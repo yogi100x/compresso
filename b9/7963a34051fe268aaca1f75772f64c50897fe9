@@ -1,0 +1,28 @@
+scripts/ci/check_ci_matrix.rb
+  s_87261b37472da1::t_5b26ddf463f21b 1-8,10-21
+  s_87261b37472da1::t_70a596917ad255 9
+.github/workflows/ci.yml
+  s_87261b37472da1::t_f04eb0aaaf3821 1-58
+.github/actionlint.yaml
+  s_87261b37472da1::t_65c33be3647cf6 1-4
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_542dbb3fe10aa1 26
+.github/workflows/release.yml
+  s_87261b37472da1::t_f04eb0aaaf3821 1-15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "b97963a34051fe268aaca1f75772f64c50897fe9",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
