@@ -35,17 +35,14 @@ Test cases:
 - test_ci_yaml_valid: `actionlint .github/workflows/ci.yml` exits 0 (run locally and as a CI step).
 - test_matrix_covers_d33: assert ci.yml matrix contains macos-14, macos-13, ubuntu-24.04, windows-2022 (yq assertion in a repo lint script).
 
-### [ ] E1-03: Supply-chain checks (cargo-deny, cargo-audit, gitleaks)
+### [ ] E1-03: Supply-chain and capability-boundary checks
 Owner: I1 · Estimate: 1d · Depends: E1-02
-Files: deny.toml, .github/workflows/ci.yml (security job), .gitleaks.toml
-Description: Add the `security` CI job from `01-stack-and-workspace.md` §4: `cargo audit` for advisories, `cargo deny check licenses bans` with a deny.toml that encodes the license allowlist and bans network-I/O crates from core/atlas/mcp/store dependency trees, and gitleaks secret scanning.
+Files: deny.toml, scripts/check-crate-capabilities.ts, .github/workflows/ci.yml
+Description: Enforce 01-stack network/process classes per owning crate.
 Acceptance criteria:
-- `cargo deny check licenses bans` passes locally and in CI; deny.toml bans `reqwest`, `hyper-tls`, `native-tls`, `ureq` except via an explicit allow for `compresso-updater` (post-slice).
-- `cargo audit` runs in CI and fails the job on unaddressed advisories.
-- gitleaks action runs on PRs; a fixture secret in a test branch is caught (verified once manually, documented in the PR).
+- Unknown classes fail; network/process dependencies pass only in sanctioned crates; audit/deny/gitleaks gate.
 Test cases:
-- test_deny_bans_network_crates: `cargo deny check bans` exits 0 on the current tree; adding `reqwest` to compresso-core in a scratch branch makes it exit non-zero.
-- test_audit_runs: CI security job log contains `cargo audit` summary line.
+- reqwest core fail/proxy pass; terminal direct spawn fail; secret canary.
 
 ### [ ] E1-04: Commit versioned JSON Schemas
 Owner: R1 · Estimate: 1d · Depends: E1-01
@@ -63,15 +60,15 @@ Test cases:
 
 ### [ ] E1-05: Fixtures skeleton and conventions doc
 Owner: PQ · Estimate: 1.5d · Depends: E1-01
-Files: fixtures/{code,debugging,logs,conversations,provider-payloads,adversarial}/README.md, fixtures/logs/repeated-timestamps/, fixtures/code/rust-small/, docs/plan/06-fixtures.md (skeleton referencing final format), docs/architecture/conventions.md
+Files: fixtures/{code,debugging,logs,conversations,provider-payloads,adversarial}/README.md, fixtures/logs/repeated-npm-install/, fixtures/code/mini-monorepo/, docs/plan/06-fixtures.md (skeleton referencing final format), docs/architecture/conventions.md
 Description: Create the six-category fixture directory tree from `06-fixtures.md` §3 (code, debugging, logs, conversations, provider-payloads, adversarial) with at least one seed fixture per category (a 500-line repeated log, a small Rust crate, a failing-test debugging log, a tool-call conversation JSON, an Anthropic count-calibration payload stub, a prompt-injection adversarial repo), each carrying a `fixture.toml` in the authoritative `06-fixtures.md` §2 format: exactly one input form (`graph` | `[[input.files]]`/`[[input.nodes]]` | `repo`), an `[expectations]` table, optional `[[recall_probes]]`, and the top-level `eligible` flag. Write `conventions.md` covering error conventions (thiserror per crate, anyhow in binaries only per D20), commit format, module layout, and test naming (`test_snake_case`).
 Acceptance criteria:
 - All six fixture categories exist with at least one committed fixture and a `fixture.toml` declaring an input form, an `[expectations]` table, and the top-level `eligible` flag per `06-fixtures.md` §2.
-- `fixtures/logs/repeated-timestamps/input.txt` contains exactly 500 log lines identical after timestamp normalization (used verbatim by E2-05 and E7).
+- `fixtures/logs/repeated-npm-install/input.txt` contains exactly 500 log lines identical after timestamp normalization (used verbatim by E2-05 and E7).
 - conventions.md documents error, naming, commit, and schema-versioning conventions and is linked from the repo README.
 Test cases:
 - test_fixture_tomls_parse: walk fixtures/, parse every fixture.toml with the `toml` crate, assert `name`, `category`, `description`, `eligible`, `mode`, `[budget]`, one input form, and `[expectations]` present.
-- test_repeated_log_fixture_shape: read repeated-timestamps/input.txt, assert 500 lines and that stripping the leading ISO-8601 timestamp yields a single distinct line.
+- test_repeated_log_fixture_shape: read repeated-npm-install/input.txt, assert 500 lines and that stripping the leading ISO-8601 timestamp yields a single distinct line.
 
 ### [ ] E1-06: Slice release tarball CI job (D42)
 Owner: I1 · Estimate: 1.5d · Depends: E1-02
@@ -110,7 +107,7 @@ Test cases:
 ### [ ] E2-02: TokenCounter providers
 Owner: R1 · Estimate: 1.5d · Depends: E1-01, E1-05
 Files: rust/compresso-core/src/tokens.rs, tests in same file
-Description: Implement `TokenProvider`, the `TokenCounter` trait, and `counter_for(provider) -> &'static dyn TokenCounter` per `03-interfaces.md` §2.2: tiktoken-rs `o200k_base` and `cl100k_base` counters, `AnthropicCalibrated` (o200k count × `CALIBRATION`; until E2-02a commits measured counts into `fixtures/provider-payloads/anthropic-counts.json`, `CALIBRATION` is the documented interim default `1.15` per ADR-0017 and `03-interfaces.md` §2.2), and a `Heuristic` fallback (bytes/4) for use when tokenizer init fails. Singletons are lazily initialized once.
+Description: Implement `TokenProvider`, the `TokenCounter` trait, and `counter_for(provider) -> &'static dyn TokenCounter` per `03-interfaces.md` §2.2: tiktoken-rs `o200k_base` and `cl100k_base` counters, `AnthropicCalibrated` (o200k count × `CALIBRATION`; until E2-02a commits measured counts into `fixtures/provider-payloads/anthropic-counts/anthropic-counts.json`, `CALIBRATION` is the documented interim default `1.15` per ADR-0017 and `03-interfaces.md` §2.2), and a `Heuristic` fallback (bytes/4) for use when tokenizer init fails. Singletons are eagerly initialized during process startup once.
 Acceptance criteria:
 - `counter_for(TokenProvider::OpenAiO200k).count(text)` matches tiktoken-rs `o200k_base` exactly; same for cl100k.
 - `AnthropicCalibrated` returns `ceil(o200k_count × CALIBRATION)` and its `provider()` tag is `AnthropicCalibrated`; CALIBRATION is a named const with a doc comment citing the fixture file and ADR-0017 — interim value `1.15` while the fixture's `anthropic_tokens`/`calibration_factor` are null, replaced by the measured median once E2-02a lands.
@@ -118,15 +115,15 @@ Acceptance criteria:
 Test cases:
 - test_o200k_hello_world: `count("hello world") == 2` for OpenAiO200k.
 - test_empty_string_zero: all four providers return 0 for "".
-- test_calibrated_is_scaled_o200k: for the text of `fixtures/provider-payloads/anthropic-counts.json` samples, calibrated count equals `ceil(o200k × CALIBRATION)`.
+- test_calibrated_is_scaled_o200k: for the text of `fixtures/provider-payloads/anthropic-counts/anthropic-counts.json` samples, calibrated count equals `ceil(o200k × CALIBRATION)`.
 - test_calibration_accuracy_gated_on_fixture: while the fixture's `anthropic_tokens` values are null, the ±10% accuracy assertion is skipped with a `calibration pending (E2-02a)` warning; once they are non-null, calibrated counts must be within 10% of the recorded Anthropic count for every sample.
 - test_counter_for_singleton: `std::ptr::eq(counter_for(OpenAiO200k), counter_for(OpenAiO200k))` is true.
 - test_provider_tag_roundtrip: each counter's `provider()` serializes to the schema enum string (`"openai_o200k"` etc.).
 
 ### [ ] E2-02a: Anthropic calibration measurement
 Owner: PQ+R1 · Estimate: 1d · Depends: E2-02, E1-05
-Files: fixtures/provider-payloads/anthropic-counts/anthropic-counts.json, rust/compresso-eval/src/calibrate.rs, docs/adr/0017-anthropic-calibration.md
-Description: Implement `compresso eval calibrate-anthropic --model <model>` running the documented procedure from `06-fixtures.md` §7.6: for each sample, call Anthropic `POST /v1/messages/count_tokens` with the sample text as a single user message, subtract the once-measured empty-message envelope overhead, fill `anthropic_tokens`/`anthropic_model`/`counted_at`, compute `ratio_i = anthropic_tokens_i / o200k_tokens_i`, and set `calibration_factor` to the median ratio rounded to three decimals. Run offline by a maintainer with an API key — never in CI. Commit the measured counts, update the `CALIBRATION` const from the fixture (provenance comment naming fixture, model, date), and thereby activate E2-02's ±10% accuracy assertion. Counts produced with the factor stay tagged `anthropic_calibrated` and never feed `provider_verified_cost_saved` (02-schemas §3).
+Files: fixtures/provider-payloads/anthropic-counts/anthropic-counts.json, rust/compresso-eval/src/calibrate.rs, docs/adr/0017-token-counting-o200k-anthropic-calibration.md
+Description: Implement `compresso eval calibrate-anthropic --model <model>` running the documented procedure from `06-fixtures.md` §7.6: for each sample, call Anthropic `POST /v1/messages/count_tokens` with the sample text as a single user message, subtract the once-measured empty-message envelope overhead, fill `anthropic_tokens`/`anthropic_model`/`counted_at`, compute `ratio_i = anthropic_tokens_i / o200k_tokens_i`, and set `calibration_factor` to the median ratio rounded to three decimals. Run offline by a maintainer with an API key — never in CI. Commit the measured counts, update the `CALIBRATION` const from the fixture (provenance comment naming fixture, model, date), and thereby activate E2-02's ±10% accuracy assertion. Counts produced with the factor stay tagged `anthropic_calibrated` and never feed `provider_observed_cost` (02-schemas §3).
 Acceptance criteria:
 - Committed `anthropic-counts.json` has non-null `anthropic_tokens` for all ten samples plus `anthropic_model`, `counted_at`, and a three-decimal `calibration_factor` equal to the median ratio.
 - `CALIBRATION` equals the fixture's `calibration_factor` (test reads the fixture and compares), replacing the 1.15 interim; ADR-0017 updated with model and date.
@@ -154,7 +151,7 @@ Test cases:
 ### [ ] E2-04: Exact-duplicate removal strategy
 Owner: R1 · Estimate: 1d · Depends: E2-03
 Files: rust/compresso-core/src/strategies/dedup_exact.rs, tests in same file
-Description: Implement `dedup_exact` per `03-interfaces.md` §2.3: identical unprotected node contents keep the first occurrence and replace later occurrences with a short reference stub (`[duplicate of node <id>]`), preserving node ids, kinds, and edges. `supports()` is true only when at least two unprotected nodes share byte-identical content; `estimate()` returns saved tokens for all-but-first duplicates. Per D39 this is the only strategy permitted at `Lossiness::None`; every replaced duplicate appends a machine-readable `removed node:<id>` note (naming the surviving node) to `StrategyOutput.notes` so the `removals_enumerated` safety check can account for the token loss.
+Description: Implement `dedup_exact` per `03-interfaces.md` §2.3. Each replacement emits `RemovalRecord::DuplicateReference` with node/survivor locator, original/replacement hashes, and exact before/after counts; notes are explanatory only (D51).
 Acceptance criteria:
 - First occurrence of duplicated content is byte-unchanged; replacements reference the kept node's id; edges untouched.
 - Protected nodes are never candidates, even when byte-identical to unprotected ones.
@@ -168,13 +165,13 @@ Test cases:
 ### [ ] E2-05: Log-collapse strategy
 Owner: R1 · Estimate: 1.5d · Depends: E2-03, E1-05
 Files: rust/compresso-core/src/strategies/collapse_logs.rs, tests in same file
-Description: Implement `collapse_logs` per `03-interfaces.md` §2.3: within unprotected nodes of kinds `ToolResponse`, `CompilerOutput`, `TestOutput`, runs of ≥3 consecutive lines that are identical after normalizing timestamps, hex strings (≥8 chars), and UUIDs are collapsed to `<first line> [×N repeats]`. Non-matching runs and protected nodes pass through byte-identical. Each collapsed run appends a machine-readable `collapsed <n> lines` note to `StrategyOutput.notes` (D39 `Structural` lossiness: whole-line removals, each enumerated) feeding the `removals_enumerated` safety check.
+Description: Implement `collapse_logs` per `03-interfaces.md` §2.3. Each non-overlapping collapsed span emits `RemovalRecord::CollapsedLines` with locator, hashes, exact counts, and removed-line count (D51).
 Acceptance criteria:
 - Runs shorter than 3 lines are never collapsed; collapsed output keeps the first raw line verbatim plus the `[×N repeats]` suffix.
 - Normalization treats ISO-8601 timestamps, `0x`-prefixed and bare hex ≥8 chars, and RFC-4122 UUIDs as equal; everything else must match exactly.
 - Protected nodes and `SourceFile`/`CodeSymbol` nodes are untouched.
 Test cases:
-- test_collapse_500_timestamped_lines: load `fixtures/logs/repeated-timestamps/input.txt` (500 identical lines with varying timestamps) into one `ToolResponse` node; output content has ≤5 lines and contains `"[×500"`; notes contain a `collapsed` entry accounting for the removed lines.
+- test_collapse_500_timestamped_lines: load `fixtures/logs/repeated-npm-install/input.txt` (500 identical lines with varying timestamps) into one `ToolResponse` node; output content has ≤5 lines and contains `"[×500"`; notes contain a `collapsed` entry accounting for the removed lines.
 - test_two_repeats_untouched: node with 2 identical lines → byte-unchanged, strategy note records the skip.
 - test_uuid_and_hex_normalization: 10 lines `"request 3f2a9c1d4b5e6f70 done (id=550e8400-e29b-41d4-a716-446655440000)"` with differing hex/uuid values → collapsed to 1 line containing `"[×10"`.
 - test_protected_log_untouched: same 500-line content in a node with `protected: true` → byte-identical output.
@@ -183,7 +180,7 @@ Test cases:
 ### [ ] E2-06: JSON-compaction strategy
 Owner: R1 · Estimate: 1.5d · Depends: E2-03
 Files: rust/compresso-core/src/strategies/compact_json.rs, tests in same file
-Description: Implement `compact_json` per `03-interfaces.md` §2.3: unprotected `ToolResponse` nodes whose content parses as JSON are minified, long string values are truncated with an elision marker (`"…[+N chars]"`), and long arrays are elided in the middle (`"…[+N items]"` sentinel element), preserving object/array structure and all keys. Content that fails `serde_json` parsing is untouched. Every string truncation and array elision appends a machine-readable `truncated <json-pointer>` note to `StrategyOutput.notes` (D39 `Structural`: whole-unit truncations, each enumerated) feeding the `removals_enumerated` safety check.
+Description: Implement `compact_json` per `03-interfaces.md` §2.3. Each non-overlapping elision emits `RemovalRecord::JsonElision` with JSON Pointer, hashes, exact counts, and removed-unit count (D51).
 Acceptance criteria:
 - Output content of processed nodes always re-parses as valid JSON; keys are never dropped.
 - String values > 500 chars truncated with `…[+N chars]`; arrays > 50 elements keep first 25 and last 5 with an elision sentinel counting the omitted items.
@@ -199,7 +196,7 @@ Test cases:
 ### [ ] E2-07: Budget-packing strategy
 Owner: R1 · Estimate: 1.5d · Depends: E2-03
 Files: rust/compresso-core/src/strategies/pack_budget.rs, tests in same file
-Description: Implement `pack_budget` per `03-interfaces.md` §2.3: while `total_tokens() > budget.max_tokens`, drop whole unprotected nodes in ascending `priority / token_count` order. Code nodes (`SourceFile`, `CodeSymbol`) are dropped whole or kept whole — never partially truncated. Dropped node ids are recorded as machine-readable `removed node:<id>` entries in `StrategyOutput.notes` (D39 note format, consumed by `removals_enumerated`); edges referencing dropped nodes are removed so the output still validates.
+Description: Implement `pack_budget` per `03-interfaces.md` §2.3. Every dropped node emits `RemovalRecord::DroppedNode` with original hash/count and zero replacement count; edge pruning cannot create overlapping records (D51).
 Acceptance criteria:
 - Output `total_tokens() ≤ budget.max_tokens` whenever the protected set alone fits; otherwise the strategy stops at protected-only and records that the budget is unsatisfiable in notes (engine surfaces this; no protected node is ever dropped).
 - Drop order is deterministic: ties on priority/token broken by node id lexicographic order.
@@ -211,24 +208,14 @@ Test cases:
 - test_edges_pruned: edge A→B where B is dropped → edge absent from output and `output.validate()` passes.
 - test_deterministic_tiebreak: two identical-score nodes "n_a" and "n_b" → "n_a" dropped first on two consecutive runs (assert equality of both outputs).
 
-### [ ] E2-08: Safety module — run_all with eight checks
-Owner: R1 · Estimate: 1.5d · Depends: E2-01, E2-02
-Files: rust/compresso-core/src/safety.rs, tests in same file
-Description: Implement `SafetyCheck` and `run_all(original, candidate, budget, elapsed_ms) -> Vec<SafetyCheck>` per `03-interfaces.md` §2.5 with exactly the eight named checks from `03-interfaces.md` §2.5: `protected_unchanged`, `no_inflation`, `json_still_valid`, `fences_balanced`, `refs_valid`, `latency_ok`, `schema_valid`, `removals_enumerated`. Per the D39 lossiness taxonomy, `removals_enumerated` fails when the token loss between original and candidate is not accounted for by the machine-readable strategy notes (`removed node:<id>`, `collapsed <n> lines`, `truncated <pointer>`) that the engine accumulates and passes alongside the graphs. Every check always appears in the output vector with `passed` and a human-readable `detail` containing no raw node content.
+### [ ] E2-08: Safety module with eleven mandatory checks
+Owner: R1 · Estimate: 2d · Depends: E2-01, E2-02
+Files: rust/compresso-core/src/safety.rs
+Description: Implement the eleven checks in 03 §2.5 in order.
 Acceptance criteria:
-- `run_all` returns exactly eight checks with those names, in that order, on every call.
-- `protected_unchanged` compares byte equality of content for every node protected in the original; a missing protected node also fails it.
-- `detail` strings reference node ids and counts only — a test asserts no node content substring leaks into any detail.
+- All eleven always run; provider atoms, non-empty output, dedup refs, token recounts, and removals gate output.
 Test cases:
-- test_all_pass_on_identity: `run_all(g, g, budget, 10)` → all eight `passed == true`.
-- test_protected_mutation_fails: candidate changes one byte of a protected node → `protected_unchanged.passed == false`, detail names the node id.
-- test_inflation_fails_without_note: candidate `total_tokens()` > original → `no_inflation.passed == false`.
-- test_broken_json_fails: original node content `{"a":1}` becomes `{"a":` → `json_still_valid` fails; a node that was never valid JSON does not trigger it.
-- test_unbalanced_fence_fails: original with two ``` fences, candidate with one → `fences_balanced` fails.
-- test_dangling_file_ref_fails: candidate contains `src/ghost.rs:42` absent from the original → `refs_valid` fails; refs present in the original pass.
-- test_latency_exceeded_fails: `elapsed_ms = 500` with `budget.max_latency_ms = 200` → `latency_ok` fails.
-- test_invalid_candidate_schema_fails: candidate with duplicate node ids → `schema_valid` fails.
-- test_removals_not_enumerated_fails: candidate is 300 tokens smaller than the original but the accumulated strategy notes account for none of it → `removals_enumerated.passed == false`, detail reports the unaccounted token count; with matching `removed node:`/`collapsed`/`truncated` notes covering the delta, the check passes.
+- one failure per check; all-pass; every failure restores bytes.
 
 ### [ ] E2-09: Engine::compress pipeline, trace generation, fallback
 Owner: R1 · Estimate: 2d · Depends: E2-04, E2-05, E2-06, E2-07, E2-08, E1-04
@@ -434,25 +421,17 @@ Test cases:
 - test_outline_line_order_and_ranges: `outline(.., "src/lib.rs")` on the E3-05 fixture → symbols sorted by start_line, ranges matching the extraction test constants.
 - test_outline_missing_path: `outline(.., "src/nope.rs")` → `Err(AtlasError::FileNotIndexed)`.
 
-### [ ] E3-11: Queries — unfold, search, read_bounded (path security)
+### [ ] E3-11: Queries - selector-based unfold, search, and bounded read
 Owner: R2 · Estimate: 2.5d · Depends: E3-09
 Files: rust/compresso-atlas/src/queries.rs, tests in rust/compresso-atlas/tests/queries_unfold_search_read.rs
-Description: Implement `unfold(store, repo, path, symbol)` (exact body via stored line range, read from disk, blake3 hash-checked against the stored file hash; per D44 staleness is never an error: on hash mismatch the function re-locates the symbol **by name** in the current on-disk content and serves the current body with `stale: true` plus a reindex hint — `not_found` is returned only when the symbol cannot be re-located in the changed file), `search(store, repo, query, limit)` over FTS5 (delegating to `Store::search_symbols`), and `read_bounded(root, path, range, budget_tokens, counter)` per `03-interfaces.md` §4. Every externally-supplied path is canonicalized and must satisfy `starts_with(approved_root)` **after** symlink resolution; violations return `AtlasError::OutsideRoot`. Path traversal and symlink-escape tests are REQUIRED for this ticket to close.
+Description: Implement `unfold(store, repo, selector: &SymbolSelector)`, ranked search, and `read_bounded`. Unfold uses path plus qualified name and optional kind/signature hash/start-line hint. Zero matches returns NotFound; multiple matches returns typed Ambiguous candidates; it never selects an arbitrary body. On stale files it re-parses and matches the complete selector against current content.
 Acceptance criteria:
-- `unfold` returns the exact source lines `start_line..=end_line` when the hash matches; after an on-disk edit without reindex, it re-locates the symbol by name and returns the symbol's current on-disk body (not blindly the stored range) with `stale: true` and a reindex hint; no `stale_index`-style error variant exists (D44).
-- `read_bounded` truncates at `budget_tokens` with an explicit truncation flag and honors 1-based inclusive `range`.
-- `../` traversal, absolute paths outside root, and symlinks pointing outside root all return `AtlasError::OutsideRoot`; symlinks resolving inside root are allowed.
+- Unique selectors return exact current source; ambiguous selectors return at most 20 deterministic candidate identities.
+- Staleness is a flag, not an error; deleted symbols return NotFound with reindex hint.
+- Every path is canonicalized after symlink resolution and bounded reads honor inclusive ranges/token limits.
 Test cases:
-- test_unfold_exact_body: unfold `SessionManager::start` on the E3-05 fixture → returned text byte-equal to lines 10–14 of sample.rs.
-- test_unfold_stale_after_disk_edit: index, insert two lines above the symbol and append a trailing comment, unfold → `stale == true`, returned body is the symbol's current (shifted) on-disk body, hint mentions `compresso index`.
-- test_unfold_symbol_deleted_not_found: index, delete the symbol from the file, unfold → `Err(AtlasError::SymbolNotFound)` with a `compresso index` instruction — never a stale error variant (D44).
-- test_search_ranked: seed symbols `parse_config`, `ConfigParser`, `apply_theme`; `search(.., "config", 10)` returns the two config symbols before `apply_theme` is absent/last.
-- test_read_bounded_dotdot_rejected: `read_bounded(root, "../../../etc/passwd", None, 1000, counter)` → `Err(AtlasError::OutsideRoot)`.
-- test_read_bounded_absolute_outside_rejected: path `/etc/hosts` → `Err(AtlasError::OutsideRoot)`.
-- test_read_bounded_symlink_escape_rejected: create `root/link.rs -> /etc/passwd` (unix) → `Err(AtlasError::OutsideRoot)`; on Windows the test is skipped with a named guard.
-- test_read_bounded_internal_symlink_ok: `root/alias.rs -> root/src/lib.rs` → content returned.
-- test_read_bounded_budget_truncates: 5000-token file with budget 200 → `counter.count(result.content) <= 200`, `truncated == true`.
-- test_read_bounded_range: range `(3, 5)` returns exactly lines 3–5 inclusive.
+- `test_unfold_unique_selector_exact_body`, `test_unfold_overload_returns_candidates`, `test_unfold_trait_impl_disambiguated_by_signature`, `test_unfold_stale_relocates_full_selector`, `test_unfold_deleted_not_found`.
+- Search ranking, dotdot/absolute/symlink escapes, internal symlink, range, and token truncation.
 
 ### [ ] E3-12: Queries — impact and plan_context
 Owner: R2 · Estimate: 1.5d · Depends: E3-10, E3-11
@@ -472,34 +451,23 @@ Test cases:
 
 ## E4 — CLI
 
-### [ ] E4-01: clap skeleton with all slice commands and --json
-Owner: D1 · Estimate: 1.5d · Depends: E1-01, E2-01
-Files: rust/compresso-cli/src/main.rs, rust/compresso-cli/src/cli.rs, tests in rust/compresso-cli/tests/cli_skeleton.rs
-Description: clap (derive) command tree with every slice command: `init`, `doctor`, `index`, `map`, `search`, `outline`, `unfold`, `context`, `compress`, `explain`, `stats`, `config` (with `explain` subcommand), `mcp serve`, `integrations` (`list|install|uninstall|verify`), `uninstall`. Global `--json` flag emitting a versioned envelope `{"schema_version":1,"ok":bool,"data":...,"error":...}` on every command; modifying commands (`init`, `index`, `integrations install|uninstall`, `uninstall`) accept `--dry-run`. Commands return typed exit codes (0 ok, 1 operational error, 2 usage). Handlers are stubs returning `unimplemented` errors in the JSON envelope until wired in E4-02/03/04; `anyhow` at the binary edge only per D20.
+### [ ] E4-01: CLI application and canonical command tree
+Owner: D1 · Estimate: 2d · Depends: E2-09, E3-12
+Files: rust/compresso-cli/src/{main,commands}.rs, rust/compresso-eval/src/cli.rs
+Description: Expose account login|status|logout and eval run|gates|diff-gates|workflow|calibrate-anthropic with all existing commands.
 Acceptance criteria:
-- `compresso --help` lists all fifteen commands; `compresso <cmd> --help` renders for each without panic.
-- Every command run with `--json` emits exactly one line of parseable JSON to stdout matching the envelope; human output goes to stdout without `--json`, diagnostics to stderr.
-- Unknown subcommand exits 2; stubbed command exits 1 with `error.code == "unimplemented"` in JSON mode.
+- Shared eval parser/output/exit codes; help, JSON, dry-run; account uses AccountClient.
 Test cases:
-- test_help_lists_all_commands: assert_cmd `--help` output contains each of the fifteen command names.
-- test_json_envelope_on_stats: `compresso stats --json` → stdout parses as JSON with keys `schema_version`, `ok`, and exit code consistent with `ok`.
-- test_dry_run_accepted_on_modifiers: `compresso index --dry-run --json` parses args successfully (no usage error).
-- test_unknown_command_exit_2: `compresso frobnicate` → exit code 2.
+- command snapshot; both eval entry points; cancelled login writes nothing.
 
-### [ ] E4-02: Wire Atlas commands (init, index, map, search, outline, unfold, context)
-Owner: D1 · Estimate: 1.5d · Depends: E4-01, E3-10, E3-11, E3-12
-Files: rust/compresso-cli/src/commands/{init.rs,index.rs,atlas.rs}, tests in rust/compresso-cli/tests/cli_atlas.rs
-Description: `init` approves the current (or `--repo`) root via `Store::approve_repo` and runs a first `Indexer::index`; `index` re-runs incrementally with a progress bar (suppressed under `--json`); `map`/`search`/`outline`/`unfold`/`context` call `repo_map`/`search`/`outline`/`unfold`/`plan_context` with `--budget` token flags defaulting per config. `impact` is exposed as `compresso context --impact <path>`? No — `impact` gets its own hidden alias under `search --impact`? Neither: expose `impact` through `compresso map --impact <path>` is wrong too; it is wired as its own flag on `context`. Correction: `impact(path)` is wired as `compresso context --impact <path>`, documented in `--help`.
+### [ ] E4-02: CLI retrieval, compression, and diagnostics
+Owner: D1 · Estimate: 2d · Depends: E4-01
+Files: rust/compresso-cli/src/commands/
+Description: Wire canonical interfaces without duplicated logic.
 Acceptance criteria:
-- `compresso init` in a fixture repo creates the DB (default path per 01-stack §5, overridable via `--db` for tests), indexes it, and prints an `IndexReport` summary; `--dry-run` prints the scan plan and writes nothing.
-- `compresso search <q> --json` returns hits with path, qualified_name, kind, line; `unfold` prints the exact body; all outputs match their atlas-layer test constants.
-- Path arguments outside the approved root surface `AtlasError::OutsideRoot` as exit 1 with `error.code == "outside_root"`.
+- Unfold selector/ambiguity and impact completeness are surfaced; bounds/root checks match MCP; no empty compression.
 Test cases:
-- test_init_then_search_e2e: temp fixture repo; `init --db tmp.db` then `search SessionManager --json` → hit for `SessionManager` with `path == "src/sample.rs"`.
-- test_index_incremental_via_cli: run `index` twice; second `--json` report has `files_indexed == 0`.
-- test_unfold_outputs_exact_body: `unfold src/sample.rs SessionManager::start` stdout equals lines 10–14 of the fixture.
-- test_init_dry_run_writes_nothing: `init --dry-run --db tmp.db` → tmp.db does not exist afterwards.
-- test_outside_root_error_code: `compresso unfold ../etc/passwd x --json` → exit 1, `error.code == "outside_root"`.
+- JSON snapshots; root, ambiguity, unresolved, stale, malformed, fallback.
 
 ### [ ] E4-03: Wire engine commands (compress, explain, stats)
 Owner: D1 · Estimate: 1d · Depends: E4-01, E2-09, E3-03
@@ -510,7 +478,7 @@ Acceptance criteria:
 - `compresso explain --last --json` returns the stored trace, validating against compression-trace v1.
 - `compresso stats --json` field names match 02-schemas §3 exactly; human output labels modeled savings as "modeled".
 Test cases:
-- test_compress_log_fixture_via_stdin: pipe fixtures/logs/repeated-timestamps/input.txt → JSON `after_tokens < before_tokens`, stdout content contains `"[×500"`.
+- test_compress_log_fixture_via_stdin: pipe fixtures/logs/repeated-npm-install/input.txt → JSON `after_tokens < before_tokens`, stdout content contains `"[×500"`.
 - test_passthrough_byte_exact: `--mode passthrough` with arbitrary UTF-8 input → stdout equals stdin.
 - test_explain_last_matches_schema: after a compress, `explain --last --json` → `data.trace` validates against schemas/compression-trace/v1.json and contains no input substring.
 - test_stats_labels_modeled: `stats --json` → keys include `net_tokens_saved` and `modeled_cost_saved`; human mode output contains the word "modeled".
@@ -561,21 +529,16 @@ Test cases:
 - test_instructions_word_budget: instructions split_whitespace count ≤ 200; denylist phrases absent.
 - test_malformed_frame_survives: send `{"jsonrpc":"2.0",` then a valid request → valid request still answered.
 
-### [ ] E5-02: Tool handlers — compresso_repo_map, compresso_outline, compresso_unfold
+### [ ] E5-02: Navigation handlers - repo map, outline, selector-based unfold
 Owner: R2 · Estimate: 1.5d · Depends: E5-01, E3-10, E3-11
 Files: rust/compresso-mcp/src/tools/atlas_nav.rs, tests in rust/compresso-mcp/tests/tools_nav.rs
-Description: Implement the three navigation handlers per `04-mcp-and-integrations.md` §1, calling `repo_map`, `outline`, and `unfold` with `max_tokens` budgets from arguments (name per 04 §1.1, Tetris-compatible per D7; defaults from `Config`). Argument names/semantics stay compatible with the Tetris equivalents per D7 (`tetris_outline`→`compresso_outline`, `tetris_unfold`→`compresso_unfold`). Handlers are pure request/response, validate arguments against the tool schema, and map `AtlasError` variants to `isError` tool results with the stable bracketed codes from 04 §1.1 (`not_indexed`, `outside_root`, `not_found`, `invalid_arguments`, `internal`). Per D44, `compresso_unfold` never returns a staleness error: on hash mismatch it serves the current on-disk body (re-located by name) with `stale: true` and a reindex hint; `not_found` only when the symbol is gone.
+Description: Implement the three navigation handlers against the exact JSON schemas in 04 §1. Root naming, defaults, bounds, SymbolSelector, ambiguity, and errors must match those schemas.
 Acceptance criteria:
-- Each tool called against a temp indexed fixture repo returns content matching the atlas-layer constants (same body as E3-10/E3-11 tests) inside MCP content blocks.
-- Invalid arguments (missing `path`, `max_tokens` outside 100..100000) return `invalid_arguments` errors without invoking atlas.
-- `compresso_unfold` on a stale file re-locates the symbol by name and returns the current body with `stale: true` and a reindex hint; the error surface has no `stale_index` code — `not_found` only when the symbol no longer exists, with up to 5 closest qualified-name matches listed (04 §1.7).
+- Repo map and outline preserve their bounded contracts.
+- Unfold passes the complete selector to E3-11 and returns found/ambiguous/not_found as structured success; ambiguous candidates are capped at 20 and deterministic.
+- Invalid arguments and root violations return stable MCP errors; stale unique matches return current content with stale=true.
 Test cases:
-- test_repo_map_tool_budget: call with `{"max_tokens": 300}` → returned text ≤ 300 tokens by the o200k counter.
-- test_outline_tool_matches_atlas: outline of `src/sample.rs` via MCP equals the E3-10 outline rendering.
-- test_unfold_tool_exact_body: unfold `SessionManager::start` → text equals fixture lines 10–14.
-- test_unfold_missing_symbol_error: unknown symbol → `isError` result starting with `[not_found]`, listing up to 5 closest qualified-name matches, no panic.
-- test_unfold_stale_serves_current_body: edit the fixture file after indexing (shift the symbol two lines) → result `stale == true`, content equals the symbol's current on-disk body, hint mentions `compresso index` — not an error (D44).
-- test_unfold_symbol_gone_not_found: delete the symbol from the file → `[not_found]` with a `compresso index` instruction; no `stale_index` code exists anywhere in the error surface.
+- `test_repo_map_budget`, `test_outline_matches_atlas`, `test_unfold_unique`, `test_unfold_ambiguous_candidates`, `test_unfold_signature_disambiguates`, `test_unfold_stale_current`, `test_unfold_deleted_not_found`, `test_unfold_schema_bounds`.
 
 ### [ ] E5-03: Tool handlers — compresso_search, compresso_read (gate mode), compresso_context
 Owner: R2 · Estimate: 1.5d · Depends: E5-01, E3-11, E3-12
@@ -622,17 +585,14 @@ Test cases:
 - test_operation_per_tool_call: 3 tool calls (search, read, compress) → 3 operations rows sharing the session_id; the search and read rows have `trace_json` NULL with `tokens_served` set, the compress row carries a root-schema-valid trace (D47).
 - test_ledger_failure_fail_open: make DB read-only, call `compresso_search` → valid MCP result returned, stderr contains a ledger warning.
 
-### [ ] E5-06: MCP startup-time budget test
-Owner: R2 · Estimate: 1d · Depends: E5-01
-Files: rust/compresso-mcp/tests/startup_budget.rs, .github/workflows/ci.yml (release-mode test step)
-Description: Measure spawn-to-initialize-response latency for the release binary: spawn `compresso mcp serve`, send `initialize`, and require a response within the D37 budget of 500 ms, sampled over 10 runs using the P95. Guards against eager tokenizer/grammar/db work moving into the startup path (heavy singletons must stay lazy per E2-02).
+### [ ] E5-06: MCP startup and eager tokenizer lifecycle
+Owner: R2 · Estimate: 1.5d · Depends: E5-01, E2-02
+Files: rust/compresso-mcp/src/server.rs, rust/compresso-core/src/tokens.rs, benches/startup.rs
+Description: Initialize configured tokenizers before accepting tools; separate cold startup from warm calls.
 Acceptance criteria:
-- P95 of 10 cold spawns < 500 ms in release mode on macos-14 and ubuntu-24.04 CI legs.
-- Test is `#[ignore]`d in debug and executed via a dedicated `cargo test --release -p compresso-mcp -- --ignored startup` CI step.
-- A regression demonstration (eagerly loading both tiktoken encoders at startup in a scratch branch) makes the test fail, documented in the PR.
+- Initialize once under 500ms; warm P95 under 200ms; failure keeps passthrough MCP alive.
 Test cases:
-- test_startup_p95_under_500ms: 10 spawn+initialize cycles, sort, assert `samples[8] < 500ms`.
-- test_no_db_migration_before_initialize: spawn with `COMPRESSO_DB` pointing at a nonexistent path → initialize still answers in budget (store opens lazily on first tool call).
+- pre-initialize construction; no handler construction; cold/warm; failure; EOF.
 
 ### [ ] E5-07: Manual verification in Claude Code
 Owner: R2 · Estimate: 1.5d · Depends: E5-02, E5-03, E5-04, E5-05, E5-06
@@ -650,19 +610,14 @@ Test cases:
 
 ## E6 — Integrations
 
-### [ ] E6-01: Integration trait, backups, and receipt plumbing
-Owner: D1 · Estimate: 2d · Depends: E1-01, E3-03
-Files: rust/compresso-integrations/src/lib.rs, rust/compresso-integrations/src/backup.rs, tests in same files
-Description: Implement the `Integration` trait (`client_id`, `detect`, `plan_install`, `install`, `verify`, `uninstall`), `InstallCtx` with `Scope::User | Scope::Project(PathBuf)`, `Detection`, `InstallPlan` (exact key-level diff, human-readable), `InstallReceipt`, `VerificationReport`, `RestoreReport` per `03-interfaces.md` §6, plus shared helpers: timestamped backup (`<config>.compresso-backup-<ISO timestamp>`, UTC with colons replaced by hyphens per 04 §2.1; sentinel `"(none: file created)"` when the config did not exist), atomic write (tmp file + rename on the same filesystem), and receipt persistence via `Store::save_receipt` (wired at the CLI layer so this crate keeps zero internal deps per `01-stack` §3 — receipts are returned as values, stored by the caller).
+### [ ] E6-01: Integration trait, base-bound plans, and receipts
+Owner: D1 · Estimate: 2d · Depends: E5-01
+Files: rust/compresso-integrations/src/{lib,plan,receipt}.rs, schemas/integrations/v1.json
+Description: Define detect and plan/apply install/uninstall with full-file base hash, plan, diff, expiry, session, backup.
 Acceptance criteria:
-- `install` always writes a backup before modifying anything and returns a receipt listing the exact keys written, backup path, and compresso version.
-- Atomic write proven: killing the process between tmp-write and rename (test seam) leaves the original config byte-intact.
-- Crate has no `compresso-*` dependencies (serde types only), matching the dependency rule.
+- Rehash before writes; drift/forge/expiry/session reject; atomic receipts; owned-key uninstall; idempotent.
 Test cases:
-- test_backup_created_before_write: fake adapter installs into a temp config → backup file exists with original bytes and a `compresso-backup-<UTC ISO>` suffix (04 §2.1 format).
-- test_atomic_write_crash_safe: inject failure after tmp write, before rename → target file unchanged, tmp cleaned or ignorable.
-- test_receipt_lists_owned_keys: receipt `keys_owned == ["mcpServers.compresso"]` for the fake adapter, `compresso_version` equals crate version.
-- test_no_internal_deps: Cargo.toml assertion mirroring E1-01.
+- outside-diff rewrite; forged/expired; crash; unknown keys.
 
 ### [ ] E6-02: Claude Code adapter
 Owner: D1 · Estimate: 2d · Depends: E6-01, E5-01
@@ -679,19 +634,14 @@ Test cases:
 - test_uninstall_skips_user_modified_entry: mutate the compresso entry after install, uninstall → entry retained, RestoreReport warns `key_modified`.
 - test_project_scope_writes_mcp_json: `Scope::Project(dir)` → `.mcp.json` created in dir with the compresso entry, user config untouched.
 
-### [ ] E6-03: Codex adapter (toml_edit)
-Owner: D1 · Estimate: 2d · Depends: E6-01, E5-01
-Files: rust/compresso-integrations/src/codex.rs, rust/compresso-integrations/Cargo.toml (add toml_edit), tests in codex.rs
-Description: Adapter with `client_id() == "codex"` targeting `~/.codex/config.toml` per `04-mcp-and-integrations.md` §2, owning only the `[mcp_servers.compresso]` table (`command`, `args`). Chosen approach, documented in the module header and ADR-0018: use the `toml_edit` crate for format-preserving edits so user comments, key ordering, and whitespace outside the owned table survive install/uninstall; plain `toml` (de)serialization is used only for read-side detection. Covers Codex CLI and Codex Desktop, which share this config file (D4).
+### [ ] E6-03: Codex integration adapter
+Owner: D1 · Estimate: 2d · Depends: E6-01
+Files: rust/compresso-integrations/src/codex.rs
+Description: Implement Codex CLI/Desktop without Claude assumptions.
 Acceptance criteria:
-- Installing into a config containing comments and custom tables preserves every comment and unrelated table byte-for-byte; only the owned table is added/updated.
-- Uninstall removes the owned table and any trailing blank line it introduced; result is byte-identical to the pre-install file in the round-trip test.
-- Missing `~/.codex/` yields `Detection::NotFound`; malformed TOML yields a plan-time typed error, never a partial write.
+- Base-bound owned-key lifecycle and typed unsupported no-op.
 Test cases:
-- test_codex_comments_preserved: config with `# my proxy settings` comment and `[profile.o3]` table → post-install file contains both verbatim plus `[mcp_servers.compresso]`.
-- test_codex_install_uninstall_byte_roundtrip: bytes(before) == bytes(after uninstall) for a commented fixture config.
-- test_codex_malformed_toml_no_write: config `"[mcp_servers"` → `plan_install` returns Err, file mtime/bytes unchanged.
-- test_codex_updates_stale_entry: existing compresso table pointing at an old binary path → install rewrites just that table, receipt notes `updated`.
+- fresh/existing/malformed; drift; disable/uninstall/repeat; platforms.
 
 ### [ ] E6-04: Cursor adapter
 Owner: D1 · Estimate: 1.5d · Depends: E6-01, E5-01
@@ -706,21 +656,15 @@ Test cases:
 - test_cursor_uninstall_restores: uninstall → deep-equal to original JSON.
 - test_cursor_project_scope_isolated: `Scope::Project` install → project file has entry, user file byte-unchanged.
 
-### [ ] E6-05: Idempotency, restore, and CLI wiring with temp HOME
-Owner: D1 · Estimate: 2.5d · Depends: E6-02, E6-03, E6-04, E4-01
-Files: rust/compresso-cli/src/commands/integrations.rs, rust/compresso-integrations/tests/idempotency_restore.rs
-Description: Wire `compresso integrations list|install|uninstall|verify` (per-client or `--all`) with mandatory dry-run preview (`--dry-run` prints the `InstallPlan` diff; interactive install shows the plan and requires confirmation unless `--yes`), receipt persistence via `Store::save_receipt`, and `compresso uninstall` performing all-client restore then self-cleanup listing. Binary-path resolution per D42/04 §2.1: `InstallCtx.compresso_bin` is the absolute resolved path of the installed binary, preferring `~/.local/bin/compresso` (as installed by E4-05) and falling back to `std::env::current_exe()` with a printed warning when the installed path is absent — adapters always write an absolute `command` that resolves to an existing executable. Cross-adapter test suite runs every adapter under a fabricated `$HOME` (tempfile + env override; `USERPROFILE` on Windows) proving idempotency and restoration per build-doc §25.6 gates.
+### [ ] E6-05: Integration parity and restoration suite
+Owner: D1+PQ · Estimate: 2d · Depends: E6-02, E6-03, E6-04
+Files: rust/compresso-integrations/tests/parity.rs, fixtures/integrations/
+Description: Run one contract over Claude Code, Codex, Cursor.
 Acceptance criteria:
-- Running `integrations install <client>` twice yields identical configs and a single active receipt per client (second run reports `already-installed`, writes nothing, exit 0).
-- `integrations uninstall <client>` restores each adapter's config to its pre-install bytes (JSON deep-equal for claude-code/cursor, byte-equal for codex) and stamps `uninstalled_at` on the receipt.
-- `--dry-run` never modifies any file (asserted via before/after directory hash) and prints a key-level diff naming exactly the owned keys.
+- Detection, base plan, drift, atomic apply, receipts, disable, uninstall match.
 Test cases:
-- test_install_twice_idempotent_all_clients: for each of the three adapters under temp HOME: install, snapshot config, install again → snapshots equal, receipts count 1.
-- test_uninstall_restores_all_clients: install all three, uninstall all → all three configs equal their originals.
-- test_dry_run_no_writes: hash config dir, run `integrations install claude-code --dry-run --json`, rehash → equal; JSON plan lists `mcpServers.compresso`.
-- test_receipt_survives_and_stamps: after uninstall, `Store::receipts(Some("codex"))[0].uninstalled_at.is_some()`.
-- test_missing_client_graceful: no `~/.codex` dir → `install codex --json` exits 1 with `error.code == "client_not_found"`, other clients unaffected in `--all` mode.
-- test_installed_binary_path_preferred: with a binary present at `<temp HOME>/.local/bin/compresso`, the written `command` equals that absolute path; without it, `command` equals `current_exe()` and stderr carries a warning (D42).
+- rewrite; malformed; crash; unknown keys; repeats; privacy.
+
 
 ---
 
@@ -738,7 +682,7 @@ Acceptance criteria:
 Test cases:
 - test_load_all_committed_fixtures: load fixtures/ → count ≥ 5, one per category minimum, zero errors.
 - test_malformed_fixture_rejected: temp fixture with the `[expectations]` table missing → `Err` naming the fixture path and the missing table.
-- test_eligibility_parsed: `fixtures/adversarial/prompt-injection-repo/fixture.toml` → `eligible == false`; `fixtures/logs/repeated-timestamps` → `eligible == true`.
+- test_eligibility_parsed: `fixtures/adversarial/prompt-injection-repo/fixture.toml` → `eligible == false`; `fixtures/logs/repeated-npm-install` → `eligible == true`.
 - test_recall_probes_parsed: fixture with two `[[recall_probes]]` (one `protected = true`) → probes exposed with correct `answer_substring` and protected flags.
 - test_eligibility_rule_violation_rejected: temp fixture with `eligible = true` and `mode = "passthrough"` → load error citing the §4 eligibility rules.
 - test_fixture_graph_validates: every loaded fixture's graph `validate().is_ok()`.
@@ -753,7 +697,7 @@ Acceptance criteria:
 - Runner is deterministic across runs on the committed corpus (identical report modulo timings).
 Test cases:
 - test_runner_full_corpus_report_shape: run on fixtures/ → JSON parses, has `fixtures[]` and `aggregate` keys, all committed fixtures present.
-- test_log_fixture_expectations: repeated-timestamps row → `after_tokens < before_tokens`, output contains `"[×500"` per its fixture.toml expected block.
+- test_log_fixture_expectations: repeated-npm-install row → `after_tokens < before_tokens`, output contains `"[×500"` per its fixture.toml expected block.
 - test_failed_expectation_isolated: inject a temp fixture expecting substring "UNOBTAINIUM" → that row `passed == false`, aggregate still produced, exit code reflects failure only via gates (E7-03).
 - test_protected_mutation_counter_zero: aggregate `protected_mutations == 0` on the committed corpus.
 
@@ -861,20 +805,14 @@ Test cases:
 - test_unknown_schema_version_fails_open: request with `schema_version: 99` → typed error response, server still serving.
 - test_body_size_limit_413: oversized body rejected.
 
-### [ ] E8-04: Read endpoints — health, sessions, operations, stats
-Owner: R2 · Estimate: 2.5d · Depends: E8-03
-Files: rust/compresso-agent/src/api/read.rs, tests in rust/compresso-agent/tests/api_read.rs
-Description: Implement `GET /v1/health` (`{status, version, components: [{name, status}]}` fed by the E8-08 health subsystem), `GET /v1/sessions` (paginated), `GET /v1/operations?session=&since=&limit=` (trace documents only, never raw content; retrieval rows expose `tokens_served` with `trace_json: null` per D47), and `GET /v1/stats?since=` returning `StatsSummary` in the 02-schemas §3 savings vocabulary — all against `Store` via `spawn_blocking` (D41).
+### [ ] E8-04: Health, session, operation, and stats endpoints
+Owner: R2 · Estimate: 2.5d · Depends: E8-08
+Files: rust/compresso-agent/src/api/{health,sessions,operations,stats}.rs
+Description: Expose authenticated bounded views backed by HealthService.
 Acceptance criteria:
-- /v1/operations returns compression rows with their trace v1 documents and retrieval rows with `trace_json: null` + `tokens_served`; no response contains raw file or prompt content.
-- /v1/stats field names match 02-schemas §3 exactly (`observed_tokens`, `applied_tokens`, `removed_tokens`, `compression_overhead`, `net_tokens_saved`, `modeled_cost_saved` labelled modeled).
-- Pagination is stable (ordered by `created_at`), `limit` capped, and documented in schemas/local-api/v1.json.
+- Deterministic pagination; no content; observed actuals separate modeled savings.
 Test cases:
-- test_health_shape_and_components: health matches the 03 §7 shape.
-- test_sessions_paginated: 30 sessions, limit 10 → three stable pages.
-- test_operations_filter_by_session_and_since: filters compose.
-- test_operations_retrieval_rows_null_trace: retrieval rows carry `tokens_served`, null trace (D47).
-- test_no_raw_content_in_responses: compress a known canary string, then fetch all endpoints → canary absent everywhere.
+- health states; pagination; auth/origin; redaction.
 
 ### [ ] E8-05: Repo management endpoints
 Owner: R2 · Estimate: 2d · Depends: E8-03
@@ -891,50 +829,33 @@ Test cases:
 - test_nondirectory_root_rejected: POST a file path → `invalid_arguments`, no row.
 - test_index_progress_via_health: during a large index, health `indexer` component reports progress.
 
-### [ ] E8-06: Config endpoints
-Owner: R2 · Estimate: 2d · Depends: E8-03
-Files: rust/compresso-agent/src/api/config.rs, tests in rust/compresso-agent/tests/api_config.rs
-Description: `GET /v1/config` returns the effective config with per-key sources from `Config::explain()` (03-interfaces §2.6). `PUT /v1/config` performs a validated partial update: merge into `~/.config/compresso/config.toml` with `toml_edit` (comments preserved), validate the merged result via `Config::load()` semantics, then atomic write (tmp + rename). Unknown keys are rejected; `privacy.telemetry = true` is rejected with code `telemetry_forbidden` (D6). Concurrent PUTs serialize behind a lock; failed validation leaves the file byte-untouched.
+### [ ] E8-06: Configuration plan/apply endpoints
+Owner: R2+D1 · Estimate: 2d · Depends: E8-03
+Files: rust/compresso-agent/src/api/config.rs, schemas/local-api/config-v1.json
+Description: Implement GET plus POST plan/apply; no direct PUT.
 Acceptance criteria:
-- GET lists every key with source `default|file|env|flag`.
-- PUT with an unknown key → 400 `invalid_arguments`, file unchanged; PUT setting telemetry true → 400 `telemetry_forbidden` citing D6.
-- Comments and unrelated keys in config.toml survive a PUT byte-for-byte.
+- Plan includes base/hash/expiry; apply checks approval/session/expiry/full bytes then atomic validates/writes.
 Test cases:
-- test_get_config_sources: env override shows source `env`.
-- test_put_partial_update_atomic: valid PUT → only the targeted key changes, write is atomic (crash seam leaves original intact).
-- test_put_unknown_key_rejected: file hash unchanged after rejection.
-- test_put_telemetry_rejected_d6: `{"privacy":{"telemetry":true}}` → 400 `telemetry_forbidden`.
-- test_concurrent_puts_serialized: two racing PUTs → both applied in some order, final file valid, no interleaved corruption.
+- drift anywhere; forge/expire/session; invalid; crash; dry-run.
 
-### [ ] E8-07: Integration endpoints — two-step plan/install flow
-Owner: D1 · Estimate: 3d · Depends: E8-03, E6-05
-Files: rust/compresso-agent/src/api/integrations.rs, tests in rust/compresso-agent/tests/api_integrations.rs
-Description: `GET /v1/integrations` returns detection + receipt status per client (`Integration::detect`, `Store::receipts`). `POST /v1/integrations/:client/plan` runs `plan_install` and returns `{plan, unified_diff, plan_hash, backup_path}` where `plan_hash` is the blake3 of the exact unified diff (03-interfaces §7 two-step flow). `POST /v1/integrations/:client/install` requires body `{approve: true, plan_hash}` matching a plan issued this supervisor session; a stale hash — the target config changed since planning, or the hash came from a previous session — is rejected with `plan_stale` and a fresh plan must be requested. `POST /v1/integrations/:client/uninstall` mirrors the flow. All writes go through the E6 adapters unchanged (backup, receipt, atomic write). `claude-desktop` as `:client` is refused citing D5.
+### [ ] E8-07: Integration install/uninstall plan/apply endpoints
+Owner: R2+D1 · Estimate: 3d · Depends: E8-03, E6-05
+Files: rust/compresso-agent/src/api/integrations.rs, schemas/local-api/integrations-v1.json
+Description: Expose separate base-bound install and uninstall flows.
 Acceptance criteria:
-- Install without a prior plan, with a wrong hash, or after the target config changed → rejected with `plan_stale`/`invalid_arguments`, zero writes.
-- A successful API install produces a backup and receipt identical to a CLI-driven install (same adapter code path, asserted by comparing receipts).
-- `POST /v1/integrations/claude-desktop/plan` → error citing D5; no Claude Desktop detection code path exists.
+- Drift/session/expiry/approval fail before disk; owned-key restore; idempotent.
 Test cases:
-- test_plan_then_install_happy_path: plan → diff + hash → install with hash → receipt row, config updated.
-- test_install_without_plan_rejected: install first → rejected, config untouched.
-- test_stale_plan_hash_rejected: modify the client config between plan and install → `plan_stale`.
-- test_uninstall_two_step: plan + approve → config restored, `uninstalled_at` stamped.
-- test_claude_desktop_refused_d5: refusal message names the decision.
+- all clients; rewrite; forge; malformed; crash; repeats.
 
-### [ ] E8-08: Health subsystem and embedded fallback mode
-Owner: R2 · Estimate: 2d · Depends: E8-04
-Files: rust/compresso-agent/src/health.rs, tests in rust/compresso-agent/tests/health_fallback.rs
-Description: Component health registry (store, indexer, mcp, api, config) with status `ok|degraded|failed` and content-free detail strings, feeding `GET /v1/health`. Embedded fallback mode per the Phase 4 exit criteria: `compresso mcp serve` continues to work with no supervisor running (opens `Store` directly), and supervisor failure never blocks MCP, the CLI, or the underlying assistant (owner constraint 4).
+### [ ] E8-08: Health subsystem and read-only fallback
+Owner: R2 · Estimate: 3d · Depends: E8-01, E8-03
+Files: rust/compresso-agent/src/{health,fallback}.rs
+Description: Implement probes/fallback before endpoints.
 Acceptance criteria:
-- Health reports every component; a degraded component (e.g. indexer mid-failure) is visible without failing the whole endpoint.
-- `compresso mcp serve` works with the supervisor stopped; killing the supervisor mid-session leaves a running stdio MCP server fully functional.
-- CLI commands work with the supervisor down (direct Store access path).
+- Content-free component health; supervisor failure permits read-only fallback only; clean recovery.
 Test cases:
-- test_health_reports_all_components.
-- test_degraded_component_visible: seam-fail the indexer → `indexer: degraded`, endpoint 200.
-- test_mcp_serves_without_supervisor: no agent process → all ten tools answer.
-- test_supervisor_kill_does_not_break_mcp: kill agent mid-session → in-flight MCP session keeps answering.
-- test_cli_works_with_supervisor_down: `compresso stats --json` succeeds.
+- each unhealthy; crash/restart; fallback read; mutation denial.
+
 
 ---
 
@@ -942,19 +863,15 @@ Test cases:
 
 Per amended ADR-0010: the desktop app is a **local-API client only** — it never embeds the runtime crates and never touches the SQLite store directly; all data flows over the authenticated E8 local API. Presentation logic only (08 §6); ranking, entitlement evaluation, and strategy logic never appear in webview-reachable state. Epic estimate: ~5 wk.
 
-### [ ] E9-01: Tauri shell as local-API client
+### [ ] E9-01: Tauri shell, API client, and desktop test harness
 Owner: D1 · Estimate: 4d · Depends: E8-04
-Files: apps/desktop/src-tauri/tauri.conf.json, apps/desktop/src-tauri/src/main.rs, apps/desktop/src-tauri/src/api_client.rs, apps/desktop/src/main.tsx, apps/desktop/src/lib/api.ts, tests in apps/desktop/src-tauri/tests/api_client.rs
-Description: Tauri app boots, reads the bearer token from `~/.local/state/compresso/api-token` **in Rust** (never handed to the webview, never in localStorage — 08 §6), attaches it to local-API requests made from Rust commands, and renders `/v1/health`. If the supervisor is not running, the shell offers to start it (`compresso agent start`) and shows a "runtime offline" screen — it never spawns engine code in-process (ADR-0010 amendment: no direct runtime embedding). Webview→Rust commands are a typed allowlist; no generic fs/shell/http primitives are exposed.
+Files: apps/desktop/, packages/api-client/, apps/desktop/{vitest,playwright}.config.*
+Dependency rationale: E9-01 owns security-by-construction defaults for the initial shell: the webview receives no bearer token and has no direct filesystem, shell, or arbitrary-network capability. It intentionally does not depend on E14-05, because E14-05 requires a concrete shell and dist build to harden and verify.
+Description: Build shell plus Vitest, RTL, Playwright, mocked contracts, packaged smoke.
 Acceptance criteria:
-- `apps/desktop/src-tauri/Cargo.toml` declares no dependency on compresso-core, compresso-atlas, compresso-store, or compresso-mcp (dependency assertion); all data reaches the UI via local-API round-trips.
-- Token isolation: a webview-context dump contains no token bytes; requests originate from Rust with the bearer attached.
-- Supervisor-down state renders the offline screen with a start action; health renders per-component status.
+- No webview token/fs/shell/http; component/a11y/contract/package CI exists before pages.
 Test cases:
-- test_no_runtime_crate_deps: parse Cargo.toml → forbid compresso-{core,atlas,store,mcp}.
-- test_token_never_in_webview_state: canary token → absent from serialized webview state and localStorage.
-- test_health_rendered_from_api: mocked local API → component list rendered.
-- test_offline_screen_when_agent_down: connection refused → offline screen with start action.
+- token/CSP; schema drift; keyboard; offline; package smoke.
 
 ### [ ] E9-02: Onboarding flow
 Owner: D1 · Estimate: 4d · Depends: E9-01, E8-05, E8-07
@@ -1004,7 +921,7 @@ Owner: D1 · Estimate: 4d · Depends: E9-01, E8-04
 Files: apps/desktop/src/explorer/, tests in apps/desktop/tests/explorer.spec.ts
 Description: Browse sessions and operations from `/v1/sessions` and `/v1/operations`. Per-operation view renders the trace v1 document for compression rows — mode, per-strategy `strategy_results` deltas, safety-check outcomes, fallback status, explanation — and `tokens_served` for retrieval rows (D47). Zero raw content is displayed anywhere: traces contain none by construction and the UI adds none.
 Acceptance criteria:
-- Compression rows render all strategy results and the eight safety checks; retrieval rows render tokens_served and tool name.
+- Compression rows render all strategy results and the eleven safety checks; retrieval rows render tokens_served and tool name.
 - Fallback operations carry a visible badge with `fallback_reason`.
 - A canary-content compression (from a test session) never surfaces its content anywhere in the Explorer DOM.
 Test cases:
@@ -1017,7 +934,7 @@ Test cases:
 ### [ ] E9-06: Savings dashboard (metrics vocabulary)
 Owner: D1 · Estimate: 2.5d · Depends: E9-05
 Files: apps/desktop/src/dashboard/, tests in apps/desktop/tests/dashboard.spec.ts
-Description: Dashboard over `GET /v1/stats` using the 02-schemas §3 vocabulary verbatim: `observed_tokens`, `applied_tokens`, `removed_tokens`, `compression_overhead`, `net_tokens_saved`, and `modeled_cost_saved` visibly labelled "modeled". `provider_verified_cost_saved` appears only when present (post-slice proxy data, E11-06) and is never fabricated or merged with modeled figures. Time-window and per-tool breakdowns.
+Description: Dashboard over `GET /v1/stats` using the 02-schemas §3 vocabulary verbatim: `observed_tokens`, `applied_tokens`, `removed_tokens`, `compression_overhead`, `net_tokens_saved`, and `modeled_cost_saved` visibly labelled "modeled". `provider_observed_cost` appears only when present (post-slice proxy data, E11-06) and is never fabricated or merged with modeled figures. Time-window and per-tool breakdowns.
 Acceptance criteria:
 - Field labels map 1:1 to the §3 vocabulary; modeled figures always carry the "modeled" label in the DOM.
 - With no provider-verified data, that panel is absent (not zero-filled).
@@ -1025,7 +942,7 @@ Acceptance criteria:
 Test cases:
 - test_vocabulary_labels_exact.
 - test_modeled_label_always_visible.
-- test_provider_verified_hidden_when_absent.
+- test_provider_observed_hidden_when_absent.
 - test_window_and_tool_filters.
 
 ### [ ] E9-07: Diagnostics view
@@ -1062,20 +979,14 @@ Test cases:
 
 Cloud per `03-interfaces.md` §8 and `02-schemas.md` §5; local entitlement side per `03-interfaces.md` §9, `02-schemas.md` §4 migration 0002, D43, ADR-0015. Owner hard constraints: the control-plane database never stores source code, prompts, file paths, repo names, symbols, patches, or raw tool args (D30); every cloud/licensing failure degrades to `local_only()` and never blocks the assistant. No telemetry: `event_batches` exists in schema but no slice or post-slice client calls `POST /v1/events` (D6). Epic estimate: ~8 wk.
 
-### [ ] E10-01: Fastify scaffold and drizzle migrations
+### [ ] E10-01: Fastify scaffold, migrations, and cloud test harness
 Owner: F1 · Estimate: 3d · Depends: E1-01
-Files: apps/control-plane/src/app.ts, apps/control-plane/src/routes/index.ts, apps/control-plane/drizzle/schema.ts, apps/control-plane/drizzle/0001_init.sql, .github/workflows/ci.yml (ts + postgres job), tests in apps/control-plane/test/app.test.ts
-Description: Fastify app with the `/v1` prefix and the universal error shape `{error: {code, message, request_id}}`; drizzle schema mirroring every table in 02-schemas §5 (users, organizations, organization_members, plans, subscriptions, entitlements, devices, device_sessions, release_channels, releases, feature_flags, policy_sets, event_batches, audit_logs, support_cases) including the `subscriptions` `num_nonnulls(owner_user_id, owner_org_id) = 1` check; migrations generated and applied in CI against a disposable Postgres. `audit_logs` is append-only: the migration issues `REVOKE UPDATE, DELETE ON audit_logs FROM app_role`. No route writes `event_batches` (D6).
+Files: apps/control-plane/, drizzle/, apps/control-plane/vitest.config.ts
+Description: Build modules, migration runner, schema registry, ephemeral-Postgres tests.
 Acceptance criteria:
-- Migration SQL is semantically equivalent to 02-schemas §5 (columns, FKs, checks, uniques verified by an introspection test).
-- Every route (including 404s) returns the error shape with a per-request `request_id`.
-- CI boots Postgres, applies migrations from scratch, and runs the suite green.
+- Health, request ids, redaction, migration lock, transaction helpers, JSONB guard.
 Test cases:
-- test_migrations_apply_clean: fresh database → all fifteen tables present.
-- test_error_shape_on_404: unknown route → `{error: {code, message, request_id}}`.
-- test_audit_logs_append_only: UPDATE as app role → permission denied.
-- test_subscriptions_owner_exclusivity: both owner ids set → constraint violation.
-- test_no_event_batches_route: route table contains no handler writing event_batches.
+- migrate/lock/rollback; unknown JSONB; redaction.
 
 ### [ ] E10-02: Better Auth setup
 Owner: F1 · Estimate: 3d · Depends: E10-01
@@ -1120,20 +1031,14 @@ Test cases:
 - test_revoked_device_refresh_401.
 - test_idempotent_device_registration.
 
-### [ ] E10-05: Entitlement issuance (JWS ed25519, kid rotation)
-Owner: F1 · Estimate: 3d · Depends: E10-03
-Files: apps/control-plane/src/routes/entitlements.ts, apps/control-plane/src/entitlements/signer.ts, tests in apps/control-plane/test/entitlements.test.ts
-Description: `GET /v1/entitlements` returns a signed entitlement bundle: JWS with EdDSA/ed25519, header `kid` naming the signing key, payload carrying plan features from the `entitlements` table plus issued/expires timestamps (30-day offline validity per 03-interfaces §8). Signing keys live in KMS (E12-01 secret management); `current` and `next` kids are both live so clients embedding both public keys (03 §9) verify across rotation. Failure and past-due paths return **degraded-but-valid** bundles — never an error shape that could block local operation (build-doc §4). The server signs; clients only verify; issuance policy and abuse detection stay server-side (08 §11).
+### [ ] E10-05: Entitlement issuance and three-generation rotation
+Owner: F1+I1 · Estimate: 3d · Depends: E10-02, E10-04
+Files: apps/control-plane/src/modules/entitlements/, schemas/cloud-api/entitlement-v1.json, docs/runbooks/entitlement-key-rotation.md
+Description: Issue Ed25519 previous/current/next bundles with overlap for grace plus supported releases.
 Acceptance criteria:
-- Bundles verify against the published current key; a bundle signed with `next` also verifies on a client holding both keys.
-- A past-due subscription yields a degraded bundle (reduced features, valid signature), not a 4xx.
-- Bundle payload contains only plan/feature identifiers, timestamps, and ids — no email, no device metadata beyond the device id.
+- Strict claims; stale clients survive two rotations; compromise runbook; five-minute iat/nbf skew.
 Test cases:
-- test_bundle_verifies_current_kid.
-- test_bundle_next_kid_verifies_for_rotation.
-- test_past_due_returns_degraded_valid_bundle.
-- test_bundle_payload_id_only.
-- test_expiry_30_days.
+- rotations; stale; unknown/retired kid; skew; revoke; malformed.
 
 ### [ ] E10-06: Local — migration 0002 entitlement_cache
 Owner: R2 · Estimate: 1d · Depends: E3-01
@@ -1149,21 +1054,14 @@ Test cases:
 - test_cache_roundtrip_fields.
 - test_second_row_rejected_by_check.
 
-### [ ] E10-07: Local — EntitlementVerifier and keyring device credentials
-Owner: R1 · Estimate: 2.5d · Depends: E10-06
-Files: rust/compresso-agent/src/entitlements/verifier.rs, rust/compresso-agent/src/entitlements/credentials.rs, tests in rust/compresso-agent/tests/entitlements_verify.rs
-Description: Implement `EntitlementVerifier::verify(bundle_jws, now)` per 03-interfaces §9: JWS EdDSA/ed25519, header `kid` selecting among `EMBEDDED_KEYS` (≥2 for rotation: current + next; releases ship both so bundles signed with `next` verify on versions N and N+1). Expired-but-within-grace bundles verify with `Entitlements::degraded = true`; bad signature, unknown kid, malformed JWS, or expired-past-grace → typed `EntitlementError`. Device credentials (refresh token, device private key) are stored exclusively via the `keyring` crate in the OS keychain (D43) — never on disk.
+### [ ] E10-07: Local EntitlementVerifier and keychain credentials
+Owner: R1+R2 · Estimate: 3d · Depends: E10-05, E10-06
+Files: rust/compresso-agent/src/{entitlements,credentials}.rs, docs/adr/0015-cached-entitlements-offline-grace.md
+Description: Verify three keys, keychain credentials, bounded skew, monotonic expiry.
 Acceptance criteria:
-- Verification accepts current- and next-kid bundles and rejects tampered payloads, unknown kids, and alg-substitution attempts (only EdDSA accepted).
-- Grace semantics: expired < grace end → `degraded = true`; past `expires_at` → error (cache layer then degrades to local_only).
-- A regression test exercises registration + refresh and scans every file under the data/config/state directories for credential bytes → none found.
+- Unknown kid refreshes then local-only; clock rollback cannot extend; local tools never block.
 Test cases:
-- test_verify_current_and_next_kid.
-- test_unknown_kid_rejected.
-- test_tampered_payload_rejected.
-- test_alg_substitution_rejected.
-- test_grace_window_sets_degraded.
-- test_credentials_never_on_disk.
+- keys; two rotations; unknown; clock; grace; keychain; canaries.
 
 ### [ ] E10-08: Local — EntitlementCache, background refresh, degradation matrix
 Owner: R1 · Estimate: 2.5d · Depends: E10-07
@@ -1349,20 +1247,15 @@ Test cases:
 - test_unknown_route_passthrough.
 - test_unparseable_json_passthrough.
 
-### [ ] E11-06: Proxy operation records and verified savings
-Owner: R1 · Estimate: 2d · Depends: E11-04, E11-05
-Files: rust/compresso-proxy/src/records.rs, tests in rust/compresso-proxy/tests/records.rs
-Description: Each proxied request records an operation with D47 semantics: compression operations carry a trace v1 document (root-schema validated); bypass/passthrough requests record `tokens_served` with `trace_json = NULL`. Raw prompts are never stored. Provider-reported usage fields on responses populate `provider_verified_cost_saved` — which is populated **only** from provider-reported usage deltas (02-schemas §3) and never mixed with modeled figures; both feed `compresso stats`.
+### [ ] E11-06: Proxy records, observed usage, and modeled savings
+Owner: R1+R2 · Estimate: 3d · Depends: E11-02, E11-03, E3-03
+Files: rust/compresso-proxy/src/operations.rs, rust/compresso-store/migrations/0003_model_runtime.sql
+Description: Record observed input/cache/output and actual cost; counterfactual stays modeled.
 Acceptance criteria:
-- Compression rows validate against the trace root schema; bypass rows have null traces with tokens_served.
-- A canary prompt string never appears in the store.
-- `provider_verified_cost_saved` is absent when the provider reports no usage; modeled and verified figures are reported in separate fields.
+- Versioned metadata, no content, no verified counterfactual, absent usage null.
 Test cases:
-- test_proxied_compression_records_root_valid_trace.
-- test_bypass_records_null_trace_tokens_served.
-- test_no_prompt_bytes_in_store.
-- test_provider_verified_only_from_usage_deltas.
-- test_modeled_and_verified_never_merged.
+- cache/no-cache; missing usage; prices; modeled; redaction.
+
 
 ---
 
@@ -1484,18 +1377,15 @@ Test cases:
 - test_release_compromise_simulation_refused.
 - external_review_no_unresolved_critical_high (release-checklist item).
 
-### [ ] E12-09: Beta, incident runbooks, and launch
-Owner: PQ+I1 · Estimate: 3d · Depends: E12-08, E10-08
-Files: docs/runbooks/incident-*.md, docs/runbooks/release-checklist.md, docs/beta/report.md
-Description: Closed beta on real coding sessions measures true task-success degradation (<1%, D40 — the CI recall gate is a proxy, this is the proof) plus reduction and latency in the field. (Absorbs E14-13.) Incident runbooks per 08 §21 committed under `docs/runbooks/`: signing-key compromise, malicious release publication, source-repo breach, insider exfiltration, dependency compromise, leaked cloud credentials, entitlement-signing compromise (rotate to `next` kid, reissue, 30-day cache bound), counterfeit distribution, user-data exposure. Signing-compromise and rollback runbooks are exercised (tabletop plus a real staging drill) before stable. G1–G15 checklist signed off; stable channel opened.
+### [ ] E12-09: Closed beta, runbooks, and launch decision
+Owner: PQ+I1+PO · Estimate: 5d · Depends: E12-06, E12-08, E7-06
+Files: rust/compresso-eval/src/beta.rs, schemas/beta-export/v1.json, docs/runbooks/
+Description: Execute D62 paired local beta and launch drills.
 Acceptance criteria:
-- Beta report shows task-success degradation < 1% on real sessions; regressions triaged before launch.
-- All nine runbooks committed; signing-compromise and rollback drills executed with logs attached.
-- The G1–G15 release checklist is fully signed with named owners per gate.
+- 200 pairs/20 people; lower 95% bound >-1pp; probes 100%; previewed allowlist export only.
 Test cases:
-- beta_task_success_degradation_below_1pct (measured report artifact).
-- runbooks_committed_and_drilled (drill logs referenced).
-- gates_g1_g15_checklist_signed_off.
+- schema attack; refusal/incomplete; randomization; statistics; drills.
+
 
 ---
 
@@ -1563,21 +1453,14 @@ Test cases:
 - test_grep_gate_green_on_tree.
 - test_grep_gate_catches_seeded_name (scratch-branch verification).
 
-### [ ] E13-05: compresso-providers crate and OpenAiChatDriver
-Owner: R2 · Estimate: 4d · Depends: E13-03
-Files: rust/compresso-providers/Cargo.toml, rust/compresso-providers/src/lib.rs, rust/compresso-providers/src/drivers/openai_chat.rs, deny.toml (network exception), tests + fixtures under fixtures/providers/openai/
-Description: New crate — the second sanctioned network exception (`reqwest` + rustls) encoded in `deny.toml` per 07 §1.1: the only crate opening outbound connections to model providers, and only to endpoints the user explicitly configured against a signed host allowlist; a fresh install performs zero provider network I/O. `OpenAiChatDriver` implements `ProviderAdapter` parameterized by a profile: canonical→wire request serialization (developer-role mapping, strict-mode structured outputs per 07 §7), SSE parsing into `ModelEvent`s, tool-call extraction accumulating argument fragments in bounded buffers (default 1 MiB per call, profile-tunable downward), usage and finish-reason normalization. Shared payload types are exported for `compresso-proxy` consumption (07 §1.1).
+### [ ] E13-05: compresso-providers and OpenAiChatDriver
+Owner: R2 · Estimate: 3d · Depends: E13-03
+Files: rust/compresso-providers/src/, fixtures/providers/openai/
+Description: Implement protocol behind sanctioned provider network boundary.
 Acceptance criteria:
-- Request serialization matches recorded fixtures byte-for-byte for representative canonical requests.
-- SSE fixture streams normalize into the exact expected `ModelEvent` sequences, including fragmented tool arguments.
-- deny.toml permits reqwest only for compresso-providers (and compresso-updater); zero sockets opened when no provider is configured.
+- Explicit config/keychain; host/TLS/redirect/private-IP/limits; validated turns; allowlisted errors.
 Test cases:
-- test_request_serialization_matches_fixtures.
-- test_sse_normalized_event_sequence.
-- test_tool_argument_fragments_bounded_buffer.
-- test_finish_and_usage_normalization.
-- test_deny_toml_network_exception_scoped.
-- test_fresh_install_zero_provider_network.
+- tool loops; SSE; cancel; retry; network attacks; unknown; secrets.
 
 ### [ ] E13-06: AnthropicMessagesDriver
 Owner: R2 · Estimate: 3d · Depends: E13-03
@@ -1674,7 +1557,7 @@ Test cases:
 
 ### [ ] E13-12: Anthropic and OpenAI first-party profiles
 Owner: R2 · Estimate: 2.5d · Depends: E13-07, E13-08, E13-16
-Files: profiles/anthropic.toml, profiles/openai.toml, fixtures/providers/{anthropic,openai}/, tests in rust/compresso-providers/tests/first_party_profiles.rs
+Files: profiles/providers/anthropic.toml, profiles/providers/openai.toml, fixtures/providers/{anthropic,openai}/, tests in rust/compresso-providers/tests/first_party_profiles.rs
 Description: First-party profiles over the two native drivers (07 §7 delivery order) wired through the recorded-fixture conformance suite: capabilities marked `verified` only for the cases the suite passed on the current profile and model versions; pricing blocks populated for preflight `estimated_cost_micros`; privacy blocks (`direct_byok_supported`, data policy URLs) filled.
 Acceptance criteria:
 - Both profiles validate against the schema and pass their conformance case sets; evidence values in the TOML match the recorded conformance results exactly (a test cross-checks).
@@ -1720,7 +1603,7 @@ Test cases:
 
 ### [ ] E13-15: Kimi and GLM profiles
 Owner: R2+PQ · Estimate: 2.5d · Depends: E13-12, E13-13
-Files: profiles/kimi.toml, profiles/glm.toml, fixtures/providers/{kimi,glm}/, tests in rust/compresso-providers/tests/expansion_profiles.rs
+Files: profiles/providers/kimi.toml, profiles/providers/glm.toml, fixtures/providers/{kimi,glm}/, tests in rust/compresso-providers/tests/expansion_profiles.rs
 Description: Profiles over `OpenAiChatDriver` encoding the 07 §7 quirks: Kimi — modern `tool_calls` only (`legacy_function_call = false`), per-model reasoning/multimodal/context capabilities, official provider tools kept separate from Compresso-owned tools, regional endpoints and privacy metadata explicit; GLM — per-model `tool_choice` restrictions never generalized across the family, thinking/context-caching/structured-output/output limits per model, coding-plan endpoints as separate endpoint profiles when behavior or terms differ. Recorded conformance fixtures per provider; zero native code (ADR-0020 — the trigger conditions are recorded in profile review notes).
 Acceptance criteria:
 - Both profiles validate, load, and pass their conformance case sets over recorded fixtures.
@@ -1809,21 +1692,14 @@ Test cases:
 - test_circuit_breaker_transitions_and_eligibility.
 - test_completing_model_reported.
 
-### [ ] E13-21: Agent-loop integration
+### [ ] E13-21: Agent loop and migration 0003
 Owner: R1+D1 · Estimate: 4d · Depends: E13-03, E13-14, E13-20
-Files: rust/compresso-agent/src/loop.rs, rust/compresso-agent/src/session_coordinator.rs, tests in rust/compresso-agent/tests/agent_loop.rs
-Description: The 13-step provider-neutral loop of 07 §4.2 in `compresso-agent`: receive task → resolve project/user/org policy → query Atlas → build canonical messages and tools → determine required capabilities → router selection → execute the adapter and consume canonical events → assemble and validate tool calls against canonical schemas (E13-14) → policy-gated approval → execute permitted tools → append canonical results and preserved provider state → continue until completion/limit/cancel/failure → return canonical output and usage. The loop owns maximum-turn, maximum-cost, maximum-time, and repeated-tool-call protections; steps 3–4 run the existing compression engine identically for every provider (compression sits above the canonical protocol); a model can never change its own permission level; provider-state custody stays in the session coordinator. Phase-1 exit criterion: the entire loop runs against `FakeProvider` with zero network, including a complete streaming tool loop; real drivers then run behind recorded fixtures. Accounting is local-only: normalized usage and content-free metadata via `record_operation` (D47 semantics extended with a usage column — store migration 0003 if required).
+Files: rust/compresso-agent/src/agent_loop.rs, rust/compresso-store/migrations/0003_model_runtime.sql
+Description: Integrate provider/tool loop and always apply reserved 0003.
 Acceptance criteria:
-- Full loop over FakeProvider with zero sockets opened (asserted); streaming tool loop completes with validated arguments and recorded usage.
-- Compression runs on assembled context before provider dispatch for every provider identically (trace evidence).
-- Turn/cost/time/repeat protections each stop the loop with typed outcomes; a tool call requesting permission escalation is refused.
+- No content persisted; turns validate; no cross-provider opaque state; permissions/budgets/cancel.
 Test cases:
-- test_full_loop_fake_provider_zero_network.
-- test_compression_precedes_provider_dispatch.
-- test_permission_escalation_refused.
-- test_budget_protections_stop_loop_each.
-- test_provider_state_custody_session_scoped.
-- test_usage_recorded_locally_only.
+- drivers; migration; invalid args; fallback; cancel; DB canaries.
 
 ### [ ] E13-22: Provider CLI surface
 Owner: D1 · Estimate: 2.5d · Depends: E13-09, E13-10, E13-11, E13-20
@@ -1840,6 +1716,52 @@ Test cases:
 - test_model_test_runs_smoke_cases.
 - test_route_set_dry_run_no_write.
 - test_json_envelopes_all_commands.
+
+---
+
+## E13 future phases — protocol and ecosystem expansion
+
+Tickets below implement D52 and `07-model-expansion.md` §11. Each uses the E13 conformance harness and must not add provider branches to the runtime.
+
+### [ ] E13-23: OpenAI Responses driver
+Owner: R2 · Estimate: 3d · Depends: E13-07, E13-16 · Files: rust/compresso-providers/src/openai_responses.rs, fixtures/providers/openai-responses/
+Acceptance/tests: canonical text/tool/state/usage loop; fragmented streams, unknown items, cancellation, and redaction canary.
+
+### [ ] E13-24: Local inference gateways
+Owner: R2 · Estimate: 3d · Depends: E13-09, E13-16 · Files: rust/compresso-providers/src/local.rs, profiles/providers/local-openai.toml
+Acceptance/tests: explicit loopback/private-network approval, no auto-discovery, unknown-model quarantine, offline tool loop.
+
+### [ ] E13-25: Enterprise and multi-provider gateways
+Owner: R2+I1 · Estimate: 2.5d · Depends: E13-09, E13-20 · Files: rust/compresso-router/src/gateway.rs, profiles/providers/gateway.schema.toml
+Acceptance/tests: direct/gateway identities remain distinct; billing, residency, auth, and retention boundary fallback tests.
+
+### [ ] E13-26: Canonical multimodal content
+Owner: R1+R2 · Estimate: 4d · Depends: E13-02, E13-16 · Files: rust/compresso-model-protocol/src/media.rs, fixtures/providers/multimodal/
+Acceptance/tests: bounded digest-addressed image/file/audio/video parts; MIME spoof, oversize, unsupported-model, and no-log tests.
+
+### [ ] E13-27: Realtime protocol
+Owner: R2 · Estimate: 4d · Depends: E13-02, E13-07 · Files: rust/compresso-model-protocol/src/realtime.rs, rust/compresso-providers/src/realtime.rs
+Acceptance/tests: deterministic interruption/reconnect/tool state; out-of-order, replay, buffer, timeout, and approval tests.
+
+### [ ] E13-28: Embedding and reranking protocol
+Owner: R1+R2 · Estimate: 3d · Depends: E13-01, E13-09 · Files: rust/compresso-model-protocol/src/retrieval.rs, rust/compresso-providers/src/embeddings.rs
+Acceptance/tests: dimensions, batching, privacy policy, local/direct routing, usage, and redaction validated.
+
+### [ ] E13-29: Asynchronous batch execution
+Owner: R2 · Estimate: 2.5d · Depends: E13-07, E13-18 · Files: rust/compresso-agent/src/batch.rs, rust/compresso-providers/src/batch.rs
+Acceptance/tests: idempotent submit/poll/cancel/resume; encrypted local inputs, partial-failure reconciliation, cost cap.
+
+### [ ] E13-30: Evaluation-driven route calibration
+Owner: PQ+R1 · Estimate: 3.5d · Depends: E13-18, E13-20, E7-06 · Files: rust/compresso-eval/src/model_eval.rs, rust/compresso-router/src/calibration.rs
+Acceptance/tests: held-out quality gate, set separation, policy invariants, deterministic calibration, rollback artifact.
+
+### [ ] E13-31: Provider profile authoring SDK
+Owner: R1+PQ · Estimate: 2.5d · Depends: E13-09, E13-16 · Files: packages/provider-sdk/, schemas/provider-conformance/v1.json
+Acceptance/tests: sample provider added without core change; malformed profile and dev/production signature separation tested.
+
+### [ ] E13-32: Self-hosted registry operations
+Owner: I1+F1 · Estimate: 3d · Depends: E13-09, E10-05, E12-01 · Files: apps/control-plane/src/modules/model-registry/, docs/runbooks/profile-rollback.md
+Acceptance/tests: delegated threshold signing, revoke, staged rollout, rollback, stale metadata, and air-gap import.
 
 ---
 
@@ -1909,6 +1831,7 @@ Test cases:
 ### [ ] E14-05: Tauri hardening
 Owner: D1 · Estimate: 2d · Depends: E9-01
 Files: apps/desktop/src-tauri/tauri.conf.json, apps/desktop/src-tauri/capabilities/, tests in apps/desktop/src-tauri/tests/hardening.rs
+Dependency rationale: E14-05 is post-shell dist hardening and verification, not the source of baseline shell safety. It validates devtools-off production behavior, restrictive CSP/capability configuration, webview isolation, and artifact properties after E9-01 exists; release enforcement consumes these results later.
 Description: Per 08 §6: devtools disabled in dist builds; restrictive CSP with no remote origins (the app talks only to the local API); Tauri capability allowlist exposing only the explicit commands the UI needs — no generic fs/shell/http primitives reachable from the webview; every frontend→Rust command validates its input; privileged behavior stays in Rust commands with capability checks; the local-API bearer token is read by the Rust side and attached in Rust — never handed to the webview, never in localStorage; no private source maps in public artifacts; desktop updates are signed and verified before install (shared updater trust logic, E12-06).
 Acceptance criteria:
 - Dist bundle refuses devtools; CSP blocks a test fetch to a remote origin from the webview.
@@ -1995,7 +1918,7 @@ Test cases:
 - activation_checklist_reviewed_by_owner.
 
 ### [ ] E14-14: Legal program checklist
-Owner: owner+counsel · Estimate: 2d · Depends: E14-01
+Owner: PO+counsel · Estimate: 2d · Depends: E14-01
 Files: docs/legal/program-checklist.md, docs/legal/eula-draft.md
 Description: With qualified counsel per 08 §19 (this plan is not legal advice): confirm ownership of all source and design assets; employee/contractor IP assignments with prior-invention disclosure; trade-secret inventory + handling policy cross-referenced (E14-01/E14-12); copyright registration where useful; trademark search and filing for Compresso and primary marks — resolving D36, which is launch-blocking; patentability review of genuinely novel compression/routing/evaluation methods before public disclosure; proprietary EULA and enterprise terms prohibiting unauthorized redistribution and circumvention where lawful; an infringement reporting and response process.
 Acceptance criteria:
@@ -2009,7 +1932,7 @@ Test cases:
 
 ### [ ] E14-15: Obfuscation evaluation spike (go/no-go)
 Owner: I1+R1 · Estimate: 3d · Depends: E12-08, E7-04
-Files: docs/adr/0022-selective-obfuscation.md (update), scripts/release/obfuscate/ (spike artifacts)
+Files: docs/adr/0022-selective-obfuscation-policy.md (update), scripts/release/obfuscate/ (spike artifacts)
 Description: Last in the epic per ip.md §28.12 and ADR-0022 — permitted only after performance baselines and support processes exist. Evaluate candidate techniques in escalating order (symbol renaming beyond stripping, string-literal protection for tuning constants, constant splitting, selective control-flow transformation, commercial LLVM-based transformation) applied ONLY to the §1.1 crown-jewel modules (strategy registry ordering/estimate weights, `pack_budget` scoring, `queries.rs` ranking, proxy model-selection rules). Never obfuscated: everything in 08 §1.3 plus signature verification, cryptographic code, installer/updater trust logic, privacy controls and redaction, secret detection, uninstaller/restore, crash recovery, data deletion. Each adopted technique requires the full gate set to pass on the obfuscated dist build (G15: all G1–G15 re-run). Deliverable is a go/no-go decision recorded as an ADR-0022 update with the measured gate deltas.
 Acceptance criteria:
 - Gate suite (median reduction, P95 latency, recall, MCP startup) re-run on each candidate obfuscated build; results tabulated.
@@ -2035,23 +1958,537 @@ Test cases:
 - test_checklist_owner_per_gate.
 - test_failing_gate_blocks_publish (scratch-branch verification).
 
+### [ ] E14-17: High-impact E15 threat model
+Owner: I1+R1+R2 · Estimate: 2.5d · Depends: E15-01 · Files: docs/security/threat-model-e15.md, docs/security/data-flow-e15.md
+Acceptance/tests: edit/SQL/recall/review/browser/terminal assets, boundaries, abuse cases, controls, owners, and release-blocking high findings traced to tickets.
+
+### [ ] E14-18: Shared sandbox policy and OS primitives
+Owner: I1+R2 · Estimate: 2.5d · Depends: E14-17
+Files: rust/compresso-sandbox/src/, docs/security/sandbox-boundary.md
+Description: Implement deny-default process/network/fs/resource isolation.
+Acceptance criteria:
+- No direct bypass; unsupported disables; typed roots/argv/env/destination/resources/cancel.
+Test cases:
+- escape; interpolation; exfiltration; fork/output; cancel; unsupported.
+
+
 ---
+
+## E15 — Clean-room WOZ-inspired capabilities
+
+Per `09-woz-inspired-capabilities.md`, D49-D50, and ADR-0023/0024. All fixtures and implementation artifacts are original. Epic estimate: 116.5 engineer-days.
+
+### [ ] E15-01: Schemas, migration 0004, and permission types
+Owner: R1+R2 · Estimate: 2.5d · Depends: E3-01, E8-02 · Files: schemas/{search,edit,sql,recall,knowledge,review}/v1.json, rust/compresso-store/migrations/0004_woz_capabilities.sql
+Acceptance/tests: strict schemas, transactional migration, unforgeable scoped grants, stale/expired plans, and ciphertext-only DB scan.
+
+### [ ] E15-02: Combined bounded search core
+Owner: R2 · Estimate: 3d · Depends: E3-12, E15-01 · Files: rust/compresso-search/src/{search,regex}.rs, fixtures/search/
+Acceptance/tests: glob/regex/path/count/snippet modes, deterministic bounds, traversal/symlink/secret rejection, regex-bomb timeout.
+
+### [ ] E15-03: Structural search, importers, and versions
+Owner: R2 · Estimate: 3d · Depends: E15-02 · Files: rust/compresso-search/src/{structure,importers}.rs
+Acceptance/tests: exact ranges/confidence, Atlas importer graph, known-version no-content marker, stale/hash and token-cap tests.
+
+### [ ] E15-04: Image, PDF, and notebook search adapters
+Owner: R2+I1 · Estimate: 4d · Depends: E15-02, E14-18 · Files: rust/compresso-search/src/assets/, fixtures/search/assets/
+Acceptance/tests: isolated bounded workers; MIME spoof, encrypted/bomb PDF, oversized image, malformed notebook.
+
+### [ ] E15-05: Edit planner and exact operations
+Owner: R1 · Estimate: 3d · Depends: E15-01, E14-17 · Files: rust/compresso-edit/src/{plan,operations}.rs
+Acceptance/tests: no side effects, canonical plan hash, base hashes, bounded diff, ambiguity/path/hash mutation failures.
+
+### [ ] E15-06: Atomic edit apply and rollback
+Owner: R1 · Estimate: 4d · Depends: E15-05 · Files: rust/compresso-edit/src/{apply,rollback}.rs
+Acceptance/tests: grant/base recheck, all-or-nothing staging, encrypted rollback, crash phases, concurrent edit, rollback divergence.
+
+### [ ] E15-07: Validation registry
+Owner: R1+R2 · Estimate: 3d · Depends: E15-05 · Files: rust/compresso-edit/src/validation/, fixtures/edit/validation/
+Acceptance/tests: bounded tree-sitter/TS/JSON/YAML/HTML/SQL/notebook validation; failure, timeout, and approved-command isolation.
+
+### [ ] E15-08: Notebook edit and explicit fuzzy matching
+Owner: R1 · Estimate: 4d · Depends: E15-06, E15-07 · Files: rust/compresso-edit/src/{notebook,fuzzy}.rs
+Acceptance/tests: cell/schema/metadata preservation, deterministic thresholds, ambiguity refusal, rollback.
+
+### [ ] E15-09: SQL profiles and keychain credentials
+Owner: R2+I1 · Estimate: 3d · Depends: E15-01, E13-10, E14-17 · Files: rust/compresso-sql/src/{profile,connect}.rs
+Acceptance/tests: secret references only, read-only default, TLS/host policy, idle close, logout clear, disk/log canary.
+
+### [ ] E15-10: PostgreSQL/MySQL/SQLite schema graph
+Owner: R2 · Estimate: 5d · Depends: E15-09 · Files: rust/compresso-sql/src/{postgres,mysql,sqlite,schema}.rs, fixtures/sql/
+Acceptance/tests: normalized objects/relationships across engines, restricted catalogs, cycles, caching, and output bounds.
+
+### [ ] E15-11: SQL parser, linter, and classifier
+Owner: R1 · Estimate: 3d · Depends: E15-01 · Files: rust/compresso-sql/src/{parse,classify,lint}.rs
+Acceptance/tests: read/data/schema/admin/unknown classes; writable CTE, stacked statement, comment-smuggling, and dialect corpus.
+
+### [ ] E15-12: Bounded read-only SQL execution
+Owner: R2 · Estimate: 3d · Depends: E15-09, E15-11 · Files: rust/compresso-sql/src/query.rs
+Acceptance/tests: read-only role/transaction, timeout/cancel, row/byte/cell/line bounds, formats, attempted-write and redaction tests.
+
+### [ ] E15-13: SQL mutation plan/apply
+Owner: R1+R2 · Estimate: 4d · Depends: E15-11, E15-12, E14-17 · Files: rust/compresso-sql/src/mutate.rs
+Acceptance/tests: rollback preview, elevated grant, stale schema/plan, partial failure, audit; admin denied by default.
+
+### [ ] E15-14: Recall ingestion and secret redaction
+Owner: R2+I1 · Estimate: 4d · Depends: E15-01, E14-17 · Files: rust/compresso-recall/src/{sources,parse,redact}.rs, fixtures/recall/
+Acceptance/tests: disabled default, per-source consent, typed parsing, malformed/duplicate handling, secret corpus, no plaintext storage.
+
+### [ ] E15-15: Lexical and semantic recall index
+Owner: R1+R2 · Estimate: 4d · Depends: E15-14, E13-28 · Files: rust/compresso-recall/src/{chunk,index,rank}.rs
+Acceptance/tests: offline lexical mode, optional policy-approved embeddings, relevance/recency/provenance ranking, deterministic rebuild.
+
+### [ ] E15-16: Recall query, export, delete, and rebuild
+Owner: R2 · Estimate: 3d · Depends: E15-15 · Files: rust/compresso-recall/src/api.rs, rust/compresso-cli/src/commands/recall.rs
+Acceptance/tests: bounded citations, retention, export, full row/vector/blob/cache deletion, rebuild parity, no telemetry.
+
+### [ ] E15-17: Knowledge scopes and provenance ledger
+Owner: R2 · Estimate: 4d · Depends: E15-16 · Files: rust/compresso-knowledge/src/{item,store,personalization}.rs
+Acceptance/tests: personal/repo/org isolation, source revision/confidence/expiry, reversible add/edit/suppress/boost/undo/delete.
+
+### [ ] E15-18: Organization knowledge envelope cryptography
+Owner: R2+I1 · Estimate: 2.5d · Depends: E15-17, E10-05
+Files: rust/compresso-knowledge/src/{envelope,keys}.rs
+Description: Implement client encryption/key lifecycle only.
+Acceptance criteria:
+- Ciphertext metadata only; revoke rotates; no plaintext/keys persist.
+Test cases:
+- crypto/tamper; membership; rotation; stale; keychain; canaries.
+
+### [ ] E15-19: Review change-set collector
+Owner: R1 · Estimate: 3d · Depends: E3-12, E15-01 · Files: rust/compresso-review/src/changes.rs, fixtures/review/repos/
+Acceptance/tests: committed/staged/worktree/approved-untracked manifest, rename/binary/secret handling, malicious git config, no hooks/remotes.
+
+### [ ] E15-20: Review persona orchestration
+Owner: R1+PQ · Estimate: 4d · Depends: E15-19, E13-21 · Files: rust/compresso-review/src/{persona,orchestrate}.rs, profiles/review/
+Acceptance/tests: original versioned prompts, least context, cost/model policy, parallel cancellation, fallback, failure isolation.
+
+### [ ] E15-21: Finding validation, deduplication, synthesis
+Owner: R1+PQ · Estimate: 3d · Depends: E15-20 · Files: rust/compresso-review/src/{finding,validate,synthesize}.rs
+Acceptance/tests: verified current path/line/evidence, stale rejection, duplicate/conflict handling, separate severity/confidence.
+
+### [ ] E15-22: Review report and apply modes
+Owner: R1+D1 · Estimate: 4d · Depends: E15-21, E15-06 · Files: rust/compresso-review/src/apply.rs, rust/compresso-cli/src/commands/review.rs
+Acceptance/tests: report default, save/select/high-confidence plan, no autonomous write, stale/grant denial, edit rollback.
+
+### [ ] E15-23: Historical review backtesting
+Owner: PQ+I1 · Estimate: 5d · Depends: E15-21, E14-18 · Files: rust/compresso-eval/src/review_backtest.rs
+Acceptance/tests: isolated clone, no remotes/credentials, hidden human outcomes, precision/recall/severity recall/false-positive cost, reproducibility.
+
+### [ ] E15-24: Controlled workflow benchmark
+Owner: PQ · Estimate: 4d · Depends: E15-23, E7-06 · Files: rust/compresso-eval/src/workflow_bench.rs, fixtures/workflows/
+Acceptance/tests: baseline/safe/retrieval/E15 success, tests, edit correctness, tokens, cost, turns, latency, context metrics, intervention; quality gates savings.
+
+### [ ] E15-25: E15 MCP tools and permission annotations
+Owner: R2 · Estimate: 3d · Depends: E15-02, E15-06, E15-12, E15-16, E15-22 · Files: rust/compresso-mcp/src/tools/e15/
+Acceptance/tests: separate plan/apply tools, strict schemas, read/write/destructive annotations, forged/stale plan rejection, bounded output.
+
+### [ ] E15-26: Claude Code and Codex parity harness
+Owner: D1+PQ · Estimate: 3d · Depends: E15-25, E6-05 · Files: rust/compresso-integrations/tests/e15_parity.rs
+Acceptance/tests: identical schemas, paths, permissions, offline behavior, disable, and uninstall; presentation-only differences documented.
+
+### [ ] E15-27: Capability-negotiated hooks and live review
+Owner: D1 · Estimate: 4d · Depends: E15-22, E15-26 · Files: rust/compresso-integrations/src/capabilities.rs, rust/compresso-agent/src/events.rs
+Acceptance/tests: no Claude-only core dependency, Codex derived events, opt-in intervals/model/cost, timeout fail-open, independent disable.
+
+### [ ] E15-28: Desktop controls and quality/savings UI
+Owner: D1 · Estimate: 3d · Depends: E15-16, E15-22, E9-08 · Files: apps/desktop/src/features/e15/
+Acceptance/tests: consent/source/permission/review controls, visible destructive previews, quality beside savings, telemetry off, token isolation.
+
+### [ ] E15-29: Assist/prefer/enforce presets
+Owner: R1+D1 · Estimate: 2d · Depends: E15-25, E13-20 · Files: profiles/agents/, rust/compresso-agent/src/presets.rs
+Acceptance/tests: assist default, native tools retained, enforce visible/acknowledged, bypass and uninstall restoration.
+
+### [ ] E15-30: E15 production and clean-room gates
+Owner: PQ+I1 · Estimate: 4d · Depends: E15-24, E15-26, E14-17 · Files: docs/plan/gates.toml, docs/security/clean-room-e15.md, .github/workflows/ci.yml
+Acceptance/tests: G16-G17, search/edit/SQL/recall/review/parity/provenance/license gates; deliberate failure and no-WOZ-dependency scans block publish.
+
+### [ ] E15-31: Sandboxed browser workflows
+Owner: R2+I1 · Estimate: 5d · Depends: E14-19, E15-30
+Files: rust/compresso-browser/, fixtures/browser/security/
+Description: Implement disabled browser only over E14-19.
+Acceptance criteria:
+- Fresh profile, destinations/private-IP/redirect, quarantine, no ambient creds, visible bounded cancel.
+Test cases:
+- redirect/DNS/localhost; cookies; download; timeout/crash/escape.
+
+### [ ] E15-32: Sandboxed terminal co-drive
+Owner: R2+I1 · Estimate: 5d · Depends: E14-20, E15-30
+Files: rust/compresso-terminal/, fixtures/terminal/security/
+Description: Implement disabled terminal only over E14-20 approved plans.
+Acceptance criteria:
+- Exact cwd/exe/argv/env/resources; no interpolation; grants; bounded output; kill descendants.
+Test cases:
+- injection; symlink; exfiltration; fork/output; escape; cancel.
+
+
+---
+
+## Cross-epic correctness tickets
+
+### [ ] E2-12: Provider conversation graph and validator
+Owner: R1 · Estimate: 2d · Depends: E2-01, E2-08
+Files: rust/compresso-core/src/{graph,provider_conversation}.rs, schemas/context-graph/v1.json, fixtures/conversations/provider-tool-loop/
+Description: Implement protected reasoning nodes, typed provider turn/tool identifiers, atomic assistant/tool groups, and profile-extensible pre/post-compression validation from D53.
+Acceptance/tests: Anthropic/OpenAI single and parallel tool loops remain serializable; orphan request/result, removed owner turn, changed reasoning, unknown opaque state, and cross-provider state replay all force byte-identical fallback.
+
+### [ ] E2-13: Generic-text segmentation and minimum-output invariant
+Owner: R1 · Estimate: 2d · Depends: E2-08
+Files: rust/compresso-core/src/segment.rs, rust/compresso-mcp/src/tools/compress.rs, fixtures/conversations/single-oversize-text/
+Description: Segment plain text into deterministic structural units before packing and enforce non-empty output for non-empty input.
+Acceptance/tests: paragraphs/fences/JSON/log groups retain boundaries; final anchor survives; impossible budgets return original bytes with fallback; no successful result contains zero nodes or empty text.
+
+### [ ] E2-14: Dedup referential integrity and atomic packing
+Owner: R1 · Estimate: 1.5d · Depends: E2-04, E2-07, E2-08
+Files: rust/compresso-core/src/strategies/{dedup_exact,pack_budget}.rs, rust/compresso-core/src/safety.rs
+Description: Add `duplicate_of` edges and treat referent/stubs as one retention group.
+Acceptance/tests: a retained stub always resolves to one byte-preserved referent; pack cannot orphan, cycle, or multiply-reference a stub; malformed external references force fallback.
+
+### [ ] E2-15: Differential token accounting and large-payload latency
+Owner: R1+PQ · Estimate: 2.5d · Depends: E2-11, E5-06
+Files: rust/compresso-core/src/{graph,engine,tokens}.rs, rust/compresso-eval/benches/, fixtures/logs/mib-rebuild-stream/
+Description: Recount changed nodes only, enforce count equality, initialize tokenizers at startup, and benchmark 1 MiB/4 MiB/configured-max payloads.
+Acceptance/tests: no strategy invokes full-graph counting; changed and aggregate counts match independent recounts; cold startup stays below 500 ms or fails its distinct gate; warm P95 satisfies the 200 ms product gate.
+
+### [ ] E7-07: Canonical quality and benchmark assets
+Owner: PQ · Estimate: 3d · Depends: E1-05
+Files: fixtures/, docs/plan/06-fixtures.md
+Description: Commit fifteen quality fixtures plus two benchmark assets; canonical seeds are repeated-npm-install and mini-monorepo.
+Acceptance criteria:
+- All paths/hash/size pinned; no silent skip; benchmarks excluded from quality median.
+Test cases:
+- delete/rename fails lint; gate population; benchmark hash.
+
+### [ ] E10-15: Local account client and device authentication CLI
+Owner: R2+D1 · Estimate: 3d · Depends: E10-03, E10-04, E10-07
+Files: rust/compresso-agent/src/account.rs, rust/compresso-cli/src/commands/account.rs, rust/compresso-store/migrations/0002_entitlements.sql
+Description: Implement `CloudClient`, device-code polling, rotating refresh, keychain persistence, entitlement fetch, and login/status/logout.
+Acceptance/tests: slow_down/expiry/denial/cancel/offline/revocation are bounded; secrets never reach files/logs; logout clears locally while offline; missing cloud degrades to local-only without blocking MCP.
+
+### [ ] E11-07: Prompt-cache-stable compression epochs
+Owner: R1 · Estimate: 2d · Depends: E11-02, E11-03
+Files: rust/compresso-proxy/src/cache_epoch.rs, fixtures/provider-payloads/cache/
+Description: Freeze serialized prefixes already assigned a provider cache epoch and compress only the uncached suffix. This E11-local contract does not depend on E13 profiles; E13-08 later represents the same capability in model profiles.
+Acceptance criteria:
+- Second-turn cached prefix and key remain byte-identical; repack/fallback creates an explicit new epoch.
+- Provider-observed cached/uncached usage is recorded; unknown cache semantics disable mutation.
+Test cases:
+- `test_second_turn_prefix_byte_stable`, `test_suffix_only_compression`, `test_repack_starts_new_epoch`, `test_unknown_cache_passthrough`, `test_cached_usage_recorded`.
+
+### [ ] E14-19: Browser sandbox implementation and escape suite
+Owner: I1+R2 · Estimate: 3d · Depends: E14-18
+Files: rust/compresso-browser/src/sandbox.rs, fixtures/browser/security/
+Description: Implement OS-specific browser isolation separately from shared policy.
+Acceptance/tests: fresh profiles, destination allowlists, download quarantine, no credential reuse, redirect/private-IP/localhost/resource/escape tests on supported OSes.
+
+### [ ] E14-20: Terminal sandbox implementation and escape suite
+Owner: I1+R2 · Estimate: 3d · Depends: E14-18
+Files: rust/compresso-terminal/src/sandbox.rs, fixtures/terminal/security/
+Description: Implement OS-specific terminal process isolation separately from command policy.
+Acceptance/tests: approved cwd/executable/argv, restricted environment, resource/process/output limits, cancellation, and exfiltration/injection/fork/escape tests.
+
+### [ ] E15-18b: Encrypted organization knowledge sync
+Owner: R2+I1 · Estimate: 3.5d · Depends: E15-18
+Files: rust/compresso-knowledge/src/{sync,queue,merge}.rs
+Description: Sync ciphertext with offline queue, merge, replay and key migration.
+Acceptance criteria:
+- Idempotent convergence/conflict; scope validation; logout clears queue.
+Test cases:
+- offline/order/duplicate/conflict/revoke/rotate/malformed/cancel.
+
+### [ ] E15-18c: Organization knowledge cloud service
+Owner: F1+I1 · Estimate: 4d · Depends: E15-18b, E10-11
+Files: apps/control-plane/src/modules/knowledge/, schemas/cloud-api/knowledge-v1.json
+Description: Relay ciphertext and membership/key metadata only.
+Acceptance criteria:
+- Reject plaintext; scoped auth; transactional revoke; id/count audit; explicit limits.
+Test cases:
+- cross-org; revoke race; replay; oversize; plaintext; DB scan.
+
+
+## E16 — Full-product scope completion
+
+### [ ] E16-01: Compression plan router
+Owner: R1 · Estimate: 3d · Depends: E2-15
+Files: rust/compresso-core/src/routing/, fixtures/routing/
+Description: Deterministic classification, candidate construction, utility/risk ranking, explanation.
+Acceptance criteria:
+- Identical replay; declared estimates/risk; policy before rank; no network/model.
+Test cases:
+- `test_classification_matrix_selects_expected_candidates`: table-drive every supported context kind, mode, and budget class; assert the eligible strategy set and rejection reasons.
+- `test_policy_filters_before_utility_ranking`: give a forbidden strategy the highest utility and assert policy removes it before ranking and records the policy reason.
+- `test_equal_utility_tie_break_is_stable`: permute equal-scoring candidates and assert the same strategy order and explanation bytes.
+- `test_latency_budget_excludes_over_budget_candidate`: assert estimated latency above the remaining budget cannot be selected even when token savings are highest.
+- `test_no_eligible_plan_returns_byte_identical_passthrough`: assert original bytes, token count, and protected content are unchanged and the trace names `no_eligible_plan`.
+- `test_router_replay_is_byte_identical`: replay the same graph, policy, profile, and budget 100 times and assert identical plan, plan hash, and explanation.
+- `test_router_has_no_network_or_model_capability`: compile/test the router with only local traits and assert no provider, socket, or process capability is reachable.
+
+### [ ] E16-02: Advanced strategy pack A
+Owner: R1 · Estimate: 4d · Depends: E16-01
+Files: rust/compresso-core/src/strategies/, fixtures/strategies/pack-a/
+Description: Implement compiler_noise, test_noise, superseded_decisions, source_outline.
+Acceptance criteria:
+- Each has supports/estimate/execute, lossiness, invariants, flag, fixture floor.
+Test cases:
+- `test_compiler_noise_removes_repeated_diagnostics_only`: preserve the first diagnostic and distinct locations while enumerating every removed duplicate.
+- `test_test_noise_compacts_repeated_pass_output_but_preserves_failures`: remove repetitive passing lines while retaining failures, stack traces, and protected output byte-for-byte.
+- `test_superseded_decisions_keeps_latest_complete_chain`: remove only whole superseded decisions and preserve dependency-linked or protected decisions.
+- `test_source_outline_emits_signatures_without_bodies`: produce a deterministic symbol skeleton while retaining protected source nodes unchanged.
+- `test_pack_a_unsupported_inputs_are_noops`: feed malformed, unknown, and unsupported node kinds to every Pack A strategy and assert unchanged output.
+- `test_pack_a_removal_records_reconcile_exactly`: for every strategy, assert summed typed removals equal the before/after token and unit deltas.
+- `test_pack_a_feature_flags_disable_independently`: disable each strategy in turn and assert it is neither estimated nor executed while peers remain available.
+- `test_pack_a_adversarial_markers_cannot_spoof_structure`: place compiler/test/decision markers inside quoted or source content and assert they are not treated as removable structure.
+- `test_pack_a_replay_is_deterministic`: repeat each positive fixture with shuffled non-semantic map ordering and assert byte-identical output and trace.
+
+### [ ] E16-03: Strategy pack B and canonical fourteen
+Owner: R1+PQ · Estimate: 4d · Depends: E16-02
+Files: rust/compresso-core/src/strategies/, docs/architecture/strategy-catalog.md
+Description: Complete the canonical fourteen: dedup_exact, collapse_logs, compact_json, pack_budget, compiler_noise, test_noise, superseded_decisions, source_outline, table_compact, search_cluster, repo_map_prune, history_prune, import_context_prune, and repeated_tool_result.
+Acceptance criteria:
+- Every registry item maps lossiness/kinds/protection/trace/fixture/modes; no unnamed entry.
+Test cases:
+- `test_registry_has_exactly_fourteen_unique_ids`: assert the registry contains the canonical fourteen IDs once each in deterministic order.
+- `test_every_registry_entry_has_catalog_and_fixture`: assert each ID maps to a catalog row, positive fixture, adversarial fixture, and protected-content fixture.
+- `test_catalog_contract_matches_implementation`: compare supported kinds, lossiness, modes, feature flag, and trace removal kinds against each strategy implementation.
+- `test_table_compact_preserves_headers_and_ragged_rows`: compact eligible tables while retaining headers, protected cells, and malformed rows without mutation.
+- `test_search_cluster_preserves_distinct_high_rank_hits`: deduplicate equivalent hits but retain distinct paths, scores, and protected snippets.
+- `test_repo_map_and_history_pruning_preserve_dependencies`: prune low-value units only when no retained node or protected turn depends on them.
+- `test_import_context_and_repeated_tool_result_are_atomic`: remove only complete import-context units and complete duplicate tool-result groups with valid referents.
+- `test_unknown_or_unnamed_strategy_is_rejected`: fail profile/catalog validation before engine execution and fall back to compiled defaults.
+- `test_fourteen_strategy_holdout_floors`: run each strategy against its holdout set and assert declared reduction, recall, safety, and latency floors.
+
+### [ ] E16-04: Balanced and aggressive modes
+Owner: R1+PQ · Estimate: 4d · Depends: E16-01, E13-21
+Files: rust/compresso-core/src/modes/, profiles/compression/, fixtures/modes/
+Description: Implement balanced and opt-in summarizing aggressive modes.
+Acceptance criteria:
+- Signed profiles; consent/policy/cost; provider/cache preservation; labeled summaries; no remote default.
+Test cases:
+- `test_mode_precedence_resolves_cli_project_team_defaults`: table-drive all precedence combinations and assert the selected mode plus explanation source.
+- `test_aggressive_requires_explicit_current_scope_consent`: reject absent, expired, or differently scoped consent and never persist implicit consent.
+- `test_team_policy_can_deny_or_cap_modes`: assert a denied aggressive request resolves to the policy-approved mode without bypass through CLI flags.
+- `test_balanced_mode_operates_fully_offline`: deny all network capabilities and assert deterministic compression and trace generation still succeed.
+- `test_provider_cache_prefix_is_byte_preserved`: assert signed reasoning, opaque state, and provider cache-prefix bytes and ordering never change in either mode.
+- `test_aggressive_summary_is_labeled_and_traceable`: assert each generated summary is marked summarizing lossiness and records source node hashes without raw source in the trace.
+- `test_quality_gate_failure_falls_back_to_safer_mode`: force recall or safety failure and assert balanced/aggressive output is discarded for safe or passthrough output.
+- `test_tampered_expired_or_incompatible_profile_uses_defaults`: reject invalid signatures, expiry, version bounds, and unknown fields without blocking compression.
+
+### [ ] E16-05: Remaining Atlas language packs
+Owner: R2 · Estimate: 4d · Depends: E3-12
+Files: rust/compresso-atlas/src/queries/{go,java,c_cpp,c_sharp,ruby,php}.scm, fixtures/code/languages/
+Description: Add Go, Java, C/C++, C#, Ruby, PHP packs.
+Acceptance criteria:
+- Pinned grammars; normalized extraction; malformed recovery; quality/migration per pack.
+Test cases:
+- `test_go_pack_extracts_packages_imports_types_methods_and_tests`: compare normalized symbols and edges against the committed Go golden fixture.
+- `test_java_pack_extracts_packages_imports_nested_types_and_overloads`: preserve qualified names and distinguish overloaded methods in the Java golden fixture.
+- `test_c_and_cpp_dispatch_and_extract_distinct_constructs`: select the correct grammar and extract includes, namespaces, structs/classes, functions, and methods without collisions.
+- `test_csharp_pack_extracts_namespaces_usings_generics_and_partial_types`: merge only valid partial declarations and preserve generic signatures.
+- `test_ruby_pack_extracts_modules_classes_mixins_and_dynamic_calls`: record unresolved dynamic calls explicitly rather than inventing targets.
+- `test_php_pack_extracts_namespaces_uses_traits_and_functions`: distinguish imports from trait use and preserve fully qualified names.
+- `test_each_pack_recovers_from_malformed_and_truncated_files`: assert bounded partial extraction, diagnostic status, and no panic for every grammar.
+- `test_generated_vendor_and_ignored_paths_are_excluded_for_all_packs`: assert scanner policy is applied before parsing and excluded files create no rows.
+- `test_grammar_version_change_triggers_transactional_reindex`: upgrade each pinned grammar fingerprint and assert old symbols are atomically replaced or rolled back.
+- `test_mixed_language_repo_dispatch_is_deterministic_and_bounded`: index one repository containing all languages and enforce file-size, parse-time, and node-count limits.
+
+### [ ] E16-06: Import resolver and impact completeness
+Owner: R2 · Estimate: 3d · Depends: E16-05
+Files: rust/compresso-atlas/src/resolve/, rust/compresso-store/migrations/0005_import_resolution.sql
+Description: Persist relative/package/workspace/alias tri-state resolution.
+Acceptance criteria:
+- D60 reserves 0005; deterministic; completeness surfaced; transactional reindex.
+Test cases:
+- `test_relative_package_workspace_and_alias_resolution`: table-drive supported import forms and assert the canonical target plus `resolved` status.
+- `test_ambiguous_workspace_import_persists_all_candidates`: assert deterministic candidate ordering, `ambiguous` status, and surfaced completeness counts.
+- `test_missing_or_external_package_is_explicitly_unresolved`: create no false edge and return an unresolved reason without treating it as an index failure.
+- `test_resolution_cycle_is_bounded_and_reported`: assert cyclic aliases terminate within the configured hop limit and remain queryable.
+- `test_file_rename_invalidates_and_rebuilds_affected_edges`: rename a target and assert stale edges disappear in the same transaction as replacement edges.
+- `test_failed_reindex_rolls_back_symbols_and_resolution_rows`: inject a write failure and assert the previous complete index remains visible.
+- `test_0005_upgrade_and_downgrade_fixture`: migrate a populated 0004 database, verify tri-state values/indexes, and reject unsupported schema rollback safely.
+- `test_impact_response_counts_resolved_ambiguous_and_unresolved`: assert MCP/API completeness totals reconcile with persisted import rows.
+
+### [ ] E16-07: Authenticated Streamable HTTP MCP
+Owner: R2+I1 · Estimate: 3d · Depends: E8-03, E14-04
+Files: rust/compresso-mcp/src/http/, schemas/local-api/mcp-v1.json
+Description: Implement HTTP over stdio ToolRouter.
+Acceptance criteria:
+- Loopback/auth/peer/origin/host; versions/sessions/resume/cancel/limits; no open SSE.
+Test cases:
+- `test_stdio_and_http_tool_contracts_are_schema_identical`: enumerate both routers and assert matching names, schemas, results, errors, and protocol versions.
+- `test_http_binds_loopback_only`: reject wildcard/non-loopback bind configuration and prove no external interface listener is created.
+- `test_missing_invalid_expired_or_wrong_audience_token_is_rejected`: return the same content-free authorization error before dispatch.
+- `test_peer_origin_and_host_policy_rejects_confused_deputy_requests`: cover spoofed forwarding headers, DNS rebinding hostnames, disallowed origins, and non-loopback peers.
+- `test_session_resume_requires_matching_identity_and_version`: resume valid sessions while rejecting stolen, expired, or protocol-incompatible session IDs.
+- `test_request_cancellation_releases_work_and_capacity`: cancel during indexing/read work and assert task, permit, and temporary state cleanup.
+- `test_body_response_concurrency_and_timeout_limits`: exercise each boundary at limit and limit-plus-one with deterministic typed errors.
+- `test_version_negotiation_rejects_unknown_major_and_accepts_supported_minor`: assert no tool executes before negotiation succeeds.
+- `test_shutdown_closes_listener_sessions_and_inflight_requests`: assert bounded graceful shutdown and forced cancellation after deadline.
+
+### [ ] E16-08: Additional coding-client integrations
+Owner: D1 · Estimate: 5d · Depends: E6-05, E16-07
+Files: rust/compresso-integrations/src/{gemini,opencode,aider,vscode}.rs, fixtures/integrations/
+Description: Implement four adapters on E6 contract.
+Acceptance criteria:
+- Versioned detection/ownership; base-bound idempotent lifecycle; no core branches.
+Test cases:
+- `test_gemini_adapter_contract_matrix`: cover detection, fresh install, existing config merge, plan hash, apply, verification, and uninstall on every supported platform path.
+- `test_opencode_adapter_contract_matrix`: cover detection, fresh install, existing config merge, plan hash, apply, verification, and uninstall on every supported platform path.
+- `test_aider_adapter_contract_matrix`: cover detection, fresh install, existing config merge, plan hash, apply, verification, and uninstall on every supported platform path.
+- `test_vscode_adapter_contract_matrix`: cover user/workspace scope, fresh install, existing config merge, plan hash, apply, verification, and uninstall on every supported platform path.
+- `test_all_new_adapters_preserve_unowned_keys_and_format`: mutate only declared owned keys and retain unrelated client configuration byte-equivalently where the format permits.
+- `test_all_new_adapters_reject_malformed_or_unsupported_versions`: produce a previewable refusal without writing, backing up, or creating a receipt.
+- `test_all_new_adapters_detect_base_drift_before_apply`: modify the complete config after planning and assert apply fails without partial writes.
+- `test_all_new_adapters_restore_receipts_and_are_idempotent`: run install/verify/uninstall twice and assert exact owned-state restoration with no duplicate entries.
+- `test_client_addition_requires_no_core_or_mcp_branch`: enforce dependency/lint checks proving adapters register through the E6 interface only.
+
+### [ ] E16-09: Desktop account/settings/privacy/overview
+Owner: D1 · Estimate: 4d · Depends: E9-08, E10-15
+Files: apps/desktop/src/features/
+Description: Implement missing pages on E9-01 harness.
+Acceptance criteria:
+- Offline/degraded; config preview; privacy truth; sources; a11y/responsive.
+Test cases:
+- `test_account_page_device_login_success_cancel_expiry_and_retry`: drive the complete device flow and assert credentials cross only the Rust keychain boundary.
+- `test_account_page_offline_and_entitlement_degraded_states`: display cached status, expiry, and local-only behavior without blocking local features.
+- `test_settings_preview_apply_and_base_drift`: show the exact diff, require confirmation, reject stale base hashes, and refresh from authoritative config.
+- `test_privacy_page_matches_no_telemetry_and_local_data_contract`: assert copy and controls expose no nonexistent upload toggle and list every local data class and deletion action.
+- `test_overview_page_uses_local_ledger_without_content_leakage`: reconcile displayed operations/savings with local records while excluding prompts, source, and secrets.
+- `test_all_pages_pass_axe_keyboard_focus_and_reduced_motion`: run component accessibility checks at desktop and narrow responsive widths.
+- `test_webview_cannot_access_tokens_files_shell_or_arbitrary_http`: invoke each prohibited bridge path and assert it is absent or denied by Rust capability policy.
+- `test_packaged_desktop_account_settings_privacy_overview_flow`: execute the four-page happy path and cloud-outage path against the packaged application.
+
+### [ ] E16-10: Desktop update/rollback/disable/uninstall
+Owner: D1+I1 · Estimate: 3d · Depends: E12-07, E16-09
+Files: apps/desktop/src/features/lifecycle/, apps/desktop/src-tauri/lifecycle.rs
+Description: Expose signed lifecycle with Rust privilege.
+Acceptance criteria:
+- Preview/cancel/recovery/rollback/base-uninstall; assistant survives failures.
+Test cases:
+- `test_valid_signed_update_previews_then_installs_atomically`: require explicit confirmation and assert version, migration, health check, and retained previous version.
+- `test_tampered_expired_or_wrong_platform_metadata_is_refused`: perform no download/install mutation and present a content-free recovery message.
+- `test_interrupted_download_or_install_resumes_or_rolls_back_cleanly`: restart at every lifecycle checkpoint and assert one healthy version plus consistent update state.
+- `test_failed_post_update_health_check_restores_previous_version`: roll back binaries and migrations and preserve assistant availability.
+- `test_disable_and_reenable_are_idempotent_and_non_destructive`: stop Compresso hooks/services without deleting indexes, settings, or unrelated client configuration.
+- `test_uninstall_preview_detects_config_drift_and_preserves_unowned_keys`: refuse stale plans, remove only receipt-owned state, and retain user data unless explicitly selected.
+- `test_progress_cancellation_obeys_last_safe_checkpoint`: cancel download, staging, migration, and cleanup phases with documented outcomes.
+- `test_lifecycle_secrets_never_enter_webview_logs_or_error_payloads`: seed tokens and signing material and assert redaction across UI, IPC, diagnostics, and crash paths.
+
+### [ ] E16-11: Local team-policy enforcement
+Owner: R1+R2 · Estimate: 4d · Depends: E10-11, E10-15
+Files: rust/compresso-agent/src/policy/, rust/compresso-core/src/policy.rs
+Description: Fetch/verify/cache/explain/enforce signed policy.
+Acceptance criteria:
+- Explicit precedence/constraints; stale/offline/revoke/malformed visible and local fail-open.
+Test cases:
+- `test_valid_signed_policy_is_fetched_cached_and_enforced`: assert issuer, audience, organization, version, and expiry validation before policy activation.
+- `test_policy_key_rotation_accepts_overlap_and_rejects_unknown_kid`: exercise previous/current/next windows and retirement of the old key.
+- `test_policy_precedence_matrix_is_deterministic`: table-drive hard safety, organization policy, project config, user config, and command overrides.
+- `test_stale_or_offline_policy_degrades_to_documented_local_behavior`: anchor expiry monotonically, expose state, and never disable unrelated local compression.
+- `test_revoked_org_or_device_invalidates_cached_policy_and_entitlement`: prevent privileged policy use while preserving local-only operation.
+- `test_malformed_unknown_or_rollback_policy_fails_open_locally`: reject schema errors, unknown critical fields, lower versions, and replayed bundles without crashing.
+- `test_policy_cannot_unprotect_forced_protected_kinds_or_enable_forbidden_network`: assert immutable safety constraints override every signed policy field.
+- `test_policy_explanation_snapshot_names_value_and_source_without_secrets`: verify stable user-facing provenance for each effective setting.
+
+### [ ] E16-12: Cloud infrastructure provisioning
+Owner: I1 · Estimate: 4d · Depends: E10-01
+Files: infra/terraform/, infra/fly/, docs/runbooks/deploy.md
+Description: Provision staging/prod network/compute/DB/TLS/secrets/backups/migrations.
+Acceptance criteria:
+- Least privilege/isolation/PITR/OIDC/drift/destroy/rollback.
+Test cases:
+- `test_terraform_validate_and_policy_checks_for_staging_and_prod`: reject public databases, wildcard IAM, plaintext secrets, missing encryption, and unpinned providers.
+- `test_clean_account_plan_is_reproducible_and_apply_is_idempotent`: compare two plans and assert the second apply has no unintended changes.
+- `test_staging_smoke_covers_dns_tls_api_auth_database_and_jobs`: provision from empty state and verify each dependency through public and private paths as appropriate.
+- `test_postgres_pitr_restores_to_declared_rpo`: write a marker, restore around its timestamp, and verify integrity plus measured RPO/RTO evidence.
+- `test_failed_forward_migration_blocks_release_and_runs_documented_recovery`: inject a migration fault and assert old application/database compatibility remains.
+- `test_secret_rotation_preserves_service_and_revokes_previous_secret`: rotate every cloud secret class and verify old credentials fail after overlap.
+- `test_staging_and_prod_have_no_network_identity_or_data_path_overlap`: assert separate state, accounts/projects, databases, keys, and allowlists.
+- `test_production_destroy_requires_break_glass_approval_and_backup_evidence`: prove ordinary CI credentials cannot destroy protected resources.
+
+### [ ] E16-13: Cloud observability/SLOs/runbooks
+Owner: I1+F1 · Estimate: 4d · Depends: E16-12
+Files: infra/observability/, docs/runbooks/, docs/slo/
+Description: Implement content-free telemetry, SLOs, alerts, dashboards, response.
+Acceptance criteria:
+- API/auth/billing/update SLOs; no content; owned drills; local independence.
+Test cases:
+- `test_api_auth_billing_and_update_sli_queries_match_synthetic_events`: assert numerator, denominator, labels, and exclusion rules for every SLI.
+- `test_fast_and_slow_burn_alerts_fire_at_declared_thresholds`: replay multi-window failures and assert paging versus ticket routing.
+- `test_redaction_canaries_never_reach_logs_metrics_traces_or_alerts`: seed prompt, source, token, email, and path canaries at every cloud boundary.
+- `test_alert_routes_to_current_owner_with_runbook_and_context`: validate severity, deduplication, escalation timeout, and content-free diagnostic links.
+- `test_dashboards_handle_empty_delayed_and_partial_data_honestly`: never display fabricated zeroes or success during telemetry pipeline failure.
+- `test_each_incident_runbook_completes_in_staging_with_evidence`: exercise API outage, auth compromise, billing webhook backlog, failed release, and database recovery.
+- `test_cloud_outage_does_not_affect_local_compression_index_or_mcp`: deny DNS/network for the control plane and assert local operations remain within gates.
+- `test_observability_pipeline_has_retention_access_and_cost_bounds`: verify deletion, least-privilege queries, cardinality limits, and budget alerts.
+
+### [ ] E16-14: Public site and admin completion
+Owner: F1+D1 · Estimate: 4d · Depends: E10-13, E10-14
+Files: apps/web/, apps/admin/
+Description: Implement downloads/docs/pricing/status/legal and device/flags/releases admin.
+Acceptance criteria:
+- Authz; signed downloads; a11y/SEO/states; audited changes; independent status.
+Test cases:
+- `test_public_download_resolves_platform_channel_and_signed_artifact`: verify checksum/signature metadata, expiry, unsupported-platform behavior, and no unsigned fallback.
+- `test_pricing_docs_status_and_legal_pages_render_without_auth`: assert canonical metadata, structured data, stable links, and independent status hosting.
+- `test_admin_role_matrix_denies_every_cross_role_action_server_side`: table-drive support, release, billing, security, and read-only roles rather than relying on hidden UI.
+- `test_admin_device_revoke_invalidates_target_only_and_is_audited`: require confirmation, preserve other devices, and record actor/reason/time without secrets.
+- `test_feature_flag_and_release_changes_are_base_bound_and_audited`: reject stale plans and record before/after values, approvals, rollout, and rollback.
+- `test_site_and_admin_pass_axe_keyboard_focus_and_responsive_checks`: cover primary routes, dialogs, tables, errors, and narrow viewports.
+- `test_seo_metadata_and_robots_rules_match_environment`: index public production pages while excluding admin, account, previews, and non-production hosts.
+- `test_loading_empty_error_partial_and_outage_states_are_truthful`: inject API/auth/billing/status failures and assert recoverable actions without leaking internals.
+
+### [ ] E16-15: Parser fuzzing and platform gates
+Owner: PQ+I1 · Estimate: 3d · Depends: E16-05
+Files: rust/compresso-atlas/fuzz/, .github/workflows/ci.yml
+Description: Add parser fuzz corpus and Linux ARM64 test/package.
+Acceptance criteria:
+- Every parser bounded; crashes regress; ARM artifact parity; no panic/root escape.
+Test cases:
+- `test_each_parser_fuzz_target_accepts_seed_corpus_without_crash`: run all language targets against golden, malformed, binary-like, deeply nested, and Unicode seeds.
+- `test_parser_crash_corpus_replays_in_normal_ci`: promote every discovered crash/minimized input to a deterministic regression corpus.
+- `test_parser_resource_caps_stop_depth_size_node_and_time_bombs`: assert typed bounded failure with no panic, runaway allocation, or partial committed index.
+- `test_parser_paths_cannot_escape_repository_root`: fuzz path, symlink, include/import, and encoding inputs and assert canonical root enforcement.
+- `test_linux_arm64_build_and_unit_integration_suites_match_x64`: run the supported test matrix and compare feature/config parity.
+- `test_linux_arm64_release_archive_has_checksum_signature_sbom_and_provenance`: verify every artifact before publication.
+- `test_linux_arm64_installer_verifies_then_runs_smoke_commands`: install into an isolated home and execute version, doctor, index, and MCP initialize.
+- `test_linux_arm64_artifact_allowlist_rejects_source_fixtures_maps_and_symbols`: seed each forbidden class and assert the release gate fails.
+
+### [ ] E16-16: Full-product contract closure
+Owner: PQ · Estimate: 3d · Depends: E16-01..E16-15
+Files: docs/plan/, docs/adr/, docs/architecture/, scripts/plan-lint.ts
+Description: Machine-check deliverables/dependencies/references/owners/estimates/conventions.
+Acceptance criteria:
+- No overlays; full mapping; acyclic order; derived rollups; existing refs; full templates.
+Test cases:
+- `test_plan_lint_rejects_dangling_declared_file_path`: distinguish future ticket outputs from references required to exist at plan time.
+- `test_plan_lint_rejects_unknown_stale_or_duplicate_ticket_id`: report every source location and the nearest canonical ID without rewriting files.
+- `test_plan_lint_rejects_dependency_cycle_and_wave_inversion`: emit the complete cycle or violating edge and fail nonzero.
+- `test_plan_lint_recomputes_epic_slice_post_and_grand_rollups`: detect count/day drift from ticket bodies, including duplicate correction rows.
+- `test_plan_lint_requires_owner_estimate_depends_files_description_acceptance_and_tests`: fail each missing or malformed ticket field independently.
+- `test_plan_lint_validates_owner_alias_adr_profile_and_command_references`: reject undefined owners, missing ADR files, root-level profiles, and noncanonical CLI/MCP names.
+- `test_plan_lint_rejects_contract_drift_across_schema_interface_tool_and_ticket`: fixture mismatched field names, versions, errors, and enum values across canonical documents.
+- `test_plan_lint_rejects_amendment_overlays_and_mutated_source_documents`: require in-place canonical edits and explicit plan deltas for immutable source inputs.
+- `test_plan_lint_clean_corpus_matches_repository_plan`: run against the complete Compresso plan and emit stable machine-readable counts, days, and dependency order.
+
 
 ## Execution order (flat, dependency-ordered)
 
-Slice: E1-01, E1-02, E1-03, E1-04, E1-05, E1-06, E2-01, E2-02, E2-02a, E3-01, E2-03, E3-02, E3-03, E2-04, E2-05, E2-06, E2-07, E2-08, E3-04, E3-05, E3-06, E3-07, E3-08, E2-09, E7-01, E2-10, E2-11, E3-09, E7-02, E3-10, E3-11, E3-12, E4-01, E4-02, E4-03, E4-04, E4-05, E7-03, E7-04, E7-05, E7-06, E5-01, E5-02, E5-03, E5-04, E5-05, E5-06, E5-07, E6-01, E6-02, E6-03, E6-04, E6-05.
+Slice: E1-01, E1-02, E1-03, E1-04, E1-05, E1-06, E2-01, E2-02, E2-02a, E3-01, E2-03, E3-02, E3-03, E2-04, E2-05, E2-06, E2-07, E2-08, E2-12, E2-13, E2-14, E3-04, E3-05, E3-06, E3-07, E3-08, E2-09, E7-01, E7-07, E2-10, E2-11, E3-09, E7-02, E3-10, E3-11, E3-12, E4-01, E4-02, E4-03, E4-04, E4-05, E5-01, E5-02, E5-03, E5-04, E5-05, E5-06, E2-15, E7-03, E7-04, E7-05, E7-06, E5-07, E6-01, E6-02, E6-03, E6-04, E6-05.
 
-Post-slice, wave 1 — local platform: E8-01, E8-02, E8-03, E8-04, E8-05, E8-06, E8-07, E8-08, E14-01, E14-02, E14-03, E14-04.
+Post-slice, wave 1 — local platform: E8-01, E8-02, E8-03, E8-08, E8-04, E8-05, E8-06, E8-07, E14-01, E14-02, E14-03, E14-04.
 Wave 2 — desktop: E9-01, E14-05, E9-02, E9-03, E9-04, E9-05, E9-06, E9-07, E9-08.
-Wave 3 — cloud + local entitlements: E10-01, E10-02, E10-09, E10-03, E10-04, E10-05, E10-06, E10-07, E10-08, E10-10, E10-11, E10-12, E10-13, E10-14.
-Wave 4 — provider proxy: E11-01, E11-02, E11-03, E11-04, E11-05, E11-06.
-Wave 5 — model expansion (may start any time after E1; phases 1–3 have no dependency on E8–E12): E13-01, E13-02, E13-03, E13-04, E13-05, E13-06, E13-07, E13-08, E13-09, E13-10, E13-11, E13-16, E13-12, E13-13, E13-14, E13-15, E13-17, E13-18, E13-19, E13-20, E13-21, E13-22.
-Wave 6 — release engineering and hardening close-out: E12-01, E12-02, E12-03, E12-04, E12-05, E12-06, E14-08, E14-09, E14-10, E14-11, E12-07, E12-08, E14-15, E14-16, E14-12, E14-14, E12-09.
+Wave 3 — cloud + local entitlements: E10-01, E10-02, E10-09, E10-03, E10-04, E10-05, E10-06, E10-07, E10-15, E10-08, E10-10, E10-11, E10-12, E10-13, E10-14.
+Wave 4 — provider proxy: E11-01, E11-02, E11-03, E11-04, E11-05, E11-06, E11-07.
+Wave 5 — model expansion: E13-01..E13-11, E13-13, E13-14, E13-16, E13-12, E13-15, E13-17..E13-22; then E13-23..E13-31 subject to dependencies.
+Wave 6 — release engineering and hardening close-out: E12-01, E13-32, E12-02, E12-03, E12-04, E12-05, E12-06, E14-08, E14-09, E14-10, E14-11, E12-07, E12-08, E14-15, E14-16, E14-12, E14-14, E12-09.
+Wave 7 — E15 A-F plus threat-model and sandbox foundations: E15-01, E14-17, E14-18, E15-02, E15-03, E15-05, E15-09, E15-11, E15-14, E15-19, E15-06..E15-17, E15-18, E15-18b, E15-18c, E15-20..E15-30 subject to dependencies.
+Wave 8 — full-product completion: E16-01..E16-16 subject to listed dependencies.
+Wave 9 — deferred sandbox actions: E14-19, E14-20, E15-04, E15-31, E15-32.
 
 Parallelism notes:
 - Slice: E2 (R1) and E3 (R2) run concurrently after E1; E7-01/E7-02 (PQ/R1) overlap E2's tail; E4 (D1) starts once E2-09 and E3-12 land; E5 (R2) follows E3; E6 (D1) follows E5-01 and overlaps E5-02..07; E1-06 and E4-05 (I1) slot in any time after E1-02/E4-04. E2-02a is a maintainer task (needs an Anthropic API key) and can land any time after E2-02 without blocking anything — until it lands, the interim 1.15 factor applies.
 - Post-slice: wave 1 (R2) and wave 3 (F1 owns cloud; R1/R2 own the E10-06..08 local entitlement tickets) run concurrently; wave 2 (D1) follows E8-04. Wave 5 (R1/R2/PQ) is independent of E8–E12 through its first three phases and should start alongside wave 1 to smooth R1/R2 utilization. E11 (R1) needs only E2/E3 and can overlap wave 3. E14-01..04 land early in wave 1 so release hardening inputs (dist profile, IPC suite) are ready when E12-01 starts; E14-05 rides with E9-01.
-- Hard cross-epic edges: E12-01 needs E14-02; E9-08 needs E14-05; E13-12 needs E13-16; E12-09 needs E10-08 (cloud-outage gate G11); E14-16 needs E7-06 and E12-01; E14-15 runs last, after E12-08.
+- Hard cross-epic edges: existing edges remain; E15 high-impact work needs E14-17; browser/terminal need E14-18 and E15-30.
 - Solo mode: all roles collapse to the owner; the flat lists above remain the execution order.
 
 ## Estimate rollup
@@ -2059,21 +2496,21 @@ Parallelism notes:
 | Epic | Tickets | Days | Weeks | Notes |
 |------|---------|------|-------|-------|
 | E1 Foundation | 6 | 9 | ~2 wk | +E1-06 tarball job (D42) |
-| E2 Core engine | 12 | 17 | ~3.5 wk | +E2-02a calibration; eight safety checks |
+| E2 Core engine | 16 | 25.5 | ~5 wk | +E2-02a calibration; eleven safety checks |
 | E3 Atlas | 12 | 20.5 | ~4 wk | D41 concurrency + D44 staleness folded in |
-| E4 CLI | 5 | 6.5 | ~1.5 wk | +E4-05 installer (D42) |
-| E5 MCP server | 7 | 10 | 2 wk | D47 recording, D44 unfold |
-| E6 Integrations | 5 | 10 | 2 wk | installed-binary path resolution (D42) |
-| E7 Eval & fixtures | 6 | 10.5 | ~2 wk (overlaps E2/E3) | +recall gate tickets (D40) |
-| **Slice total** | **53** | **83.5 gross** | **~14 engineer-wk; 2 engineers ≈ 7–8 calendar wk** | |
-| E8 Supervisor & local API | 8 | 19 | ~4 wk | |
+| E4 CLI | 5 | 7.5 | ~1.5 wk | +E4-05 installer (D42) |
+| E5 MCP server | 7 | 10.5 | ~2 wk | D47 recording, D44 unfold |
+| E6 Integrations | 5 | 9.5 | ~2 wk | installed-binary path resolution (D42) |
+| E7 Eval & fixtures | 7 | 13.5 | ~2.5 wk (overlaps E2/E3) | +recall gate tickets (D40) |
+| **Slice total** | **58** | **96 gross** | **~19.2 solo engineer-wk; 2 engineers ≈ 9–10 calendar wk** | Derived directly from ticket bodies |
+| E8 Supervisor & local API | 8 | 20 | ~4 wk | |
 | E9 Desktop (Tauri) | 8 | 25 | ~5 wk | |
-| E10 Cloud + local entitlements | 14 | 38 | ~8 wk (F1, with R1/R2 local tickets in parallel) | |
-| E11 Provider proxy | 6 | 16 | ~3 wk | |
-| E12 Release engineering | 9 | 26 | ~5 wk | absorbs E14-06/07/13 |
-| E13 Model & client expansion | 22 | 61 | ~12 wk (R1/R2/PQ, overlaps E8–E12) | |
-| E14 IP & secure deployment | 13 | 26.5 | ~5.5 wk (I1-heavy, overlaps E12) | |
-| **Post-slice total** | **80** | **211.5 gross** | heavily parallel across R1/R2/D1/F1/I1/PQ | |
-| **Grand total** | **133** | **295 gross** | | |
-
-The slice estimate grows from the pre-audit ~13 engineer-weeks to ~14: the audit remediation added real scope (calibration measurement, recall gates, installability, concurrency and staleness contracts) rather than padding. Post-slice figures are gross engineer-days per epic; with the parallelism above, E8–E14 land in roughly 4–5 calendar months for a 4–5 person team, dominated by E10 (F1) and E13 (R1/R2) running side by side.
+| E10 Cloud + local entitlements | 15 | 41.5 | ~8.5 wk (F1, with R1/R2 local tickets in parallel) | |
+| E11 Provider proxy | 7 | 19 | ~4 wk | |
+| E12 Release engineering | 9 | 28 | ~5.5 wk | absorbs E14-06/07/13 |
+| E13 Model & client expansion | 32 | 91 | ~18 engineer-wk, phased | +D52 future phases |
+| E14 IP & secure deployment | 17 | 37.5 | ~7.5 wk | +E15 threat/sandbox gates |
+| E15 WOZ-inspired capabilities | 34 | 121.5 | ~24.5 engineer-wk | A-F incremental; G deferred |
+| E16 Full-product completion | 16 | 59 | ~12 engineer-wk, dependency-phased | |
+| **Post-slice total** | **146** | **442.5 gross** | heavily parallel across roles | Derived directly from ticket bodies |
+| **Grand total** | **204** | **538.5 gross** | **~107.7 engineer-wk** | |

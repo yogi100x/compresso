@@ -33,7 +33,7 @@ These carry little differentiating logic and benefit from scrutiny — they are 
 
 - `schemas/` — every versioned JSON Schema: context-graph, compression-trace, local-api, cloud-api allowlists (02-schemas).
 - MCP tool contracts and server instructions (`04-mcp-and-integrations.md` §1; D7 tool surface).
-- `installers/` — `install-local.sh` now; `install.sh`, `install.ps1`, Homebrew formula in E12-03.
+- `installers/` — `install-local.sh` now; `install.sh`, `install.ps1`, Homebrew formula in E12-07.
 - `rust/compresso-integrations/` — adapters, key-level diffs, receipts, uninstall/restore logic (owner constraint 5 depends on this being inspectable).
 - Release signature and update-metadata verification logic in `compresso-updater` (verification, not the update orchestration internals).
 - Entitlement verification contract (`EntitlementVerifier`, 03-interfaces §9) and the entitlement bundle format.
@@ -133,7 +133,7 @@ The local API spec (03-interfaces §7, E8-02) is the baseline: UDS + localhost H
 - Origin validated (reject browser origins) and Host-header confusion rejected; no CORS allowances at all — the API is for local trusted clients, not web pages.
 - Protocol/schema version negotiation (`schema_version` on every payload, 02-schemas); unknown versions fail open, never crash.
 - Request-size, concurrency, and per-method timeout limits; explicit cancellation semantics.
-- Method-level authorization: config writes and integration installs require the two-step plan/approve flow (E8-06); read endpoints never return raw content (traces only).
+- Method-level authorization: config writes require E8-06; integration install/uninstall require E8-07; read endpoints never return raw content (traces only).
 - Approved-root path authorization reuses the E3-11 canonicalization boundary for every path that arrives via API or MCP.
 - Peer credential checks (SO_PEERCRED / getpeereid / named-pipe SIDs) where the platform provides them.
 - Structured, redacted audit records in the operations ledger — never raw prompts or source (02-schemas §4 rules).
@@ -173,11 +173,11 @@ ADR-0015 and 03-interfaces §9 / 02-schemas §4 define the mechanism (signed JWS
 
 ## 12. Secret management
 
-Never in source, binaries, containers, or logs: code-signing keys, entitlement signing keys, database credentials, cloud provider credentials, confidential OAuth secrets, billing secrets, admin API keys. Concrete requirements (E14-07, mostly landing inside E12):
+Never in source, binaries, containers, or logs: code-signing keys, entitlement signing keys, database credentials, cloud provider credentials, confidential OAuth secrets, billing secrets, admin API keys. Concrete requirements (E14-06, mostly landing inside E12):
 
 - Production secrets in the platform secret manager (`fly secrets` for runtime; GitHub OIDC → cloud KMS for CI — no long-lived CI cloud keys).
 - Release-signing and entitlement-signing keys in KMS/HSM, non-exportable; signing permission separated from deployment permission; documented rotation procedures for both (entitlement rotation already designed: current+next `kid`, ADR-0015).
-- Short-lived credentials preferred everywhere; gitleaks already scans the repo (E1-03) — extend scanning to release artifacts, container layers, and CI logs in `release.yml` (E12-01 gate).
+- Short-lived credentials preferred everywhere; gitleaks already scans the repo (E1-03) — extend scanning to release artifacts, container layers, and CI logs in `release.yml` (E12-02 gate).
 - Local user credentials only in the OS credential store (`keyring`); redaction happens before any log or diagnostic file is written (tracing redaction layer, 01-stack §1), not just before export.
 
 ## 13. Build and release pipeline security
@@ -189,13 +189,13 @@ E12 owns the pipeline; E14 supplies the requirement list `release.yml` must sati
 - Immutable artifacts and tags; committed lockfiles (`Cargo.lock`, `pnpm-lock.yaml`); `cargo audit` + `cargo deny` already gate CI (E1-03).
 - SBOM (CycloneDX via `cargo cyclonedx` + pnpm SBOM) and SLSA-style provenance attestation for every artifact (E12-01).
 - Malware/vulnerability scan of artifacts; separate stable/beta/nightly/enterprise channels (02-schemas §5 `release_channels`).
-- macOS Developer ID signing + notarization + stapling; Windows Authenticode; signed Linux archives and checksums (E12-02, ADR-0013).
-- Private debug-symbol upload (§4) as a release step; artifact-contents allowlist test (no fixtures/prompts/maps) (E14-02).
+- macOS Developer ID signing + notarization + stapling; Windows Authenticode; signed Linux archives and checksums (E12-03, E12-04, E12-05; ADR-0013).
+- Private debug-symbol upload (§4) as a release step; artifact-contents allowlist test (no fixtures/prompts/maps) (E14-10).
 - Eval release gates (`gates.toml`, E7-03) are a hard precondition of publishing, run against the `dist` build.
 
 ## 14. Secure update system
 
-E12-04 implements the updater; E14-09 upgrades its metadata to a TUF-style hierarchy (root → timestamp → snapshot → targets) so that a single leaked CDN or metadata key cannot forge accepted updates. The updater verifies: trusted root keys, signature threshold, metadata expiration, version monotonicity (rollback protection), artifact digest, platform/arch match, and compatibility constraints — then downloads to a private staging directory, verifies again, checks disk/compatibility, stops affected components safely, installs atomically, runs migrations, health-checks, and rolls back automatically on failure (ADR-0013, `update_state` table). At least one known-good previous version is always retained. A tampered manifest being refused is an existing release-gate test (E12-04); E14-09 adds threshold-signing and metadata-expiry tests. Trust-root rotation is exercised as part of the signing-compromise runbook (§21).
+E12-06 implements the updater; E14-08 upgrades its metadata to a TUF-style hierarchy (root → timestamp → snapshot → targets) so that a single leaked CDN or metadata key cannot forge accepted updates. The updater verifies: trusted root keys, signature threshold, metadata expiration, version monotonicity (rollback protection), artifact digest, platform/arch match, and compatibility constraints — then downloads to a private staging directory, verifies again, checks disk/compatibility, stops affected components safely, installs atomically, runs migrations, health-checks, and rolls back automatically on failure (ADR-0013, `update_state` table). At least one known-good previous version is always retained. A tampered manifest being refused is an existing release-gate test (E12-06); E14-08 adds threshold-signing and metadata-expiry tests. Trust-root rotation is exercised as part of the signing-compromise runbook (§21).
 
 ## 15. Telemetry and diagnostics stance
 
@@ -237,7 +237,7 @@ Prohibited, permanently: destructive responses to detected modification; rootkit
 
 ## 21. Incident response
 
-Runbooks under `docs/runbooks/` (E14-13, delivered with E12-06): signing-key compromise, malicious release publication, source repository breach, insider exfiltration, dependency compromise, leaked cloud credentials, entitlement-signing compromise, counterfeit distribution, user-data exposure. The signing-compromise runbook must support: immediate release freeze; key revocation or trust-root rotation (§14); CDN/package withdrawal (release `yanked_at`, 02-schemas §5); customer notification; known-good recovery release; forensic preservation; root-cause and control review. Entitlement-signing compromise is bounded by design: rotate to the `next` key, reissue bundles, and the 30-day cache expiry limits exposure (ADR-0015). Signing-compromise and rollback runbooks are exercised (tabletop plus a real staging drill) before stable launch.
+Runbooks under `docs/runbooks/` (E14-13, delivered with E12-09): signing-key compromise, malicious release publication, source repository breach, insider exfiltration, dependency compromise, leaked cloud credentials, entitlement-signing compromise, counterfeit distribution, user-data exposure. The signing-compromise runbook must support: immediate release freeze; key revocation or trust-root rotation (§14); CDN/package withdrawal (release `yanked_at`, 02-schemas §5); customer notification; known-good recovery release; forensic preservation; root-cause and control review. Entitlement-signing compromise is bounded by design: promote the pre-published `next` key to `current`, retain the prior key only for the defined overlap window where it is not compromised, reissue affected entitlement bundles, retire the compromised key, and rely on the 30-day cache expiry to bound offline exposure (ADR-0015). Signing-compromise and rollback runbooks are exercised (tabletop plus a real staging drill) before stable launch.
 
 ## 22. Release acceptance gates (merged)
 
@@ -247,7 +247,7 @@ A production (stable-channel) release is blocked unless all of the following pas
 |---|------|--------|
 | G1 | `median_reduction_eligible > 0.25`, `p95_latency_ms < 200`, `protected_mutations == 0`, `malformed_json == 0`, recall-probe 100%/≥99% — on the `dist` build | D37 / E7-03 |
 | G2 | MCP startup < 500 ms | D37 |
-| G3 | Every artifact verifies against signed metadata; tampered manifest refused; update rollback passes on macOS, Windows, Linux | ADR-0013 / E12-04 |
+| G3 | Every artifact verifies against signed metadata; tampered manifest refused; update rollback passes on macOS, Windows, Linux | ADR-0013 / E12-06 |
 | G4 | No production secret in source, binaries, containers, or logs (scanners green, §12) | ip.md §26 |
 | G5 | SBOM and provenance generated for every artifact | E12-01 |
 | G6 | Critical/high dependency findings resolved or formally accepted | E1-03 / ip.md §26 |
@@ -255,10 +255,10 @@ A production (stable-channel) release is blocked unless all of the following pas
 | G8 | Claude Code, Codex, and Cursor uninstall/restore tests pass | E6-05 |
 | G9 | No remote telemetry code path exists in the shipped build; diagnostics local/user-exported only | D6 / §15 |
 | G10 | Privacy schema tests pass: no prohibited fields writable in cloud JSONB, traces contain no raw content | 02-schemas §5 |
-| G11 | Cloud-outage test: all local features operational with the control plane down | ADR-0011 / E10-04 |
+| G11 | Cloud-outage test: all local features operational with the control plane down | ADR-0011 / E10-08 |
 | G12 | Third-party notices complete; no unapproved license in the dependency graph | §18 |
 | G13 | Artifact-contents allowlist passes: symbols stripped, private symbols archived, no source maps/fixtures/prompts | §4 |
-| G14 | Security testing matrix executed; external review has no unresolved critical/high findings | E12-05 |
+| G14 | Security testing matrix executed; external review has no unresolved critical/high findings | E12-08 |
 | G15 | If obfuscation is enabled: all above gates re-run on the obfuscated build | §5 / ADR-0022 |
 
 ## 23. E14 ticket seeds
@@ -272,14 +272,31 @@ One-liners for expansion in `05-tickets.md`. "In E12" means the work lands insid
 | E14-03 | Panic-hook and release assertion/message policy + clippy lint | R1 | E14-02 | E14 |
 | E14-04 | Local IPC security test suite (token/socket perms, 401, Origin/Host, peer creds, limits) | I1 + R2 | E8-02 | E14 |
 | E14-05 | Tauri hardening: CSP, capability allowlist, devtools-off, token isolation from webview | D1 | E9-01 | E14 |
-| E14-06 | Secret-management setup: KMS/HSM signing keys, OIDC workload identity, artifact/log secret scanning | I1 | E1-03 | in E12-01 |
-| E14-07 | SBOM + provenance generation and verification in `release.yml` | I1 | E12-01 | in E12-01 |
-| E14-08 | TUF-style update metadata (root/timestamp/snapshot/targets), threshold signing, rotation test | I1 | E12-04 | E14 (extends E12-04) |
+| E14-06 | Secret-management setup: KMS/HSM signing keys, OIDC workload identity, artifact/log secret scanning | I1 | E1-03 | in E12-02 |
+| E14-07 | SBOM + provenance generation and verification in `release.yml` | I1 | E12-01 | in E12-02 |
+| E14-08 | TUF-style update metadata (root/timestamp/snapshot/targets), threshold signing, rotation test | I1 | E12-06 | E14 (extends E12-06) |
 | E14-09 | Signed strategy-pack format, manifest schema, and fail-open client verifier | R1 + I1 | E12-01, E2-09 | E14 |
 | E14-10 | Artifact-contents allowlist test (no fixtures/prompts/source maps/symbols) as release gate | I1 | E14-02, E12-01 | E14 |
 | E14-11 | License-compliance program: pnpm license gate, THIRD-PARTY-NOTICES in artifacts, AGPL policy | I1 | E1-03 | E14 |
-| E14-12 | Repository/contributor controls and trade-secret handling policy (activates with remote repo) | I1 + owner | E14-01 | E14 |
-| E14-13 | IP/security incident runbooks incl. signing- and entitlement-key compromise drill | I1 + PQ | E12-04 | in E12-06 |
-| E14-14 | Legal program checklist: trademark search (closes D36), IP assignments, proprietary EULA | owner + counsel | E14-01 | E14 |
-| E14-15 | Obfuscation evaluation spike: candidate techniques on §1.1 modules, gate re-run, go/no-go ADR update | I1 + R1 | E12-05, E7-04 | E14 (last, per ip.md §28.12) |
+| E14-12 | Repository/contributor controls and trade-secret handling policy (activates with remote repo) | I1 + PO | E14-01 | E14 |
+| E14-13 | IP/security incident runbooks incl. signing- and entitlement-key compromise drill | I1 + PQ | E12-06 | in E12-09 |
+| E14-14 | Legal program checklist: trademark search (closes D36), IP assignments, proprietary EULA | PO + LEGAL | E14-01 | E14 |
+| E14-15 | Obfuscation evaluation spike: candidate techniques on §1.1 modules, gate re-run, go/no-go ADR update | I1 + R1 | E12-08, E7-04 | E14 (last, per ip.md §28.12) |
 | E14-16 | Merge §22 gate table into `gates.toml` + `release.yml` enforcement and release checklist | I1 | E7-03, E12-01 | E14 |
+
+## 24. E15 high-impact capability hardening
+
+E14-17 owns the threat model for edit, SQL, recall, review, browser, and terminal boundaries. E14-18 owns reusable sandbox profiles and adversarial escape tests. Browser and terminal cannot ship enabled until these gates are enforced:
+
+| Gate | Requirement |
+|---|---|
+| G16 | Write and SQL plan/apply TOCTOU, approval-binding, rollback, and injection tests pass |
+| G17 | Recall/review encryption, deletion, provenance, and support-bundle exclusion tests pass |
+| G18 | Browser/terminal sandbox escape, credential isolation, destination, and resource-limit tests pass |
+
+The crown-jewel inventory includes review prompts, routing/evaluation weights, fuzzy-match policy, SQL classification policy, and knowledge ranking. Public schemas, permission labels, installer behavior, and rollback verification remain auditable and unobfuscated.
+
+
+## 25. Authoritative ticket-reference map
+
+This map supersedes older inline numbers left by pre-audit drafting: release pipeline E12-01; SBOM/provenance E12-02; macOS signing E12-03; Windows signing E12-04; Linux signing E12-05; updater/rollback E12-06; installers/Homebrew E12-07; security review E12-08; beta/runbooks/launch E12-09; TUF metadata E14-08; strategy packs E14-09; artifact gate E14-10; shared sandbox policy E14-18; browser sandbox E14-19; terminal sandbox E14-20. E14-06, E14-07, and E14-13 remain requirement aliases absorbed by E12-01/E12-02/E12-09 and are not standalone backlog tickets.

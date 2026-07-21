@@ -22,7 +22,7 @@ All schemas versioned by integer `schema_version`. Breaking change → new versi
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "kind": { "enum": [
-          "system_instruction", "user_instruction", "assistant_response",
+          "system_instruction", "user_instruction", "assistant_response", "assistant_reasoning",
           "tool_definition", "tool_request", "tool_response",
           "source_file", "code_symbol", "search_result",
           "compiler_output", "test_output", "repo_map",
@@ -34,7 +34,19 @@ All schemas versioned by integer `schema_version`. Breaking change → new versi
         "priority": { "type": "number", "minimum": 0, "maximum": 1 },
         "protected": { "type": "boolean" },
         "recency": { "type": ["integer", "null"], "description": "unix seconds" },
-        "metadata": { "type": "object" }
+        "metadata": { "type": "object" },
+        "provider_turn": { "oneOf": [{ "$ref": "#/$defs/provider_turn" }, { "type": "null" }] }
+      }
+    },
+    "provider_turn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "turn_id", "tool_call_id"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "turn_id": { "type": "string", "minLength": 1 },
+        "tool_call_id": { "type": "string", "minLength": 1 },
+        "opaque_state_hash": { "type": ["string", "null"] }
       }
     },
     "source": {
@@ -51,7 +63,7 @@ All schemas versioned by integer `schema_version`. Breaking change → new versi
       "properties": {
         "from": { "type": "string" },
         "to": { "type": "string" },
-        "kind": { "enum": ["imports", "calls", "defines", "references", "tests", "supersedes", "produced_by_tool", "responds_to", "depends_on", "same_error_group"] },
+        "kind": { "enum": ["imports", "calls", "defines", "references", "tests", "supersedes", "produced_by_tool", "responds_to", "depends_on", "same_error_group", "duplicate_of"] },
         "weight": { "type": "number", "minimum": 0, "maximum": 1 }
       }
     }
@@ -59,7 +71,13 @@ All schemas versioned by integer `schema_version`. Breaking change → new versi
 }
 ```
 
-Invariants (validated in code, not expressible in JSON Schema): node ids unique; edge endpoints exist; `protected: true` is **forced at ingress** for `kind ∈ {system_instruction, user_instruction, tool_definition, tool_request}`. Unprotecting one of these kinds is only possible from trusted local surfaces (CLI `--allow-unprotect`, local config) — never from an inbound MCP/proxy payload: the boundary validator overrides `protected` to `true` for these kinds on any external graph and records a `protection_forced` note in the trace. Arbitrary metadata can never downgrade protection.
+Invariants (validated in code, not expressible in JSON Schema): node ids unique; edge endpoints exist; every node's `token_count` equals a recount by its declared provider; and `protected: true` is forced at ingress for `kind ∈ {system_instruction, user_instruction, assistant_reasoning, tool_definition, tool_request}`. Provider reasoning and opaque continuation state are never compressed, persisted as memory, or moved between providers. Reasoning and in-flight tool requests cannot be unprotected.
+
+Provider conversations are ordered atomic turns. Every `tool_request` has `provider`, `turn_id`, and `tool_call_id` metadata and exactly one owning assistant turn. Every `tool_response` carries the same identifiers and a `responds_to` edge. A candidate may retain a complete pair or remove a complete pair only when no later provider turn depends on it; orphan responses, pending requests, and results without their owning assistant turn are invalid. Unknown provider state forces passthrough.
+
+Deduplication references use a `duplicate_of` edge from stub to byte-preserved referent. A stub without exactly one surviving referent is invalid, and budget packing treats a referent plus all stubs as one atomic group.
+
+D53 extends the build source's original safety list: unknown provider/client conversation format is a provider-conversation validation failure and therefore byte-identical passthrough. The source document remains unchanged; this paragraph is the authoritative plan delta.
 
 ## 2. CompressionBudget / Result / Trace v1 (`schemas/compression-trace/v1.json`)
 
@@ -79,9 +97,25 @@ Invariants (validated in code, not expressible in JSON Schema): node ids unique;
         "protected_kinds": { "type": "array", "items": { "type": "string" } }
       }
     },
+    "removal_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy_id", "node_id", "kind", "original_hash", "before_tokens", "after_tokens"],
+      "properties": {
+        "strategy_id": { "type": "string" },
+        "node_id": { "type": "string" },
+        "kind": { "enum": ["duplicate_reference", "collapsed_lines", "json_elision", "dropped_node"] },
+        "locator": { "type": ["string", "null"], "description": "line span or JSON pointer; never raw content" },
+        "original_hash": { "type": "string" },
+        "replacement_hash": { "type": ["string", "null"] },
+        "before_tokens": { "type": "integer", "minimum": 0 },
+        "after_tokens": { "type": "integer", "minimum": 0 },
+        "units_removed": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
     "strategy_result": {
       "type": "object",
-      "required": ["strategy_id", "applied", "before_tokens", "after_tokens", "duration_ms"],
+      "required": ["strategy_id", "applied", "before_tokens", "after_tokens", "duration_ms", "removals"],
       "properties": {
         "strategy_id": { "type": "string" },
         "applied": { "type": "boolean" },
@@ -90,6 +124,7 @@ Invariants (validated in code, not expressible in JSON Schema): node ids unique;
         "duration_ms": { "type": "number" },
         "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
         "notes": { "type": "array", "items": { "type": "string" } },
+        "removals": { "type": "array", "items": { "$ref": "#/$defs/removal_record" } },
         "skipped_reason": { "type": ["string", "null"] }
       }
     },
@@ -131,8 +166,9 @@ applied_tokens             tokens actually delivered after applied compression
 removed_tokens             observed - applied, only when compression was applied
 compression_overhead       tokens added by Compresso itself (maps, explanations)
 net_tokens_saved           removed_tokens - compression_overhead
-modeled_cost_saved         net_tokens_saved x provider price table (labelled modeled)
-provider_verified_cost_saved  only from provider-reported usage deltas (post-slice)
+provider_observed_input_tokens  actual input/cache fields reported for the request sent
+provider_observed_cost          actual cost from observed usage and a versioned price table
+modeled_cost_saved              counterfactual only; never provider-verified
 ```
 
 ## 4. SQLite DDL v1 (`rust/compresso-store/migrations/0001_init.sql`)
@@ -188,6 +224,8 @@ CREATE TABLE edges (
   from_file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
   to_path TEXT NOT NULL,                -- import target as written, resolved when possible
   to_file_id INTEGER REFERENCES files(id) ON DELETE SET NULL,
+  resolution_status TEXT NOT NULL DEFAULT 'unresolved' CHECK (resolution_status IN ('resolved','ambiguous','unresolved')),
+  resolution_detail TEXT,
   kind TEXT NOT NULL                    -- imports|references|tests
 );
 CREATE INDEX idx_edges_from ON edges(from_file_id);
@@ -416,3 +454,17 @@ CREATE TABLE support_cases (
 ```
 
 Privacy invariant — enforced at **content level**, not column names: every JSONB field (`plans.features`, `entitlements.value`, `feature_flags.default_value`/`rules`, `policy_sets.policy`, `event_batches.aggregates`, `audit_logs.detail`, `subscriptions` metadata) has a versioned allowlist JSON Schema under `schemas/cloud-api/` with `additionalProperties: false`, validated in Fastify middleware on every write; requests failing validation are rejected and audited. `audit_logs.detail` is restricted to an enumerated key set (ids, enum values, counts — no free-form strings from clients). Enforcement stack: (1) write-path schema validation, (2) property tests generating adversarial payloads containing paths/prompts/symbols and asserting rejection, (3) CI test asserting every JSONB column has a registered allowlist schema. A column-name check alone is explicitly insufficient.
+
+## 6. Migration registry and E15 local schemas
+
+Migration numbers are reserved centrally and never introduced conditionally inside a ticket:
+
+| Number | Owner | Purpose |
+|---|---|---|
+| `0001` | E3 | Core local store |
+| `0002` | E10 | Entitlements and device account metadata |
+| `0003` | E13 | Provider state, capability evidence, and observed usage |
+| `0004` | E15 | WOZ-inspired local capabilities |
+| `0005` | E16-06 | Import-resolution status/detail migration |
+
+E15 adds strict boundary schemas under `schemas/search/v1.json`, `schemas/edit/v1.json`, `schemas/sql/v1.json`, `schemas/recall/v1.json`, `schemas/knowledge/v1.json`, and `schemas/review/v1.json`. Apply requests contain plan hashes and approvals, never credentials. Migration `0004_woz_capabilities.sql` adds `edit_transactions`, `sql_connection_profiles`, `recall_sources`, `recall_chunks`, `knowledge_items`, `review_runs`, and `review_findings`. Recall, knowledge, rollback, and review content is encrypted with keychain-held keys; rows store ciphertext, hashes, provenance, states, and retention metadata. SQL profiles store only opaque keychain references. Migration `0003_model_runtime.sql` adds normalized E13 provider state and usage without prompts or reasoning. Exact DDL and invariants are owned by E15-01 and validated by E15-30 before release.
