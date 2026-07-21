@@ -291,25 +291,41 @@ Error shape everywhere: `{ error: { code, message, request_id } }`. Entitlement 
 pub struct EntitlementVerifier { /* embedded ed25519 public keys, keyed by kid */ }
 impl EntitlementVerifier {
     pub fn verify(&self, bundle_jws: &str, now: u64) -> Result<Entitlements, EntitlementError>;
-    // JWS (EdDSA/ed25519), header kid selects among EMBEDDED_KEYS (≥2 for rotation: previous + current + next).
-    // Expired-but-within-grace bundles verify with Entitlements::degraded = true.
+    // JWS (EdDSA/ed25519), header kid selects among EMBEDDED_KEYS (previous + current + next).
+    // Lease claims bind account, device_id, device public-key hash, plan/features, lease_class,
+    // issued_at, refresh_after, expires_at, lease_id, and schema_version. Standard is +14d/+21d.
+    // Enterprise offline leases are server-authorized per org/device for exactly 30, 60, or 90 days
+    // and set refresh_after to seven days before expiry; 90 days is the absolute protocol maximum.
+    // At refresh_after the lease remains valid but reports renewal_due; at expires_at paid local
+    // features become local_only(). An active operation is never interrupted.
 }
 pub struct EntitlementCache<'a> { /* store-backed, entitlement_cache table (02-schemas §4) */ }
 pub trait CloudClient: Send + Sync {
     fn begin_device_authorization(&self) -> Result<DeviceAuthorization, AccountError>;
     fn poll_device_token(&self, device_code: &SecretString) -> Result<DevicePoll, AccountError>;
-    fn fetch_entitlements(&self, access: &AccessToken) -> Result<String, AccountError>;
+    fn begin_entitlement_challenge(&self, access: &AccessToken) -> Result<LeaseChallenge, AccountError>;
+    fn fetch_entitlements(&self, access: &AccessToken, proof: &DeviceProof) -> Result<String, AccountError>;
     fn revoke_device(&self, access: &AccessToken) -> Result<(), AccountError>;
 }
 pub struct AccountClient { /* HTTPS CloudClient, bounded polling, refresh rotation, keychain */ }
 // CLI: compresso account login|status|logout. Logout always clears local credentials and revokes when reachable.
 impl EntitlementCache<'_> {
-    pub fn current(&self, now: u64) -> Entitlements;          // NEVER errors: missing/invalid/expired-past-grace => Entitlements::local_only()
-    pub fn refresh(&self, client: &dyn CloudClient) -> Result<(), EntitlementError>; // background, exponential backoff, jitter
+    pub fn current(&self, now: u64) -> Entitlements;          // NEVER errors: missing/invalid/expired lease => Entitlements::local_only()
+    pub fn refresh(&self, client: &dyn CloudClient) -> Result<(), EntitlementError>; // only when due, explicitly requested, or recovering
 }
+// Device proof: server nonce signed by the device private key; server verifies possession before renewal.
 // Device credentials (refresh token, device private key): OS keychain via the `keyring` crate — never on disk.
-// Key rotation: releases carry previous+current+next keys. Server overlap lasts max offline grace plus release support window.
-// Time validation permits ±5 minutes only for nbf/iat; expiry/grace use monotonic elapsed time anchored at fetched_at.
+// Scheduled network policy: no automatic entitlement request before refresh_after. Attempt at day 14;
+// after failure retry at most once per 24h with bounded jitter until day 21. Explicit login/status/refresh may contact sooner.
+// Renewal payload is allowlisted to device_id, device-key proof, entitlement/client version, lease_id, and nonce:
+// never prompts, source, repository metadata, paths, operation history, or usage statistics.
+// The client never accepts local config, environment variables, CLI flags, cache columns, or wall-clock edits
+// as authority for plan/features/lease_class/refresh_after/expires_at; only signed claims are authoritative locally.
+// Cloud authorization never trusts this local result: every paid cloud request is independently authorized from
+// current server subscription, org membership, seat, device, revocation, and capability state.
+// Key rotation: releases carry previous+current+next keys. Server overlap covers the maximum 90-day
+// enterprise-offline lease plus the supported-release window.
+// Time validation permits ±5 minutes only for nbf/iat; refresh/expiry use monotonic elapsed time anchored at fetched_at.
 // Hard rule (owner constraint 4): every failure path degrades to local/free features; nothing here can block
 // compression, MCP, or the underlying assistant.
 ```
