@@ -1,0 +1,28 @@
+rust/compresso-core/Cargo.toml
+  s_87261b37472da1::t_98843ea98db3fa 19
+Cargo.toml
+  s_87261b37472da1::t_6839c67f3bdeb7 47
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_c56144df964ee2 241
+rust/compresso-core/tests/proptest_engine.rs
+  s_87261b37472da1::t_68adcf6b079da7 1-119,169-264
+  s_87261b37472da1::t_17be6414d88297 120-168
+Cargo.lock
+  s_87261b37472da1::t_3e96d3cb7cd5b6 197,407-412,737-742,872,943-951,971-996,1018-1056,1178-1189,1487-1492,1550-1558
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "6f8d9c773cbc92ce959c9f272e802e368f630064",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
