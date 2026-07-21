@@ -1,0 +1,34 @@
+rust/compresso-atlas/Cargo.toml
+  s_87261b37472da1::t_03d7ae233ad56f 16
+.claude/outputs/compiler-interpreter-design.md
+  s_87261b37472da1::t_af5f7ee54c47e2 1,7,22-29,47-49,57
+rust/compresso-atlas/queries/python.scm
+  s_87261b37472da1::t_d80a42cc3c37c6 1-9
+rust/compresso-atlas/tests/fixtures/lang/sample.py
+  s_87261b37472da1::t_6e3efecf874390 1-11
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_32b3b931933afb 383
+rust/compresso-atlas/src/parsers.rs
+  s_87261b37472da1::t_d80a42cc3c37c6 9,85,95,149-158,232,234-235,245-248,261-264,285,316-513
+rust/compresso-atlas/tests/parsers_python.rs
+  s_87261b37472da1::t_6e3efecf874390 4-88,91-168,171-190,193-241
+  s_87261b37472da1::t_71b5f3b039ab94 1-3,89-90,169-170,191-192
+Cargo.lock
+  s_87261b37472da1::t_bd2065268311b0 172,1291-1300
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "25c7a641c589da5ce1d9b99b4dafce3bc605b2de",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
