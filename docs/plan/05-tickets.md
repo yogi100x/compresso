@@ -288,10 +288,10 @@ Test cases:
 - test_busy_timeout_5s: `PRAGMA busy_timeout` == 5000 after open.
 - test_store_send_sync_clone: `fn assert_bounds<T: Send + Sync + Clone>() {}` instantiated with `Store`.
 
-### [ ] E3-02: Repository, file, and symbol DAOs
+### [x] E3-02: Repository, file, and symbol DAOs
 Owner: R2 · Estimate: 1.5d · Depends: E3-01
 Files: rust/compresso-store/src/repos.rs, rust/compresso-store/src/files.rs, rust/compresso-store/src/symbols.rs, tests in same files
-Description: Implement the repository/file/symbol surface of `Store` per `03-interfaces.md` §3: `approve_repo`, `repo_by_root`, `upsert_file`, `file_hashes`, `replace_symbols` (symbols + edges in a single transaction), `delete_files`, `search_symbols` (FTS5, bm25-ranked), `symbols_in_file`, `symbol_by_name`, with `RepoRecord`/`FileRecord`/`SymbolRecord`/`EdgeRecord`/`SymbolHit` types. Only this crate contains SQL.
+Description: Implement the repository/file/symbol surface of `Store` per `03-interfaces.md` §3: `approve_repo`, `repo_by_root`, `upsert_file`, `file_hashes`, `replace_symbols` (symbols + edges in a single transaction), `delete_files`, `search_symbols` (literal FTS5 trigram queries, bm25-ranked with deterministic ties), `symbols_in_file`, and D59-compliant `symbols_by_identity`, with `RepoRecord`/`FileRecord`/`SymbolRecord`/`EdgeRecord`/`SymbolHit` types. `SymbolSelector` is owned by `compresso-store` so Store never depends on Atlas; lookup returns all deterministic candidates and never an arbitrary first match. Only this crate contains SQL.
 Acceptance criteria:
 - `approve_repo` canonicalizes the root and is idempotent (same `RepoId` on repeat); `repo_by_root` finds it by canonical path.
 - `upsert_file` twice for the same `(repo, path)` yields one row with updated hash/size; `delete_files` cascades symbol and edge rows (FK verified).
@@ -303,7 +303,7 @@ Test cases:
 - test_replace_symbols_transactional: seed 3 symbols; call `replace_symbols` with a batch containing an invalid row (end_line < start_line triggers CHECK/validation) → Err, `symbols_in_file` still returns the 3 originals.
 - test_delete_files_cascades: file with 2 symbols and 1 edge; `delete_files` → `symbols` and `edges` rows for it gone, `symbols_fts` no longer matches.
 - test_search_symbols_trigram: symbol `SessionManager::start`; `search_symbols(repo, "essionMan", 10)` returns it ranked first.
-- test_symbol_by_name_qualified: `symbol_by_name(repo, "SessionManager::start")` returns `(FileRecord, SymbolRecord)` with correct path and line range.
+- test_symbols_by_identity_qualified_and_ambiguous: a selector with path + qualified name and optional kind/signature hash/start-line hint returns all matching `(FileRecord, SymbolRecord)` candidates in deterministic order; optional fields are honored and no arbitrary first match is selected.
 
 ### [ ] E3-03: Session, operation, receipt, and stats DAOs
 Owner: R2 · Estimate: 1.5d · Depends: E3-01, E1-04

@@ -1,5 +1,9 @@
 //! Local SQLite persistence boundaries for repositories, files, symbols, and operations.
 
+mod files;
+mod repos;
+mod symbols;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -7,6 +11,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use thiserror::Error;
+
+pub use files::{FileLanguage, FileRecord, RelativePathError};
+pub use repos::{FileId, RepoId, RepoRecord};
+pub use symbols::{
+    EdgeKind, EdgeRecord, EdgeResolution, SymbolHit, SymbolKind, SymbolRecord, SymbolSelector,
+};
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
@@ -56,6 +66,19 @@ pub enum StoreError {
         #[source]
         source: std::io::Error,
     },
+    /// A repository root could not be resolved to an existing filesystem path.
+    #[error("failed to canonicalize repository root {path}")]
+    CanonicalizeRepository {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    /// A repository root resolves to something other than a directory.
+    #[error("repository root is not a directory: {path}")]
+    RepositoryRootNotDirectory { path: PathBuf },
+    /// A filesystem path cannot be represented by SQLite's TEXT storage.
+    #[error("path is not valid UTF-8: {path}")]
+    NonUtf8Path { path: PathBuf },
     /// SQLite could not open the database file.
     #[error("failed to open store database {path}")]
     Open {
@@ -69,6 +92,45 @@ pub enum StoreError {
     /// SQLite could not enable the WAL journal mode required by the store.
     #[error("store requires WAL journal mode, but SQLite returned {actual}")]
     JournalModeMismatch { actual: String },
+    /// A repository-relative path failed lexical validation.
+    #[error("invalid repository-relative path {path:?}: {reason}")]
+    InvalidRelativePath {
+        path: String,
+        reason: RelativePathError,
+    },
+    /// A requested repository does not exist.
+    #[error("repository {0} does not exist")]
+    RepositoryNotFound(RepoId),
+    /// A requested file does not exist.
+    #[error("file {0} does not exist")]
+    FileNotFound(FileId),
+    /// A required record field was semantically invalid.
+    #[error("invalid {field}: {reason}")]
+    InvalidField {
+        field: &'static str,
+        reason: &'static str,
+    },
+    /// An unsigned Rust value cannot fit SQLite's signed INTEGER storage.
+    #[error("{field} value {value} exceeds SQLite INTEGER range")]
+    NumericOutOfRange { field: &'static str, value: u128 },
+    /// A symbol line interval is not one-based and inclusive.
+    #[error("invalid symbol line range {start_line}..={end_line}")]
+    InvalidSymbolLineRange { start_line: u32, end_line: u32 },
+    /// An edge marked resolved does not identify a stored file in the same repository.
+    #[error("resolved edge target does not exist in repository {repo}: {path}")]
+    ResolvedEdgeTargetNotFound { repo: RepoId, path: String },
+    /// An edge's resolution payload is inconsistent with its status.
+    #[error("invalid edge resolution for {path:?}: {reason}")]
+    InvalidEdgeResolution { path: String, reason: &'static str },
+    /// A caller supplied malformed full-text search input.
+    #[error("invalid symbol search query: {reason}")]
+    InvalidSearchQuery { reason: &'static str },
+    /// A selector signature hash was not a 32-byte lowercase/uppercase hexadecimal digest.
+    #[error("invalid BLAKE3 signature hash: {0}")]
+    InvalidSignatureHash(String),
+    /// Persisted data does not match the typed store contract.
+    #[error("invalid stored {field} value: {value}")]
+    InvalidStoredValue { field: &'static str, value: String },
     /// A migration failed and was rolled back.
     #[error("store migration {version} failed")]
     Migration {

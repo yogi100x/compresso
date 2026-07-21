@@ -8,6 +8,7 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
+blake3.workspace = true
 compresso-core.workspace = true
 dirs.workspace = true
 rusqlite.workspace = true
