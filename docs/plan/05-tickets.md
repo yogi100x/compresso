@@ -195,7 +195,7 @@ Test cases:
 - test_structure_preserved: nested object with 4 levels → output has identical key set at every level (recursive key comparison).
 - test_truncations_enumerated_in_notes: every elision marker in the output has a matching `truncated <pointer>` note; a node with no elisions contributes no `truncated` notes.
 
-### [ ] E2-07: Budget-packing strategy
+### [x] E2-07: Budget-packing strategy
 Owner: R1 · Estimate: 1.5d · Depends: E2-03
 Files: rust/compresso-core/src/strategies/pack_budget.rs, tests in same file
 Description: Implement `pack_budget` per `03-interfaces.md` §2.3. Every dropped node emits `RemovalRecord::DroppedNode` with original hash/count and zero replacement count; edge pruning cannot create overlapping records (D51).
