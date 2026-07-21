@@ -1,0 +1,51 @@
+[workspace]
+members = ["rust/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "Proprietary"
+repository = "https://github.com/compresso-dev/compresso"
+
+[workspace.dependencies]
+compresso-core = { path = "rust/compresso-core" }
+compresso-atlas = { path = "rust/compresso-atlas" }
+compresso-store = { path = "rust/compresso-store" }
+compresso-mcp = { path = "rust/compresso-mcp" }
+compresso-integrations = { path = "rust/compresso-integrations" }
+compresso-cli = { path = "rust/compresso-cli" }
+compresso-eval = { path = "rust/compresso-eval" }
+compresso-agent = { path = "rust/compresso-agent" }
+compresso-proxy = { path = "rust/compresso-proxy" }
+compresso-updater = { path = "rust/compresso-updater" }
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+tokio = { version = "1.45", features = ["rt-multi-thread", "macros", "io-std"] }
+rmcp = { version = "0.3", features = ["server", "transport-io"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+tiktoken-rs = "0.6"
+tree-sitter = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.23"
+tree-sitter-python = "0.23"
+blake3 = "1.5"
+ignore = "0.4"
+toml = "0.8"
+dirs = "6.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+jsonschema = "0.26"
+insta = "1.41"
+proptest = "1.5"
+criterion = "0.5"
+tempfile = "3.14"
+keyring = "3.6"
+jsonwebtoken = "9.3"
+reqwest = "0.12"
