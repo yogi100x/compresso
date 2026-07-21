@@ -1,0 +1,23 @@
+Cargo.toml
+  s_87261b37472da1::t_99daf27c57270c 44
+schemas/context-graph/v1.json
+  s_87261b37472da1::t_67a58da8bedd84 14-22,25-44,48-56,59-62,64-66,82-107,116-130
+schemas/compression-trace/v1.json
+  s_87261b37472da1::t_67a58da8bedd84 19-26,30-41,51-58,67-70,77-81,85-95,106-117
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "0b7b9ea87254c6b62db0e005ae232d69cd2ee09c",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
