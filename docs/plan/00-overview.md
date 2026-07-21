@@ -48,9 +48,11 @@ E14 IP protection & secure deployment (08-ip-and-secure-deployment.md; source: i
 | E5 MCP server | rmcp stdio server, 10 read-only tools, sessions/ledger | 4 | 2 wk |
 | E6 Integrations | Framework + Claude Code, Codex, Cursor adapters | 5 (pulled in) | 2 wk |
 | E7 Eval & fixtures | Fixture corpus, eval runner, release gates | 2–3 | 1.5 wk (overlaps) |
-| E8–E12 | Supervisor, desktop, cloud, proxy, release eng | 4–9 | per build-doc roadmap |
+| E8–E12 | Supervisor, desktop, cloud, proxy, release eng | 4–9 | full tickets in 05 |
+| E13 Model & client expansion | Canonical protocol, drivers, profiles, router, Kimi/GLM/MiniMax/DeepSeek | post-slice | 22 tickets in 05 |
+| E14 IP & secure deployment | Hardening, obfuscation policy, anti-tamper, legal/compliance | 8–9 | 13 tickets in 05 |
 
-Slice total: ~13 engineer-weeks; 2 engineers ≈ 6–7 calendar weeks; solo ≈ 3 months.
+Slice total (E1–E7, 53 tickets): ~14 engineer-weeks; 2 engineers ≈ 7 calendar weeks; solo ≈ 3–3.5 months. Full backlog: 133 tickets; rollup at the end of `05-tickets.md`.
 
 ## Staffing and ownership
 
@@ -76,4 +78,6 @@ Roles from build-doc §27, used as `owner` on tickets. Solo mode: all roles = ow
 | `04-mcp-and-integrations.md` | MCP tool JSON schemas, per-client integration specs |
 | `05-tickets.md` | Epics → dependency-ordered tickets with acceptance criteria and test cases |
 | `06-fixtures.md` | Evaluation fixture format and initial corpus |
-| `docs/adr/` | Architecture decision records |
+| `07-model-expansion.md` | Canonical model protocol, drivers, profiles, router, conformance (source: `compresso-expand.md`) |
+| `08-ip-and-secure-deployment.md` | IP boundaries, release hardening, anti-tamper, legal program (source: `ip.md`) |
+| `docs/adr/` | Architecture decision records (0001–0022) |
