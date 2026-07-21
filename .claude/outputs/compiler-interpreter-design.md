@@ -1,10 +1,10 @@
-# Atlas parser design through E3-07
+# Atlas parser design through E3-08
 
 ## Pattern and rationale
 
 Use one error-tolerant Tree-sitter pipeline that accepts a pinned grammar, a
 committed query asset, and a language-specific capture normalizer. Rust,
-TypeScript, TSX, and JavaScript share capture ordering and byte-range
+TypeScript, TSX, JavaScript, and Python share capture ordering and byte-range
 deduplication while retaining separate grammar and query inputs. Script-language
 normalization filters definitions to module scope, qualifies class methods, and
 skips declarations that have no stable name. TypeScript maps only concrete
@@ -18,6 +18,14 @@ JavaScript captures CommonJS dependencies syntactically but accepts them only
 when the callee is the identifier `require` and its sole argument is a string
 literal. It records exact module-level `module.exports` assignments separately
 from ordinary or nested assignments, without attempting semantic execution.
+
+Python captures definition nodes rather than their decorated wrappers. This
+keeps source ranges anchored at `def`/`async def` while the normalizer prepends
+decorator text to the signature. Only module functions and classes plus direct
+methods of module classes are emitted; nested declarations are skipped. A
+constant must be a direct module assignment to one identifier whose spelling is
+strict ASCII `UPPER_CASE`. Import aliases normalize to the original module or
+member, and multi-name imports expand in source order without resolving them.
 
 ## Complexity
 
@@ -36,8 +44,9 @@ from ordinary or nested assignments, without attempting semantic execution.
   defaults are skipped without discarding other symbols.
 - Dynamic/template CommonJS loads and member calls named `require` are ignored;
   static string-literal calls remain explicit unresolved imports.
-- Unsupported routed languages return `UnsupportedLanguage` until their tickets
-  add a grammar and live query.
+- Python destructuring, attribute assignments, lowercase names, nested
+  declarations, and wildcard imports are ignored because they do not produce a
+  stable symbol or dependency identity under the E3-08 contract.
 - Imports and export-from edges are normalized without quotes but remain
   explicitly `Unresolved("not_indexed")` until indexing resolves them.
 
@@ -45,3 +54,4 @@ from ordinary or nested assignments, without attempting semantic execution.
 
 - [Tree-sitter: Using Parsers](https://tree-sitter.github.io/tree-sitter/using-parsers/)
 - [Tree-sitter: Query Syntax and error recovery](https://tree-sitter.github.io/tree-sitter/using-parsers/queries/1-syntax.html)
+- [Tree-sitter Python grammar](https://github.com/tree-sitter/tree-sitter-python/blob/master/grammar.js)

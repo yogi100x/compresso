@@ -380,7 +380,7 @@ Test cases:
 - test_js_cjs_and_esm_imports: `const path = require("path");` plus `import express from "express";` → imports `["path", "express"]`.
 - test_js_dynamic_require_ignored: `require(pluginName)` → not present in imports, extraction succeeds.
 
-### [ ] E3-08: Python extraction
+### [x] E3-08: Python extraction
 Owner: R2 · Estimate: 1.5d · Depends: E3-05
 Files: rust/compresso-atlas/queries/python.scm, tests + fixture tests/fixtures/lang/sample.py
 Description: tree-sitter-python queries for module functions, classes, methods (including decorated and async defs), and module-level constants (UPPER_CASE assignments); imports from `import x`, `import x as y`, and `from x import y` forms as written.

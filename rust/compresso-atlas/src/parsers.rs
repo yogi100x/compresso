@@ -6,6 +6,7 @@ use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
 
 const RUST_QUERY: &str = include_str!("../queries/rust.scm");
 const JAVASCRIPT_QUERY: &str = include_str!("../queries/javascript.scm");
+const PYTHON_QUERY: &str = include_str!("../queries/python.scm");
 const TYPESCRIPT_QUERY: &str = include_str!("../queries/typescript.scm");
 const TSX_QUERY: &str = include_str!("../queries/tsx.scm");
 const NOT_INDEXED: &str = "not_indexed";
@@ -81,7 +82,7 @@ impl ParserRegistry {
             Language::TypeScript => extract_typescript(Language::TypeScript, source),
             Language::Tsx => extract_typescript(Language::Tsx, source),
             Language::JavaScript => extract_javascript(source),
-            Language::Python => Err(ParseError::UnsupportedLanguage(lang)),
+            Language::Python => extract_python(source),
         }
     }
 }
@@ -91,6 +92,7 @@ enum CaptureKind {
     Symbol(SymbolKind),
     Variable,
     ModuleExport,
+    PythonConstant,
     Import(ImportKind),
     Use,
 }
@@ -141,6 +143,16 @@ fn extract_javascript(source: &str) -> Result<Extraction, ParseError> {
         JAVASCRIPT_QUERY,
         source,
         process_javascript_candidate,
+    )
+}
+
+fn extract_python(source: &str) -> Result<Extraction, ParseError> {
+    extract_with_query(
+        tree_sitter_python::LANGUAGE.into(),
+        "Python",
+        PYTHON_QUERY,
+        source,
+        process_python_candidate,
     )
 }
 
@@ -217,7 +229,10 @@ fn capture_kind(name: &str) -> Option<CaptureKind> {
         "definition.module" => Some(CaptureKind::Symbol(SymbolKind::Module)),
         "definition.variable" => Some(CaptureKind::Variable),
         "definition.module_export" => Some(CaptureKind::ModuleExport),
+        "definition.python_constant" => Some(CaptureKind::PythonConstant),
         "import.import" => Some(CaptureKind::Import(ImportKind::Import)),
+        "import.python" => Some(CaptureKind::Import(ImportKind::Import)),
+        "import.python_from" => Some(CaptureKind::Import(ImportKind::FromImport)),
         "import.export_from" => Some(CaptureKind::Import(ImportKind::ExportFrom)),
         "import.require" => Some(CaptureKind::Import(ImportKind::Require)),
         "import.use" => Some(CaptureKind::Use),
@@ -227,7 +242,10 @@ fn capture_kind(name: &str) -> Option<CaptureKind> {
 
 const fn capture_priority(kind: CaptureKind) -> u8 {
     match kind {
-        CaptureKind::Symbol(_) | CaptureKind::Variable | CaptureKind::ModuleExport => 0,
+        CaptureKind::Symbol(_)
+        | CaptureKind::Variable
+        | CaptureKind::ModuleExport
+        | CaptureKind::PythonConstant => 0,
         CaptureKind::Import(_) | CaptureKind::Use => 1,
     }
 }
@@ -240,7 +258,10 @@ fn process_rust_candidate(candidate: Candidate<'_>, source: &str, output: &mut E
             }
         }
         CaptureKind::Use => output.imports.extend(rust_imports(candidate.node, source)),
-        CaptureKind::Variable | CaptureKind::ModuleExport | CaptureKind::Import(_) => {}
+        CaptureKind::Variable
+        | CaptureKind::ModuleExport
+        | CaptureKind::PythonConstant
+        | CaptureKind::Import(_) => {}
     }
 }
 
@@ -261,7 +282,7 @@ fn process_typescript_candidate(candidate: Candidate<'_>, source: &str, output: 
                 output.imports.push(import);
             }
         }
-        CaptureKind::ModuleExport | CaptureKind::Use => {}
+        CaptureKind::ModuleExport | CaptureKind::PythonConstant | CaptureKind::Use => {}
     }
 }
 
@@ -292,7 +313,204 @@ fn process_javascript_candidate(candidate: Candidate<'_>, source: &str, output: 
                 output.imports.push(import);
             }
         }
-        CaptureKind::Use => {}
+        CaptureKind::PythonConstant | CaptureKind::Use => {}
+    }
+}
+
+fn process_python_candidate(candidate: Candidate<'_>, source: &str, output: &mut Extraction) {
+    match candidate.kind {
+        CaptureKind::Symbol(kind) => {
+            if let Some(symbol) = python_symbol(candidate.node, kind, source) {
+                output.symbols.push(symbol);
+            }
+        }
+        CaptureKind::PythonConstant => {
+            if let Some(symbol) = python_constant(candidate.node, source) {
+                output.symbols.push(symbol);
+            }
+        }
+        CaptureKind::Import(ImportKind::Import) => output
+            .imports
+            .extend(python_imports(candidate.node, source)),
+        CaptureKind::Import(ImportKind::FromImport) => output
+            .imports
+            .extend(python_from_imports(candidate.node, source)),
+        CaptureKind::Variable
+        | CaptureKind::ModuleExport
+        | CaptureKind::Import(_)
+        | CaptureKind::Use => {}
+    }
+}
+
+fn python_symbol(node: Node<'_>, kind: SymbolKind, source: &str) -> Option<SymbolRecord> {
+    let name = node_text(node.child_by_field_name("name")?, source)?.to_owned();
+    let (kind, qualified_name) = match kind {
+        SymbolKind::Function => {
+            if let Some(owner) = python_class_owner(node, source) {
+                (SymbolKind::Method, format!("{owner}::{name}"))
+            } else if python_is_module_declaration(node) {
+                (SymbolKind::Function, name.clone())
+            } else {
+                return None;
+            }
+        }
+        SymbolKind::Class if python_is_module_declaration(node) => {
+            (SymbolKind::Class, name.clone())
+        }
+        _ => return None,
+    };
+
+    Some(SymbolRecord {
+        name,
+        qualified_name,
+        kind,
+        signature: python_declaration_signature(node, source),
+        start_line: line_number(node.start_position().row),
+        end_line: line_number(node.end_position().row),
+        token_estimate: 0,
+    })
+}
+
+fn python_class_owner(function: Node<'_>, source: &str) -> Option<String> {
+    let declaration = python_declaration_wrapper(function);
+    let class_body = declaration.parent()?;
+    if class_body.kind() != "block" {
+        return None;
+    }
+    let class = class_body.parent()?;
+    if class.kind() != "class_definition" || !python_is_module_declaration(class) {
+        return None;
+    }
+    Some(node_text(class.child_by_field_name("name")?, source)?.to_owned())
+}
+
+fn python_is_module_declaration(node: Node<'_>) -> bool {
+    python_declaration_wrapper(node)
+        .parent()
+        .is_some_and(|parent| parent.kind() == "module")
+}
+
+fn python_declaration_wrapper(node: Node<'_>) -> Node<'_> {
+    node.parent()
+        .filter(|parent| parent.kind() == "decorated_definition")
+        .unwrap_or(node)
+}
+
+fn python_declaration_signature(node: Node<'_>, source: &str) -> Option<String> {
+    let body = node.child_by_field_name("body")?;
+    let declaration = source.get(node.start_byte()..body.start_byte())?.trim();
+    if declaration.is_empty() {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    if let Some(wrapper) = node
+        .parent()
+        .filter(|parent| parent.kind() == "decorated_definition")
+    {
+        let mut cursor = wrapper.walk();
+        for child in wrapper.named_children(&mut cursor) {
+            if child.kind() == "decorator" {
+                parts.push(node_text(child, source)?.trim());
+            }
+        }
+    }
+    parts.push(declaration);
+    Some(parts.join("\n"))
+}
+
+fn python_constant(node: Node<'_>, source: &str) -> Option<SymbolRecord> {
+    if !python_is_module_statement(node) || node.child_by_field_name("right").is_none() {
+        return None;
+    }
+    let name_node = node.child_by_field_name("left")?;
+    if name_node.kind() != "identifier" {
+        return None;
+    }
+    let name = node_text(name_node, source)?;
+    if !is_python_constant_name(name) {
+        return None;
+    }
+
+    Some(SymbolRecord {
+        name: name.to_owned(),
+        qualified_name: name.to_owned(),
+        kind: SymbolKind::Const,
+        signature: trimmed_signature(node_text(node, source)?),
+        start_line: line_number(node.start_position().row),
+        end_line: line_number(node.end_position().row),
+        token_estimate: 0,
+    })
+}
+
+fn python_is_module_statement(node: Node<'_>) -> bool {
+    let Some(parent) = node.parent() else {
+        return false;
+    };
+    parent.kind() == "module"
+        || (parent.kind() == "expression_statement"
+            && parent
+                .parent()
+                .is_some_and(|grandparent| grandparent.kind() == "module"))
+}
+
+fn is_python_constant_name(name: &str) -> bool {
+    name.as_bytes().first().is_some_and(u8::is_ascii_uppercase)
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+fn python_imports(node: Node<'_>, source: &str) -> Vec<ImportRecord> {
+    let mut imports = Vec::new();
+    let mut cursor = node.walk();
+    for imported in node.children_by_field_name("name", &mut cursor) {
+        let name = if imported.kind() == "aliased_import" {
+            imported.child_by_field_name("name")
+        } else {
+            Some(imported)
+        };
+        if let Some(raw) = name.and_then(|name| node_text(name, source)) {
+            imports.push(unresolved_import(raw.to_owned(), ImportKind::Import));
+        }
+    }
+    imports
+}
+
+fn python_from_imports(node: Node<'_>, source: &str) -> Vec<ImportRecord> {
+    let Some(module) = node
+        .child_by_field_name("module_name")
+        .and_then(|module| node_text(module, source))
+    else {
+        return Vec::new();
+    };
+    let mut imports = Vec::new();
+    let mut cursor = node.walk();
+    for imported in node.children_by_field_name("name", &mut cursor) {
+        let name = if imported.kind() == "aliased_import" {
+            imported.child_by_field_name("name")
+        } else {
+            Some(imported)
+        };
+        let Some(name) = name.and_then(|name| node_text(name, source)) else {
+            continue;
+        };
+        let raw = if module.ends_with('.') {
+            format!("{module}{name}")
+        } else {
+            format!("{module}.{name}")
+        };
+        imports.push(unresolved_import(raw, ImportKind::FromImport));
+    }
+    imports
+}
+
+fn unresolved_import(raw: String, kind: ImportKind) -> ImportRecord {
+    ImportRecord {
+        raw,
+        kind,
+        resolved_path: None,
+        resolution: ImportResolution::Unresolved(NOT_INDEXED.to_owned()),
     }
 }
 
