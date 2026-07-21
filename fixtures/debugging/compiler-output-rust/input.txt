@@ -1,0 +1,194 @@
+error[E0308]: mismatched types
+  --> src/session.rs:74:31
+   |
+74 |     let timeout: Duration = config.timeout_ms;
+   |                  --------   ^^^^^^^^^^^^^^^^^ expected `Duration`, found `u64`
+   |                  |
+   |                  expected due to this
+   |
+help: try wrapping the expression in `Duration::from_millis`
+   |
+74 |     let timeout: Duration = Duration::from_millis(config.timeout_ms);
+   |                             +++++++++++++++++++++                 +
+
+warning: unused variable: `temporary_1`
+  --> src/generated/worker_1.rs:18:9
+   |
+18 |     let temporary_1 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_1`
+
+warning: unused variable: `temporary_2`
+  --> src/generated/worker_2.rs:18:9
+   |
+18 |     let temporary_2 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_2`
+
+warning: unused variable: `temporary_3`
+  --> src/generated/worker_3.rs:18:9
+   |
+18 |     let temporary_3 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_3`
+
+warning: unused variable: `temporary_4`
+  --> src/generated/worker_4.rs:18:9
+   |
+18 |     let temporary_4 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_4`
+
+warning: unused variable: `temporary_5`
+  --> src/generated/worker_5.rs:18:9
+   |
+18 |     let temporary_5 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_5`
+
+warning: unused variable: `temporary_6`
+  --> src/generated/worker_6.rs:18:9
+   |
+18 |     let temporary_6 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_6`
+
+warning: unused variable: `temporary_7`
+  --> src/generated/worker_7.rs:18:9
+   |
+18 |     let temporary_7 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_7`
+
+warning: unused variable: `temporary_8`
+  --> src/generated/worker_8.rs:18:9
+   |
+18 |     let temporary_8 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_8`
+
+warning: unused variable: `temporary_9`
+  --> src/generated/worker_9.rs:18:9
+   |
+18 |     let temporary_9 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_9`
+
+warning: unused variable: `temporary_10`
+  --> src/generated/worker_10.rs:18:9
+   |
+18 |     let temporary_10 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_10`
+
+warning: unused variable: `temporary_11`
+  --> src/generated/worker_11.rs:18:9
+   |
+18 |     let temporary_11 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_11`
+
+warning: unused variable: `temporary_12`
+  --> src/generated/worker_12.rs:18:9
+   |
+18 |     let temporary_12 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_12`
+
+warning: unused variable: `temporary_13`
+  --> src/generated/worker_13.rs:18:9
+   |
+18 |     let temporary_13 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_13`
+
+warning: unused variable: `temporary_14`
+  --> src/generated/worker_14.rs:18:9
+   |
+18 |     let temporary_14 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_14`
+
+warning: unused variable: `temporary_15`
+  --> src/generated/worker_15.rs:18:9
+   |
+18 |     let temporary_15 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_15`
+
+warning: unused variable: `temporary_16`
+  --> src/generated/worker_16.rs:18:9
+   |
+18 |     let temporary_16 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_16`
+
+warning: unused variable: `temporary_17`
+  --> src/generated/worker_17.rs:18:9
+   |
+18 |     let temporary_17 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_17`
+
+warning: unused variable: `temporary_18`
+  --> src/generated/worker_18.rs:18:9
+   |
+18 |     let temporary_18 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_18`
+
+warning: unused variable: `temporary_19`
+  --> src/generated/worker_19.rs:18:9
+   |
+18 |     let temporary_19 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_19`
+
+warning: unused variable: `temporary_20`
+  --> src/generated/worker_20.rs:18:9
+   |
+18 |     let temporary_20 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_20`
+
+warning: unused variable: `temporary_21`
+  --> src/generated/worker_21.rs:18:9
+   |
+18 |     let temporary_21 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_21`
+
+warning: unused variable: `temporary_22`
+  --> src/generated/worker_22.rs:18:9
+   |
+18 |     let temporary_22 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_22`
+
+warning: unused variable: `temporary_23`
+  --> src/generated/worker_23.rs:18:9
+   |
+18 |     let temporary_23 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_23`
+
+warning: unused variable: `temporary_24`
+  --> src/generated/worker_24.rs:18:9
+   |
+18 |     let temporary_24 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_24`
+
+warning: unused variable: `temporary_25`
+  --> src/generated/worker_25.rs:18:9
+   |
+18 |     let temporary_25 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_25`
+
+warning: unused variable: `temporary_26`
+  --> src/generated/worker_26.rs:18:9
+   |
+18 |     let temporary_26 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_26`
+
+warning: unused variable: `temporary_27`
+  --> src/generated/worker_27.rs:18:9
+   |
+18 |     let temporary_27 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_27`
+
+warning: unused variable: `temporary_28`
+  --> src/generated/worker_28.rs:18:9
+   |
+18 |     let temporary_28 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_28`
+
+warning: unused variable: `temporary_29`
+  --> src/generated/worker_29.rs:18:9
+   |
+18 |     let temporary_29 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_29`
+
+warning: unused variable: `temporary_30`
+  --> src/generated/worker_30.rs:18:9
+   |
+18 |     let temporary_30 = queue.peek();
+   |         ^^^^^^^^^^^^^ help: prefix it with an underscore: `_temporary_30`
+
+error: aborting due to 1 previous error; 30 warnings emitted

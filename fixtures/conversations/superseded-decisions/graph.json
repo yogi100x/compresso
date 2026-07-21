@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "asst-before",
+      "kind": "assistant_response",
+      "content": "I will compare three storage layouts before recording the final decision.",
+      "source": {
+        "type": "synthetic"
+      },
+      "token_count": 0,
+      "priority": 0.4,
+      "protected": false,
+      "recency": 1784628000
+    },
+    {
+      "id": "decision-1",
+      "kind": "decision",
+      "content": "Draft decision: store indexes as one JSON file per repository.",
+      "source": {
+        "type": "synthetic"
+      },
+      "token_count": 0,
+      "priority": 0.2,
+      "protected": false,
+      "recency": 1784628060
+    },
+    {
+      "id": "decision-2",
+      "kind": "decision",
+      "content": "Draft decision: use an embedded key-value store with one global writer.",
+      "source": {
+        "type": "synthetic"
+      },
+      "token_count": 0,
+      "priority": 0.3,
+      "protected": false,
+      "recency": 1784628120
+    },
+    {
+      "id": "decision-3",
+      "kind": "decision",
+      "content": "Draft decision: use SQLite but rebuild every index on startup.",
+      "source": {
+        "type": "synthetic"
+      },
+      "token_count": 0,
+      "priority": 0.4,
+      "protected": false,
+      "recency": 1784628180
+    },
+    {
+      "id": "decision-final",
+      "kind": "decision",
+      "content": "Final decision: use SQLite in WAL mode with versioned migrations and per-file index updates.",
+      "source": {
+        "type": "synthetic"
+      },
+      "token_count": 0,
+      "priority": 0.9,
+      "protected": false,
+      "recency": 1784628240
+    },
+    {
+      "id": "asst-after",
+      "kind": "assistant_response",
+      "content": "The final SQLite WAL decision is now authoritative for implementation.",
+      "source": {
+        "type": "synthetic"
+      },
+      "token_count": 0,
+      "priority": 0.8,
+      "protected": false,
+      "recency": 1784628300
+    }
+  ],
+  "edges": [
+    {
+      "from": "decision-final",
+      "to": "decision-1",
+      "kind": "supersedes",
+      "weight": 1
+    },
+    {
+      "from": "decision-final",
+      "to": "decision-2",
+      "kind": "supersedes",
+      "weight": 1
+    },
+    {
+      "from": "decision-final",
+      "to": "decision-3",
+      "kind": "supersedes",
+      "weight": 1
+    },
+    {
+      "from": "asst-after",
+      "to": "decision-final",
+      "kind": "references",
+      "weight": 0.8
+    }
+  ]
+}

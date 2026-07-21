@@ -1,0 +1,31 @@
+name = "cargo-build-noise"
+category = "logs"
+description = "Twelve repetitive Cargo rebuilds followed by one actionable E0599 compiler error."
+eligible = true
+mode = "safe"
+
+[budget]
+max_tokens = 1800
+max_latency_ms = 200
+
+[[input.files]]
+path = "build.log"
+kind = "compiler_output"
+node_id = "cargo-build"
+protected = false
+priority = 0.6
+source_tool = "shell"
+
+[expectations]
+min_reduction_pct = 40.0
+expect_fallback = false
+must_preserve = [
+  "error[E0599]: no method named `compress` found for struct `Engine` in the current scope",
+  "42 |     let result = engine.compress(graph, budget);",
+  "error: could not compile `compresso-cli` (bin \"compresso\") due to 1 previous error",
+]
+
+[[recall_probes]]
+question = "Which method was missing?"
+answer_substring = "no method named `compress`"
+protected = true

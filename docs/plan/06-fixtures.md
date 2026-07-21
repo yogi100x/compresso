@@ -191,7 +191,29 @@ CLI: `compresso eval run [--fixtures <dir>] [--json]`, `compresso eval gates [--
 | 14 | `provider-payloads/anthropic-counts` | provider-payloads | false | — | Calibration data for the Anthropic factor (full content in §7.6); not an engine run |
 | 15 | `provider-payloads/openai-unknown-fields` | provider-payloads | false | passthrough | Chat Completions payload with unknown fields passes through byte-identical |
 
-Six fixtures are written out in full in §7 and are ready to commit as files. The remaining nine are specified in §8 and authored the same way during Phase 2.
+All fifteen fixtures are committed and pinned by `fixtures/corpus.toml`. Six are
+reproduced in full in §7 for review; the other nine retain their concise content
+contracts in §8. The lock file, rather than the illustrative inline copies, is
+the machine-readable authority for canonical paths and bytes.
+
+### 6.1 Canonical corpus lock
+
+`fixtures/corpus.toml` contains exactly fifteen `[[quality]]` entries and two
+`[[benchmark]]` entries in lexicographic path order. Each quality entry pins its
+directory path, eligibility, regular-file count, aggregate byte size, and a
+SHA-256 tree hash. The tree hash is computed over every regular file below the
+fixture directory, sorted by forward-slash relative path. For each file, the
+hashed byte sequence is `path`, NUL, decimal byte size, NUL, raw file bytes,
+NUL. Renaming, deleting, adding, or changing any file therefore changes the
+pin. Symlinks and other non-regular assets are invalid.
+`fixtures/.gitattributes` fixes text assets to LF so hashes and exact byte sizes
+remain identical on every CI platform.
+
+Each benchmark entry pins the exact file path, byte size, exact `openai_o200k`
+token count, generator command, and SHA-256 file hash. Corpus integrity tests
+require the complete path sets, so an absent member cannot be silently skipped.
+The loader recognizes only the exact top-level `benchmarks/` directory as
+non-quality data; every other unknown category remains an error.
 
 ## 7. Inline fixture contents
 
@@ -1098,7 +1120,7 @@ Calibration procedure (offline, run by a maintainer with an Anthropic API key; n
 4. Every count produced with the factor is tagged `token_provider = "anthropic_calibrated"` — it is an estimate and must never feed `provider_observed_cost` (02-schemas §3).
 5. Recalibrate whenever samples are added, the tokenizer crate is upgraded, or Anthropic announces tokenizer changes; the diff to `calibration_factor` must be called out in the PR.
 
-## 8. Remaining corpus fixtures (specified, authored during Phase 2)
+## 8. Canonical corpus fixtures specified in brief
 
 - **`logs/cargo-build-noise`** (eligible): ~200 lines of `cargo build` output — repeated `Compiling <crate> v<version>` lines and one 5-line `warning: unused variable` block repeated 12 times across rebuilds — ending in a single `error[E0599]` block. Expect ≥40% reduction; `must_preserve` the full error block.
 - **`conversations/superseded-decisions`** (eligible): `graph.json` with four `decision` nodes where three are connected to the fourth by `supersedes` edges, plus surrounding assistant turns. Expect ≥30% reduction; `must_preserve` the final decision text; the superseded drafts are removable.
@@ -1114,7 +1136,11 @@ Gate arithmetic check: the eligible population is fixtures 1–6 and 8–10 from
 
 ## 9. Corpus ownership and scale fixtures
 
-E7-07 authors and commits all fifteen named fixtures before E7-02 or E7-03 can pass. E1-05 seed names are aliases only and must be replaced by the canonical paths in §§7–8. CI rejects a manifest whose declared corpus member is absent.
+The canonical lock contains all fifteen named fixtures before E7-02 or E7-03
+can pass. E1-05 seeds at `logs/repeated-npm-install` and
+`code/mini-monorepo` retain those canonical identities; the other seed content
+is pinned at its final path in §§7–8. CI rejects a missing, renamed, added, or
+byte-drifted corpus member.
 
 Add three blocking scale fixtures:
 
@@ -1133,4 +1159,18 @@ Primary endpoint: paired success-rate difference with a two-sided 95% confidence
 
 ## 11. Benchmark-only assets
 
-E7-07 authors `fixtures/benchmarks/json-2000-elements/input.json` and `fixtures/benchmarks/source-200kb/input.ts`; E2-11 consumes them. They are excluded from the fifteen-fixture quality median and pin size, token count, generator, and hash.
+E2-11 consumes exactly these two E7-07 assets:
+
+- `fixtures/benchmarks/json-2000-elements/input.json`: an array of exactly
+  2,000 deterministic objects.
+- `fixtures/benchmarks/source-200kb/input.ts`: deterministic TypeScript source
+  of exactly 204,800 bytes.
+
+Run `node fixtures/benchmarks/generate.mjs` from the repository root to recreate
+both byte-for-byte. Their size, `openai_o200k` token count, generator command,
+and SHA-256 hashes are pinned in `fixtures/corpus.toml`.
+
+`FixtureSet::load(fixtures/)` explicitly excludes the `benchmarks/` directory
+and returns exactly the fifteen quality fixtures. Consequently benchmark
+payloads never enter the eligible-fixture population or its quality median;
+the separate corpus-integrity lint still validates them on every Rust test run.

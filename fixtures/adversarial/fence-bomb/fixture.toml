@@ -1,0 +1,22 @@
+name = "fence-bomb"
+category = "adversarial"
+description = "An assistant response with five opening Markdown fences and only three closers."
+eligible = false
+mode = "safe"
+
+[budget]
+max_tokens = 500
+max_latency_ms = 200
+
+[[input.files]]
+path = "input.txt"
+kind = "assistant_response"
+node_id = "fence-bomb"
+protected = false
+priority = 0.5
+source_tool = "fixture"
+
+[expectations]
+min_reduction_pct = 0.0
+expect_fallback = true
+must_preserve = ["third closer leaves two fences open."]
