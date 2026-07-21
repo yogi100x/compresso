@@ -1,0 +1,25 @@
+.github/workflows/ci.yml
+  s_87261b37472da1::t_6f31786a33aefe 25-26,120-200
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_f724e6e3e3f870 73
+scripts/package-tarball.sh
+  s_87261b37472da1::t_fdc34bb58bd1b9 88-89,147-148,185-186
+  s_87261b37472da1::t_6f31786a33aefe 1-20,22-38,40-76,78-79,81-87,90-137,139-146,149-156,158-184,187-251
+  s_87261b37472da1::t_fc30d5e12b0943 21,39,77,80,138,157
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "3783b93ac4af12fa02d6d303b71492a51c6ae948",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
