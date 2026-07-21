@@ -1,0 +1,83 @@
+docs/adr/0001-rust-modular-local-runtime.md
+  s_c8ed7df616d5d9::t_4b53e8d23dce79 1-20
+docs/adr/0002-typescript-modular-cloud-monolith.md
+  s_c8ed7df616d5d9::t_42438b36c729bd 1-20
+docs/adr/0003-local-first-cloud-optional.md
+  s_c8ed7df616d5d9::t_6f625ad50a4045 1-20
+docs/adr/0004-sqlite-local-storage.md
+  s_c8ed7df616d5d9::t_7864e4296e0881 1-20
+docs/adr/0005-postgresql-cloud-storage.md
+  s_c8ed7df616d5d9::t_99683183903ee2 1-20
+docs/adr/0006-deterministic-compression-first.md
+  s_c8ed7df616d5d9::t_ed52056db430e3 1-20
+docs/adr/0007-mcp-primary-integration-rmcp.md
+  s_c8ed7df616d5d9::t_83a188ec56a849 1-20
+docs/adr/0008-fail-open-passthrough.md
+  s_c8ed7df616d5d9::t_1c8d4449cd0da2 1-20
+docs/adr/0009-tree-sitter-symbol-extraction.md
+  s_c8ed7df616d5d9::t_8b71e2032a5d7a 1-20
+docs/adr/0010-tauri-desktop-application.md
+  s_113efb253e9989::t_b1f25d29c839bb 1-20
+docs/adr/0011-no-account-for-local-features.md
+  s_113efb253e9989::t_f8b1fd8975643d 1-20
+docs/adr/0012-no-remote-telemetry-in-slice.md
+  s_113efb253e9989::t_fac8b606c741da 1-20
+docs/adr/0013-signed-releases-and-rollback.md
+  s_113efb253e9989::t_502e13736527f7 1-20
+docs/adr/0014-localhost-only-proxy.md
+  s_113efb253e9989::t_411105e2867887 1-20
+docs/adr/0015-cached-entitlements-offline-grace.md
+  s_113efb253e9989::t_c8674966e47999 1-20
+docs/adr/0016-xdg-style-config-paths.md
+  s_113efb253e9989::t_810093e3b60866 1-20
+docs/adr/0017-token-counting-o200k-anthropic-calibration.md
+  s_113efb253e9989::t_1cf613564a38de 1-20
+docs/adr/0018-no-claude-desktop-integration.md
+  s_113efb253e9989::t_ae99d3bbf0166d 1-20
+docs/plan/04-mcp-and-integrations.md
+  s_9048926425143b::t_3191f819dd21db 1-574
+docs/plan/05-tickets.md
+  s_4557b768bd8a78::t_d7061ee9e51135 1-932
+docs/plan/06-fixtures.md
+  s_c8ed7df616d5d9::t_c51334d85f5bc8 1-1106
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "fdb33c1d234086b550b3c50adee3453229a22a15",
+  "prompts": {},
+  "sessions": {
+    "s_113efb253e9989": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "131b5d4d-b8c8-4f56-ae95-f52b77b5f684",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_4557b768bd8a78": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a55ec74d35b161953",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_9048926425143b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-aec5d8f414da0e42a",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_c8ed7df616d5d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a5dcf82462d2ed6bd",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
