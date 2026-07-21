@@ -166,6 +166,7 @@ pub struct SymbolRecord { pub name: String, pub qualified_name: String, pub kind
 pub enum EdgeKind { Imports, References, Tests }
 pub enum EdgeResolution { Resolved, Ambiguous(Vec<String>), Unresolved(String) }
 pub struct EdgeRecord { pub to_path: String, pub kind: EdgeKind, pub resolution: EdgeResolution }
+pub struct ResolvedEdgeRecord { pub from_path: String, pub to_path: String, pub kind: EdgeKind }
 pub struct SymbolHit { pub file: FileRecord, pub symbol: SymbolRecord, pub rank: f64 }
 // D59: selector ownership stays in Store to avoid a Store -> Atlas dependency. Lookup returns all candidates.
 pub struct SymbolSelector { pub path: String, pub qualified_name: String, pub kind: Option<SymbolKind>, pub signature_hash: Option<String>, pub start_line_hint: Option<u32> }
@@ -185,10 +186,13 @@ impl Store {
     pub fn upsert_file(&self, repo: RepoId, rec: &FileRecord) -> Result<FileId>;
     pub fn replace_indexed_file(&self, repo: RepoId, rec: &FileRecord, symbols: &[SymbolRecord], edges: &[EdgeRecord]) -> Result<FileId>; // one per-file transaction
     pub fn file_hashes(&self, repo: RepoId) -> Result<HashMap<String, String>>;  // path -> blake3
+    pub fn indexed_files(&self, repo: RepoId) -> Result<Vec<FileRecord>>; // deterministic path order
+    pub fn indexed_file(&self, repo: RepoId, path: &str) -> Result<Option<FileRecord>>;
     pub fn replace_symbols(&self, file: FileId, symbols: &[SymbolRecord], edges: &[EdgeRecord]) -> Result<()>; // single transaction
     pub fn delete_files(&self, repo: RepoId, paths: &[String]) -> Result<()>;
     pub fn search_symbols(&self, repo: RepoId, query: &str, limit: usize) -> Result<Vec<SymbolHit>>; // FTS5, bm25-ranked
     pub fn symbols_in_file(&self, repo: RepoId, path: &str) -> Result<Vec<SymbolRecord>>;
+    pub fn resolved_edges(&self, repo: RepoId) -> Result<Vec<ResolvedEdgeRecord>>; // deterministic, resolved rows only
     pub fn symbols_by_identity(&self, repo: RepoId, selector: &SymbolSelector) -> Result<Vec<(FileRecord, SymbolRecord)>>; // never arbitrary first
     pub fn latest_index_version(&self, repo: RepoId) -> Result<Option<IndexVersionRecord>>;
     pub fn stamp_index_version(&self, repo: RepoId, parser_version: &str, schema_version: u32) -> Result<()>;
@@ -199,6 +203,7 @@ impl Store {
     // receipts
     pub fn save_receipt(&self, r: &ReceiptRecord) -> Result<()>;
     pub fn receipts(&self, client: Option<&str>) -> Result<Vec<ReceiptRecord>>;
+    pub fn total_changes(&self) -> Result<u64>; // connection-local read-only acceptance proof
 }
 ```
 
@@ -238,6 +243,8 @@ pub enum IndexProgress { Parsing { path: PathBuf }, Removed { path: String } }
 pub struct IndexReport { pub files_indexed: usize, pub files_removed: usize, pub files_skipped: usize, pub symbols: usize, pub imports_resolved: usize, pub imports_unresolved: usize, pub duration_ms: u64, pub stale: bool }
 
 // queries.rs — all read-only, all bounded by token budget
+pub struct RepoMap { pub rendered: String, pub files_total: usize, pub files_shown: usize, pub truncated: bool, pub tokens_used: usize, pub token_provider: TokenProvider }
+pub struct Outline { pub path: String, pub language: Option<FileLanguage>, pub symbols: Vec<SymbolRecord> }
 pub fn repo_map(store: &Store, repo: RepoId, budget_tokens: usize) -> Result<RepoMap>;      // dir tree + top symbols per file, PageRank-ish by edge in-degree
 pub fn outline(store: &Store, repo: RepoId, path: &str) -> Result<Outline>;                  // symbol skeleton with line ranges + token estimates
 pub fn unfold(store: &Store, repo: RepoId, selector: &SymbolSelector) -> Result<UnfoldResult>; // multiple matches return typed Ambiguous candidates

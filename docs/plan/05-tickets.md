@@ -409,7 +409,7 @@ Test cases:
 - test_parser_version_bump_flags_stale: stamp index_versions with "0.0.1", run indexer built as "0.0.2" → `stale == true` and all files reparsed.
 - test_per_file_transaction_isolation: inject failure while indexing the 3rd of 5 changed files → first two updated, last three untouched, no partial symbol sets.
 
-### [ ] E3-10: Queries — repo_map and outline
+### [x] E3-10: Queries — repo_map and outline
 Owner: R2 · Estimate: 2d · Depends: E3-09
 Files: rust/compresso-atlas/src/queries.rs, tests in rust/compresso-atlas/tests/queries_map_outline.rs
 Description: Implement `repo_map(store, repo, budget_tokens)` (directory tree + top symbols per file, ranked PageRank-ish by edge in-degree, truncated to the token budget using the core counter) and `outline(store, repo, path)` (full symbol skeleton with line ranges and token estimates) per `03-interfaces.md` §4.

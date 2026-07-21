@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use rusqlite::{Row, params};
+use rusqlite::{OptionalExtension, Row, params};
 
 use crate::repos::ensure_repo_exists;
 use crate::{FileId, RepoId, Store, StoreError};
@@ -115,6 +115,34 @@ impl Store {
         let rows = statement.query_map([repo], |row| Ok((row.get(0)?, row.get(1)?)))?;
         rows.collect::<Result<HashMap<_, _>, _>>()
             .map_err(StoreError::from)
+    }
+
+    /// Lists all indexed files in deterministic repository-relative path order.
+    pub fn indexed_files(&self, repo: RepoId) -> Result<Vec<FileRecord>, StoreError> {
+        let connection = self.connection()?;
+        ensure_repo_exists(&connection, repo)?;
+        let mut statement = connection.prepare(
+            "SELECT path, hash, language, size_bytes, token_estimate, indexed_at FROM files WHERE repo_id = ?1 ORDER BY path ASC, id ASC",
+        )?;
+        let raw = statement
+            .query_map([repo], |row| raw_file_from_row(row, 0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        raw.into_iter().map(decode_file_record).collect()
+    }
+
+    /// Loads one indexed file by its validated repository-relative path.
+    pub fn indexed_file(&self, repo: RepoId, path: &str) -> Result<Option<FileRecord>, StoreError> {
+        validate_relative_path(path)?;
+        let connection = self.connection()?;
+        ensure_repo_exists(&connection, repo)?;
+        let raw = connection
+            .query_row(
+                "SELECT path, hash, language, size_bytes, token_estimate, indexed_at FROM files WHERE repo_id = ?1 AND path = ?2",
+                params![repo, path],
+                |row| raw_file_from_row(row, 0),
+            )
+            .optional()?;
+        raw.map(decode_file_record).transpose()
     }
 
     /// Deletes repository files, cascading owned rows and downgrading incoming resolved edges.

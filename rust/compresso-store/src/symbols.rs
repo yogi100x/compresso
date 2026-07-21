@@ -55,6 +55,14 @@ pub struct EdgeRecord {
     pub resolution: EdgeResolution,
 }
 
+/// One fully resolved stored dependency edge, named by repository-relative paths.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedEdgeRecord {
+    pub from_path: String,
+    pub to_path: String,
+    pub kind: EdgeKind,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SymbolHit {
     pub file: FileRecord,
@@ -113,6 +121,18 @@ impl EdgeKind {
             Self::Imports => "imports",
             Self::References => "references",
             Self::Tests => "tests",
+        }
+    }
+
+    fn from_db(value: &str) -> Result<Self, StoreError> {
+        match value {
+            "imports" => Ok(Self::Imports),
+            "references" => Ok(Self::References),
+            "tests" => Ok(Self::Tests),
+            _ => Err(StoreError::InvalidStoredValue {
+                field: "edges.kind",
+                value: value.to_owned(),
+            }),
         }
     }
 }
@@ -249,6 +269,33 @@ impl Store {
             .collect::<Result<Vec<_>, _>>()?;
         raw.into_iter()
             .map(|symbol| decode_symbol_record(symbol).map(|(_, symbol)| symbol))
+            .collect()
+    }
+
+    /// Lists fully resolved edges in deterministic path and kind order.
+    pub fn resolved_edges(&self, repo: RepoId) -> Result<Vec<ResolvedEdgeRecord>, StoreError> {
+        let connection = self.connection()?;
+        ensure_repo_exists(&connection, repo)?;
+        let mut statement = connection.prepare(
+            "SELECT source.path, target.path, e.kind FROM edges AS e JOIN files AS source ON source.id = e.from_file_id JOIN files AS target ON target.id = e.to_file_id WHERE e.repo_id = ?1 AND e.resolution_status = 'resolved' ORDER BY source.path ASC, target.path ASC, e.kind ASC, e.id ASC",
+        )?;
+        let raw = statement
+            .query_map([repo], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        raw.into_iter()
+            .map(|(from_path, to_path, kind)| {
+                Ok(ResolvedEdgeRecord {
+                    from_path,
+                    to_path,
+                    kind: EdgeKind::from_db(&kind)?,
+                })
+            })
             .collect()
     }
 
@@ -851,6 +898,69 @@ mod tests {
                 "unresolved".to_owned(),
                 Some("not found".to_owned())
             )
+        );
+    }
+
+    #[test]
+    fn test_resolved_edges_are_typed_ordered_and_exclude_unresolved_rows() {
+        let (_directory, store, repo) = setup();
+        let first = store
+            .upsert_file(repo, &file("src/a.rs"))
+            .expect("first source should insert");
+        let second = store
+            .upsert_file(repo, &file("src/b.rs"))
+            .expect("second source should insert");
+        store
+            .upsert_file(repo, &file("src/core.rs"))
+            .expect("target should insert");
+        store
+            .replace_symbols(
+                second,
+                &[],
+                &[
+                    EdgeRecord {
+                        to_path: "src/core.rs".to_owned(),
+                        kind: EdgeKind::References,
+                        resolution: EdgeResolution::Resolved,
+                    },
+                    EdgeRecord {
+                        to_path: "missing".to_owned(),
+                        kind: EdgeKind::Imports,
+                        resolution: EdgeResolution::Unresolved("not indexed".to_owned()),
+                    },
+                ],
+            )
+            .expect("second edges should insert");
+        store
+            .replace_symbols(
+                first,
+                &[],
+                &[EdgeRecord {
+                    to_path: "src/core.rs".to_owned(),
+                    kind: EdgeKind::Imports,
+                    resolution: EdgeResolution::Resolved,
+                }],
+            )
+            .expect("first edge should insert");
+
+        let edges = store
+            .resolved_edges(repo)
+            .expect("resolved edges should load");
+
+        assert_eq!(
+            edges,
+            [
+                super::ResolvedEdgeRecord {
+                    from_path: "src/a.rs".to_owned(),
+                    to_path: "src/core.rs".to_owned(),
+                    kind: EdgeKind::Imports,
+                },
+                super::ResolvedEdgeRecord {
+                    from_path: "src/b.rs".to_owned(),
+                    to_path: "src/core.rs".to_owned(),
+                    kind: EdgeKind::References,
+                },
+            ]
         );
     }
 
