@@ -19,7 +19,8 @@ pub use ops::{ModeledCostSaved, OperationId, OperationRecord, SessionId, StatsSu
 pub use receipts::{ReceiptId, ReceiptRecord};
 pub use repos::{FileId, IndexVersionRecord, RepoId, RepoRecord};
 pub use symbols::{
-    EdgeKind, EdgeRecord, EdgeResolution, SymbolHit, SymbolKind, SymbolRecord, SymbolSelector,
+    EdgeKind, EdgeRecord, EdgeResolution, ResolvedEdgeRecord, SymbolHit, SymbolKind, SymbolRecord,
+    SymbolSelector,
 };
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -216,6 +217,13 @@ impl Store {
     /// Opens a database with an explicit operation-retention policy.
     pub fn open_with_options(path: &Path, options: StoreOptions) -> Result<Self, StoreError> {
         Self::open_with_migrations(path, options, MIGRATIONS)
+    }
+
+    /// Returns SQLite's connection-local cumulative write count.
+    ///
+    /// Query acceptance tests use this value before and after read-only operations.
+    pub fn total_changes(&self) -> Result<u64, StoreError> {
+        Ok(self.connection()?.total_changes())
     }
 
     fn open_with_migrations(

@@ -57,6 +57,8 @@ pub enum AtlasError {
     Scan(#[from] ScanError),
     #[error(transparent)]
     Index(#[from] crate::indexer::IndexError),
+    #[error("file {path:?} is not indexed in repository {repo}")]
+    FileNotIndexed { repo: RepoId, path: String },
     #[error("path {path:?} resolves outside approved repository root {root:?}")]
     OutsideRoot { path: PathBuf, root: PathBuf },
 }
