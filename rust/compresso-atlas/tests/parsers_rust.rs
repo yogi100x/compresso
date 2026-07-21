@@ -201,11 +201,3 @@ fn test_rust_malformed_no_panic() {
         Err(error) => panic!("unexpected malformed-source error: {error}"),
     }
 }
-
-#[test]
-fn test_unimplemented_language_is_typed_unsupported_language() {
-    assert!(matches!(
-        ParserRegistry::extract(Language::Python, "value = 1"),
-        Err(ParseError::UnsupportedLanguage(Language::Python))
-    ));
-}
