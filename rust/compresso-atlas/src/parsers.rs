@@ -5,6 +5,7 @@ use compresso_store::{SymbolKind, SymbolRecord};
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
 
 const RUST_QUERY: &str = include_str!("../queries/rust.scm");
+const JAVASCRIPT_QUERY: &str = include_str!("../queries/javascript.scm");
 const TYPESCRIPT_QUERY: &str = include_str!("../queries/typescript.scm");
 const TSX_QUERY: &str = include_str!("../queries/tsx.scm");
 const NOT_INDEXED: &str = "not_indexed";
@@ -79,7 +80,8 @@ impl ParserRegistry {
             Language::Rust => extract_rust(source),
             Language::TypeScript => extract_typescript(Language::TypeScript, source),
             Language::Tsx => extract_typescript(Language::Tsx, source),
-            Language::JavaScript | Language::Python => Err(ParseError::UnsupportedLanguage(lang)),
+            Language::JavaScript => extract_javascript(source),
+            Language::Python => Err(ParseError::UnsupportedLanguage(lang)),
         }
     }
 }
@@ -88,6 +90,7 @@ impl ParserRegistry {
 enum CaptureKind {
     Symbol(SymbolKind),
     Variable,
+    ModuleExport,
     Import(ImportKind),
     Use,
 }
@@ -128,6 +131,16 @@ fn extract_typescript(lang: Language, source: &str) -> Result<Extraction, ParseE
         query,
         source,
         process_typescript_candidate,
+    )
+}
+
+fn extract_javascript(source: &str) -> Result<Extraction, ParseError> {
+    extract_with_query(
+        tree_sitter_javascript::LANGUAGE.into(),
+        "JavaScript",
+        JAVASCRIPT_QUERY,
+        source,
+        process_javascript_candidate,
     )
 }
 
@@ -203,8 +216,10 @@ fn capture_kind(name: &str) -> Option<CaptureKind> {
         "definition.type" => Some(CaptureKind::Symbol(SymbolKind::Type)),
         "definition.module" => Some(CaptureKind::Symbol(SymbolKind::Module)),
         "definition.variable" => Some(CaptureKind::Variable),
+        "definition.module_export" => Some(CaptureKind::ModuleExport),
         "import.import" => Some(CaptureKind::Import(ImportKind::Import)),
         "import.export_from" => Some(CaptureKind::Import(ImportKind::ExportFrom)),
+        "import.require" => Some(CaptureKind::Import(ImportKind::Require)),
         "import.use" => Some(CaptureKind::Use),
         _ => None,
     }
@@ -212,7 +227,7 @@ fn capture_kind(name: &str) -> Option<CaptureKind> {
 
 const fn capture_priority(kind: CaptureKind) -> u8 {
     match kind {
-        CaptureKind::Symbol(_) | CaptureKind::Variable => 0,
+        CaptureKind::Symbol(_) | CaptureKind::Variable | CaptureKind::ModuleExport => 0,
         CaptureKind::Import(_) | CaptureKind::Use => 1,
     }
 }
@@ -225,14 +240,14 @@ fn process_rust_candidate(candidate: Candidate<'_>, source: &str, output: &mut E
             }
         }
         CaptureKind::Use => output.imports.extend(rust_imports(candidate.node, source)),
-        CaptureKind::Variable | CaptureKind::Import(_) => {}
+        CaptureKind::Variable | CaptureKind::ModuleExport | CaptureKind::Import(_) => {}
     }
 }
 
 fn process_typescript_candidate(candidate: Candidate<'_>, source: &str, output: &mut Extraction) {
     match candidate.kind {
         CaptureKind::Symbol(kind) => {
-            if let Some(symbol) = typescript_symbol(candidate.node, kind, source) {
+            if let Some(symbol) = script_symbol(candidate.node, kind, source) {
                 output.symbols.push(symbol);
             }
         }
@@ -242,7 +257,38 @@ fn process_typescript_candidate(candidate: Candidate<'_>, source: &str, output: 
             }
         }
         CaptureKind::Import(kind) => {
-            if let Some(import) = typescript_import(candidate.node, kind, source) {
+            if let Some(import) = script_import(candidate.node, kind, source) {
+                output.imports.push(import);
+            }
+        }
+        CaptureKind::ModuleExport | CaptureKind::Use => {}
+    }
+}
+
+fn process_javascript_candidate(candidate: Candidate<'_>, source: &str, output: &mut Extraction) {
+    match candidate.kind {
+        CaptureKind::Symbol(kind) => {
+            if let Some(symbol) = script_symbol(candidate.node, kind, source) {
+                output.symbols.push(symbol);
+            }
+        }
+        CaptureKind::Variable => {
+            if let Some(symbol) = javascript_variable_symbol(candidate.node, source) {
+                output.symbols.push(symbol);
+            }
+        }
+        CaptureKind::ModuleExport => {
+            if let Some(symbol) = javascript_module_export(candidate.node, source) {
+                output.symbols.push(symbol);
+            }
+        }
+        CaptureKind::Import(ImportKind::Require) => {
+            if let Some(import) = javascript_require(candidate.node, source) {
+                output.imports.push(import);
+            }
+        }
+        CaptureKind::Import(kind) => {
+            if let Some(import) = script_import(candidate.node, kind, source) {
                 output.imports.push(import);
             }
         }
@@ -250,9 +296,9 @@ fn process_typescript_candidate(candidate: Candidate<'_>, source: &str, output: 
     }
 }
 
-fn typescript_symbol(node: Node<'_>, kind: SymbolKind, source: &str) -> Option<SymbolRecord> {
+fn script_symbol(node: Node<'_>, kind: SymbolKind, source: &str) -> Option<SymbolRecord> {
     let (name, qualified_name) = if kind == SymbolKind::Method {
-        let owner = typescript_class_owner(node, source)?;
+        let owner = script_class_owner(node, source)?;
         let name = node_text(node.child_by_field_name("name")?, source)?.to_owned();
         (name.clone(), format!("{owner}::{name}"))
     } else {
@@ -267,14 +313,14 @@ fn typescript_symbol(node: Node<'_>, kind: SymbolKind, source: &str) -> Option<S
         name,
         qualified_name,
         kind,
-        signature: typescript_declaration_signature(node, source),
+        signature: script_declaration_signature(node, source),
         start_line: line_number(node.start_position().row),
         end_line: line_number(node.end_position().row),
         token_estimate: 0,
     })
 }
 
-fn typescript_class_owner(method: Node<'_>, source: &str) -> Option<String> {
+fn script_class_owner(method: Node<'_>, source: &str) -> Option<String> {
     let class_body = method.parent()?;
     if class_body.kind() != "class_body" {
         return None;
@@ -321,7 +367,7 @@ fn typescript_variable_symbol(node: Node<'_>, source: &str) -> Option<SymbolReco
     })
 }
 
-fn typescript_declaration_signature(node: Node<'_>, source: &str) -> Option<String> {
+fn script_declaration_signature(node: Node<'_>, source: &str) -> Option<String> {
     let start_byte = export_wrapper(node).map_or(node.start_byte(), |export| export.start_byte());
     let end_byte = node
         .child_by_field_name("body")
@@ -345,7 +391,86 @@ fn typescript_variable_signature(
     trimmed_signature(source.get(start_byte..end_byte)?)
 }
 
-fn typescript_import(node: Node<'_>, kind: ImportKind, source: &str) -> Option<ImportRecord> {
+fn javascript_variable_symbol(node: Node<'_>, source: &str) -> Option<SymbolRecord> {
+    let declaration = node.parent()?;
+    if declaration.kind() != "lexical_declaration" || !is_module_level(declaration) {
+        return None;
+    }
+    if declaration.child_by_field_name("kind")?.kind() != "const" {
+        return None;
+    }
+    let value = node.child_by_field_name("value")?;
+    if !matches!(value.kind(), "arrow_function" | "function_expression") {
+        return None;
+    }
+    let name_node = node.child_by_field_name("name")?;
+    if name_node.kind() != "identifier" {
+        return None;
+    }
+    let name = node_text(name_node, source)?.to_owned();
+
+    Some(SymbolRecord {
+        qualified_name: name.clone(),
+        name,
+        kind: SymbolKind::Function,
+        signature: javascript_variable_signature(declaration, value, source),
+        start_line: line_number(node.start_position().row),
+        end_line: line_number(node.end_position().row),
+        token_estimate: 0,
+    })
+}
+
+fn javascript_variable_signature(
+    declaration: Node<'_>,
+    value: Node<'_>,
+    source: &str,
+) -> Option<String> {
+    let start_byte =
+        export_wrapper(declaration).map_or(declaration.start_byte(), |export| export.start_byte());
+    let end_byte = value.child_by_field_name("body")?.start_byte();
+    trimmed_signature(source.get(start_byte..end_byte)?)
+}
+
+fn javascript_module_export(node: Node<'_>, source: &str) -> Option<SymbolRecord> {
+    let statement = node.parent()?;
+    if statement.kind() != "expression_statement" || !is_module_level(statement) {
+        return None;
+    }
+    let left = node.child_by_field_name("left")?;
+    if node_text(left, source)? != "module.exports" {
+        return None;
+    }
+    let name = "module.exports".to_owned();
+    Some(SymbolRecord {
+        qualified_name: name.clone(),
+        name,
+        kind: SymbolKind::Module,
+        signature: trimmed_signature(node_text(node, source)?),
+        start_line: line_number(node.start_position().row),
+        end_line: line_number(node.end_position().row),
+        token_estimate: 0,
+    })
+}
+
+fn javascript_require(node: Node<'_>, source: &str) -> Option<ImportRecord> {
+    let callee = node.child_by_field_name("function")?;
+    if callee.kind() != "identifier" || node_text(callee, source)? != "require" {
+        return None;
+    }
+    let arguments = node.child_by_field_name("arguments")?;
+    if arguments.kind() != "arguments" {
+        return None;
+    }
+    let mut cursor = arguments.walk();
+    let mut values = arguments.named_children(&mut cursor);
+    let module = values.next()?;
+    if values.next().is_some() || module.kind() != "string" {
+        return None;
+    }
+    script_import(module, ImportKind::Require, source)
+}
+
+fn script_import(node: Node<'_>, kind: ImportKind, source: &str) -> Option<ImportRecord> {
     let quoted = node_text(node, source)?;
     let raw = unquote_module_specifier(quoted)?.to_owned();
     Some(ImportRecord {
