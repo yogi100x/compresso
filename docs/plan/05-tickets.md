@@ -353,7 +353,7 @@ Test cases:
 - test_rust_malformed_no_panic: source `"fn broken( {"` → `Ok(Extraction)` or typed `ParseError`, never a panic (wrapped in catch_unwind assertion).
 - test_for_path_extension_map: table-driven over all eight extensions plus `foo.go → None`.
 
-### [ ] E3-06: TypeScript + TSX extraction
+### [x] E3-06: TypeScript + TSX extraction
 Owner: R2 · Estimate: 1.5d · Depends: E3-05
 Files: rust/compresso-atlas/queries/typescript.scm, rust/compresso-atlas/queries/tsx.scm, tests + fixtures tests/fixtures/lang/sample.ts, sample.tsx
 Description: tree-sitter-typescript (both grammars) queries extracting functions, arrow-function consts, classes, methods, interfaces, enums, type aliases, and exported consts; imports from `import`/`export from` statements. TSX additionally covers function components.

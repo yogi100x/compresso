@@ -203,9 +203,9 @@ fn test_rust_malformed_no_panic() {
 }
 
 #[test]
-fn test_non_rust_extract_is_typed_unsupported_language() {
+fn test_unimplemented_language_is_typed_unsupported_language() {
     assert!(matches!(
-        ParserRegistry::extract(Language::TypeScript, "export const value = 1;"),
-        Err(ParseError::UnsupportedLanguage(Language::TypeScript))
+        ParserRegistry::extract(Language::JavaScript, "export const value = 1;"),
+        Err(ParseError::UnsupportedLanguage(Language::JavaScript))
     ));
 }
