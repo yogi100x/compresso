@@ -179,7 +179,7 @@ Test cases:
 - test_protected_log_untouched: same 500-line content in a node with `protected: true` → byte-identical output.
 - test_interleaved_runs: 5×"A", 1×"B", 4×"A" → output `A [×5]`, `B`, `A [×4]` (three lines; runs never merge across interruptions).
 
-### [ ] E2-06: JSON-compaction strategy
+### [x] E2-06: JSON-compaction strategy
 Owner: R1 · Estimate: 1.5d · Depends: E2-03
 Files: rust/compresso-core/src/strategies/compact_json.rs, tests in same file
 Description: Implement `compact_json` per `03-interfaces.md` §2.3. Each non-overlapping elision emits `RemovalRecord::JsonElision` with JSON Pointer, hashes, exact counts, and removed-unit count (D51).
