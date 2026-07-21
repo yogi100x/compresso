@@ -164,7 +164,7 @@ Test cases:
 - test_no_duplicates_not_supported: graph of three distinct contents → `supports() == false`; `execute` (if forced) returns the input unchanged with an explanatory note.
 - test_estimate_matches_execute: `estimate().tokens_saved` equals `before_tokens - after_tokens` measured after execute on the three-duplicate graph, within the stub-token overhead.
 
-### [ ] E2-05: Log-collapse strategy
+### [x] E2-05: Log-collapse strategy
 Owner: R1 · Estimate: 1.5d · Depends: E2-03, E1-05
 Files: rust/compresso-core/src/strategies/collapse_logs.rs, tests in same file
 Description: Implement `collapse_logs` per `03-interfaces.md` §2.3. Each non-overlapping collapsed span emits `RemovalRecord::CollapsedLines` with locator, hashes, exact counts, and removed-line count (D51).
