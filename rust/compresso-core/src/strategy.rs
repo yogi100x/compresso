@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::graph::{ContextGraph, NodeKind};
+use crate::strategies::DedupExact;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -122,7 +123,7 @@ impl StrategyRegistry {
     pub fn safe_default(mode: Mode) -> Self {
         let strategies: Vec<Box<dyn CompressionStrategy>> = match mode {
             Mode::Safe => vec![
-                Box::new(StubStrategy::new("dedup_exact")),
+                Box::new(DedupExact),
                 Box::new(StubStrategy::new("collapse_logs")),
                 Box::new(StubStrategy::new("compact_json")),
                 Box::new(StubStrategy::new("pack_budget")),
@@ -291,9 +292,9 @@ mod tests {
     }
 
     #[test]
-    fn test_stub_execute_returns_typed_not_implemented_error() {
+    fn test_remaining_stubs_return_typed_not_implemented_error() {
         let registry = StrategyRegistry::safe_default(Mode::Safe);
-        for strategy in registry.strategies() {
+        for strategy in registry.strategies().iter().skip(1) {
             assert_eq!(
                 strategy.execute(&empty_graph(), &test_budget()),
                 Err(StrategyError::NotImplemented {

@@ -150,7 +150,7 @@ Test cases:
 - test_strategy_object_safety: `fn assert_send_sync<T: Send + Sync>() {}` instantiated with `Box<dyn CompressionStrategy>`.
 - test_lossiness_none_permits_dedup_only: `permitted(Lossiness::None)` ids == `["dedup_exact"]`; `permitted(Lossiness::Structural)` ids == all four in registry order (D39).
 
-### [ ] E2-04: Exact-duplicate removal strategy
+### [x] E2-04: Exact-duplicate removal strategy
 Owner: R1 · Estimate: 1d · Depends: E2-03
 Files: rust/compresso-core/src/strategies/dedup_exact.rs, tests in same file
 Description: Implement `dedup_exact` per `03-interfaces.md` §2.3. Each replacement emits `RemovalRecord::DuplicateReference` with node/survivor locator, original/replacement hashes, and exact before/after counts; notes are explanatory only (D51).
