@@ -1,0 +1,16 @@
+name = "anthropic-counts"
+category = "provider-payloads"
+description = "Text samples with exact o200k counts and empty Anthropic count-token calibration fields."
+eligible = false
+mode = "safe"
+
+[budget]
+max_tokens = 4000
+max_latency_ms = 200
+
+[input]
+graph = "anthropic-counts.json"
+
+[expectations]
+min_reduction_pct = 0.0
+expect_fallback = false
