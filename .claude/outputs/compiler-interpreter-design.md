@@ -1,24 +1,38 @@
-# Rust parser extraction design
+# Atlas parser design through E3-06
 
-## Chosen pattern and rationale
+## Pattern and rationale
 
-Compresso uses tree-sitter-rust with a committed query for broad, error-tolerant item capture. Query captures are converted into Store-owned symbol records in source-byte order. Small Rust-specific normalization steps qualify implementation methods and expand grouped `use` declarations while preserving declaration order.
+Use one error-tolerant Tree-sitter pipeline that accepts a pinned grammar, a
+committed query asset, and a language-specific capture normalizer. Rust,
+TypeScript, and TSX share capture ordering and byte-range deduplication while
+retaining separate grammar and query inputs. TypeScript normalization filters
+definitions to module scope, qualifies class methods, skips declarations that
+have no stable name, and maps only concrete implementations rather than
+overload or interface member signatures.
 
-This keeps the parser boundary concrete and deterministic, reuses tree-sitter's incremental-capable syntax model, and allows complete items in malformed files to remain indexable. Other recognized languages return a typed unsupported-language error until their dedicated tickets land.
+TypeScript and TSX remain distinct registry dialects because JSX changes the
+grammar. Their query files are also separate live assets so future TSX-specific
+captures can evolve without conditional query construction.
 
 ## Complexity
 
-Parsing is linear in source size for ordinary inputs. Captures are sorted by byte range in `O(c log c)`, where `c` is the number of query captures, and range deduplication is `O(c)` expected time. Symbol conversion is linear in captured text. Grouped-use expansion is linear in the declaration text plus the emitted import paths.
+- Tree parsing and query execution are linear in source size for ordinary input.
+- Sorting `c` captures is `O(c log c)`; deduplication and normalization are
+  expected `O(c)`.
+- Memory is the syntax tree plus `O(c + s + i)` for captures, symbols, and
+  imports.
 
 ## Failure modes and handling
 
-- Parser or language setup failures return typed `ParseError` values.
-- Invalid extraction queries fail at the registry boundary rather than producing partial, misleading records.
-- A missing syntax tree returns `ParseError::ParseFailed`.
-- Malformed Rust is parsed error-tolerantly; complete captured items are returned and the API does not panic.
-- Unsupported languages return `ParseError::UnsupportedLanguage` without fabricating symbols.
-- Imports remain explicitly unresolved with `not_indexed` until incremental indexing resolves them.
-- Duplicate captures are removed by byte range, and all output is ordered deterministically by source position.
+- Grammar setup, incompatible query, or missing syntax tree returns a typed
+  `ParseError`; no parser path panics.
+- Malformed files retain every complete capture before or around error nodes.
+- Missing names, unexpected parents, destructuring declarations, and anonymous
+  defaults are skipped without discarding other symbols.
+- Unsupported routed languages return `UnsupportedLanguage` until their tickets
+  add a grammar and live query.
+- Imports and export-from edges are normalized without quotes but remain
+  explicitly `Unresolved("not_indexed")` until indexing resolves them.
 
 ## References
 
