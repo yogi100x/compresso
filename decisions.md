@@ -60,7 +60,22 @@ Date: 2026-07-21. Source: `compresso-build.md` + owner Q&A. Every item here is *
 | D37 | Latency gates | Per build doc §24.3/§25.6: P95 local compression < 200 ms, MCP startup < 500 ms, safe-mode median reduction > 25% on eligible fixtures, task-success degradation < 1% |
 | D38 | Fail-open | Every compression path falls back to original content on failure, uncertainty, or unknown format (build doc §4) |
 
-## 5. Owner hard constraints (never override without new owner decision)
+## 5. Post-audit decisions (2026-07-21 audit remediation)
+
+| # | Decision | Value |
+|---|----------|-------|
+| D39 | Lossiness taxonomy | Safe mode = deterministic + rule-based, NEVER called lossless. `None` → dedup only; `Structural` (safe default) → whole-unit removals, all enumerated in trace + `removals_enumerated` safety check; `Summarizing` → aggressive only |
+| D40 | Task-success gate | CI proxy: recall-probe gate (100% protected, ≥99% overall) + compressed-vs-passthrough baseline comparison. Real task-success (<1% degradation) measured in closed beta before stable |
+| D41 | Store concurrency | `Store` = `Arc<Mutex<Connection>>`, Send+Sync, blocking API, `spawn_blocking` from async, busy_timeout 5s. Escape hatch: writer thread behind same API |
+| D42 | Slice installability | Checksummed tarball + `installers/install-local.sh` → `~/.local/bin/compresso` in slice (SHA256-verified, unsigned). Signing/notarization/package managers stay E12 |
+| D43 | Entitlements local impl | `entitlement_cache` SQLite table, JWS ed25519 verify vs embedded current+next keys, `keyring` for device creds, all failures → `local_only()` |
+| D44 | Staleness contract | Never an error: serve current content with `stale: true` + reindex hint; unfold re-locates symbol by name in changed file, `not_found` only if it disappeared |
+| D45 | Model/client expansion adopted | `compresso-expand.md` architecture is in-plan as epic E13: canonical model protocol, protocol drivers + model profiles (profile-first rule), providers Kimi/GLM/MiniMax/DeepSeek after Anthropic/OpenAI, conformance suite. Spec: `docs/plan/07-model-expansion.md` |
+| D46 | IP & secure deployment adopted | `ip.md` is in-plan as epic E14: crown-jewel boundary (routing/policy local, never shipped readable), release hardening, IPC auth, anti-tamper, legal program. Spec: `docs/plan/08-ip-and-secure-deployment.md` |
+| D47 | Non-compression operations | Retrieval tools record `tokens_served`, `trace_json = NULL`; only compression operations carry trace v1 documents |
+| D48 | Protection ingress rule | `protected` forced true for instruction/tool kinds on all external payloads; unprotect only via trusted local surfaces |
+
+## 6. Owner hard constraints (never override without new owner decision)
 
 1. No telemetry enabled, ever, without explicit opt-in decision (D6).
 2. No Claude Desktop bundle/integration (D5).

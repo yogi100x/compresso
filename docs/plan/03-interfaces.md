@@ -53,7 +53,9 @@ pub trait TokenCounter: Send + Sync {
     fn count(&self, text: &str) -> usize;
 }
 pub fn counter_for(provider: TokenProvider) -> &'static dyn TokenCounter; // lazily-initialized singletons
-// AnthropicCalibrated = O200k count × CALIBRATION (const, derived from fixtures/provider-payloads/anthropic-counts.json; documented in ADR-0017)
+// AnthropicCalibrated = O200k count × CALIBRATION. Until the calibration ticket (E2-02a) lands measured values in
+// fixtures/provider-payloads/anthropic-counts.json, CALIBRATION = 1.15 (documented interim default, ADR-0017);
+// the ±10% accuracy assertion only activates once measured counts are committed.
 ```
 
 ### 2.3 `strategy` module
@@ -77,6 +79,16 @@ impl StrategyRegistry {
 ```
 
 Slice strategies (each its own file under `strategies/`): `dedup_exact` (identical unprotected node contents → keep first, replace rest with reference stub), `collapse_logs` (≥3 consecutive lines matching after timestamp/hex/uuid normalization → `<line> [×N repeats]`), `compact_json` (tool_response nodes with valid JSON: minify + truncate long string values/arrays with elision markers, structure preserved), `pack_budget` (drop lowest `priority/token` unprotected nodes until under `max_tokens`; never partial-truncate code).
+
+**Lossiness taxonomy (D39)** — safe mode is deterministic and rule-based, NOT lossless, and is never described as lossless in user-facing copy. Mapping enforced by `supports()`:
+
+| `allowed_lossiness` | Strategies permitted |
+|---|---|
+| `None` | `dedup_exact` only (duplicates replaced by reference stubs naming the surviving node) |
+| `Structural` (safe-mode default) | + `collapse_logs`, `compact_json`, `pack_budget` — removal/truncation of whole units (lines, values, nodes), each enumerated in the trace |
+| `Summarizing` | + model-based summarization (aggressive mode, post-slice) |
+
+Every removal or truncation appends a machine-readable entry to `StrategyResult.notes` (`removed node:<id>`, `collapsed <n> lines`, `truncated <pointer>`); the `removals_enumerated` safety check fails the result if token loss is not accounted for by notes.
 
 ### 2.4 `engine` module
 
@@ -103,7 +115,7 @@ pub struct SafetyCheck { pub name: String, pub passed: bool, pub detail: String 
 pub fn run_all(original: &ContextGraph, candidate: &ContextGraph, budget: &CompressionBudget, elapsed_ms: u64) -> Vec<SafetyCheck>;
 ```
 
-Checks (all must pass; build-doc §10.6): `protected_unchanged` (byte-equal content for every protected node), `no_inflation` (after ≤ before unless a note explains), `json_still_valid` (nodes that were valid JSON still are), `fences_balanced` (``` count parity preserved per node), `refs_valid` (file:line references in output exist in input), `latency_ok`, `schema_valid` (output revalidates).
+Checks (all must pass; build-doc §10.6): `protected_unchanged` (byte-equal content for every protected node), `no_inflation` (after ≤ before unless a note explains), `json_still_valid` (nodes that were valid JSON still are), `fences_balanced` (``` count parity preserved per node), `refs_valid` (file:line references in output exist in input), `latency_ok`, `schema_valid` (output revalidates), `removals_enumerated` (every removed/truncated token span is accounted for by a strategy note — see lossiness taxonomy §2.3).
 
 ### 2.6 `config` module
 
@@ -119,7 +131,13 @@ impl Config {
 ## 3. compresso-store
 
 ```rust
-pub struct Store { /* rusqlite Connection, WAL */ }
+pub struct Store { /* Arc<Mutex<rusqlite::Connection>>, WAL */ }
+// Concurrency contract (D41, ADR-0004): Store is Send + Sync and cheaply cloneable (Arc). ONE process, ONE
+// connection guarded by a Mutex: every method acquires the lock, so writes are serialized by construction and
+// reads never observe partial transactions. busy_timeout = 5s guards against a second process (e.g. CLI while
+// MCP serves). Async callers (rmcp handlers) wrap calls in tokio::task::spawn_blocking — Store itself exposes
+// only blocking methods. If profiling ever shows lock contention, the escape hatch is a dedicated writer thread
+// with a channel, behind the same API — callers never change.
 impl Store {
     pub fn open(path: &Path) -> Result<Store, StoreError>;   // runs pending migrations transactionally
     pub fn open_default() -> Result<Store, StoreError>;      // platform data dir (01-stack §5)
@@ -223,7 +241,8 @@ DELETE /v1/repos/:id     -> remove from index
 GET  /v1/config          -> effective config with sources
 PUT  /v1/config          -> validated partial update (atomic file write)
 GET  /v1/integrations    -> detection + receipt status per client
-POST /v1/integrations/:client/install    -> body { approve: true, plan_hash } (two-step: plan then approve)
+POST /v1/integrations/:client/plan       -> { plan, unified_diff, plan_hash, backup_path } (step 1: generate + preview)
+POST /v1/integrations/:client/install    -> body { approve: true, plan_hash } (step 2: plan_hash must match a plan issued this session)
 POST /v1/integrations/:client/uninstall
 ```
 
@@ -247,3 +266,24 @@ GET  /v1/flags                 -> feature flags for device
 ```
 
 Error shape everywhere: `{ error: { code, message, request_id } }`. Entitlement failures return degraded-but-valid bundles — never a shape that blocks local operation (build-doc §4).
+
+## 9. Local entitlement verification (spec now; E10-local tickets)
+
+```rust
+// compresso-agent (or core::entitlements until the supervisor exists)
+pub struct EntitlementVerifier { /* embedded ed25519 public keys, keyed by kid */ }
+impl EntitlementVerifier {
+    pub fn verify(&self, bundle_jws: &str, now: u64) -> Result<Entitlements, EntitlementError>;
+    // JWS (EdDSA/ed25519), header kid selects among EMBEDDED_KEYS (≥2 for rotation: current + next).
+    // Expired-but-within-grace bundles verify with Entitlements::degraded = true.
+}
+pub struct EntitlementCache<'a> { /* store-backed, entitlement_cache table (02-schemas §4) */ }
+impl EntitlementCache<'_> {
+    pub fn current(&self, now: u64) -> Entitlements;          // NEVER errors: missing/invalid/expired-past-grace => Entitlements::local_only()
+    pub fn refresh(&self, client: &dyn CloudClient) -> Result<(), EntitlementError>; // background, exponential backoff, jitter
+}
+// Device credentials (refresh token, device private key): OS keychain via the `keyring` crate — never on disk.
+// Key rotation: releases ship current+next public keys; bundles signed with `next` verify on N and N+1 versions.
+// Hard rule (owner constraint 4): every failure path degrades to local/free features; nothing here can block
+// compression, MCP, or the underlying assistant.
+```

@@ -59,13 +59,15 @@ All schemas versioned by integer `schema_version`. Breaking change → new versi
 }
 ```
 
-Invariants (validated in code, not expressible in JSON Schema): node ids unique; edge endpoints exist; `protected: true` required when `kind ∈ {system_instruction, user_instruction, tool_definition, tool_request}` unless client explicitly unprotects.
+Invariants (validated in code, not expressible in JSON Schema): node ids unique; edge endpoints exist; `protected: true` is **forced at ingress** for `kind ∈ {system_instruction, user_instruction, tool_definition, tool_request}`. Unprotecting one of these kinds is only possible from trusted local surfaces (CLI `--allow-unprotect`, local config) — never from an inbound MCP/proxy payload: the boundary validator overrides `protected` to `true` for these kinds on any external graph and records a `protection_forced` note in the trace. Arbitrary metadata can never downgrade protection.
 
 ## 2. CompressionBudget / Result / Trace v1 (`schemas/compression-trace/v1.json`)
 
 ```json
 {
   "$id": "https://compresso.dev/schemas/compression-trace/v1.json",
+  "type": "object",
+  "$ref": "#/$defs/trace",
   "$defs": {
     "budget": {
       "type": "object",
@@ -221,7 +223,8 @@ CREATE TABLE operations (
   applied_tokens INTEGER NOT NULL,
   compression_overhead INTEGER NOT NULL DEFAULT 0,
   fallback_used INTEGER NOT NULL DEFAULT 0,
-  trace_json TEXT NOT NULL,             -- compression-trace v1, no raw content
+  tokens_served INTEGER,                -- retrieval tools: tokens returned to the client
+  trace_json TEXT,                      -- compression-trace v1, no raw content; NULL for retrieval-only operations
   created_at INTEGER NOT NULL
 );
 CREATE INDEX idx_operations_session ON operations(session_id, created_at);
@@ -273,7 +276,18 @@ CREATE TABLE update_state (               -- used by updater, Phase 8
 );
 ```
 
-Rules: raw prompts and full source content never stored; `operations.trace_json` validated against trace v1 before insert; retention: operations older than 90 days pruned on startup (configurable).
+Rules: raw prompts and full source content never stored. Operations come in two kinds: **compression operations** (`compresso_compress`, engine runs) must carry `trace_json`, validated against the trace v1 **root** schema before insert; **retrieval operations** (map, search, read, outline, unfold, context, impact, stats, explain) store `trace_json = NULL` and set `tokens_served`. Retention: operations older than 90 days pruned on startup (configurable).
+
+```sql
+-- 0002_entitlements.sql (local side of ADR-0015; implemented in E10-local tickets)
+CREATE TABLE entitlement_cache (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  bundle_jws TEXT NOT NULL,             -- signed entitlement bundle, verified before every use
+  key_id TEXT NOT NULL,                 -- signing key id (kid) used, for rotation
+  fetched_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL           -- hard offline-grace end (fetched_at + 30d unless bundle says less)
+);
+```
 
 ## 5. PostgreSQL DDL v1 (Phase 6; `infra/` + drizzle schema mirrors this)
 
@@ -401,4 +415,4 @@ CREATE TABLE support_cases (
 );
 ```
 
-Privacy invariant (tested in Phase 6 CI): no column anywhere stores source code, prompts, file paths, repository names, symbols, patches, or raw tool arguments. `event_batches.aggregates` validated against an allowlist JSON Schema (`schemas/telemetry/v1.json`) server-side.
+Privacy invariant — enforced at **content level**, not column names: every JSONB field (`plans.features`, `entitlements.value`, `feature_flags.default_value`/`rules`, `policy_sets.policy`, `event_batches.aggregates`, `audit_logs.detail`, `subscriptions` metadata) has a versioned allowlist JSON Schema under `schemas/cloud-api/` with `additionalProperties: false`, validated in Fastify middleware on every write; requests failing validation are rejected and audited. `audit_logs.detail` is restricted to an enumerated key set (ids, enum values, counts — no free-form strings from clients). Enforcement stack: (1) write-path schema validation, (2) property tests generating adversarial payloads containing paths/prompts/symbols and asserting rejection, (3) CI test asserting every JSONB column has a registered allowlist schema. A column-name check alone is explicitly insufficient.

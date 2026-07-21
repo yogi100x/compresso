@@ -30,6 +30,8 @@ Versions are floors, pinned by `Cargo.lock` at first build.
 | proptest | 1.5 | dev | Property tests |
 | criterion | 0.5 | dev | Latency benchmarks |
 | tempfile | 3.14 | dev | Test dirs |
+| keyring | 3.6 | agent (E10-local) | OS keychain for device credentials |
+| jsonwebtoken | 9.3 | agent (E10-local) | JWS EdDSA verification of entitlement bundles |
 
 Forbidden in slice: any crate performing network I/O from core/atlas/mcp paths (telemetry hard-off; local-only). `reqwest` allowed only in `compresso-updater` (post-slice) and dev tools.
 
@@ -66,8 +68,9 @@ compresso/
   packages/{api-client,shared-types,ui,config}/    # stubs until Phase 6
   apps/{web,control-plane,admin,desktop}/          # stubs until Phase 5-6
   schemas/{context-graph,compression-trace,local-api,cloud-api}/   # versioned JSON Schemas
-  fixtures/{code,logs,conversations,provider-payloads,adversarial}/
-  installers/{install.sh,install.ps1,homebrew}/    # Phase 8
+  fixtures/{code,debugging,logs,conversations,provider-payloads,adversarial}/
+  installers/install-local.sh                      # slice: checksum-verified local install to ~/.local/bin
+  installers/{install.sh,install.ps1,homebrew}/    # Phase 8 (signed, hosted)
   infra/{terraform,docker,monitoring}/             # Phase 6+
 ```
 
@@ -82,7 +85,7 @@ Triggers: push to main, PRs. Jobs:
 3. `eval` (ubuntu + macos-14): `cargo run -p compresso-eval -- run fixtures/ --gates docs/plan/gates.toml` — fails CI when release gates regress.
 4. `security`: `cargo audit` (advisories), `cargo deny check licenses bans` (added E1; secret scanning via gitleaks action).
 
-Caching: `Swatinem/rust-cache@v2`. Artifacts: release binary per platform uploaded on main.
+Caching: `Swatinem/rust-cache@v2`. Artifacts: per-platform release tarball (`compresso-<version>-<target>.tar.gz`) + `SHA256SUMS` uploaded on main; `installers/install-local.sh` downloads/copies and verifies the checksum before installing to `~/.local/bin/compresso` (slice-level install path, D42; signing is Phase 8).
 
 ## 5. Environment configuration
 

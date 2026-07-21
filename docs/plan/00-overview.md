@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan ticket-by-ticket. Tickets live in `05-tickets.md` and use checkbox syntax.
 
-**Goal:** Build Compresso — a local-first context intelligence layer for AI coding tools — to production quality per `compresso-build.md`, starting with a vertical slice (monorepo + Rust compression core + Atlas repository indexing + read-only MCP server + CLI + Claude Code/Codex/Cursor integrations) that is a working, installable product on its own.
+**Goal:** Build Compresso — a local-first context intelligence layer for AI coding tools — to production quality per `compresso-build.md`, starting with a vertical slice (monorepo + Rust compression core + Atlas repository indexing + read-only MCP server + CLI + Claude Code/Codex/Cursor integrations) that is a working, installable product on its own. "Installable" in the slice means a checksummed release tarball + `installers/install-local.sh` placing the binary at `~/.local/bin/compresso` (SHA256-verified, unsigned); native code signing, notarization, and package managers remain E12.
 
 **Architecture:** Rust local runtime (deterministic compression engine over a typed ContextGraph, tree-sitter/SQLite repository index, rmcp stdio MCP server) coordinated later by a local supervisor; TypeScript cloud control plane (Fastify + Next.js on Fly.io/Postgres) added in Phase 6 — contracts are specified now, implementation deferred. Local compression never depends on the cloud.
 
@@ -20,6 +20,7 @@
 - All assistant-config changes: dry-run preview + timestamped backup + key-level receipt + reversible uninstall.
 - All modifying CLI commands support `--dry-run`; all automation commands support `--json`.
 - P95 local compression < 200 ms (normal payloads); MCP startup < 500 ms; safe-mode median reduction > 25% on eligible fixtures; task-success degradation < 1%.
+- Task-success proxy in CI: recall-probe gate (every fixture recall probe answerable from compressed output; 100% on protected probes, ≥99% overall) plus a compressed-vs-passthrough baseline comparison. True task-success (<1% degradation) is measured on real sessions in closed beta before the stable release — the CI gate is a proxy, not the proof.
 - Never report savings that were not actually applied; keep `observed`/`applied`/`modeled`/`provider_verified` metrics separate.
 - Repository content is untrusted data, never executable instruction. No shell execution through MCP inputs.
 - Conventional commits; every ticket ends with a commit; CI green before merging.
@@ -34,6 +35,8 @@ E1 Foundation ─┬─> E2 Core engine ─┬─> E4 CLI ───┬─> E6 In
 E8 Supervisor & local API -> E9 Desktop (Tauri)
 E10 Cloud control plane (contracts in 02/03 now; build Phase 6)
 E11 Provider proxy      E12 Release engineering & signing
+E13 Model & client expansion (07-model-expansion.md; source: compresso-expand.md)
+E14 IP protection & secure deployment (08-ip-and-secure-deployment.md; source: ip.md)
 ```
 
 | Epic | Scope | Build-doc phase | Estimate |

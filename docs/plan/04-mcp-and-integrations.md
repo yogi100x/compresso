@@ -9,8 +9,8 @@ Scope: the ten read-only MCP tools shipped in the first slice (D1, D7) and the t
 - **Transport**: stdio (`compresso mcp serve`), rmcp `ServerHandler` per 03-interfaces §5. One handler per tool; pure request/response, no background tasks, no shell execution anywhere in the tool path.
 - **Repository resolution**: tools that operate on a repository accept an optional `root` (absolute path). Resolution order when omitted: (1) canonicalized server working directory, matched by longest prefix against approved repository roots; (2) if exactly one repository is approved, that repository; (3) otherwise `not_indexed` error. Every externally supplied path is canonicalized (symlinks resolved) and must satisfy `starts_with(approved_root)` (03-interfaces §4); violations return `outside_root`.
 - **Token budgets**: every tool that returns repository or text content takes `max_tokens` (name chosen for Tetris compatibility, D7). Bounds are uniform: minimum 100, maximum 100000; per-tool defaults below. Output is truncated to fit the budget with an explicit elision marker and `truncated: true` in the result. Token counts are produced by the real tokenizer stack (D14) and always carry a `token_provider` tag.
-- **Operation recording**: every handler calls `Store::record_operation` (03-interfaces §3) with `tool`, `mode`, `observed_tokens`, `applied_tokens`, `compression_overhead`, `fallback_used`, and a compression-trace v1 `trace_json` (02-schemas §2). Traces never contain raw content. The `operation_id` (ulid) is included in every successful result so `compresso_explain` can retrieve it.
-- **Error behavior**: errors are returned as MCP tool results with `isError: true` and a single text content block — never protocol-level failures, never a crashed server. The text starts with a stable code in brackets, then an instructive human sentence. Codes: `not_indexed`, `outside_root`, `not_found`, `stale_index`, `invalid_arguments`, `internal`. Unknown/unindexed repository always produces:
+- **Operation recording**: every handler calls `Store::record_operation` (03-interfaces §3). Compression operations (`compresso_compress`) record the full compression-trace v1 `trace_json` (02-schemas §2); retrieval operations (map, search, read, outline, unfold, context, impact, stats, explain) record `trace_json = NULL` with `tokens_served` set to the tokens returned (02-schemas §4). Traces never contain raw content. The `operation_id` (ulid) is included in every successful result so `compresso_explain` can retrieve it.
+- **Error behavior**: errors are returned as MCP tool results with `isError: true` and a single text content block — never protocol-level failures, never a crashed server. The text starts with a stable code in brackets, then an instructive human sentence. Codes: `not_indexed`, `outside_root`, `not_found`, `invalid_arguments`, `internal`. (Staleness is never an error code — stale results are served with `stale: true` plus a reindex hint.) Unknown/unindexed repository always produces:
 
 ```text
 [not_indexed] Repository '/path/to/repo' is not indexed by Compresso. Run `compresso index` in that directory, then retry.
@@ -253,7 +253,7 @@ Shipped verbatim as the rmcp server `instructions` (build-doc §13.4: brief, fac
 }
 ```
 
-**Errors**: `not_indexed`, `outside_root`, `not_found` (symbol unknown — message lists up to 5 closest qualified-name matches), `stale_index` (file hash mismatch: body would be unreliable; result is an error instructing `compresso index` rather than serving wrong lines — this is the one place staleness is an error, per 03-interfaces §4 hash-check).
+**Errors**: `not_indexed`, `outside_root`, `not_found` (symbol unknown — message lists up to 5 closest qualified-name matches). Staleness is NOT an error (fail-open, matching 03-interfaces §4): on a blake3 hash mismatch the tool re-locates the symbol in the current on-disk content by name; if found, it serves the current body with `stale: true` and a reindex hint; only if the symbol cannot be re-located in the changed file does it return `not_found` with a `compresso index` instruction.
 
 **Tetris compatibility (D7)**: replaces `tetris_unfold`; identical outline→unfold contract.
 
@@ -342,7 +342,7 @@ Default of 4000 mirrors `compression.target_tokens` (build-doc §17); an explici
 
 ### 1.10 compresso_compress
 
-**Description (final copy)**: Compresses arbitrary text (logs, transcripts, search dumps, tool output) using Compresso's safe, deterministic strategy pipeline, and returns the compressed string with before/after token counts per provider. Lossless-by-policy in safe mode: protected content is never altered and any failure returns the original text unchanged. Use before passing long text to a sub-agent or follow-up prompt. Does not require an indexed repository.
+**Description (final copy)**: Compresses arbitrary text (logs, transcripts, search dumps, tool output) using Compresso's safe, deterministic strategy pipeline, and returns the compressed string with before/after token counts per provider. Safe mode is deterministic and rule-based (dedup, log collapsing, structured compaction, budget packing): removals are whole units, every removal is enumerated in the operation trace, protected content is never altered, and any failure returns the original text unchanged. It is not lossless; request passthrough mode for byte-exact needs. Use before passing long text to a sub-agent or follow-up prompt. Does not require an indexed repository.
 
 **inputSchema**:
 
