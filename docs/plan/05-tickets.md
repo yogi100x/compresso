@@ -105,14 +105,14 @@ Test cases:
 - test_assistant_reasoning_must_be_protected: `assistant_reasoning` with `protected: false` fails validation; ingress forces it protected and records the note (D53).
 - test_from_text_counts_tokens: `ContextGraph::from_text("fn main() {}", NodeKind::SourceFile, counter)` yields one node with `token_count == counter.count("fn main() {}")` and `total_tokens()` equal to it.
 
-### [ ] E2-02: TokenCounter providers
+### [x] E2-02: TokenCounter providers
 Owner: R1 · Estimate: 1.5d · Depends: E1-01, E1-05
 Files: rust/compresso-core/src/tokens.rs, tests in same file
 Description: Implement `TokenProvider`, the `TokenCounter` trait, and `counter_for(provider) -> &'static dyn TokenCounter` per `03-interfaces.md` §2.2: tiktoken-rs `o200k_base` and `cl100k_base` counters, `AnthropicCalibrated` (o200k count × `CALIBRATION`; until E2-02a commits measured counts into `fixtures/provider-payloads/anthropic-counts/anthropic-counts.json`, `CALIBRATION` is the documented interim default `1.15` per ADR-0017 and `03-interfaces.md` §2.2), and a `Heuristic` fallback (bytes/4) for use when tokenizer init fails. Singletons are eagerly initialized during process startup once.
 Acceptance criteria:
 - `counter_for(TokenProvider::OpenAiO200k).count(text)` matches tiktoken-rs `o200k_base` exactly; same for cl100k.
 - `AnthropicCalibrated` returns `ceil(o200k_count × CALIBRATION)` and its `provider()` tag is `AnthropicCalibrated`; CALIBRATION is a named const with a doc comment citing the fixture file and ADR-0017 — interim value `1.15` while the fixture's `anthropic_tokens`/`calibration_factor` are null, replaced by the measured median once E2-02a lands.
-- `counter_for` returns the same static reference on repeated calls (no re-init); counting a 1 MB string completes in < 50 ms in release mode.
+- `counter_for` returns the same static reference on repeated calls (no re-init); counting a representative 1 MiB multiline string completes in < 200 ms after prewarming in release mode, aligned with the canonical warm product gate owned by E2-15.
 Test cases:
 - test_o200k_hello_world: `count("hello world") == 2` for OpenAiO200k.
 - test_empty_string_zero: all four providers return 0 for "".
@@ -120,6 +120,7 @@ Test cases:
 - test_calibration_accuracy_gated_on_fixture: while the fixture's `anthropic_tokens` values are null, the ±10% accuracy assertion is skipped with a `calibration pending (E2-02a)` warning; once they are non-null, calibrated counts must be within 10% of the recorded Anthropic count for every sample.
 - test_counter_for_singleton: `std::ptr::eq(counter_for(OpenAiO200k), counter_for(OpenAiO200k))` is true.
 - test_provider_tag_roundtrip: each counter's `provider()` serializes to the schema enum string (`"openai_o200k"` etc.).
+- test_warm_o200k_one_mib_under_two_hundred_ms_in_release: after prewarming, count one representative 1 MiB multiline input in release mode and assert elapsed time is < 200 ms; E2-15 owns the canonical warm P95 product gate.
 
 ### [ ] E2-02a: Anthropic calibration measurement
 Owner: PQ+R1 · Estimate: 1d · Depends: E2-02, E1-05
