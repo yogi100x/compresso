@@ -75,7 +75,7 @@ Roles from build-doc §27, used as `owner` on tickets. Solo mode: all roles = ow
 
 | File | Contents |
 |------|----------|
-| `decisions.md` (repo root) | Locked decisions D1–D64 |
+| `decisions.md` (repo root) | Locked decisions D1–D66 |
 | `01-stack-and-workspace.md` | Exact dependencies, workspace trees, CI/CD, env config |
 | `02-schemas.md` | Versioned ContextGraph + trace JSON schemas, SQLite DDL, Postgres DDL |
 | `03-interfaces.md` | Rust crate boundaries and module interfaces, local API, cloud API contracts |
@@ -91,4 +91,4 @@ Roles from build-doc §27, used as `owner` on tickets. Solo mode: all roles = ow
 
 ## Audit-r2 planning baseline
 
-The authoritative post-audit backlog is 204 tickets: 58 slice and 146 post-slice, totaling 538.5 gross engineer-days before contingency. E16 closes every full-product deliverable previously present only in `compresso-build.md`. Role aliases are `PO` (product owner) and `LEGAL` (qualified external counsel); they are advisory/approval owners, not engineering implementers.
+The authoritative post-audit backlog is 204 tickets: 58 slice and 146 post-slice, totaling 541.5 gross engineer-days before contingency. E16 closes every full-product deliverable previously present only in `compresso-build.md`. Role aliases are `PO` (product owner) and `LEGAL` (qualified external counsel); they are advisory/approval owners, not engineering implementers.

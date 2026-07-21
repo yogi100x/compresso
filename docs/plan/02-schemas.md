@@ -320,10 +320,13 @@ Rules: raw prompts and full source content never stored. Operations come in two 
 -- 0002_entitlements.sql (local side of ADR-0015; implemented in E10-local tickets)
 CREATE TABLE entitlement_cache (
   id INTEGER PRIMARY KEY CHECK (id = 1),
-  bundle_jws TEXT NOT NULL,             -- signed entitlement bundle, verified before every use
+  bundle_jws TEXT NOT NULL,             -- signed, device-bound machine lease; verified before every paid use
   key_id TEXT NOT NULL,                 -- signing key id (kid) used, for rotation
-  fetched_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL           -- hard offline-grace end (fetched_at + 30d unless bundle says less)
+  lease_class TEXT NOT NULL CHECK (lease_class IN ('standard', 'enterprise_offline')),
+  fetched_at INTEGER NOT NULL,          -- local monotonic anchor paired with signed server issued_at
+  refresh_after INTEGER NOT NULL,       -- scheduled remote renewal start (normally issued_at + 14d)
+  expires_at INTEGER NOT NULL,          -- hard lease end (normally issued_at + 21d)
+  CHECK (fetched_at < refresh_after AND refresh_after < expires_at)
 );
 ```
 

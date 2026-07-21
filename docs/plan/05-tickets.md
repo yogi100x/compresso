@@ -1031,19 +1031,33 @@ Test cases:
 - test_revoked_device_refresh_401.
 - test_idempotent_device_registration.
 
-### [ ] E10-05: Entitlement issuance and three-generation rotation
-Owner: F1+I1 · Estimate: 3d · Depends: E10-02, E10-04
-Files: apps/control-plane/src/modules/entitlements/, schemas/cloud-api/entitlement-v1.json, docs/runbooks/entitlement-key-rotation.md
-Description: Issue Ed25519 previous/current/next bundles with overlap for grace plus supported releases.
+### [ ] E10-05: Device-bound machine-lease issuance and three-generation rotation
+Owner: F1+I1 · Estimate: 4.5d · Depends: E10-02, E10-04
+Files: apps/control-plane/src/modules/entitlements/, apps/control-plane/src/plugins/paid_authorization.ts, schemas/cloud-api/entitlement-v1.json, docs/runbooks/entitlement-key-rotation.md
+Description: Issue Ed25519 previous/current/next signed machine leases bound to account, device ID, and device public-key hash. A standard lease carries `lease_class = standard`, `issued_at`, `refresh_after = issued_at + 14d`, `expires_at = issued_at + 21d`, `lease_id`, plan/features, and schema version. An explicitly entitled enterprise organization may issue `enterprise_offline` leases for exactly 30, 60, or 90 days, bound to one registered org/device, with renewal seven days before expiry and a protocol maximum of 90 days. Renewal requires proof of possession of the registered device private key. A shared paid-authorization middleware independently derives every cloud capability from current server subscription, organization membership, seat, device, and revocation state; it never trusts client lease claims, integrity claims, UI state, or requested feature names.
 Acceptance criteria:
-- Strict claims; stale clients survive two rotations; compromise runbook; five-minute iat/nbf skew.
+- Strict allowlisted claims; stale supported clients survive two rotations; five-minute iat/nbf skew; refresh/expiry cannot be extended by wall-clock rollback.
+- A challenge nonce is single-use, short-lived, audience-bound, and verified against the registered device public key before a lease is issued.
+- The issuance endpoint accepts no prompts, source, repository metadata, paths, operation history, or usage statistics.
+- Only an enterprise entitlement and authorized org administrator can select 30/60/90-day offline duration; standard accounts cannot request or tamper into that class, and revocation exposure is explicitly shown before issuance.
+- Every route declared as a paid cloud capability is registered with `paid_authorization`; authorization is recomputed from server tables on every request before domain execution.
 Test cases:
-- rotations; stale; unknown/retired kid; skew; revoke; malformed.
+- test_machine_lease_claims_and_14_21_day_windows.
+- test_enterprise_offline_30_60_90_day_allowlist_and_seven_day_renewal_window.
+- test_standard_account_cannot_request_enterprise_or_custom_duration.
+- test_device_challenge_proof_success_replay_expiry_and_wrong_key.
+- test_previous_current_next_rotation_and_retired_kid.
+- test_revoked_subscription_device_or_seat_refuses_renewal.
+- test_clock_skew_and_malformed_or_extra_claim_rejection.
+- test_renewal_request_privacy_allowlist_rejects_content_fields.
+- test_every_paid_cloud_route_uses_server_authorization_middleware.
+- test_forged_local_pro_lease_integrity_claim_or_feature_name_never_authorizes_cloud.
+- test_subscription_seat_org_or_device_change_takes_effect_on_next_cloud_request.
 
 ### [ ] E10-06: Local — migration 0002 entitlement_cache
 Owner: R2 · Estimate: 1d · Depends: E3-01
 Files: rust/compresso-store/migrations/0002_entitlements.sql, rust/compresso-store/src/entitlements.rs, tests in rust/compresso-store/tests/migrations.rs
-Description: Commit `0002_entitlements.sql` byte-for-byte per 02-schemas §4: `entitlement_cache` singleton table (`id CHECK (id = 1)`, `bundle_jws`, `key_id`, `fetched_at`, `expires_at` — hard offline-grace end, fetched_at + 30d unless the bundle says less). Add `Store::entitlement_cache_get() -> Result<Option<EntitlementCacheRow>>` and `Store::entitlement_cache_put(&EntitlementCacheRow)` (singleton upsert). Applies transactionally on top of 0001.
+Description: Commit `0002_entitlements.sql` byte-for-byte per 02-schemas §4: `entitlement_cache` singleton table (`id CHECK (id = 1)`, `bundle_jws`, `key_id`, `lease_class`, `fetched_at`, `refresh_after`, `expires_at`, with lease-class and ordered-timestamp checks). Add `Store::entitlement_cache_get() -> Result<Option<EntitlementCacheRow>>` and `Store::entitlement_cache_put(&EntitlementCacheRow)` (singleton upsert). Applies transactionally on top of 0001.
 Acceptance criteria:
 - Fresh open applies migrations 1 and 2; `schema_migrations` has both rows; reopen applies nothing.
 - Two puts leave exactly one row (latest wins); get round-trips every field.
@@ -1053,27 +1067,44 @@ Test cases:
 - test_cache_singleton_upsert_latest_wins.
 - test_cache_roundtrip_fields.
 - test_second_row_rejected_by_check.
+- test_refresh_after_must_be_between_fetch_and_expiry.
+- test_lease_class_rejects_unknown_or_locally_invented_value.
 
 ### [ ] E10-07: Local EntitlementVerifier and keychain credentials
 Owner: R1+R2 · Estimate: 3d · Depends: E10-05, E10-06
 Files: rust/compresso-agent/src/{entitlements,credentials}.rs, docs/adr/0015-cached-entitlements-offline-grace.md
-Description: Verify three keys, keychain credentials, bounded skew, monotonic expiry.
+Description: Verify previous/current/next signing keys and all device-bound machine-lease claims; generate and sign server challenges with the device private key held in the OS keychain; enforce bounded issuance skew and monotonic 14-day refresh/21-day expiry windows.
 Acceptance criteria:
-- Unknown kid refreshes then local-only; clock rollback cannot extend; local tools never block.
+- Unknown kid may trigger one due/explicit refresh then local-only; device/public-key mismatch is rejected; clock rollback cannot extend refresh or expiry; local tools never block.
+- Plan, features, lease class, refresh, and expiry are read only from the verified JWS; same-named config, environment, CLI, or denormalized-cache values are ignored and cannot extend access.
 Test cases:
-- keys; two rotations; unknown; clock; grace; keychain; canaries.
+- test_previous_current_next_keys_and_two_rotations.
+- test_device_id_and_public_key_hash_binding.
+- test_challenge_signature_uses_keychain_key_without_export.
+- test_day_14_renewal_due_and_day_21_hard_expiry.
+- test_enterprise_signed_30_60_90_day_lease_and_90_day_maximum.
+- test_local_config_env_cli_and_cache_cannot_override_signed_claims.
+- test_clock_rollback_and_forward_jump_do_not_extend_lease.
+- test_unknown_kid_invalid_signature_and_keychain_failure_local_only.
+- test_secret_canaries_absent_from_files_logs_and_errors.
 
 ### [ ] E10-08: Local — EntitlementCache, background refresh, degradation matrix
 Owner: R1 · Estimate: 2.5d · Depends: E10-07
 Files: rust/compresso-agent/src/entitlements/cache.rs, tests in rust/compresso-agent/tests/entitlements_degradation.rs
-Description: `EntitlementCache::current(now)` per 03-interfaces §9 — **never errors**: missing row, invalid JWS, unknown kid, expired-past-grace, or store failure all return `Entitlements::local_only()`. `refresh(client: &dyn CloudClient)` runs as a supervisor background task with exponential backoff and jitter, persisting via `entitlement_cache_put`. Degradation tests enumerate every failure mode — network down, HTTP 500, invalid bundle, revoked device (401), clock skew beyond grace, corrupt cache row — and assert each yields `local_only()` while compression, MCP, and the CLI keep working (owner constraint 4; ADR-0015; gate G11: all local features operational with the control plane down).
+Description: `EntitlementCache::current(now)` per 03-interfaces §9 **never errors**: missing row, invalid JWS, unknown kid, expired lease, or store failure returns `Entitlements::local_only()`. The scheduler consumes only verified signed `refresh_after`/`expires_at` claims: standard leases attempt renewal at day 14 and expire at day 21; enterprise offline leases renew seven days before their signed 30/60/90-day expiry. No automatic request occurs before the signed refresh time. After failure, retry is at most once per 24 hours with bounded jitter until signed expiry. A valid cached lease remains usable during that renewal window. At hard expiry paid local features downgrade after the active operation while compression, MCP, CLI, indexing, and free features continue. Explicit login/status/refresh may contact the server sooner.
 Acceptance criteria:
 - `current()` is total: the full failure matrix returns `local_only()`, never `Err`, never a panic, never a block.
-- Refresh backoff is exponential with jitter and caps; a successful refresh upgrades entitlements without restart.
+- No automatic network call occurs before day 14; failed renewal retries are capped at one per 24 hours with bounded jitter; successful renewal atomically installs a new 21-day lease without restart.
+- Renewal sends only the D65 privacy allowlist and device proof; it is licensing traffic, never telemetry.
 - An end-to-end test runs MCP tool calls during a simulated cloud outage → all succeed.
 Test cases:
 - test_current_never_errors_failure_matrix: table-driven over the six failure modes → `local_only()`.
-- test_refresh_backoff_with_jitter_caps.
+- test_no_automatic_remote_check_before_day_14.
+- test_day_14_attempt_then_daily_retry_cap_until_day_21.
+- test_enterprise_scheduler_uses_signed_expiry_minus_seven_days_without_standard_day_14_check.
+- test_valid_cached_paid_features_continue_during_renewal_window.
+- test_day_21_expiry_downgrades_after_active_operation.
+- test_renewal_payload_contains_only_allowlisted_fields_and_proof.
 - test_valid_refresh_upgrades_entitlements_live.
 - test_mcp_serves_during_cloud_outage.
 - test_revoked_device_degrades_silently_no_retry_storm.
@@ -1876,19 +1907,27 @@ Test cases:
 - test_corrupt_digest_ignored.
 - test_pack_failure_never_blocks_compression.
 
-### [ ] E14-10: Artifact-contents allowlist gate
-Owner: I1 · Estimate: 1.5d · Depends: E14-02, E12-01
-Files: scripts/release/artifact_allowlist.sh, .github/workflows/release.yml (gate step)
-Description: Release-gate test (G13) asserting every published artifact contains only allowlisted contents: symbols stripped, no fixtures, no prompts or design documents, no source maps, no debug info, no `.git` metadata, no developer paths; private symbols archived separately (E14-02). Runs in `release.yml` against every artifact of every platform before publication.
+### [ ] E14-10: Artifact allowlist and signed runtime-integrity manifest
+Owner: I1+R1 · Estimate: 3d · Depends: E14-02, E12-01, E12-06
+Files: scripts/release/artifact_allowlist.sh, schemas/runtime-integrity-manifest/v1.json, rust/compresso-agent/src/integrity.rs, .github/workflows/release.yml (gate step)
+Description: Release gate G13 asserts every published artifact contains only allowlisted contents: symbols stripped, no fixtures, prompts/design documents, source maps, debug info, `.git` metadata, or developer paths; private symbols remain separate. The release pipeline also emits a signed manifest covering executable and paid resource hashes, version, platform/arch, signing identity, and build ID. At startup and before loading paid resources, the native agent verifies the OS code signature where supported plus the manifest signature/hash set. Failure is visible tamper evidence: finish the active operation, disable paid local features, and continue free local operation. Verification code, manifests, signatures, and integrity status are explicitly patchable on a user-controlled machine and therefore never authorize cloud access; D66 and server middleware remain the security boundary.
 Acceptance criteria:
 - The gate passes on a clean release build for all platforms.
 - Seeding a fixture file, a source map, or an unstripped binary into an artifact fails the gate (scratch-branch verification, documented).
 - The allowlist itself is committed and reviewed — additions require a PR.
+- Official artifacts carry a release-signed integrity manifest whose complete file set and hashes verify before paid local resources load; unknown extra executable/resource files fail verification.
+- Signature/hash failure never crashes, deletes data, blocks MCP/free features, phones home, or claims authoritative revocation; it records a content-free local status and downgrades paid local features after the active operation.
 Test cases:
 - test_allowlist_passes_clean_release.
 - test_seeded_fixture_fails_gate.
 - test_source_map_detected_and_failed.
 - test_unstripped_symbols_detected.
+- test_signed_integrity_manifest_covers_executable_and_paid_resources.
+- test_modified_deleted_or_extra_paid_resource_detected.
+- test_wrong_signing_identity_manifest_signature_or_build_id_detected.
+- test_integrity_failure_finishes_active_operation_then_local_only.
+- test_integrity_failure_never_blocks_free_mcp_or_emits_network_request.
+- test_forged_client_integrity_ok_claim_never_authorizes_cloud.
 
 ### [ ] E14-11: License-compliance program
 Owner: I1 · Estimate: 2d · Depends: E1-03
@@ -2162,8 +2201,8 @@ Test cases:
 ### [ ] E10-15: Local account client and device authentication CLI
 Owner: R2+D1 · Estimate: 3d · Depends: E10-03, E10-04, E10-07
 Files: rust/compresso-agent/src/account.rs, rust/compresso-cli/src/commands/account.rs, rust/compresso-store/migrations/0002_entitlements.sql
-Description: Implement `CloudClient`, device-code polling, rotating refresh, keychain persistence, entitlement fetch, and login/status/logout.
-Acceptance/tests: slow_down/expiry/denial/cancel/offline/revocation are bounded; secrets never reach files/logs; logout clears locally while offline; missing cloud degrades to local-only without blocking MCP.
+Description: Implement `CloudClient`, device-code polling, rotating refresh, keychain persistence, challenge-based device proof, 14-day scheduled entitlement renewal, and login/status/logout/manual-refresh surfaces.
+Acceptance/tests: slow_down/expiry/denial/cancel/offline/revocation are bounded; challenge replay/wrong-key proofs fail; no scheduled lease request occurs before day 14; retries are at most daily until day 21; secrets and non-allowlisted local content never reach requests/files/logs; logout clears locally while offline; missing cloud degrades to local-only without blocking MCP.
 
 ### [ ] E11-07: Prompt-cache-stable compression epochs
 Owner: R1 · Estimate: 2d · Depends: E11-02, E11-03
@@ -2505,12 +2544,12 @@ Parallelism notes:
 | **Slice total** | **58** | **96 gross** | **~19.2 solo engineer-wk; 2 engineers ≈ 9–10 calendar wk** | Derived directly from ticket bodies |
 | E8 Supervisor & local API | 8 | 20 | ~4 wk | |
 | E9 Desktop (Tauri) | 8 | 25 | ~5 wk | |
-| E10 Cloud + local entitlements | 15 | 41.5 | ~8.5 wk (F1, with R1/R2 local tickets in parallel) | |
+| E10 Cloud + local entitlements | 15 | 43 | ~8.5 wk (F1, with R1/R2 local tickets in parallel) | |
 | E11 Provider proxy | 7 | 19 | ~4 wk | |
 | E12 Release engineering | 9 | 28 | ~5.5 wk | absorbs E14-06/07/13 |
 | E13 Model & client expansion | 32 | 91 | ~18 engineer-wk, phased | +D52 future phases |
-| E14 IP & secure deployment | 17 | 37.5 | ~7.5 wk | +E15 threat/sandbox gates |
+| E14 IP & secure deployment | 17 | 39 | ~8 wk | +E15 threat/sandbox gates |
 | E15 WOZ-inspired capabilities | 34 | 121.5 | ~24.5 engineer-wk | A-F incremental; G deferred |
 | E16 Full-product completion | 16 | 59 | ~12 engineer-wk, dependency-phased | |
-| **Post-slice total** | **146** | **442.5 gross** | heavily parallel across roles | Derived directly from ticket bodies |
-| **Grand total** | **204** | **538.5 gross** | **~107.7 engineer-wk** | |
+| **Post-slice total** | **146** | **445.5 gross** | heavily parallel across roles | Derived directly from ticket bodies |
+| **Grand total** | **204** | **541.5 gross** | **~108.3 engineer-wk** | |
