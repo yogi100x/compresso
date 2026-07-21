@@ -1,0 +1,10 @@
+[package]
+name = "compresso-agent"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+duct = "0.13"
+reqwest = "0.12"
+
+[workspace]

@@ -23,6 +23,65 @@ jobs:
       - name: Assert required runner matrix
         run: ruby scripts/ci/check_ci_matrix.rb
 
+  security:
+    name: Security gates
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+      - name: Test crate capability boundaries
+        run: node --experimental-strip-types --test scripts/check-crate-capabilities.test.ts
+      - name: Enforce crate capability boundaries
+        run: node --experimental-strip-types scripts/check-crate-capabilities.ts
+      - name: Install Rust security tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit@0.22.2,cargo-deny@0.19.4
+      - name: Audit Rust advisories
+        run: cargo audit
+      - name: Check Rust licenses and bans
+        run: cargo deny check licenses bans
+      - name: Verify secret-scanner canary
+        shell: bash
+        run: |
+          canary_dir="$(mktemp -d)"
+          printf '%s%s\n' 'COMPRESSO_SECRET_CANARY_' '0123456789ABCDEF' > "${canary_dir}/canary.txt"
+          set +e
+          docker run --rm \
+            --volume "${canary_dir}:/scan:ro" \
+            --volume "${PWD}/.gitleaks.toml:/gitleaks.toml:ro" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            dir /scan --config /gitleaks.toml --no-banner
+          scan_status=$?
+          set -e
+          unlink "${canary_dir}/canary.txt"
+          rmdir "${canary_dir}"
+          case "${scan_status}" in
+            0)
+              echo "gitleaks failed to detect the secret canary" >&2
+              exit 1
+              ;;
+            1)
+              echo "gitleaks detected the secret canary"
+              ;;
+            *)
+              echo "gitleaks canary scan failed with status ${scan_status}" >&2
+              exit "${scan_status}"
+              ;;
+          esac
+      - name: Scan repository for secrets
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   rust:
     name: Rust (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -31,7 +90,7 @@ jobs:
       matrix:
         os:
           - macos-14
-          - macos-13
+          - macos-15-intel
           - ubuntu-24.04
           - windows-2022
     steps:

@@ -26,16 +26,16 @@ Test cases:
 ### [x] E1-02: CI workflow
 Owner: I1 · Estimate: 2d · Depends: E1-01
 Files: .github/workflows/ci.yml, .github/workflows/release.yml (stub)
-Description: Author `ci.yml` per `01-stack-and-workspace.md` §4: rust job matrix (`macos-14`, `macos-13`, `ubuntu-24.04`, `windows-2022`) running `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo build --release -p compresso-cli`; `Swatinem/rust-cache@v2`; release-binary artifact upload on main. The `eval` job is added in E7-04; the `ts` job is gated off until Phase 6. `release.yml` is a named no-op stub until Phase 8 (E12).
+Description: Author `ci.yml` per `01-stack-and-workspace.md` §4: rust job matrix (`macos-14`, `macos-15-intel`, `ubuntu-24.04`, `windows-2022`) running `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo build --release -p compresso-cli`; `Swatinem/rust-cache@v2`; release-binary artifact upload on main. The `eval` job is added in E7-04; the `ts` job is gated off until Phase 6. `release.yml` is a named no-op stub until Phase 8 (E12).
 Acceptance criteria:
 - CI triggers on push to main and on PRs; all four matrix legs green on the scaffold commit.
 - Clippy runs with `-D warnings` and formatting is enforced via `cargo fmt --check`.
 - Release binary for each platform uploaded as an artifact on main pushes.
 Test cases:
 - test_ci_yaml_valid: `actionlint .github/workflows/ci.yml` exits 0 (run locally and as a CI step).
-- test_matrix_covers_d33: assert ci.yml matrix contains macos-14, macos-13, ubuntu-24.04, windows-2022 (yq assertion in a repo lint script).
+- test_matrix_covers_d33: assert ci.yml matrix contains macos-14, macos-15-intel, ubuntu-24.04, windows-2022 (yq assertion in a repo lint script).
 
-### [ ] E1-03: Supply-chain and capability-boundary checks
+### [x] E1-03: Supply-chain and capability-boundary checks
 Owner: I1 · Estimate: 1d · Depends: E1-02
 Files: deny.toml, scripts/check-crate-capabilities.ts, .github/workflows/ci.yml
 Description: Enforce 01-stack network/process classes per owning crate.

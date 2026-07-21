@@ -1,0 +1,9 @@
+[package]
+name = "compresso-browser"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+duct = "0.13"
+
+[workspace]
