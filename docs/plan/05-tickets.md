@@ -305,7 +305,7 @@ Test cases:
 - test_search_symbols_trigram: symbol `SessionManager::start`; `search_symbols(repo, "essionMan", 10)` returns it ranked first.
 - test_symbols_by_identity_qualified_and_ambiguous: a selector with path + qualified name and optional kind/signature hash/start-line hint returns all matching `(FileRecord, SymbolRecord)` candidates in deterministic order; optional fields are honored and no arbitrary first match is selected.
 
-### [ ] E3-03: Session, operation, receipt, and stats DAOs
+### [x] E3-03: Session, operation, receipt, and stats DAOs
 Owner: R2 · Estimate: 1.5d · Depends: E3-01, E1-04
 Files: rust/compresso-store/src/ops.rs, rust/compresso-store/src/receipts.rs, tests in same files
 Description: Implement `start_session`, `record_operation` implementing the D47 split (02-schemas §4): compression operations (`compresso_compress`, engine runs) must carry `trace_json` validated against the compression-trace v1 **root** schema before insert; retrieval operations (map, search, read, outline, unfold, context, impact, stats, explain) must store `trace_json = NULL` and set `tokens_served`. Implement `stats(since)` returning `StatsSummary` in the savings vocabulary of `02-schemas.md` §3 (`observed_tokens`, `applied_tokens`, `removed_tokens`, `compression_overhead`, `net_tokens_saved`, labelled `modeled_cost_saved`), plus `save_receipt`/`receipts` for `integration_receipts`.

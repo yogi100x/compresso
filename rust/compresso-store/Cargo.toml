@@ -11,7 +11,9 @@ repository.workspace = true
 blake3.workspace = true
 compresso-core.workspace = true
 dirs.workspace = true
+jsonschema.workspace = true
 rusqlite.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

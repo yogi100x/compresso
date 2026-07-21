@@ -233,7 +233,9 @@ dependencies = [
  "blake3",
  "compresso-core",
  "dirs",
+ "jsonschema",
  "rusqlite",
+ "serde_json",
  "tempfile",
  "thiserror",
 ]
