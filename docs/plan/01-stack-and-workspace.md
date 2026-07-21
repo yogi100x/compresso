@@ -110,7 +110,7 @@ CI parses every `Cargo.toml` and source dependency tree against this table. New 
 
 Triggers: push to main, PRs. Jobs:
 
-1. `rust` matrix: `macos-14` (ARM64), `macos-13` (x86_64), `ubuntu-24.04` (x86_64), `ubuntu-24.04-arm` (ARM64), `windows-2022` — `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo build --release -p compresso-cli`.
+1. `rust` matrix: `macos-14` (ARM64), `macos-15-intel` (x86_64), `ubuntu-24.04` (x86_64), `windows-2022` — `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo build --release -p compresso-cli`.
 2. `ts` (activates Phase 6): `pnpm install --frozen-lockfile`, `pnpm turbo lint typecheck test`.
 3. `eval` (ubuntu + macos-14): `cargo run -p compresso-eval -- run fixtures/ --gates docs/plan/gates.toml` — fails CI when release gates regress.
 4. `security`: `cargo audit` (advisories), `cargo deny check licenses bans` (added E1; secret scanning via gitleaks action).

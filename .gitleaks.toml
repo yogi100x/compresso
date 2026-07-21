@@ -1,0 +1,10 @@
+title = "Compresso secret scanning"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "compresso-secret-canary"
+description = "Compresso CI secret-scanner canary"
+regex = '''\bCOMPRESSO_SECRET_CANARY_[A-Z0-9]{16}\b'''
+keywords = ["COMPRESSO_SECRET_CANARY_"]

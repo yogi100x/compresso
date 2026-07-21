@@ -4,7 +4,7 @@
 require "yaml"
 
 workflow_path = File.expand_path("../../.github/workflows/ci.yml", __dir__)
-expected = %w[macos-14 macos-13 ubuntu-24.04 windows-2022].sort.freeze
+expected = %w[macos-14 macos-15-intel ubuntu-24.04 windows-2022].sort.freeze
 
 workflow = YAML.safe_load(File.read(workflow_path), [], [], true)
 actual = workflow.fetch("jobs").fetch("rust").fetch("strategy").fetch("matrix").fetch("os")
