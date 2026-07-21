@@ -1,0 +1,138 @@
+rust/compresso-store/src/lib.rs
+  s_87261b37472da1::t_a9c7c52031feb3 1
+docs/security/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+packages/shared-types/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+rust/compresso-core/tests/workspace_boundaries.rs
+  s_87261b37472da1::t_a9c7c52031feb3 1-135
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_ab47c7bab70d17 11
+infra/docker/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+rust/compresso-atlas/Cargo.toml
+  s_87261b37472da1::t_a9c7c52031feb3 1-11
+fixtures/debugging/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+rust/compresso-store/Cargo.toml
+  s_87261b37472da1::t_a9c7c52031feb3 1-10
+schemas/compression-trace/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+rust/compresso-eval/src/lib.rs
+  s_87261b37472da1::t_a9c7c52031feb3 1
+docs/privacy/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+apps/web/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+packages/config/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+fixtures/adversarial/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+schemas/cloud-api/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+pnpm-workspace.yaml
+  s_87261b37472da1::t_a9c7c52031feb3 1-3
+rust/compresso-eval/Cargo.toml
+  s_87261b37472da1::t_a9c7c52031feb3 1-10
+rust/compresso-core/Cargo.toml
+  s_87261b37472da1::t_a9c7c52031feb3 1-10
+apps/control-plane/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+rust/compresso-proxy/src/lib.rs
+  s_87261b37472da1::t_a9c7c52031feb3 1
+packages/api-client/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+infra/terraform/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+rust/compresso-mcp/src/lib.rs
+  s_87261b37472da1::t_a9c7c52031feb3 1
+rust/compresso-cli/src/lib.rs
+  s_87261b37472da1::t_a9c7c52031feb3 1
+rust/compresso-integrations/Cargo.toml
+  s_87261b37472da1::t_a9c7c52031feb3 1-7
+rust/compresso-updater/Cargo.toml
+  s_87261b37472da1::t_a9c7c52031feb3 1-7
+apps/admin/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+installers/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+biome.json
+  s_87261b37472da1::t_28b543ce6590a9 7,19-23
+  s_87261b37472da1::t_a9c7c52031feb3 1-6,8-18,24-25
+fixtures/logs/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+fixtures/provider-payloads/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+rust/compresso-proxy/Cargo.toml
+  s_87261b37472da1::t_a9c7c52031feb3 1-7
+schemas/context-graph/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+docs/architecture/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+schemas/local-api/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+.gitignore
+  s_87261b37472da1::t_a9c7c52031feb3 1-6
+rust/compresso-core/src/lib.rs
+  s_87261b37472da1::t_a9c7c52031feb3 1
+rust/compresso-cli/src/main.rs
+  s_87261b37472da1::t_a9c7c52031feb3 1
+docs/integrations/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+rust/compresso-cli/Cargo.toml
+  s_87261b37472da1::t_a9c7c52031feb3 1-18
+rust/compresso-agent/Cargo.toml
+  s_87261b37472da1::t_a9c7c52031feb3 1-7
+rust/compresso-atlas/src/lib.rs
+  s_87261b37472da1::t_a9c7c52031feb3 1
+rust-toolchain.toml
+  s_87261b37472da1::t_a9c7c52031feb3 1-4
+package.json
+  s_87261b37472da1::t_a9c7c52031feb3 1-22
+Cargo.toml
+  s_87261b37472da1::t_a9c7c52031feb3 1-51
+apps/desktop/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+infra/monitoring/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+fixtures/code/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+rust/compresso-integrations/src/lib.rs
+  s_87261b37472da1::t_a9c7c52031feb3 1
+turbo.json
+  s_87261b37472da1::t_a9c7c52031feb3 1-19
+AGENTS.md
+  s_87261b37472da1::t_70ce96e19880a3 1-67
+rust/compresso-updater/src/lib.rs
+  s_87261b37472da1::t_a9c7c52031feb3 1
+fixtures/conversations/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+rust/compresso-mcp/Cargo.toml
+  s_87261b37472da1::t_a9c7c52031feb3 1-12
+rust/compresso-agent/src/lib.rs
+  s_87261b37472da1::t_a9c7c52031feb3 1
+docs/runbooks/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+packages/ui/.gitkeep
+  s_87261b37472da1::t_a9c7c52031feb3 1
+Cargo.lock
+  s_87261b37472da1::t_008cd67116e018 1-219
+pnpm-lock.yaml
+  s_87261b37472da1::t_533a5d01c3cc4a 1-169
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "6f7e5d822a2c4d7fc984d8b04a69f838f5fed4c3",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
