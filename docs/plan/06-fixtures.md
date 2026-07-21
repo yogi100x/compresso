@@ -62,12 +62,12 @@ must_preserve = ["..."]              # exact strings that must appear byte-for-b
 must_not_contain = ["..."]           # strings that must NOT appear anywhere in output node content
 must_not_contain_in_trace = ["..."]  # strings that must NOT appear in the trace/explanation (privacy + injection checks)
 protected_node_ids = ["sys-1"]       # these nodes must exist in the output with byte-identical content
+expect_fallback = false              # true => the engine MUST fall back (fallback_used = true, output == input)
 
 [[recall_probes]]                    # task-success proxy (D40): information an agent would need must survive compression
 question = "What caused the webpack build failure?"          # documentation for reviewers; not evaluated
 answer_substring = "Cannot find module 'left-pad'"           # must appear in compressed output node contents
 protected = true                     # protected probes require 100% recall corpus-wide; unprotected feed the >=99% gate
-expect_fallback = false              # true => the engine MUST fall back (fallback_used = true, output == input)
 
 [expectations.atlas]                 # only for category = code fixtures with input.repo
 min_files = 5                        # files indexed (after ignore rules)

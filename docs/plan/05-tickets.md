@@ -672,7 +672,7 @@ Test cases:
 
 ## E7 — Eval & fixtures
 
-### [ ] E7-01: Fixture loader
+### [x] E7-01: Fixture loader
 Owner: PQ · Estimate: 2d · Depends: E1-05, E2-01
 Files: rust/compresso-eval/src/fixtures.rs, tests in same file
 Description: Implement `FixtureSet` loading the authoritative corpus format from `docs/plan/06-fixtures.md` §2: each fixture directory contains `fixture.toml` declaring exactly one input form (`graph` | `[[input.files]]`/`[[input.nodes]]` | `repo`), an `[expectations]` table (`min_reduction_pct`, `must_preserve`, `must_not_contain`, `must_not_contain_in_trace`, `protected_node_ids`, `expect_fallback`, optional `[expectations.atlas]`), optional `[[recall_probes]]` entries (D40: `question`, `answer_substring`, `protected`), and the top-level `eligible` flag governed by the §4 eligibility rules (adversarial, provider-payloads, and atlas fixtures are ineligible). Loader validates every fixture at load time (unknown TOML keys, name/dir and category/dir mismatch, multiple input forms, eligibility-rule violations are errors), recomputes token counts, and materializes a `ContextGraph` per fixture.

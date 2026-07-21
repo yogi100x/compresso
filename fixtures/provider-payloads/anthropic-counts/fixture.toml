@@ -8,8 +8,14 @@ mode = "safe"
 max_tokens = 4000
 max_latency_ms = 200
 
-[input]
-graph = "anthropic-counts.json"
+# Calibration JSON remains a raw E2-02a asset; the fixture loader materializes
+# it as data instead of misclassifying it as a ContextGraph document.
+[[input.files]]
+path = "anthropic-counts.json"
+kind = "tool_response"
+node_id = "anthropic-calibration-data"
+protected = false
+source_tool = "calibration"
 
 [expectations]
 min_reduction_pct = 0.0
