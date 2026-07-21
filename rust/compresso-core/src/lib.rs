@@ -8,7 +8,7 @@ pub mod tokens;
 pub use graph::{
     ContextEdge, ContextGraph, ContextNode, EdgeKind, GraphError, NodeKind, ProviderTurn, Source,
 };
-pub use strategies::DedupExact;
+pub use strategies::{CollapseLogs, DedupExact};
 pub use strategy::{
     CompressionBudget, CompressionStrategy, Estimate, Lossiness, Mode, RemovalKind, RemovalRecord,
     StrategyError, StrategyOutput, StrategyRegistry,
