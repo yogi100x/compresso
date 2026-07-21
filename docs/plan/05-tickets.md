@@ -323,7 +323,7 @@ Test cases:
 - test_stats_since_filters: op at t=100 and t=200; `stats(Some(150))` counts only the second.
 - test_receipt_roundtrip_and_filter: save claude-code and codex receipts → `receipts(Some("codex"))` returns exactly the codex one with `keys_owned == ["mcp_servers.compresso"]`.
 
-### [ ] E3-04: Repository scanner
+### [x] E3-04: Repository scanner
 Owner: R2 · Estimate: 2d · Depends: E3-02
 Files: rust/compresso-atlas/src/scanner.rs, tests in same file + fixtures under rust/compresso-atlas/tests/fixtures/scan-repo/
 Description: Implement `ScanResult` and `scan(store, repo, root)` per `03-interfaces.md` §4: walk with the `ignore` crate (gitignore-aware), apply built-in exclusions (binary sniff, files > `max_file_bytes`, `node_modules/`, `target/`, `dist/`, `.git/`, secret patterns `.env*`, `*.pem`, `id_rsa*`), hash candidates with blake3, and diff against `Store::file_hashes` to produce `added`/`changed`/`removed`/`skipped` with `SkipReason`.
