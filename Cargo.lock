@@ -197,6 +197,11 @@ name = "compresso-eval"
 version = "0.1.0"
 dependencies = [
  "compresso-core",
+ "jsonschema",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
  "toml",
 ]
 
