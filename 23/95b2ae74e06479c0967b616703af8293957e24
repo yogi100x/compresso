@@ -1,0 +1,26 @@
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_ad813d909c7baf 139
+rust/compresso-core/src/strategy.rs
+  s_87261b37472da1::t_9a3e73b3605d9e 1-14,16-185
+  s_87261b37472da1::t_3e32975bd1404b 15,225-230,275-280,284-289
+  s_87261b37472da1::t_26805a5095510d 186-224,231-274,281-283,290-349
+rust/compresso-core/src/lib.rs
+  s_87261b37472da1::t_26805a5095510d 4
+  s_87261b37472da1::t_9a3e73b3605d9e 10-13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "2395b2ae74e06479c0967b616703af8293957e24",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
