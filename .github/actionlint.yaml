@@ -1,0 +1,4 @@
+# E1-02 deliberately retains the ticket's macOS x86_64 runner label.
+self-hosted-runner:
+  labels:
+    - macos-13

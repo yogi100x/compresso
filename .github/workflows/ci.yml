@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-lint:
+    name: Workflow lint
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Lint CI workflow
+        uses: docker://rhysd/actionlint:1.7.7
+        with:
+          args: .github/workflows/ci.yml
+      - name: Assert required runner matrix
+        run: ruby scripts/ci/check_ci_matrix.rb
+
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-14
+          - macos-13
+          - ubuntu-24.04
+          - windows-2022
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Run tests
+        run: cargo test --workspace
+      - name: Build release CLI
+        run: cargo build --release -p compresso-cli
+      - name: Upload release binary
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: compresso-${{ matrix.os }}
+          path: |
+            target/release/compresso
+            target/release/compresso.exe
+          if-no-files-found: error

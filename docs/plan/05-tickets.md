@@ -23,7 +23,7 @@ Test cases:
 - test_no_internal_deps_in_core: parse `rust/compresso-core/Cargo.toml`, assert no `compresso-*` entries under `[dependencies]`.
 - test_store_never_imports_atlas: parse `rust/compresso-store/Cargo.toml`, assert `compresso-atlas` absent.
 
-### [ ] E1-02: CI workflow
+### [x] E1-02: CI workflow
 Owner: I1 · Estimate: 2d · Depends: E1-01
 Files: .github/workflows/ci.yml, .github/workflows/release.yml (stub)
 Description: Author `ci.yml` per `01-stack-and-workspace.md` §4: rust job matrix (`macos-14`, `macos-13`, `ubuntu-24.04`, `windows-2022`) running `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo build --release -p compresso-cli`; `Swatinem/rust-cache@v2`; release-binary artifact upload on main. The `eval` job is added in E7-04; the `ts` job is gated off until Phase 6. `release.yml` is a named no-op stub until Phase 8 (E12).
