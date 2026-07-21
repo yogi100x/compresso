@@ -1,6 +1,8 @@
 //! Local SQLite persistence boundaries for repositories, files, symbols, and operations.
 
 mod files;
+mod ops;
+mod receipts;
 mod repos;
 mod symbols;
 
@@ -13,6 +15,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use thiserror::Error;
 
 pub use files::{FileLanguage, FileRecord, RelativePathError};
+pub use ops::{ModeledCostSaved, OperationId, OperationRecord, SessionId, StatsSummary};
+pub use receipts::{ReceiptId, ReceiptRecord};
 pub use repos::{FileId, RepoId, RepoRecord};
 pub use symbols::{
     EdgeKind, EdgeRecord, EdgeResolution, SymbolHit, SymbolKind, SymbolRecord, SymbolSelector,
@@ -131,6 +135,48 @@ pub enum StoreError {
     /// Persisted data does not match the typed store contract.
     #[error("invalid stored {field} value: {value}")]
     InvalidStoredValue { field: &'static str, value: String },
+    /// A caller named an operation tool outside the fixed first-slice ledger vocabulary.
+    #[error("unknown operation tool {0:?}")]
+    UnknownOperationTool(String),
+    /// A compression operation omitted its required root trace document.
+    #[error("compression tool {tool:?} requires trace_json")]
+    MissingTrace { tool: String },
+    /// A retrieval operation supplied a trace forbidden by D47.
+    #[error("retrieval tool {tool:?} must not carry trace_json")]
+    UnexpectedTrace { tool: String },
+    /// A retrieval operation omitted its required served-token count.
+    #[error("retrieval tool {tool:?} requires tokens_served")]
+    MissingTokensServed { tool: String },
+    /// A compression operation supplied retrieval-only served-token accounting.
+    #[error("compression tool {tool:?} must not carry tokens_served")]
+    UnexpectedTokensServed { tool: String },
+    /// A compression trace failed JSON parsing or root-schema validation.
+    #[error("invalid compression trace: {reason}")]
+    InvalidTrace { reason: String },
+    /// The operation row and its trace disagree on their primary identity.
+    #[error(
+        "operation id {operation_id:?} does not match trace operation id {trace_operation_id:?}"
+    )]
+    OperationTraceIdMismatch {
+        operation_id: String,
+        trace_operation_id: String,
+    },
+    /// A referenced session does not exist.
+    #[error("session {0} does not exist")]
+    SessionNotFound(String),
+    /// A requested integration receipt does not exist.
+    #[error("integration receipt {0} does not exist")]
+    ReceiptNotFound(ReceiptId),
+    /// JSON serialization failed at a Store persistence boundary.
+    #[error("failed to encode {field} as JSON")]
+    JsonEncoding {
+        field: &'static str,
+        #[source]
+        source: serde_json::Error,
+    },
+    /// Persisted JSON is not the strict shape required by its typed Store DTO.
+    #[error("malformed stored JSON in {field}: {reason}")]
+    MalformedStoredJson { field: &'static str, reason: String },
     /// A migration failed and was rolled back.
     #[error("store migration {version} failed")]
     Migration {
