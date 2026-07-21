@@ -44,7 +44,7 @@ Acceptance criteria:
 Test cases:
 - reqwest core fail/proxy pass; terminal direct spawn fail; secret canary.
 
-### [ ] E1-04: Commit versioned JSON Schemas
+### [x] E1-04: Commit versioned JSON Schemas
 Owner: R1 · Estimate: 1d · Depends: E1-01
 Files: schemas/context-graph/v1.json, schemas/compression-trace/v1.json, rust/compresso-core/tests/schema_meta.rs
 Description: Commit the two authoritative slice schemas verbatim from `02-schemas.md` §1 and §2 under `schemas/`, and add a meta-validation test that compiles each with the `jsonschema` crate so a malformed edit to a schema file fails CI. `schemas/local-api/` and `schemas/cloud-api/` get versioned placeholder directories with a README naming their epic (E8/E10).
