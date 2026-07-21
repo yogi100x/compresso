@@ -1,0 +1,64 @@
+rust/compresso-atlas/tests/fixtures/scan-repo/nested/ignored.tmp
+  s_87261b37472da1::t_ef4130542e0a0d 1
+rust/compresso-atlas/tests/fixtures/scan-repo/ignored.log
+  s_87261b37472da1::t_ef4130542e0a0d 1
+rust/compresso-atlas/Cargo.toml
+  s_87261b37472da1::t_54cc72400a222b 11,14,21-23
+rust/compresso-atlas/src/lib.rs
+  s_87261b37472da1::t_54cc72400a222b 4-8
+rust/compresso-atlas/tests/fixtures/scan-repo/nested/.gitignore
+  s_87261b37472da1::t_ef4130542e0a0d 1
+docs/plan/03-interfaces.md
+  s_87261b37472da1::t_278d3184ce31d2 208-210
+  s_87261b37472da1::t_ad7972407de030 212
+rust/compresso-atlas/tests/fixtures/scan-repo/ignored-dir/never-visit.rs
+  s_87261b37472da1::t_d4535742267d57 1
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_cc1be874b1418f 326
+rust/compresso-atlas/tests/fixtures/scan-repo/.gitignore
+  s_87261b37472da1::t_ef4130542e0a0d 1
+  s_87261b37472da1::t_d4535742267d57 2
+rust/compresso-atlas/tests/fixtures/scan-repo/id_rsa
+  s_87261b37472da1::t_ef4130542e0a0d 1
+rust/compresso-atlas/tests/fixtures/scan-repo/src/util.rs
+  s_87261b37472da1::t_ef4130542e0a0d 1-3
+rust/compresso-atlas/tests/fixtures/scan-repo/.env.local
+  s_87261b37472da1::t_ef4130542e0a0d 1
+rust/compresso-atlas/tests/fixtures/scan-repo/nested/kept.rs
+  s_87261b37472da1::t_ef4130542e0a0d 1
+rust/compresso-atlas/tests/fixtures/scan-repo/server.pem
+  s_87261b37472da1::t_ef4130542e0a0d 1
+rust/compresso-atlas/tests/fixtures/scan-repo/src/main.rs
+  s_87261b37472da1::t_ef4130542e0a0d 1-3
+rust/compresso-atlas/src/scanner.rs
+  s_87261b37472da1::t_ff0dbc8703f2ed 6,89-90
+  s_87261b37472da1::t_71b5f3b039ab94 75-77,339-343,544,549-550,606-610,649-650,660-664,715-716,746,902-904,927-931,945-947,955-956
+  s_87261b37472da1::t_278d3184ce31d2 671-687,690-697,873-880,883-888,978-980
+  s_87261b37472da1::t_95559dec95dc7c 688-689,881-882,981-984
+  s_87261b37472da1::t_d9e2cddeae9d5f 531-543,545-548,551-605,611-648,651-659,665-670,698-714,717-729,731-739,744-745,747-748,773-872,889-901,905-926,932-944,948-954,957-977,985-986
+  s_87261b37472da1::t_d4535742267d57 749-769,771-772
+  s_87261b37472da1::t_3adadc977f5596 287-291,297,730,740-743,770
+  s_87261b37472da1::t_8e8697eeafe120 452,454-458,462-467
+  s_87261b37472da1::t_8042ac71bf1183 453,459-461
+  s_87261b37472da1::t_72b94014260869 1-5,7-74,78-88,91-163,165,171,173-252,258-260,332,334-338,344-351,354,372-373,375-400,408-451,468-530
+  s_87261b37472da1::t_0541223f9596f5 253-257,261-286,292-296,298-331,333,352-353,355-371,374,401-407
+  s_87261b37472da1::t_5651c75ae5c90d 164,166-170,172
+Cargo.lock
+  s_87261b37472da1::t_1ef182fd740165 167,170-171,267-291,482-494,643-658,1090-1098,1444-1453,1557-1565
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "afe0fa33b15575757de696d219aa75aa28946bf5",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
