@@ -1,0 +1,49 @@
+rust/compresso-core/tests/graph_schema_roundtrip.rs
+  s_87261b37472da1::t_4a0f9b6a730340 237
+  s_87261b37472da1::t_99c131d00f1a03 1-4,6-50,52-154,234-236,238-295
+  s_87261b37472da1::t_453136981c3cf8 5,51,155-233
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_3b21f76ca739de 93,98,105
+  s_87261b37472da1::t_7ca613c1a8606e 90
+rust/compresso-core/src/graph.rs
+  s_87261b37472da1::t_453136981c3cf8 203,226,245-263
+  s_87261b37472da1::t_5f1d836f241f85 1-32,35-36,47-115,118-131,136-202,204-225,227-244,264-314,332-387
+  s_87261b37472da1::t_1aeb4521a244bd 33-34,37-46,116-117,132-135
+  s_87261b37472da1::t_4a0f9b6a730340 315-331
+schemas/context-graph/v1.json
+  s_87261b37472da1::t_1aeb4521a244bd 61
+docs/plan/03-interfaces.md
+  s_87261b37472da1::t_1aeb4521a244bd 38-44
+docs/plan/02-schemas.md
+  s_87261b37472da1::t_1aeb4521a244bd 36
+rust/compresso-core/tests/schema_meta.rs
+  s_87261b37472da1::t_1aeb4521a244bd 30-50,58-59,64
+  s_87261b37472da1::t_ee3269a68a04e2 60-63
+  s_87261b37472da1::t_ca133f62b8b149 65
+rust/compresso-core/src/tokens.rs
+  s_87261b37472da1::t_5f1d836f241f85 1-6,8,10-18
+  s_87261b37472da1::t_3b5c2c590cd95e 7,9
+rust/compresso-core/Cargo.toml
+  s_87261b37472da1::t_99c131d00f1a03 10-14
+rust/compresso-core/src/lib.rs
+  s_87261b37472da1::t_1aeb4521a244bd 6-8
+  s_87261b37472da1::t_5f1d836f241f85 2-5,9
+Cargo.lock
+  s_87261b37472da1::t_078937111fd953 107,109,721-740
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "d4dd6fbbac8e48837228b0ff892a6e5cf296acdf",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
