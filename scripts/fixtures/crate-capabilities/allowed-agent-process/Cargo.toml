@@ -4,7 +4,8 @@ version = "0.0.0"
 edition = "2024"
 
 [dependencies]
-duct = "0.13"
-reqwest = "0.12"
+duct = { path = "deps/duct" }
+reqwest = { path = "deps/reqwest" }
 
 [workspace]
+exclude = ["deps/duct", "deps/reqwest"]

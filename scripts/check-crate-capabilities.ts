@@ -1,19 +1,51 @@
 #!/usr/bin/env node
 
+import { execFile } from "node:child_process";
 import type { Dirent } from "node:fs";
-import { readFile, readdir } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { readFile, readdir, stat } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 
-type CapabilityClass = {
-  network: boolean;
-  process: boolean;
+type Capability = "network" | "process";
+
+type CapabilityClass = Record<Capability, boolean>;
+
+type CargoDependency = {
+  name: string;
+  rename: string | null;
+  kind: "dev" | "build" | null;
+  optional: boolean;
+  features: string[];
+  target: string | null;
 };
 
-type Dependency = {
+type CargoTarget = {
   name: string;
-  features: Set<string>;
-  workspace: boolean;
+  kind: string[];
+  "required-features": string[];
+  src_path: string;
+};
+
+type CargoPackage = {
+  id: string;
+  name: string;
+  manifest_path: string;
+  dependencies: CargoDependency[];
+  features: Record<string, string[]>;
+  targets: CargoTarget[];
+};
+
+type CargoResolveNode = {
+  id: string;
+  features: string[];
+  deps: Array<{ pkg: string }>;
+};
+
+type CargoMetadata = {
+  packages: CargoPackage[];
+  workspace_members: string[];
+  resolve: { nodes: CargoResolveNode[] } | null;
 };
 
 export type CheckResult = {
@@ -21,6 +53,8 @@ export type CheckResult = {
   checkedCrates: number;
   violations: string[];
 };
+
+const execFileAsync = promisify(execFile);
 
 const capabilityClasses = {
   "pure-local": { network: false, process: false },
@@ -88,151 +122,47 @@ const processDependencies = new Set([
   "subprocess",
 ]);
 
-const sourceCapabilities = {
-  network: [
-    { label: "std::net", pattern: /\bstd\s*::\s*net\b/u },
-    { label: "tokio::net", pattern: /\btokio\s*::\s*net\b/u },
-    { label: "async_std::net", pattern: /\basync_std\s*::\s*net\b/u },
-    { label: "smol::net", pattern: /\bsmol\s*::\s*net\b/u },
-  ],
-  process: [
-    { label: "std::process", pattern: /\bstd\s*::\s*process\b/u },
-    { label: "tokio::process", pattern: /\btokio\s*::\s*process\b/u },
-    { label: "async_process", pattern: /\basync_process\b/u },
-  ],
-};
+const sourceCapabilityPaths: Array<{
+  capability: Capability;
+  root: string;
+  member: string;
+}> = [
+  { capability: "network", root: "std", member: "net" },
+  { capability: "network", root: "tokio", member: "net" },
+  { capability: "network", root: "async_std", member: "net" },
+  { capability: "network", root: "smol", member: "net" },
+  { capability: "process", root: "std", member: "process" },
+  { capability: "process", root: "tokio", member: "process" },
+  { capability: "process", root: "async_process", member: "Command" },
+];
 
-function stripTomlComment(line: string) {
-  let quoted = false;
-  let escaped = false;
+function regexEscape(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
 
-  for (let index = 0; index < line.length; index += 1) {
-    const character = line[index];
-    if (character === '"' && !escaped) {
-      quoted = !quoted;
-    }
-    if (character === "#" && !quoted) {
-      return line.slice(0, index);
-    }
-    escaped = character === "\\" && !escaped;
-    if (character !== "\\") {
-      escaped = false;
-    }
+async function cargoMetadata(manifestPath: string, resolved: boolean) {
+  const args = ["metadata", "--format-version", "1"];
+  if (resolved) {
+    args.push("--locked");
+  } else {
+    args.push("--no-deps");
   }
+  args.push("--manifest-path", manifestPath);
 
-  return line;
-}
-
-function packageName(manifest: string) {
-  const packageSection = manifest.match(
-    /(?:^|\n)\s*\[package\]\s*\n([\s\S]*?)(?=\n\s*\[|$)/u,
-  )?.[1];
-  return packageSection?.match(/^\s*name\s*=\s*["']([^"']+)["']/mu)?.[1];
-}
-
-function dependencyFromEntry(key: string, value: string): Dependency {
-  const normalizedKey = key.replace(/\.workspace$/u, "");
-  const packageOverride = value.match(/\bpackage\s*=\s*["']([^"']+)["']/u)?.[1];
-  const featureList = value.match(/\bfeatures\s*=\s*\[([^\]]*)\]/u)?.[1] ?? "";
-  const features = new Set(
-    [...featureList.matchAll(/["']([^"']+)["']/gu)].map((match) => match[1]),
-  );
-
-  return {
-    name: packageOverride ?? normalizedKey,
-    features,
-    workspace:
-      /\bworkspace\s*=\s*true\b/u.test(value) || /\.workspace\s*=/u.test(key),
-  };
-}
-
-function parseDependencies(manifest: string) {
-  const dependencies = new Map<string, Dependency>();
-  const lines = manifest.split(/\r?\n/u);
-  let section = "";
-  let dependencyTable: string | undefined;
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = stripTomlComment(lines[index]).trim();
-    const sectionMatch = line.match(/^\[([^\]]+)\]$/u);
-    if (sectionMatch) {
-      section = sectionMatch[1];
-      dependencyTable = section.match(
-        /(?:^|\.)(?:dependencies|dev-dependencies|build-dependencies)\.([A-Za-z0-9_-]+)$/u,
-      )?.[1];
-      if (dependencyTable && !dependencies.has(dependencyTable)) {
-        dependencies.set(
-          dependencyTable,
-          dependencyFromEntry(dependencyTable, ""),
-        );
-      }
-      continue;
-    }
-
-    if (dependencyTable) {
-      if (line.startsWith("package")) {
-        const current = dependencies.get(dependencyTable);
-        if (current) {
-          dependencies.set(
-            dependencyTable,
-            dependencyFromEntry(dependencyTable, line),
-          );
-        }
-      }
-      continue;
-    }
-
-    if (
-      !/(?:^|\.)(?:dependencies|dev-dependencies|build-dependencies)$/u.test(
-        section,
-      )
-    ) {
-      continue;
-    }
-
-    const entry = line.match(/^([A-Za-z0-9_-]+(?:\.workspace)?)\s*=\s*(.*)$/u);
-    if (!entry) {
-      continue;
-    }
-
-    let value = entry[2];
-    let balance =
-      (value.match(/[\[{]/gu)?.length ?? 0) -
-      (value.match(/[\]}]/gu)?.length ?? 0);
-    while (balance > 0 && index + 1 < lines.length) {
-      index += 1;
-      const continuation = stripTomlComment(lines[index]).trim();
-      value += ` ${continuation}`;
-      balance +=
-        (continuation.match(/[\[{]/gu)?.length ?? 0) -
-        (continuation.match(/[\]}]/gu)?.length ?? 0);
-    }
-
-    const key = entry[1].replace(/\.workspace$/u, "");
-    dependencies.set(key, dependencyFromEntry(entry[1], value));
+  try {
+    const { stdout } = await execFileAsync("cargo", args, {
+      cwd: dirname(manifestPath),
+      encoding: "utf8",
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    return JSON.parse(stdout) as CargoMetadata;
+  } catch (error) {
+    const stderr = (error as { stderr?: string }).stderr?.trim();
+    throw new Error(
+      `cargo metadata failed for ${manifestPath}${stderr ? `: ${stderr}` : ""}`,
+      { cause: error },
+    );
   }
-
-  return [...dependencies.values()];
-}
-
-function mergeWorkspaceFeatures(
-  dependencies: Dependency[],
-  workspace: Map<string, Dependency>,
-) {
-  return dependencies.map((dependency) => {
-    if (!dependency.workspace) {
-      return dependency;
-    }
-
-    const inherited = workspace.get(dependency.name);
-    return {
-      ...dependency,
-      features: new Set([
-        ...(inherited?.features ?? []),
-        ...dependency.features,
-      ]),
-    };
-  });
 }
 
 function stripRustCommentsAndStrings(source: string) {
@@ -329,6 +259,66 @@ function stripRustCommentsAndStrings(source: string) {
   return output.join("");
 }
 
+function sourceCapabilityUses(source: string) {
+  const uses: Array<{ capability: Capability; label: string }> = [];
+
+  for (const path of sourceCapabilityPaths) {
+    const root = regexEscape(path.root);
+    const member = regexEscape(path.member);
+    const direct = new RegExp(`\\b${root}\\s*::\\s*${member}\\b`, "u");
+    if (direct.test(source)) {
+      uses.push({
+        capability: path.capability,
+        label: `${path.root}::${path.member}`,
+      });
+    }
+
+    const grouped = new RegExp(
+      `\\buse\\s+${root}\\s*::\\s*\\{[^}]*\\b${member}\\b`,
+      "u",
+    );
+    if (grouped.test(source)) {
+      uses.push({
+        capability: path.capability,
+        label: `${path.root}::{${path.member}}`,
+      });
+    }
+
+    const aliases = new Set<string>();
+    for (const match of source.matchAll(
+      new RegExp(
+        `\\b(?:use\\s+${root}|extern\\s+crate\\s+${root})\\s+as\\s+([A-Za-z_][A-Za-z0-9_]*)`,
+        "gu",
+      ),
+    )) {
+      aliases.add(match[1]);
+    }
+    for (const match of source.matchAll(
+      new RegExp(
+        `\\buse\\s+${root}\\s*::\\s*\\{[^}]*\\bself\\s+as\\s+([A-Za-z_][A-Za-z0-9_]*)`,
+        "gu",
+      ),
+    )) {
+      aliases.add(match[1]);
+    }
+
+    for (const alias of aliases) {
+      const aliased = new RegExp(
+        `\\b${regexEscape(alias)}\\s*::\\s*${member}\\b`,
+        "u",
+      );
+      if (aliased.test(source)) {
+        uses.push({
+          capability: path.capability,
+          label: `${alias}::${path.member} (alias of ${path.root})`,
+        });
+      }
+    }
+  }
+
+  return uses;
+}
+
 async function rustSourceFiles(crateRoot: string) {
   const files: string[] = [];
   const roots = ["src", "tests", "benches", "examples"];
@@ -359,7 +349,7 @@ async function rustSourceFiles(crateRoot: string) {
   }
 
   try {
-    await readFile(join(crateRoot, "build.rs"));
+    await stat(join(crateRoot, "build.rs"));
     files.push(join(crateRoot, "build.rs"));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -370,137 +360,261 @@ async function rustSourceFiles(crateRoot: string) {
   return files.sort();
 }
 
-async function manifestPaths(root: string) {
-  const rootManifest = join(root, "Cargo.toml");
-  const paths: string[] = [];
-  let rootContents = "";
-
-  try {
-    rootContents = await readFile(rootManifest, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
+function featureReaches(
+  features: Record<string, string[]>,
+  start: string,
+  target: string,
+) {
+  const pending = [start];
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current || visited.has(current)) {
+      continue;
     }
-  }
-
-  if (packageName(rootContents)) {
-    paths.push(rootManifest);
-    return { paths, rootContents };
-  }
-
-  const rustRoot = join(root, "rust");
-  let entries: Dirent[];
-  try {
-    entries = await readdir(rustRoot, { withFileTypes: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { paths, rootContents };
-    }
-    throw error;
-  }
-
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      const manifest = join(rustRoot, entry.name, "Cargo.toml");
-      try {
-        await readFile(manifest);
-        paths.push(manifest);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-          throw error;
-        }
+    visited.add(current);
+    for (const reference of features[current] ?? []) {
+      if (reference === target) {
+        return true;
+      }
+      if (Object.hasOwn(features, reference)) {
+        pending.push(reference);
       }
     }
   }
+  return false;
+}
 
-  return { paths: paths.sort(), rootContents };
+function isEvalCalibrationDependency(
+  pkg: CargoPackage,
+  dependency: CargoDependency,
+) {
+  if (
+    pkg.name !== "compresso-eval" ||
+    dependency.name !== "reqwest" ||
+    dependency.rename !== null ||
+    dependency.kind !== null ||
+    dependency.target !== null ||
+    !dependency.optional
+  ) {
+    return false;
+  }
+
+  const calibration = pkg.features.calibration ?? [];
+  if (!calibration.includes("dep:reqwest")) {
+    return false;
+  }
+
+  for (const [feature, references] of Object.entries(pkg.features)) {
+    if (
+      feature !== "calibration" &&
+      (references.some(
+        (reference) =>
+          reference === "dep:reqwest" ||
+          reference === "reqwest" ||
+          reference.startsWith("reqwest/"),
+      ) ||
+        featureReaches(pkg.features, feature, "calibration"))
+    ) {
+      return false;
+    }
+  }
+
+  return pkg.targets.some(
+    (target) =>
+      target.name === "compresso-eval-calibrate" &&
+      target.kind.includes("bin") &&
+      target["required-features"].length === 1 &&
+      target["required-features"][0] === "calibration",
+  );
+}
+
+function dependencyCapabilities(dependency: CargoDependency) {
+  const capabilities = new Set<Capability>();
+  if (networkDependencies.has(dependency.name)) {
+    capabilities.add("network");
+  }
+  if (processDependencies.has(dependency.name)) {
+    capabilities.add("process");
+  }
+  if (dependency.name === "tokio" && dependency.features.includes("process")) {
+    capabilities.add("process");
+  }
+  return capabilities;
+}
+
+function packageCapabilities(pkg: CargoPackage, node: CargoResolveNode) {
+  const capabilities = new Set<Capability>();
+  if (networkDependencies.has(pkg.name)) {
+    capabilities.add("network");
+  }
+  if (processDependencies.has(pkg.name)) {
+    capabilities.add("process");
+  }
+  if (pkg.name === "tokio" && node.features.includes("process")) {
+    capabilities.add("process");
+  }
+  return capabilities;
+}
+
+function resolvedCapabilityPath(
+  metadata: CargoMetadata,
+  rootId: string,
+  capability: Capability,
+) {
+  if (!metadata.resolve) {
+    return undefined;
+  }
+
+  const packages = new Map(metadata.packages.map((pkg) => [pkg.id, pkg]));
+  const nodes = new Map(metadata.resolve.nodes.map((node) => [node.id, node]));
+  const root = packages.get(rootId);
+  const pending = [{ id: rootId, path: root ? [root.name] : [rootId] }];
+  const visited = new Set([rootId]);
+
+  while (pending.length > 0) {
+    const current = pending.shift();
+    if (!current) {
+      break;
+    }
+    const node = nodes.get(current.id);
+    if (!node) {
+      continue;
+    }
+
+    for (const dependency of node.deps) {
+      if (visited.has(dependency.pkg)) {
+        continue;
+      }
+      visited.add(dependency.pkg);
+      const dependencyPackage = packages.get(dependency.pkg);
+      const dependencyNode = nodes.get(dependency.pkg);
+      const dependencyName = dependencyPackage?.name ?? dependency.pkg;
+      const path = [...current.path, dependencyName];
+      if (
+        dependencyPackage &&
+        dependencyNode &&
+        packageCapabilities(dependencyPackage, dependencyNode).has(capability)
+      ) {
+        return path;
+      }
+      pending.push({ id: dependency.pkg, path });
+    }
+  }
+
+  return undefined;
+}
+
+async function hasLockfile(root: string) {
+  try {
+    await stat(join(root, "Cargo.lock"));
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
 }
 
 export async function checkWorkspace(
   root = process.cwd(),
 ): Promise<CheckResult> {
   const workspaceRoot = resolve(root);
-  const { paths, rootContents } = await manifestPaths(workspaceRoot);
-  const workspaceDependencies = new Map(
-    parseDependencies(rootContents).map((dependency) => [
-      dependency.name,
-      dependency,
-    ]),
+  const manifestPath = join(workspaceRoot, "Cargo.toml");
+  const declared = await cargoMetadata(manifestPath, false);
+  const workspacePackages = new Map(
+    declared.packages.map((pkg) => [pkg.id, pkg]),
   );
-  const violations: string[] = [];
+  const violations = new Set<string>();
 
-  if (paths.length === 0) {
-    violations.push(`${workspaceRoot}: no Rust crate manifests found`);
+  if (declared.workspace_members.length === 0) {
+    violations.add(`${workspaceRoot}: no Rust workspace members found`);
   }
 
-  for (const manifestPath of paths) {
-    const manifest = await readFile(manifestPath, "utf8");
-    const name = packageName(manifest) ?? basename(resolve(manifestPath, ".."));
-    const className = crateClasses.get(name);
+  for (const memberId of declared.workspace_members) {
+    const pkg = workspacePackages.get(memberId);
+    if (!pkg) {
+      violations.add(`${memberId}: Cargo omitted workspace member metadata`);
+      continue;
+    }
+    const className = crateClasses.get(pkg.name);
     if (!className) {
-      violations.push(
-        `${name}: unknown capability class; add an approved matrix entry before use`,
+      violations.add(
+        `${pkg.name}: unknown capability class; add an approved matrix entry before use`,
       );
       continue;
     }
 
     const capabilities = capabilityClasses[className];
-    const dependencies = mergeWorkspaceFeatures(
-      parseDependencies(manifest),
-      workspaceDependencies,
-    );
-
-    for (const dependency of dependencies) {
-      if (!capabilities.network && networkDependencies.has(dependency.name)) {
-        violations.push(
-          `${name} (${className}): dependency ${dependency.name} grants network capability`,
-        );
-      }
-      if (!capabilities.process && processDependencies.has(dependency.name)) {
-        violations.push(
-          `${name} (${className}): dependency ${dependency.name} grants process capability`,
-        );
-      }
-      if (
-        !capabilities.process &&
-        dependency.name === "tokio" &&
-        dependency.features.has("process")
-      ) {
-        violations.push(
-          `${name} (${className}): tokio process feature grants process capability`,
-        );
+    for (const dependency of pkg.dependencies) {
+      for (const capability of dependencyCapabilities(dependency)) {
+        if (
+          !capabilities[capability] &&
+          !(
+            capability === "network" &&
+            isEvalCalibrationDependency(pkg, dependency)
+          )
+        ) {
+          const alias = dependency.rename
+            ? ` (renamed ${dependency.rename})`
+            : "";
+          violations.add(
+            `${pkg.name} (${className}): dependency ${dependency.name}${alias} grants ${capability} capability`,
+          );
+        }
       }
     }
 
     for (const sourcePath of await rustSourceFiles(
-      resolve(manifestPath, ".."),
+      dirname(pkg.manifest_path),
     )) {
       const source = stripRustCommentsAndStrings(
         await readFile(sourcePath, "utf8"),
       );
-      for (const [capability, checks] of Object.entries(sourceCapabilities)) {
-        if (capabilities[capability as keyof CapabilityClass]) {
-          continue;
-        }
-        for (const check of checks) {
-          if (check.pattern.test(source)) {
-            violations.push(
-              `${name} (${className}): process API ${check.label} is forbidden in ${sourcePath}`.replace(
-                "process API",
-                `${capability} API`,
-              ),
-            );
-          }
+      for (const use of sourceCapabilityUses(source)) {
+        if (!capabilities[use.capability]) {
+          violations.add(
+            `${pkg.name} (${className}): ${use.capability} API ${use.label} is forbidden in ${sourcePath}`,
+          );
         }
       }
     }
   }
 
-  violations.sort();
+  if (await hasLockfile(workspaceRoot)) {
+    const resolved = await cargoMetadata(manifestPath, true);
+    for (const memberId of resolved.workspace_members) {
+      const pkg = resolved.packages.find(
+        (candidate) => candidate.id === memberId,
+      );
+      if (!pkg) {
+        continue;
+      }
+      const className = crateClasses.get(pkg.name);
+      if (!className) {
+        continue;
+      }
+      const capabilities = capabilityClasses[className];
+      for (const capability of ["network", "process"] as const) {
+        if (capabilities[capability]) {
+          continue;
+        }
+        const path = resolvedCapabilityPath(resolved, memberId, capability);
+        if (path) {
+          violations.add(
+            `${pkg.name} (${className}): resolved dependency path ${path.join(" -> ")} grants ${capability} capability`,
+          );
+        }
+      }
+    }
+  }
+
+  const sortedViolations = [...violations].sort();
   return {
-    ok: violations.length === 0,
-    checkedCrates: paths.length,
-    violations,
+    ok: sortedViolations.length === 0,
+    checkedCrates: declared.workspace_members.length,
+    violations: sortedViolations,
   };
 }
 
