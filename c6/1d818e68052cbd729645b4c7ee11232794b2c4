@@ -1,0 +1,19 @@
+docs/plan/AUDIT-2026-07-21-r2.md
+  s_113efb253e9989::t_fe2e52a46b3073 73,108-112,115,142-159
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "c61d818e68052cbd729645b4c7ee11232794b2c4",
+  "prompts": {},
+  "sessions": {
+    "s_113efb253e9989": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "131b5d4d-b8c8-4f56-ae95-f52b77b5f684",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
