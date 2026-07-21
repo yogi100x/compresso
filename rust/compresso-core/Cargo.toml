@@ -16,4 +16,5 @@ tiktoken-rs.workspace = true
 
 [dev-dependencies]
 jsonschema.workspace = true
+proptest.workspace = true
 toml.workspace = true

@@ -238,7 +238,7 @@ Test cases:
 - test_safe_mode_on_log_fixture: 500-line log fixture in Safe mode → `after_tokens < before_tokens × 0.5`, `fallback_used == false`, `strategy_results` includes `collapse_logs` with `applied == true`.
 - test_deterministic_output: two compress calls on the same input → outputs serialize to identical JSON (excluding operation_id/created_at).
 
-### [ ] E2-10: Property tests for engine invariants
+### [x] E2-10: Property tests for engine invariants
 Owner: R1 · Estimate: 1d · Depends: E2-09
 Files: rust/compresso-core/tests/proptest_engine.rs
 Description: proptest generators for arbitrary `ContextGraph`s (random kinds, protection flags, contents including unicode, empty strings, lone surrogate-free control chars, JSON and non-JSON) and budgets; assert the two core invariants across thousands of cases: compress never mutates protected nodes, and in Safe mode output tokens ≤ input tokens.
