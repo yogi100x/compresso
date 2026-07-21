@@ -136,7 +136,7 @@ Test cases:
 - test_calibrate_requires_api_key: `compresso eval calibrate-anthropic` without `ANTHROPIC_API_KEY` exits 1 with `error.code == "missing_api_key"` and writes nothing.
 - test_calibrate_never_in_ci: repo lint asserts no CI workflow invokes `calibrate-anthropic`.
 
-### [ ] E2-03: CompressionStrategy trait and StrategyRegistry
+### [x] E2-03: CompressionStrategy trait and StrategyRegistry
 Owner: R1 · Estimate: 1d · Depends: E2-01, E2-02
 Files: rust/compresso-core/src/strategy.rs, tests in same file
 Description: Implement `Estimate`, `StrategyOutput`, `CompressionStrategy` (with `id`, `supports`, `estimate`, `execute`), `StrategyError`, and `StrategyRegistry` per `03-interfaces.md` §2.3. `StrategyRegistry::safe_default(Mode::Safe)` returns the ordered list `[dedup_exact, collapse_logs, compact_json, pack_budget]`; `Mode::Passthrough` returns an empty registry. Add `StrategyRegistry::permitted(&self, lossiness: Lossiness) -> Vec<&dyn CompressionStrategy>` enforcing the D39 lossiness taxonomy (03-interfaces §2.3 table): `Lossiness::None` → `dedup_exact` only; `Structural` (safe-mode default) → all four; `Summarizing` reserved for post-slice aggressive mode. Ships with a `NoopStrategy` test double so the registry is testable before E2-04..07 land.
