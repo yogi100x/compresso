@@ -58,6 +58,7 @@
         "protected": { "type": "boolean" },
         "recency": {
           "type": ["integer", "null"],
+          "minimum": 0,
           "description": "unix seconds"
         },
         "metadata": { "type": "object" },
