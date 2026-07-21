@@ -210,7 +210,7 @@ Test cases:
 - test_edges_pruned: edge A→B where B is dropped → edge absent from output and `output.validate()` passes.
 - test_deterministic_tiebreak: two identical-score nodes "n_a" and "n_b" → "n_a" dropped first on two consecutive runs (assert equality of both outputs).
 
-### [ ] E2-08: Safety module with eleven mandatory checks
+### [x] E2-08: Safety module with eleven mandatory checks
 Owner: R1 · Estimate: 2d · Depends: E2-01, E2-02
 Files: rust/compresso-core/src/safety.rs
 Description: Implement the eleven checks in 03 §2.5 in order.
