@@ -219,7 +219,7 @@ Acceptance criteria:
 Test cases:
 - one failure per check; all-pass; every failure restores bytes.
 
-### [ ] E2-09: Engine::compress pipeline, trace generation, fallback
+### [x] E2-09: Engine::compress pipeline, trace generation, fallback
 Owner: R1 · Estimate: 2d · Depends: E2-04, E2-05, E2-06, E2-07, E2-08, E1-04
 Files: rust/compresso-core/src/engine.rs, rust/compresso-core/src/trace.rs, tests in both + rust/compresso-core/tests/trace_schema.rs
 Description: Implement `Mode`, `CompressionBudget`, `Lossiness`, `CompressionResult`, `Engine::new(mode, counter)`, and `Engine::compress(input, budget) -> CompressionResult` per `03-interfaces.md` §2.4, plus `Trace` serialization matching `schemas/compression-trace/v1.json`. Pipeline per build-doc §10.3: validate → mark protected → run registry strategies in order within the remaining latency budget → `safety::run_all` on the cumulative result → on any strategy error, failed check, or panic (caught via `catch_unwind`), restore the original graph and set `fallback_used`/`fallback_reason`. `compress` **never returns Err**. Traces carry ULID `operation_id`, per-strategy `StrategyResult`s, all safety checks, and a human-readable explanation with no raw content.
