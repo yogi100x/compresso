@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::graph::{ContextGraph, NodeKind};
-use crate::strategies::{CollapseLogs, CompactJson, DedupExact};
+use crate::strategies::{CollapseLogs, CompactJson, DedupExact, PackBudget};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -81,40 +81,6 @@ pub trait CompressionStrategy: Send + Sync {
     ) -> Result<StrategyOutput, StrategyError>;
 }
 
-struct StubStrategy {
-    id: &'static str,
-}
-
-impl StubStrategy {
-    const fn new(id: &'static str) -> Self {
-        Self { id }
-    }
-}
-
-impl CompressionStrategy for StubStrategy {
-    fn id(&self) -> &'static str {
-        self.id
-    }
-
-    fn supports(&self, _input: &ContextGraph) -> bool {
-        false
-    }
-
-    fn estimate(&self, _input: &ContextGraph) -> Estimate {
-        Estimate::default()
-    }
-
-    fn execute(
-        &self,
-        _input: &ContextGraph,
-        _budget: &CompressionBudget,
-    ) -> Result<StrategyOutput, StrategyError> {
-        Err(StrategyError::NotImplemented {
-            strategy_id: self.id,
-        })
-    }
-}
-
 pub struct StrategyRegistry {
     strategies: Vec<Box<dyn CompressionStrategy>>,
 }
@@ -126,7 +92,7 @@ impl StrategyRegistry {
                 Box::new(DedupExact),
                 Box::new(CollapseLogs),
                 Box::new(CompactJson),
-                Box::new(StubStrategy::new("pack_budget")),
+                Box::new(PackBudget),
             ],
             Mode::Balanced | Mode::Aggressive | Mode::Passthrough => Vec::new(),
         };
@@ -289,19 +255,6 @@ mod tests {
                 "pack_budget"
             ]
         );
-    }
-
-    #[test]
-    fn test_remaining_stubs_return_typed_not_implemented_error() {
-        let registry = StrategyRegistry::safe_default(Mode::Safe);
-        for strategy in registry.strategies().iter().skip(3) {
-            assert_eq!(
-                strategy.execute(&empty_graph(), &test_budget()),
-                Err(StrategyError::NotImplemented {
-                    strategy_id: strategy.id(),
-                })
-            );
-        }
     }
 
     #[test]
