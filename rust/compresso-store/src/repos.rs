@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{OptionalExtension, params};
 
+use crate::files::validate_nonempty;
 use crate::{Store, StoreError, unix_timestamp};
 
 pub type RepoId = i64;
@@ -16,6 +17,13 @@ pub struct RepoRecord {
     pub parser_version: String,
     pub schema_version: u32,
     pub last_indexed_at: Option<i64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IndexVersionRecord {
+    pub parser_version: String,
+    pub schema_version: u32,
+    pub created_at: i64,
 }
 
 impl Store {
@@ -67,6 +75,59 @@ impl Store {
             .optional()?;
         raw.map(decode_repo).transpose()
     }
+
+    /// Returns the most recently stamped parser/schema version for a repository.
+    pub fn latest_index_version(
+        &self,
+        repo: RepoId,
+    ) -> Result<Option<IndexVersionRecord>, StoreError> {
+        let connection = self.connection()?;
+        ensure_repo_exists(&connection, repo)?;
+        let raw = connection
+            .query_row(
+                "SELECT parser_version, schema_version, created_at FROM index_versions WHERE repo_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                [repo],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        raw.map(decode_index_version).transpose()
+    }
+
+    /// Appends an index-version stamp and updates the repository's current version atomically.
+    pub fn stamp_index_version(
+        &self,
+        repo: RepoId,
+        parser_version: &str,
+        schema_version: u32,
+    ) -> Result<(), StoreError> {
+        validate_nonempty("index parser_version", parser_version)?;
+        if schema_version == 0 {
+            return Err(StoreError::InvalidField {
+                field: "index schema_version",
+                reason: "must be positive",
+            });
+        }
+        let created_at = unix_timestamp()?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        ensure_repo_exists(&transaction, repo)?;
+        transaction.execute(
+            "INSERT INTO index_versions (repo_id, parser_version, schema_version, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![repo, parser_version, i64::from(schema_version), created_at],
+        )?;
+        transaction.execute(
+            "UPDATE repositories SET parser_version = ?2, schema_version = ?3, last_indexed_at = ?4 WHERE id = ?1",
+            params![repo, parser_version, i64::from(schema_version), created_at],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
 }
 
 pub(crate) fn ensure_repo_exists(
@@ -107,6 +168,26 @@ fn decode_repo(
         parser_version,
         schema_version,
         last_indexed_at,
+    })
+}
+
+fn decode_index_version(raw: (String, i64, i64)) -> Result<IndexVersionRecord, StoreError> {
+    let (parser_version, schema_version, created_at) = raw;
+    let schema_version =
+        u32::try_from(schema_version).map_err(|_| StoreError::InvalidStoredValue {
+            field: "index_versions.schema_version",
+            value: schema_version.to_string(),
+        })?;
+    if schema_version == 0 {
+        return Err(StoreError::InvalidStoredValue {
+            field: "index_versions.schema_version",
+            value: schema_version.to_string(),
+        });
+    }
+    Ok(IndexVersionRecord {
+        parser_version,
+        schema_version,
+        created_at,
     })
 }
 
@@ -169,5 +250,42 @@ mod tests {
             store.approve_repo(&file),
             Err(StoreError::RepositoryRootNotDirectory { path }) if path == canonical_file
         ));
+    }
+
+    #[test]
+    fn test_index_version_stamp_updates_ledger_and_repository() {
+        let directory = tempdir().expect("temp directory should be created");
+        let root = directory.path().join("repo");
+        fs::create_dir(&root).expect("repository should be created");
+        let store = Store::open(&directory.path().join("compresso.db")).expect("store should open");
+        let repo = store
+            .approve_repo(&root)
+            .expect("repository should approve");
+        assert_eq!(
+            store
+                .latest_index_version(repo)
+                .expect("version lookup should succeed"),
+            None
+        );
+
+        store
+            .stamp_index_version(repo, "0.0.2", 1)
+            .expect("version should stamp");
+
+        let version = store
+            .latest_index_version(repo)
+            .expect("version lookup should succeed")
+            .expect("version should exist");
+        assert_eq!(version.parser_version, "0.0.2");
+        assert_eq!(version.schema_version, 1);
+        assert!(version.created_at > 0);
+        let canonical = fs::canonicalize(root).expect("root should canonicalize");
+        let repository = store
+            .repo_by_root(&canonical)
+            .expect("repository lookup should succeed")
+            .expect("repository should exist");
+        assert_eq!(repository.parser_version, "0.0.2");
+        assert_eq!(repository.schema_version, 1);
+        assert_eq!(repository.last_indexed_at, Some(version.created_at));
     }
 }

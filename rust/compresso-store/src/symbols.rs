@@ -3,8 +3,8 @@ use std::fmt::Write;
 use rusqlite::{OptionalExtension, Row, params};
 
 use crate::files::{
-    decode_file_record, raw_file_from_row, sqlite_integer_from_usize, validate_nonempty,
-    validate_relative_path,
+    decode_file_record, raw_file_from_row, sqlite_integer_from_u64, sqlite_integer_from_usize,
+    validate_nonempty, validate_relative_path,
 };
 use crate::repos::ensure_repo_exists;
 use crate::{FileId, FileRecord, RepoId, Store, StoreError};
@@ -144,10 +144,6 @@ impl Store {
         symbols: &[SymbolRecord],
         edges: &[EdgeRecord],
     ) -> Result<(), StoreError> {
-        for edge in edges {
-            validate_nonempty("edge to_path", &edge.to_path)?;
-        }
-
         let mut connection = self.connection()?;
         let transaction = connection.transaction()?;
         let repo = transaction
@@ -156,52 +152,44 @@ impl Store {
             })
             .optional()?
             .ok_or(StoreError::FileNotFound(file))?;
-        let prepared_edges = edges
-            .iter()
-            .map(|edge| prepare_edge(&transaction, repo, edge))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        transaction.execute("DELETE FROM edges WHERE from_file_id = ?1", [file])?;
-        transaction.execute("DELETE FROM symbols WHERE file_id = ?1", [file])?;
-
-        {
-            let mut statement = transaction.prepare(
-                "INSERT INTO symbols (file_id, name, qualified_name, kind, signature, start_line, end_line, token_estimate) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            )?;
-            for symbol in symbols {
-                validate_symbol(symbol)?;
-                statement.execute(params![
-                    file,
-                    &symbol.name,
-                    &symbol.qualified_name,
-                    symbol.kind.as_db(),
-                    &symbol.signature,
-                    i64::from(symbol.start_line),
-                    i64::from(symbol.end_line),
-                    sqlite_integer_from_usize("symbol token_estimate", symbol.token_estimate)?,
-                ])?;
-            }
-        }
-
-        {
-            let mut statement = transaction.prepare(
-                "INSERT INTO edges (repo_id, from_file_id, to_path, to_file_id, resolution_status, resolution_detail, kind) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            )?;
-            for edge in prepared_edges {
-                statement.execute(params![
-                    repo,
-                    file,
-                    edge.to_path,
-                    edge.to_file_id,
-                    edge.resolution_status,
-                    edge.resolution_detail,
-                    edge.kind,
-                ])?;
-            }
-        }
-
+        replace_symbols_in_transaction(&transaction, file, repo, symbols, edges)?;
         transaction.commit()?;
         Ok(())
+    }
+
+    /// Atomically upserts one indexed file and replaces all of its derived rows.
+    pub fn replace_indexed_file(
+        &self,
+        repo: RepoId,
+        record: &FileRecord,
+        symbols: &[SymbolRecord],
+        edges: &[EdgeRecord],
+    ) -> Result<FileId, StoreError> {
+        validate_relative_path(&record.path)?;
+        validate_nonempty("file hash", &record.hash)?;
+        let size_bytes = sqlite_integer_from_u64("file size_bytes", record.size_bytes)?;
+        let token_estimate =
+            sqlite_integer_from_usize("file token_estimate", record.token_estimate)?;
+        let language = record.language.map(|language| language.as_db());
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction()?;
+        ensure_repo_exists(&transaction, repo)?;
+        let file = transaction.query_row(
+            "INSERT INTO files (repo_id, path, hash, language, size_bytes, token_estimate, indexed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(repo_id, path) DO UPDATE SET hash = excluded.hash, language = excluded.language, size_bytes = excluded.size_bytes, token_estimate = excluded.token_estimate, indexed_at = excluded.indexed_at RETURNING id",
+            params![
+                repo,
+                &record.path,
+                &record.hash,
+                language,
+                size_bytes,
+                token_estimate,
+                record.indexed_at,
+            ],
+            |row| row.get(0),
+        )?;
+        replace_symbols_in_transaction(&transaction, file, repo, symbols, edges)?;
+        transaction.commit()?;
+        Ok(file)
     }
 
     /// Searches indexed symbol fields using a literal FTS5 trigram expression.
@@ -329,6 +317,61 @@ impl Store {
             .map(|(_, file, symbol)| (file, symbol))
             .collect())
     }
+}
+
+fn replace_symbols_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    file: FileId,
+    repo: RepoId,
+    symbols: &[SymbolRecord],
+    edges: &[EdgeRecord],
+) -> Result<(), StoreError> {
+    for edge in edges {
+        validate_nonempty("edge to_path", &edge.to_path)?;
+    }
+    let prepared_edges = edges
+        .iter()
+        .map(|edge| prepare_edge(transaction, repo, edge))
+        .collect::<Result<Vec<_>, _>>()?;
+    transaction.execute("DELETE FROM edges WHERE from_file_id = ?1", [file])?;
+    transaction.execute("DELETE FROM symbols WHERE file_id = ?1", [file])?;
+
+    {
+        let mut statement = transaction.prepare(
+            "INSERT INTO symbols (file_id, name, qualified_name, kind, signature, start_line, end_line, token_estimate) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )?;
+        for symbol in symbols {
+            validate_symbol(symbol)?;
+            statement.execute(params![
+                file,
+                &symbol.name,
+                &symbol.qualified_name,
+                symbol.kind.as_db(),
+                &symbol.signature,
+                i64::from(symbol.start_line),
+                i64::from(symbol.end_line),
+                sqlite_integer_from_usize("symbol token_estimate", symbol.token_estimate)?,
+            ])?;
+        }
+    }
+
+    {
+        let mut statement = transaction.prepare(
+            "INSERT INTO edges (repo_id, from_file_id, to_path, to_file_id, resolution_status, resolution_detail, kind) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )?;
+        for edge in prepared_edges {
+            statement.execute(params![
+                repo,
+                file,
+                edge.to_path,
+                edge.to_file_id,
+                edge.resolution_status,
+                edge.resolution_detail,
+                edge.kind,
+            ])?;
+        }
+    }
+    Ok(())
 }
 
 fn validate_symbol(symbol: &SymbolRecord) -> Result<(), StoreError> {
@@ -577,6 +620,47 @@ mod tests {
             .expect_err("invalid replacement should fail");
 
         assert!(matches!(error, StoreError::InvalidSymbolLineRange { .. }));
+        assert_eq!(
+            store
+                .symbols_in_file(repo, "src/lib.rs")
+                .expect("symbols should load"),
+            originals
+        );
+    }
+
+    #[test]
+    fn test_replace_indexed_file_rolls_back_file_and_symbols() {
+        let (_directory, store, repo) = setup();
+        let original_file = file("src/lib.rs");
+        let originals = [symbol("original", "Type::original", 1)];
+        store
+            .replace_indexed_file(repo, &original_file, &originals, &[])
+            .expect("original index should insert");
+        let invalid = SymbolRecord {
+            start_line: 8,
+            end_line: 7,
+            ..symbol("invalid", "Type::invalid", 8)
+        };
+        let mut replacement_file = original_file.clone();
+        replacement_file.hash = "replacement-hash".to_owned();
+
+        let error = store
+            .replace_indexed_file(
+                repo,
+                &replacement_file,
+                &[symbol("replacement", "Type::replacement", 1), invalid],
+                &[],
+            )
+            .expect_err("invalid derived rows should roll back the file upsert");
+
+        assert!(matches!(error, StoreError::InvalidSymbolLineRange { .. }));
+        assert_eq!(
+            store
+                .file_hashes(repo)
+                .expect("file hashes should load")
+                .get("src/lib.rs"),
+            Some(&original_file.hash)
+        );
         assert_eq!(
             store
                 .symbols_in_file(repo, "src/lib.rs")

@@ -158,6 +158,7 @@ pub struct Store { /* Arc<Mutex<rusqlite::Connection>>, WAL */ }
 pub type RepoId = i64;
 pub type FileId = i64;
 pub struct RepoRecord { pub id: RepoId, pub root: PathBuf, pub approved_at: i64, pub parser_version: String, pub schema_version: u32, pub last_indexed_at: Option<i64> }
+pub struct IndexVersionRecord { pub parser_version: String, pub schema_version: u32, pub created_at: i64 }
 pub enum FileLanguage { Rust, TypeScript, Tsx, JavaScript, Python }
 pub struct FileRecord { pub path: String, pub hash: String, pub language: Option<FileLanguage>, pub size_bytes: u64, pub token_estimate: usize, pub indexed_at: i64 }
 pub enum SymbolKind { Function, Method, Struct, Class, Enum, Trait, Interface, Const, Type, Module }
@@ -182,12 +183,15 @@ impl Store {
     pub fn repo_by_root(&self, canonical_root: &Path) -> Result<Option<RepoRecord>>;
     // files & symbols (used only by atlas)
     pub fn upsert_file(&self, repo: RepoId, rec: &FileRecord) -> Result<FileId>;
+    pub fn replace_indexed_file(&self, repo: RepoId, rec: &FileRecord, symbols: &[SymbolRecord], edges: &[EdgeRecord]) -> Result<FileId>; // one per-file transaction
     pub fn file_hashes(&self, repo: RepoId) -> Result<HashMap<String, String>>;  // path -> blake3
     pub fn replace_symbols(&self, file: FileId, symbols: &[SymbolRecord], edges: &[EdgeRecord]) -> Result<()>; // single transaction
     pub fn delete_files(&self, repo: RepoId, paths: &[String]) -> Result<()>;
     pub fn search_symbols(&self, repo: RepoId, query: &str, limit: usize) -> Result<Vec<SymbolHit>>; // FTS5, bm25-ranked
     pub fn symbols_in_file(&self, repo: RepoId, path: &str) -> Result<Vec<SymbolRecord>>;
     pub fn symbols_by_identity(&self, repo: RepoId, selector: &SymbolSelector) -> Result<Vec<(FileRecord, SymbolRecord)>>; // never arbitrary first
+    pub fn latest_index_version(&self, repo: RepoId) -> Result<Option<IndexVersionRecord>>;
+    pub fn stamp_index_version(&self, repo: RepoId, parser_version: &str, schema_version: u32) -> Result<()>;
     // sessions & operations
     pub fn start_session(&self, client: &str, transport: &str) -> Result<SessionId>;
     pub fn record_operation(&self, op: &OperationRecord) -> Result<()>;   // validates trace_json against schema
@@ -228,9 +232,10 @@ pub struct Extraction { pub symbols: Vec<SymbolRecord>, pub imports: Vec<ImportR
 pub struct Indexer<'a> { /* store, registry, counter */ }
 impl Indexer<'_> {
     pub fn index(&self, root: &Path, progress: impl FnMut(IndexProgress)) -> Result<IndexReport, AtlasError>;
-    // pipeline: canonicalize+approve root -> scan -> parse ONLY added/changed -> replace_symbols per file transaction -> delete removed -> stamp index_versions
+    // pipeline: canonicalize+approve root -> scan -> parse ONLY added/changed -> replace_indexed_file per file transaction -> delete removed -> stamp index_versions
 }
-pub struct IndexReport { pub files_indexed: usize, pub files_skipped: usize, pub symbols: usize, pub imports_resolved: usize, pub imports_unresolved: usize, pub duration_ms: u64, pub stale: bool }
+pub enum IndexProgress { Parsing { path: PathBuf }, Removed { path: String } }
+pub struct IndexReport { pub files_indexed: usize, pub files_removed: usize, pub files_skipped: usize, pub symbols: usize, pub imports_resolved: usize, pub imports_unresolved: usize, pub duration_ms: u64, pub stale: bool }
 
 // queries.rs — all read-only, all bounded by token budget
 pub fn repo_map(store: &Store, repo: RepoId, budget_tokens: usize) -> Result<RepoMap>;      // dir tree + top symbols per file, PageRank-ish by edge in-degree
