@@ -1,0 +1,72 @@
+{
+  "$id": "https://compresso.dev/schemas/compression-trace/v1.json",
+  "type": "object",
+  "$ref": "#/$defs/trace",
+  "$defs": {
+    "budget": {
+      "type": "object",
+      "required": ["max_tokens", "max_latency_ms", "allowed_lossiness"],
+      "properties": {
+        "max_tokens": { "type": "integer", "minimum": 1 },
+        "max_latency_ms": { "type": "integer", "minimum": 1, "default": 200 },
+        "allowed_lossiness": { "enum": ["none", "structural", "summarizing"] },
+        "protected_kinds": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "removal_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy_id", "node_id", "kind", "original_hash", "before_tokens", "after_tokens"],
+      "properties": {
+        "strategy_id": { "type": "string" },
+        "node_id": { "type": "string" },
+        "kind": { "enum": ["duplicate_reference", "collapsed_lines", "json_elision", "dropped_node"] },
+        "locator": { "type": ["string", "null"], "description": "line span or JSON pointer; never raw content" },
+        "original_hash": { "type": "string" },
+        "replacement_hash": { "type": ["string", "null"] },
+        "before_tokens": { "type": "integer", "minimum": 0 },
+        "after_tokens": { "type": "integer", "minimum": 0 },
+        "units_removed": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "strategy_result": {
+      "type": "object",
+      "required": ["strategy_id", "applied", "before_tokens", "after_tokens", "duration_ms", "removals"],
+      "properties": {
+        "strategy_id": { "type": "string" },
+        "applied": { "type": "boolean" },
+        "before_tokens": { "type": "integer" },
+        "after_tokens": { "type": "integer" },
+        "duration_ms": { "type": "number" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "notes": { "type": "array", "items": { "type": "string" } },
+        "removals": { "type": "array", "items": { "$ref": "#/$defs/removal_record" } },
+        "skipped_reason": { "type": ["string", "null"] }
+      }
+    },
+    "safety_check": {
+      "type": "object",
+      "required": ["name", "passed"],
+      "properties": { "name": { "type": "string" }, "passed": { "type": "boolean" }, "detail": { "type": "string" } }
+    },
+    "trace": {
+      "type": "object",
+      "required": ["schema_version", "operation_id", "mode", "before_tokens", "after_tokens", "fallback_used", "strategy_results", "safety_checks", "explanation"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "operation_id": { "type": "string", "description": "ulid" },
+        "session_id": { "type": ["string", "null"] },
+        "mode": { "enum": ["safe", "balanced", "aggressive", "passthrough"] },
+        "before_tokens": { "type": "integer" },
+        "after_tokens": { "type": "integer" },
+        "token_provider": { "type": "string" },
+        "fallback_used": { "type": "boolean" },
+        "fallback_reason": { "type": ["string", "null"] },
+        "strategy_results": { "type": "array", "items": { "$ref": "#/$defs/strategy_result" } },
+        "safety_checks": { "type": "array", "items": { "$ref": "#/$defs/safety_check" } },
+        "explanation": { "type": "string", "description": "human-readable, no raw content" },
+        "created_at": { "type": "integer" }
+      }
+    }
+  }
+}

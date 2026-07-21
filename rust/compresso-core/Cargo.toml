@@ -7,4 +7,6 @@ license.workspace = true
 repository.workspace = true
 
 [dev-dependencies]
+jsonschema.workspace = true
+serde_json.workspace = true
 toml.workspace = true
