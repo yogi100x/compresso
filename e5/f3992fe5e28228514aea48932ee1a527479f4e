@@ -1,0 +1,168 @@
+scripts/fixtures/crate-capabilities/denied-eval-calibration-contract/deps/reqwest/src/lib.rs
+  s_87261b37472da1::t_ab8daca16ca4c7 1
+scripts/fixtures/crate-capabilities/allowed-proxy-reqwest/deps/reqwest/src/lib.rs
+  s_87261b37472da1::t_0481e6e2c3796d 1
+scripts/fixtures/crate-capabilities/allowed-agent-process/deps/reqwest/src/lib.rs
+  s_87261b37472da1::t_0481e6e2c3796d 1
+scripts/fixtures/crate-capabilities/denied-core-transitive-reqwest/Cargo.toml
+  s_87261b37472da1::t_eb5f2355e7fdf7 10
+  s_87261b37472da1::t_ab8daca16ca4c7 1-9
+scripts/fixtures/crate-capabilities/denied-eval-calibration-contract/src/lib.rs
+  s_87261b37472da1::t_ab8daca16ca4c7 1
+scripts/fixtures/crate-capabilities/allowed-proxy-reqwest/deps/reqwest/Cargo.toml
+  s_87261b37472da1::t_0481e6e2c3796d 1-7
+scripts/fixtures/crate-capabilities/denied-terminal-grouped-std/Cargo.toml
+  s_87261b37472da1::t_1967d638c2c1ed 1-6
+scripts/fixtures/crate-capabilities/denied-core-transitive-reqwest/src/lib.rs
+  s_87261b37472da1::t_ab8daca16ca4c7 1
+rust/compresso-updater/Cargo.toml
+  s_87261b37472da1::t_ae89268e1bfe31 7
+scripts/fixtures/crate-capabilities/denied-core-tokio-process-table/Cargo.toml
+  s_87261b37472da1::t_ab8daca16ca4c7 1-10
+  s_87261b37472da1::t_eb5f2355e7fdf7 11
+scripts/check-crate-capabilities.ts
+  s_87261b37472da1::t_eb5f2355e7fdf7 26,427-428
+  s_87261b37472da1::t_1967d638c2c1ed 276-286
+  s_87261b37472da1::t_f71f73c3cc69aa 3,5-6,10-25,27,30-31,33-48,57-58,125-140,143-148,150,152-165,262-269,274-275,287-321,352,363-382,385-386,392-400,403-419,423-426,429-487,489-501,505-517,524-527,529,531-532,535-541,543-544,550-553,558,562-565,575-587,591-600,603-607,613,615-617
+  s_87261b37472da1::t_bc10a3e3f9419c 8,270-273,388-391,554-557,559-561,570,588-590
+scripts/fixtures/crate-capabilities/denied-core-tokio-process-table/deps/tokio/Cargo.toml
+  s_87261b37472da1::t_ab8daca16ca4c7 1-7
+scripts/fixtures/crate-capabilities/denied-core-transitive-reqwest/deps/capability-helper/src/lib.rs
+  s_87261b37472da1::t_ab8daca16ca4c7 1
+rust/compresso-store/Cargo.toml
+  s_87261b37472da1::t_ae89268e1bfe31 7
+scripts/fixtures/crate-capabilities/denied-browser-process/deps/duct/Cargo.toml
+  s_87261b37472da1::t_0481e6e2c3796d 1-7
+scripts/fixtures/crate-capabilities/denied-eval-calibration-contract/Cargo.toml
+  s_87261b37472da1::t_eb5f2355e7fdf7 19
+  s_87261b37472da1::t_ab8daca16ca4c7 1-18
+scripts/fixtures/crate-capabilities/allowed-agent-process/deps/reqwest/Cargo.toml
+  s_87261b37472da1::t_0481e6e2c3796d 1-7
+scripts/fixtures/crate-capabilities/denied-eval-calibration-contract/src/calibrate.rs
+  s_87261b37472da1::t_ab8daca16ca4c7 1
+scripts/fixtures/crate-capabilities/denied-external-workspace-member/outside-rust/compresso-unknown/Cargo.toml
+  s_87261b37472da1::t_ab8daca16ca4c7 1-4
+scripts/fixtures/crate-capabilities/allowed-agent-process/deps/duct/src/lib.rs
+  s_87261b37472da1::t_0481e6e2c3796d 1
+scripts/fixtures/crate-capabilities/allowed-eval-calibration/src/calibrate.rs
+  s_87261b37472da1::t_ab8daca16ca4c7 1
+scripts/fixtures/crate-capabilities/denied-eval-calibration-contract/deps/reqwest/Cargo.toml
+  s_87261b37472da1::t_ab8daca16ca4c7 1-4
+scripts/fixtures/crate-capabilities/denied-terminal-grouped-std/src/lib.rs
+  s_87261b37472da1::t_1967d638c2c1ed 1-5
+scripts/fixtures/crate-capabilities/allowed-eval-calibration/src/lib.rs
+  s_87261b37472da1::t_ab8daca16ca4c7 1
+scripts/fixtures/crate-capabilities/denied-core-transitive-reqwest/deps/reqwest/Cargo.toml
+  s_87261b37472da1::t_ab8daca16ca4c7 1-4
+scripts/fixtures/crate-capabilities/denied-core-reqwest/deps/reqwest/src/lib.rs
+  s_87261b37472da1::t_0481e6e2c3796d 1
+rust/compresso-core/Cargo.toml
+  s_87261b37472da1::t_ae89268e1bfe31 7
+scripts/fixtures/crate-capabilities/denied-core-transitive-reqwest/deps/reqwest/src/lib.rs
+  s_87261b37472da1::t_ab8daca16ca4c7 1
+scripts/fixtures/crate-capabilities/denied-browser-process/Cargo.toml
+  s_87261b37472da1::t_0481e6e2c3796d 7
+  s_87261b37472da1::t_eb5f2355e7fdf7 10
+rust/compresso-agent/Cargo.toml
+  s_87261b37472da1::t_ae89268e1bfe31 7
+scripts/fixtures/crate-capabilities/denied-external-workspace-member/outside-rust/compresso-unknown/src/lib.rs
+  s_87261b37472da1::t_ab8daca16ca4c7 1
+rust/compresso-cli/Cargo.toml
+  s_87261b37472da1::t_ae89268e1bfe31 7
+scripts/fixtures/crate-capabilities/denied-terminal-aliased-std/Cargo.toml
+  s_87261b37472da1::t_ab8daca16ca4c7 1-6
+scripts/fixtures/crate-capabilities/allowed-agent-process/deps/duct/Cargo.toml
+  s_87261b37472da1::t_0481e6e2c3796d 1-7
+rust/compresso-atlas/Cargo.toml
+  s_87261b37472da1::t_ae89268e1bfe31 7
+scripts/check-crate-capabilities.test.ts
+  s_87261b37472da1::t_ab8daca16ca4c7 23,68-94,96-103,114-142
+  s_87261b37472da1::t_bc10a3e3f9419c 95
+  s_87261b37472da1::t_1967d638c2c1ed 104-113
+scripts/fixtures/crate-capabilities/denied-core-tokio-process-table/deps/tokio/src/lib.rs
+  s_87261b37472da1::t_ab8daca16ca4c7 1
+rust/compresso-mcp/Cargo.toml
+  s_87261b37472da1::t_ae89268e1bfe31 7
+Cargo.toml
+  s_87261b37472da1::t_ae89268e1bfe31 10
+scripts/fixtures/crate-capabilities/denied-core-reqwest/Cargo.toml
+  s_87261b37472da1::t_eb5f2355e7fdf7 11
+  s_87261b37472da1::t_0481e6e2c3796d 6-8
+scripts/fixtures/crate-capabilities/allowed-eval-calibration/deps/reqwest/Cargo.toml
+  s_87261b37472da1::t_ab8daca16ca4c7 1-4
+scripts/fixtures/crate-capabilities/allowed-eval-calibration/Cargo.toml
+  s_87261b37472da1::t_eb5f2355e7fdf7 18
+  s_87261b37472da1::t_ab8daca16ca4c7 1-17
+scripts/fixtures/crate-capabilities/allowed-agent-process/Cargo.toml
+  s_87261b37472da1::t_eb5f2355e7fdf7 11
+  s_87261b37472da1::t_0481e6e2c3796d 7-8
+scripts/fixtures/crate-capabilities/denied-terminal-aliased-std/src/lib.rs
+  s_87261b37472da1::t_ab8daca16ca4c7 1-5
+scripts/fixtures/crate-capabilities/denied-browser-process/deps/duct/src/lib.rs
+  s_87261b37472da1::t_0481e6e2c3796d 1
+rust/compresso-integrations/Cargo.toml
+  s_87261b37472da1::t_ae89268e1bfe31 7
+deny.toml
+  s_87261b37472da1::t_ab8daca16ca4c7 28-29
+scripts/fixtures/crate-capabilities/denied-external-workspace-member/Cargo.toml
+  s_87261b37472da1::t_ab8daca16ca4c7 1-3
+scripts/fixtures/crate-capabilities/allowed-eval-calibration/deps/reqwest/src/lib.rs
+  s_87261b37472da1::t_ab8daca16ca4c7 1
+scripts/fixtures/crate-capabilities/denied-core-reqwest/deps/reqwest/Cargo.toml
+  s_87261b37472da1::t_0481e6e2c3796d 1-7
+scripts/fixtures/crate-capabilities/allowed-proxy-reqwest/Cargo.toml
+  s_87261b37472da1::t_eb5f2355e7fdf7 10
+  s_87261b37472da1::t_0481e6e2c3796d 7
+rust/compresso-eval/Cargo.toml
+  s_87261b37472da1::t_ae89268e1bfe31 7
+scripts/fixtures/crate-capabilities/denied-core-tokio-process-table/src/lib.rs
+  s_87261b37472da1::t_ab8daca16ca4c7 1
+rust/compresso-proxy/Cargo.toml
+  s_87261b37472da1::t_ae89268e1bfe31 7
+.github/workflows/ci.yml
+  s_87261b37472da1::t_2ea3f91aea124b 83-89
+scripts/fixtures/crate-capabilities/denied-core-transitive-reqwest/deps/capability-helper/Cargo.toml
+  s_87261b37472da1::t_ab8daca16ca4c7 1-7
+scripts/fixtures/crate-capabilities/allowed-agent-process/Cargo.lock
+  s_87261b37472da1::t_089935c5f7c361 1-19
+scripts/fixtures/crate-capabilities/allowed-eval-calibration/Cargo.lock
+  s_87261b37472da1::t_f808c2d905aca8 1-14
+scripts/fixtures/crate-capabilities/allowed-proxy-reqwest/Cargo.lock
+  s_87261b37472da1::t_c64b9c121f8944 1-14
+scripts/fixtures/crate-capabilities/denied-browser-process/Cargo.lock
+  s_87261b37472da1::t_def41c57a52387 1-14
+scripts/fixtures/crate-capabilities/denied-core-reqwest/Cargo.lock
+  s_87261b37472da1::t_012353bc65cdf1 1-14
+scripts/fixtures/crate-capabilities/denied-core-tokio-process-table/Cargo.lock
+  s_87261b37472da1::t_b68102b3f0ee09 1-14
+scripts/fixtures/crate-capabilities/denied-core-transitive-reqwest/Cargo.lock
+  s_87261b37472da1::t_6bdcdd79485f07 1-21
+scripts/fixtures/crate-capabilities/denied-eval-calibration-contract/Cargo.lock
+  s_87261b37472da1::t_0cb84e2f74f0e0 1-14
+scripts/fixtures/crate-capabilities/denied-external-workspace-member/Cargo.lock
+  s_87261b37472da1::t_3b95f2bfa972e4 1-7
+scripts/fixtures/crate-capabilities/denied-terminal-aliased-std/Cargo.lock
+  s_87261b37472da1::t_35caf3dc75aa7d 1-7
+scripts/fixtures/crate-capabilities/denied-terminal-grouped-std/Cargo.lock
+  s_87261b37472da1::t_09c3dd57bb8f77 1-7
+scripts/fixtures/crate-capabilities/denied-terminal-spawn/Cargo.lock
+  s_87261b37472da1::t_67653cc48081a9 1-7
+scripts/fixtures/crate-capabilities/denied-unknown-class/Cargo.lock
+  s_87261b37472da1::t_8c33f68941c8f3 1-7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "e5f3992fe5e28228514aea48932ee1a527479f4e",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
