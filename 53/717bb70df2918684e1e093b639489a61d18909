@@ -1,0 +1,45 @@
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_672733ed2d12a7 356
+rust/compresso-atlas/queries/tsx.scm
+  s_87261b37472da1::t_55bb9a70c50588 1-14
+rust/compresso-atlas/tests/fixtures/lang/sample.ts
+  s_87261b37472da1::t_5dc561eadcb226 1-12
+rust/compresso-atlas/tests/parsers_typescript.rs
+  s_87261b37472da1::t_4f3e5ec9199825 153
+  s_87261b37472da1::t_5dc561eadcb226 1-129,131-152,154-160,180-243
+  s_87261b37472da1::t_5b50d5729d8227 130,161-179
+rust/compresso-atlas/Cargo.toml
+  s_87261b37472da1::t_0e93594f46409d 16
+.claude/outputs/compiler-interpreter-design.md
+  s_87261b37472da1::t_10f4719cae5c0c 1,3,5-11,13-15,19-23,27-35
+rust/compresso-atlas/queries/typescript.scm
+  s_87261b37472da1::t_55bb9a70c50588 1-14
+rust/compresso-atlas/src/parsers.rs
+  s_87261b37472da1::t_4f3e5ec9199825 227,232,286,338-339,375-377,381-382
+  s_87261b37472da1::t_55bb9a70c50588 8-9,48-57,80-82,90-91,102-140,144-147,149-152,182-185,187,190,196-198,205-207,215-226,228
+  s_87261b37472da1::t_5b50d5729d8227 295-297,302
+  s_87261b37472da1::t_8de04f3b18bb50 229-230,233-249,253-285,287-294,298-301,303-337,340-374,378-380,383-390,435
+  s_87261b37472da1::t_225a58ba0d45fe 231
+rust/compresso-atlas/tests/fixtures/lang/sample.tsx
+  s_87261b37472da1::t_5dc561eadcb226 1-3
+rust/compresso-atlas/tests/parsers_rust.rs
+  s_87261b37472da1::t_5b50d5729d8227 206,208-209
+Cargo.lock
+  s_87261b37472da1::t_67cffd9eee0453 172,1287-1296
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "53717bb70df2918684e1e093b639489a61d18909",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
