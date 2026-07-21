@@ -1,0 +1,11 @@
+[package]
+name = "compresso-core"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies.tokio]
+path = "deps/tokio"
+features = ["process"]
+
+[workspace]
+exclude = ["deps/tokio"]
