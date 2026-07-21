@@ -1,0 +1,39 @@
+compresso-expand.md
+  s_113efb253e9989::t_801259a5e0fd03 1-1215
+decisions.md
+  s_113efb253e9989::t_2bed4046ff83b2 63-78
+docs/adr/0004-sqlite-local-storage.md
+  s_113efb253e9989::t_3fc118de6817ce 13,18
+docs/adr/0010-tauri-desktop-application.md
+  s_113efb253e9989::t_307e3f6ffaf5f9 13,17
+docs/adr/0015-cached-entitlements-offline-grace.md
+  s_113efb253e9989::t_c5780ae3a75b18 13
+docs/plan/00-overview.md
+  s_113efb253e9989::t_e323a21a8da073 5,23,38-39
+docs/plan/01-stack-and-workspace.md
+  s_113efb253e9989::t_7e9444c7176ffd 33-34,71-73,88
+docs/plan/02-schemas.md
+  s_113efb253e9989::t_2664c60a1c98cd 62,69-70,226-227,279-290,418
+docs/plan/03-interfaces.md
+  s_113efb253e9989::t_8033a57b420521 56-58,83-92,118,134-140,244-245,269-289
+docs/plan/04-mcp-and-integrations.md
+  s_113efb253e9989::t_6fece9d602dc49 12-13,256,345
+docs/plan/06-fixtures.md
+  s_113efb253e9989::t_b936c01a94194b 65-69,97-99,130,160
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "da5faf653e5ae6ac0b0e8df25cc52b77f1beef32",
+  "prompts": {},
+  "sessions": {
+    "s_113efb253e9989": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "131b5d4d-b8c8-4f56-ae95-f52b77b5f684",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
