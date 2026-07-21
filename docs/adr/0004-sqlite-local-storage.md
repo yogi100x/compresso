@@ -10,11 +10,11 @@ The local runtime needs transactional storage for repositories, files, symbols, 
 
 ## Decision
 
-Use SQLite via `rusqlite` with the bundled feature, WAL mode, FTS5 (trigram) for symbol search, and versioned migrations owned by `compresso-store`. Only `compresso-store` contains SQL; all other crates go through its typed methods (03-interfaces §3).
+Use SQLite via `rusqlite` with the bundled feature, WAL mode, FTS5 (trigram) for symbol search, and versioned migrations owned by `compresso-store`. Only `compresso-store` contains SQL; all other crates go through its typed methods (03-interfaces §3). Concurrency is resolved by construction: `Store` wraps one connection in `Arc<Mutex<_>>` (Send + Sync, blocking methods only; async callers use `spawn_blocking`), serializing all writes in-process, with `busy_timeout = 5s` guarding cross-process access (CLI alongside MCP server). A dedicated writer thread behind the same API is the documented escape hatch if contention ever appears.
 
 ## Consequences
 
 - Zero-dependency, single-file storage that installs and uninstalls cleanly and works identically across platforms.
-- WAL mode gives concurrent readers with a single writer, which fits the supervisor-coordinated access pattern; the store must serialize writes.
+- WAL mode gives concurrent readers with a single writer; the Mutex-wrapped connection serializes writes by construction, so no caller can misuse the store concurrently.
 - FTS5 provides bm25-ranked symbol search without an external search engine.
 - Versioned migrations plus the raw-content prohibition (no prompts or full source stored, 02-schemas §4) are enforceable in one crate and testable in CI.

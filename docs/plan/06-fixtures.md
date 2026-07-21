@@ -62,6 +62,11 @@ must_preserve = ["..."]              # exact strings that must appear byte-for-b
 must_not_contain = ["..."]           # strings that must NOT appear anywhere in output node content
 must_not_contain_in_trace = ["..."]  # strings that must NOT appear in the trace/explanation (privacy + injection checks)
 protected_node_ids = ["sys-1"]       # these nodes must exist in the output with byte-identical content
+
+[[recall_probes]]                    # task-success proxy (D40): information an agent would need must survive compression
+question = "What caused the webpack build failure?"          # documentation for reviewers; not evaluated
+answer_substring = "Cannot find module 'left-pad'"           # must appear in compressed output node contents
+protected = true                     # protected probes require 100% recall corpus-wide; unprotected feed the >=99% gate
 expect_fallback = false              # true => the engine MUST fall back (fallback_used = true, output == input)
 
 [expectations.atlas]                 # only for category = code fixtures with input.repo
@@ -89,6 +94,9 @@ Field semantics:
 | `expectations.must_not_contain` | no | Substring must be absent from all output node contents. |
 | `expectations.must_not_contain_in_trace` | no | Substring must be absent from trace JSON and explanation (traces never carry raw content, 02-schemas §2). |
 | `expectations.protected_node_ids` | no | Node present in output AND `content` byte-equal to input. Backed by the `protected_unchanged` safety check. |
+| `recall_probes[].question` | no | Human documentation of what information the probe protects. Not evaluated. |
+| `recall_probes[].answer_substring` | with probe | Byte-exact substring searched over concatenated output node contents after compression. |
+| `recall_probes[].protected` | no (default false) | Protected probes gate at 100% recall corpus-wide; unprotected probes gate at ≥99% (D40). |
 | `expectations.expect_fallback` | no | Default false. When true, `fallback_used` must be true and output must equal input. |
 | `expectations.atlas.*` | no | Indexing assertions; the fixture is indexed with `compresso-atlas`, not compressed. |
 
@@ -119,6 +127,7 @@ The production gate (build-doc §25.6, D37) is: **safe-mode median token reducti
 6. Independent of eligibility, **every** fixture feeds the other gates: zero protected-node mutations, zero malformed tool/provider payloads, P95 compression latency < 200 ms, and zero `must_not_contain_in_trace` violations across the whole corpus.
 7. A fixture's own `min_reduction_pct` is a per-fixture regression floor; the 25% gate is a corpus median. Both must pass in CI.
 8. Changing `eligible`, `min_reduction_pct`, or deleting a fixture requires a PR that names the gate impact in its description (enforced by review convention, checked by `compresso-eval diff-gates` against the previous manifest set).
+9. **Recall gate (D40, task-success proxy)**: across the whole corpus, 100% of `protected = true` recall probes and ≥99% of all recall probes must find their `answer_substring` in the compressed output. Every compression fixture is additionally run in `passthrough` mode as a baseline: passthrough recall must be 100% (a failing passthrough probe means the probe itself is broken, and the run errors rather than counting it). This gate is a CI proxy for the <1% task-success degradation requirement; the real measurement happens on closed-beta sessions before stable (00-overview constraints).
 
 ## 5. Loading and evaluation (`compresso-eval`)
 
@@ -148,7 +157,7 @@ pub struct FixtureOutcome {
 
 pub struct Gates;
 impl Gates {
-    pub fn evaluate(report: &EvalReport) -> GateReport;  // §25.6 gates incl. median>25%, P95<200ms
+    pub fn evaluate(report: &EvalReport) -> GateReport;  // §25.6 gates incl. median>25%, P95<200ms, recall gate (§4.9)
 }
 ```
 
