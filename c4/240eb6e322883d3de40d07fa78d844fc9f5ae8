@@ -1,0 +1,69 @@
+scripts/check-crate-capabilities.ts
+  s_87261b37472da1::t_82050457f89f18 3,134,142,337,392
+  s_87261b37472da1::t_45f40d2a7c5f7c 1-2,5-126,130-133,135-141,143,146-163,168-175,180-184,190-198,202-217,222-229,234-336,338-391,393-418,422-424,429-440,444-468,472-474,481-499,505-520,524-525,529-535,539-544
+  s_87261b37472da1::t_1995a068ffb1ca 4,127-129,144-145,164-167,176-179,185-189,199-201,218-221,230-233,419-421,425-428,441-443,469-471,475-480,500-504,521-523,526-528,536-538
+scripts/fixtures/crate-capabilities/allowed-agent-process/Cargo.toml
+  s_87261b37472da1::t_277a6bc3612fba 1-10
+scripts/fixtures/crate-capabilities/denied-terminal-spawn/src/lib.rs
+  s_87261b37472da1::t_277a6bc3612fba 1-3
+scripts/fixtures/crate-capabilities/allowed-proxy-reqwest/src/lib.rs
+  s_87261b37472da1::t_277a6bc3612fba 1
+scripts/ci/check_ci_matrix.rb
+  s_87261b37472da1::t_99daf27c57270c 7
+scripts/fixtures/crate-capabilities/denied-unknown-class/Cargo.toml
+  s_87261b37472da1::t_277a6bc3612fba 1-6
+scripts/fixtures/crate-capabilities/denied-browser-process/Cargo.toml
+  s_87261b37472da1::t_277a6bc3612fba 1-9
+.github/workflows/ci.yml
+  s_87261b37472da1::t_90016624fcfc26 65-66,69-70
+  s_87261b37472da1::t_99daf27c57270c 93
+  s_87261b37472da1::t_d54fd36f10fb84 57-58,62-64,67-68,71-79
+  s_87261b37472da1::t_98180294433612 26-56,59-61,80-84
+scripts/fixtures/crate-capabilities/denied-terminal-spawn/Cargo.toml
+  s_87261b37472da1::t_277a6bc3612fba 1-6
+scripts/fixtures/crate-capabilities/denied-browser-process/src/lib.rs
+  s_87261b37472da1::t_277a6bc3612fba 1
+.gitleaks.toml
+  s_87261b37472da1::t_98180294433612 1-10
+docs/plan/01-stack-and-workspace.md
+  s_87261b37472da1::t_99daf27c57270c 113
+scripts/fixtures/crate-capabilities/denied-core-reqwest/src/lib.rs
+  s_87261b37472da1::t_277a6bc3612fba 1
+scripts/fixtures/crate-capabilities/denied-unknown-class/src/lib.rs
+  s_87261b37472da1::t_277a6bc3612fba 1
+scripts/fixtures/crate-capabilities/allowed-proxy-reqwest/Cargo.toml
+  s_87261b37472da1::t_277a6bc3612fba 1-9
+package.json
+  s_87261b37472da1::t_9df0b85cb8599d 5
+scripts/fixtures/crate-capabilities/denied-core-reqwest/Cargo.toml
+  s_87261b37472da1::t_277a6bc3612fba 1-9
+scripts/fixtures/crate-capabilities/allowed-agent-process/src/lib.rs
+  s_87261b37472da1::t_277a6bc3612fba 1-3
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_99daf27c57270c 29,36
+  s_87261b37472da1::t_16d8e07898e5be 38
+scripts/check-crate-capabilities.test.ts
+  s_87261b37472da1::t_1995a068ffb1ca 7-11,21-24,37-40,53-56,63-66
+  s_87261b37472da1::t_277a6bc3612fba 1-6,12-20,25-36,41-52,57-62,67
+Cargo.toml
+  s_87261b37472da1::t_9df0b85cb8599d 9
+deny.toml
+  s_87261b37472da1::t_9df0b85cb8599d 11,28
+  s_87261b37472da1::t_98180294433612 1-10,12-27,29-32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "c4240eb6e322883d3de40d07fa78d844fc9f5ae8",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
