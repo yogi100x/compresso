@@ -97,7 +97,7 @@ impl StrategyRegistry {
 }
 ```
 
-Slice strategies: `dedup_exact` creates a typed stub plus `duplicate_of` edge; `collapse_logs` and `compact_json` remove only enumerated units; `pack_budget` drops lowest `priority/token` unprotected atomic groups. It never partial-truncates code, provider turns, tool request/response pairs, or dedup referent groups. Every strategy returns changed node ids; the engine recounts those nodes and updates totals by delta. Strategies must not invoke whole-graph tokenization.
+Slice strategies: `dedup_exact` creates a typed stub plus `DuplicateReference.locator` while preserving the existing edge set; `collapse_logs` and `compact_json` remove only enumerated units; `pack_budget` drops lowest `priority/token` unprotected atomic groups. It never partial-truncates code, provider turns, tool request/response pairs, or dedup referent groups. Every strategy returns changed node ids; the engine recounts those nodes and updates totals by delta. Strategies must not invoke whole-graph tokenization.
 
 **Lossiness taxonomy (D39)** — safe mode is deterministic and rule-based, NOT lossless, and is never described as lossless in user-facing copy. Mapping enforced by `supports()`:
 
@@ -131,7 +131,11 @@ Pipeline: validate and recount ingress → mark protected/provider-atomic groups
 
 ```rust
 pub struct SafetyCheck { pub name: String, pub passed: bool, pub detail: String }
+// Compatibility wrapper: uses an empty removal ledger. Identity candidates may
+// pass removals_enumerated; any non-identity graph delta fails that check.
 pub fn run_all(original: &ContextGraph, candidate: &ContextGraph, budget: &CompressionBudget, elapsed_ms: u64) -> Vec<SafetyCheck>;
+// Engine path: receives the cumulative typed ledger from applied strategies.
+pub fn run_all_with_removals(original: &ContextGraph, candidate: &ContextGraph, budget: &CompressionBudget, elapsed_ms: u64, removals: &[RemovalRecord]) -> Vec<SafetyCheck>;
 ```
 
 Checks: `protected_unchanged`, `no_inflation`, `json_still_valid`, `fences_balanced`, `refs_valid`, `provider_conversation_valid`, `minimum_output`, `token_counts_valid`, `latency_ok`, `schema_valid`, `removals_enumerated`. `refs_valid` covers file references and dedup referents; `minimum_output` requires a non-empty candidate for non-empty input; provider validation enforces complete turns/tool pairs and immutable reasoning; token validation recounts changed nodes and totals.
