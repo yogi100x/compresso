@@ -9,3 +9,9 @@ repository.workspace = true
 
 [dependencies]
 compresso-core.workspace = true
+dirs.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
