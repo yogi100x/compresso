@@ -1,0 +1,18 @@
+[package]
+name = "compresso-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+compresso-atlas.workspace = true
+compresso-core.workspace = true
+compresso-integrations.workspace = true
+compresso-mcp.workspace = true
+compresso-store.workspace = true
+
+[[bin]]
+name = "compresso"
+path = "src/main.rs"
