@@ -55,6 +55,8 @@ pub enum AtlasError {
     Store(#[from] StoreError),
     #[error(transparent)]
     Scan(#[from] ScanError),
+    #[error(transparent)]
+    Index(#[from] crate::indexer::IndexError),
     #[error("path {path:?} resolves outside approved repository root {root:?}")]
     OutsideRoot { path: PathBuf, root: PathBuf },
 }

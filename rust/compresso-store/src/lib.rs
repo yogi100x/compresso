@@ -17,7 +17,7 @@ use thiserror::Error;
 pub use files::{FileLanguage, FileRecord, RelativePathError};
 pub use ops::{ModeledCostSaved, OperationId, OperationRecord, SessionId, StatsSummary};
 pub use receipts::{ReceiptId, ReceiptRecord};
-pub use repos::{FileId, RepoId, RepoRecord};
+pub use repos::{FileId, IndexVersionRecord, RepoId, RepoRecord};
 pub use symbols::{
     EdgeKind, EdgeRecord, EdgeResolution, SymbolHit, SymbolKind, SymbolRecord, SymbolSelector,
 };

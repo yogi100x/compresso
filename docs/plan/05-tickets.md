@@ -393,7 +393,7 @@ Test cases:
 - test_py_imports_three_forms: `import os`, `import numpy as np`, `from typing import Optional` → imports `["os", "numpy", "typing.Optional"]`.
 - test_py_decorated_line_range: `@retry` on the line above `def push` → symbol start_line is the `def` line and signature notes the decorator.
 
-### [ ] E3-09: Incremental Indexer
+### [x] E3-09: Incremental Indexer
 Owner: R2 · Estimate: 2.5d · Depends: E3-04, E3-05, E3-06, E3-07, E3-08, E2-02
 Files: rust/compresso-atlas/src/indexer.rs, tests in rust/compresso-atlas/tests/indexer_incremental.rs
 Description: Implement `Indexer::index(root, progress)` and `IndexReport` per `03-interfaces.md` §4: canonicalize + `approve_repo` → `scan` → parse only `added`/`changed` via `ParserRegistry` → `replace_symbols` per file in its own transaction → `delete_files` for removed → stamp `index_versions` with `parser_version` and `schema_version`. `token_estimate` computed with `core::tokens` counter. A parser_version mismatch against `index_versions` marks the report `stale` and triggers full reparse.
