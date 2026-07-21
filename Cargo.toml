@@ -41,7 +41,7 @@ toml = "0.8"
 dirs = "6.0"
 tracing = "0.1"
 tracing-subscriber = "0.3"
-jsonschema = "0.26"
+jsonschema = { version = "0.26", default-features = false }
 insta = "1.41"
 proptest = "1.5"
 criterion = "0.5"
