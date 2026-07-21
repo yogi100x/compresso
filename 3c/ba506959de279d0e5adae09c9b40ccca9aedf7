@@ -1,0 +1,38 @@
+docs/plan/08-ip-and-secure-deployment.md
+  s_113efb253e9989::t_b0abd17c15b28e 1-96,98-285
+  s_113efb253e9989::t_e5f1179cfb688f 97
+docs/adr/0021-crown-jewel-local-boundary.md
+  s_113efb253e9989::t_6b239d7a678ef0 1-20
+docs/adr/0022-selective-obfuscation-policy.md
+  s_113efb253e9989::t_aad74de45974a5 1-20
+docs/adr/0019-canonical-model-protocol.md
+  s_3766545701efc0::t_f76ff9fc796061 1-21
+docs/adr/0020-profile-first-provider-integration.md
+  s_3766545701efc0::t_3823dfd832cbe1 1-21
+docs/plan/07-model-expansion.md
+  s_3766545701efc0::t_c9a5934f4b4a99 1-615
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "3cba506959de279d0e5adae09c9b40ccca9aedf7",
+  "prompts": {},
+  "sessions": {
+    "s_113efb253e9989": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "131b5d4d-b8c8-4f56-ae95-f52b77b5f684",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_3766545701efc0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-af5d02cc80317d502",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
