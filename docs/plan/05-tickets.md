@@ -268,7 +268,7 @@ Test cases:
 
 ## E3 — Atlas
 
-### [ ] E3-01: Store::open and migrations
+### [x] E3-01: Store::open and migrations
 Owner: R2 · Estimate: 1.5d · Depends: E1-01
 Files: rust/compresso-store/src/lib.rs, rust/compresso-store/migrations/0001_init.sql, tests in rust/compresso-store/tests/migrations.rs
 Description: Implement `Store::open(path)` and `Store::open_default()` per `03-interfaces.md` §3: open rusqlite (bundled) with WAL and foreign keys on, run pending migrations transactionally from embedded SQL files, record them in `schema_migrations`. Commit `0001_init.sql` byte-for-byte per `02-schemas.md` §4 (all twelve tables, FTS5 `symbols_fts` with triggers, indexes). `open_default` resolves the platform data dir per `01-stack` §5 via `dirs`. Startup prunes `operations` older than 90 days (configurable). Implement the D41 concurrency contract (03-interfaces §3): `Store` wraps a single `Arc<Mutex<rusqlite::Connection>>`, is `Send + Sync` and cheaply cloneable, exposes only blocking methods, and sets `busy_timeout = 5s` at open (guarding against a second process, e.g. the CLI while the MCP server is running); async callers wrap every call in `tokio::task::spawn_blocking`. Escape hatch if profiling ever shows lock contention: a dedicated writer thread behind the same API.
