@@ -1,0 +1,25 @@
+docs/plan/00-overview.md
+  s_113efb253e9989::t_049e0b3962e401 1-76
+docs/plan/01-stack-and-workspace.md
+  s_113efb253e9989::t_ff6ab2687630e7 1-93
+docs/plan/02-schemas.md
+  s_113efb253e9989::t_d4c45cef221c07 1-404
+docs/plan/03-interfaces.md
+  s_113efb253e9989::t_3a2ef07e582b18 1-249
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "308e1e8d12b55b9ec4475b8841dfc2f9ae618854",
+  "prompts": {},
+  "sessions": {
+    "s_113efb253e9989": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "131b5d4d-b8c8-4f56-ae95-f52b77b5f684",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
