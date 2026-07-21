@@ -367,7 +367,7 @@ Test cases:
 - test_tsx_component_extracted: `sample.tsx` with `export function UserCard(props: { name: string }): JSX.Element` → symbol `UserCard`, kind `function`, signature containing `props: { name: string }`.
 - test_type_alias_kind: `export type UserId = string;` → symbol `UserId`, kind `type`.
 
-### [ ] E3-07: JavaScript extraction
+### [x] E3-07: JavaScript extraction
 Owner: R2 · Estimate: 1d · Depends: E3-05
 Files: rust/compresso-atlas/queries/javascript.scm, tests + fixture tests/fixtures/lang/sample.js
 Description: tree-sitter-javascript queries for function declarations, arrow/function-expression consts, classes and methods, and module-level `module.exports` assignments; imports from ESM `import` and CJS `require()` calls with string-literal arguments.
