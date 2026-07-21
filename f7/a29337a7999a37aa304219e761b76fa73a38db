@@ -1,0 +1,84 @@
+fixtures/code/mini-monorepo/repo/rust/src/session.rs
+  s_87261b37472da1::t_4054ae9dc00bfe 1-36
+fixtures/conversations/README.md
+  s_87261b37472da1::t_4054ae9dc00bfe 1-4
+fixtures/code/mini-monorepo/fixture.toml
+  s_87261b37472da1::t_4054ae9dc00bfe 1-15,17-24
+  s_87261b37472da1::t_c8cb043fec93f4 16
+fixtures/provider-payloads/anthropic-counts/fixture.toml
+  s_87261b37472da1::t_3af67911bddacf 1-15
+  s_87261b37472da1::t_c8cb043fec93f4 16
+fixtures/code/mini-monorepo/repo/web/src/api.ts
+  s_87261b37472da1::t_4054ae9dc00bfe 1-20
+fixtures/code/mini-monorepo/repo/rust/src/main.rs
+  s_87261b37472da1::t_4054ae9dc00bfe 1-11
+docs/architecture/conventions.md
+  s_87261b37472da1::t_4054ae9dc00bfe 1-60
+fixtures/logs/repeated-npm-install/fixture.toml
+  s_87261b37472da1::t_c8cb043fec93f4 21
+  s_87261b37472da1::t_4054ae9dc00bfe 1-20,22-30
+fixtures/code/mini-monorepo/repo/rust/Cargo.toml
+  s_87261b37472da1::t_4054ae9dc00bfe 1-4
+  s_87261b37472da1::t_3af67911bddacf 6
+fixtures/debugging/test-failure-context/fixture.toml
+  s_87261b37472da1::t_4054ae9dc00bfe 1-20,22-32
+  s_87261b37472da1::t_c8cb043fec93f4 21
+fixtures/debugging/test-failure-context/input.txt
+  s_87261b37472da1::t_4054ae9dc00bfe 1-42
+fixtures/code/README.md
+  s_87261b37472da1::t_4054ae9dc00bfe 1-4
+fixtures/provider-payloads/README.md
+  s_87261b37472da1::t_4054ae9dc00bfe 1-4
+fixtures/adversarial/README.md
+  s_87261b37472da1::t_4054ae9dc00bfe 1-4
+fixtures/adversarial/prompt-injection-repo/repo/README.md
+  s_87261b37472da1::t_3af67911bddacf 1-10
+fixtures/provider-payloads/anthropic-counts/anthropic-counts.json
+  s_87261b37472da1::t_3af67911bddacf 1-78
+fixtures/conversations/tool-output-dupes/fixture.toml
+  s_87261b37472da1::t_c8cb043fec93f4 16
+  s_87261b37472da1::t_3af67911bddacf 1-15,17-26
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_d1122c385fe83d 61
+fixtures/debugging/README.md
+  s_87261b37472da1::t_4054ae9dc00bfe 1-4
+fixtures/conversations/tool-output-dupes/graph.json
+  s_87261b37472da1::t_3af67911bddacf 1-78
+fixtures/code/mini-monorepo/repo/scripts/report.py
+  s_87261b37472da1::t_4054ae9dc00bfe 1-25
+README.md
+  s_87261b37472da1::t_4054ae9dc00bfe 1-9
+fixtures/adversarial/prompt-injection-repo/repo/src/loader.py
+  s_87261b37472da1::t_3af67911bddacf 1-13
+rust/compresso-eval/Cargo.toml
+  s_87261b37472da1::t_372dea16953f10 11-13
+fixtures/adversarial/prompt-injection-repo/fixture.toml
+  s_87261b37472da1::t_3af67911bddacf 1-32,34-44
+  s_87261b37472da1::t_c8cb043fec93f4 33
+fixtures/logs/repeated-npm-install/input.txt
+  s_87261b37472da1::t_f00f5fd7ffd77c 1-500
+fixtures/code/mini-monorepo/repo/web/src/index.ts
+  s_87261b37472da1::t_4054ae9dc00bfe 1-12
+fixtures/logs/README.md
+  s_87261b37472da1::t_4054ae9dc00bfe 1-4
+rust/compresso-eval/tests/fixtures.rs
+  s_87261b37472da1::t_28d231d6661804 22-26,31-35,77-79,93-96,117-121
+  s_87261b37472da1::t_c8cb043fec93f4 71,136-151
+  s_87261b37472da1::t_372dea16953f10 1-21,27-30,36-70,72-76,80-92,97-116,122-135,152-188
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "f7a29337a7999a37aa304219e761b76fa73a38db",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
