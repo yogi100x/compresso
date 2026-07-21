@@ -1,0 +1,42 @@
+decisions.md
+  s_5e0c4a00f6545e::t_87b24d5a4490a0 71
+  s_5e0c4a00f6545e::t_82e8dd23dee1e3 93-94
+docs/adr/0015-cached-entitlements-offline-grace.md
+  s_5e0c4a00f6545e::t_87b24d5a4490a0 1,9,13,17-19,25-26,29-30
+  s_5e0c4a00f6545e::t_82e8dd23dee1e3 15-16,20-21,27
+  s_5e0c4a00f6545e::t_2a1b6a5c1a50dc 14
+docs/plan/03-interfaces.md
+  s_5e0c4a00f6545e::t_82e8dd23dee1e3 295-298,322-325
+  s_5e0c4a00f6545e::t_df5008c13c475d 326-327
+  s_5e0c4a00f6545e::t_87b24d5a4490a0 294,299-300,306-307,313-314,316,318-321,328
+docs/plan/05-tickets.md
+  s_5e0c4a00f6545e::t_df5008c13c475d 1094,1104
+  s_5e0c4a00f6545e::t_82e8dd23dee1e3 1035-1037,1042-1043,1046-1047,1053-1055,1060,1071,1079,1085-1086,1910-1913,1918-1919,1925-1930,2547,2551,2554-2555
+  s_5e0c4a00f6545e::t_87b24d5a4490a0 1034,1038-1041,1044-1045,1048-1052,1070,1076,1078,1081-1084,1087-1089,1097-1098,1102-1103,1105-1107,2204-2205
+docs/adr/0021-crown-jewel-local-boundary.md
+  s_5e0c4a00f6545e::t_82e8dd23dee1e3 15-16,22
+docs/plan/02-schemas.md
+  s_5e0c4a00f6545e::t_82e8dd23dee1e3 325
+  s_5e0c4a00f6545e::t_87b24d5a4490a0 323,326-329
+docs/plan/08-ip-and-secure-deployment.md
+  s_5e0c4a00f6545e::t_82e8dd23dee1e3 170,172,236
+  s_5e0c4a00f6545e::t_87b24d5a4490a0 167,171,242
+docs/plan/00-overview.md
+  s_5e0c4a00f6545e::t_82e8dd23dee1e3 78,94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "b5237eae55172136e0a6dbe1bd3a6e669bd081da",
+  "prompts": {},
+  "sessions": {
+    "s_5e0c4a00f6545e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8121-1cd7-7181-b25a-86d1d8260542",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
