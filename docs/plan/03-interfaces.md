@@ -205,11 +205,13 @@ pub fn scan(store: &Store, repo: RepoId, root: &Path) -> Result<ScanResult, Atla
 // respects .gitignore + built-in exclusions (binaries, >max_file_bytes, node_modules/target/dist/.git, secret-file patterns: .env*, *.pem, id_rsa*)
 
 // parsers.rs
+pub type Language = compresso_store::FileLanguage;        // Store owns the canonical persisted language vocabulary
 pub struct ParserRegistry;
 impl ParserRegistry {
     pub fn for_path(path: &Path) -> Option<Language>;      // by extension: rs, ts, tsx, js, jsx, mjs, cjs, py
     pub fn extract(lang: Language, source: &str) -> Result<Extraction, ParseError>;
 }
+pub enum ImportKind { Use, Import, ExportFrom, Require, FromImport }
 pub struct ImportRecord { pub raw: String, pub kind: ImportKind, pub resolved_path: Option<String>, pub resolution: ImportResolution }
 pub enum ImportResolution { Resolved, Ambiguous(Vec<String>), Unresolved(String) }
 pub struct Extraction { pub symbols: Vec<SymbolRecord>, pub imports: Vec<ImportRecord> }

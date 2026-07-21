@@ -339,8 +339,8 @@ Test cases:
 - test_removed_detected: delete `src/util.rs` after indexing, rescan → `removed == ["src/util.rs"]`.
 - test_blake3_matches_reference: hash of committed file equals precomputed blake3 hex constant in the test.
 
-### [ ] E3-05: ParserRegistry scaffold + Rust extraction
-Owner: R2 · Estimate: 1.5d · Depends: E3-01
+### [x] E3-05: ParserRegistry scaffold + Rust extraction
+Owner: R2 · Estimate: 1.5d · Depends: E3-02
 Files: rust/compresso-atlas/src/parsers.rs, rust/compresso-atlas/queries/rust.scm, tests + fixture rust/compresso-atlas/tests/fixtures/lang/sample.rs
 Description: Implement `ParserRegistry::for_path` (extension map: rs, ts, tsx, js, jsx, mjs, cjs, py per `03-interfaces.md` §4) and `ParserRegistry::extract(lang, source) -> Extraction` for Rust via tree-sitter-rust and `queries/rust.scm`: functions, methods (with `Type::method` qualified names), structs, enums, traits, consts, type aliases, modules; imports from `use` declarations as written. Symbol kinds normalize to the store vocabulary from 02-schemas §4.
 Acceptance criteria:
