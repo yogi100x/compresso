@@ -151,6 +151,19 @@ impl Config {
 
 ```rust
 pub struct Store { /* Arc<Mutex<rusqlite::Connection>>, WAL */ }
+pub type RepoId = i64;
+pub type FileId = i64;
+pub struct RepoRecord { pub id: RepoId, pub root: PathBuf, pub approved_at: i64, pub parser_version: String, pub schema_version: u32, pub last_indexed_at: Option<i64> }
+pub enum FileLanguage { Rust, TypeScript, Tsx, JavaScript, Python }
+pub struct FileRecord { pub path: String, pub hash: String, pub language: Option<FileLanguage>, pub size_bytes: u64, pub token_estimate: usize, pub indexed_at: i64 }
+pub enum SymbolKind { Function, Method, Struct, Class, Enum, Trait, Interface, Const, Type, Module }
+pub struct SymbolRecord { pub name: String, pub qualified_name: String, pub kind: SymbolKind, pub signature: Option<String>, pub start_line: u32, pub end_line: u32, pub token_estimate: usize }
+pub enum EdgeKind { Imports, References, Tests }
+pub enum EdgeResolution { Resolved, Ambiguous(Vec<String>), Unresolved(String) }
+pub struct EdgeRecord { pub to_path: String, pub kind: EdgeKind, pub resolution: EdgeResolution }
+pub struct SymbolHit { pub file: FileRecord, pub symbol: SymbolRecord, pub rank: f64 }
+// D59: selector ownership stays in Store to avoid a Store -> Atlas dependency. Lookup returns all candidates.
+pub struct SymbolSelector { pub path: String, pub qualified_name: String, pub kind: Option<SymbolKind>, pub signature_hash: Option<String>, pub start_line_hint: Option<u32> }
 // Concurrency contract (D41, ADR-0004): Store is Send + Sync and cheaply cloneable (Arc). ONE process, ONE
 // connection guarded by a Mutex: every method acquires the lock, so writes are serialized by construction and
 // reads never observe partial transactions. busy_timeout = 5s guards against a second process (e.g. CLI while
@@ -213,7 +226,6 @@ pub struct IndexReport { pub files_indexed: usize, pub files_skipped: usize, pub
 // queries.rs — all read-only, all bounded by token budget
 pub fn repo_map(store: &Store, repo: RepoId, budget_tokens: usize) -> Result<RepoMap>;      // dir tree + top symbols per file, PageRank-ish by edge in-degree
 pub fn outline(store: &Store, repo: RepoId, path: &str) -> Result<Outline>;                  // symbol skeleton with line ranges + token estimates
-pub struct SymbolSelector { pub path: String, pub qualified_name: String, pub kind: Option<String>, pub signature_hash: Option<String>, pub start_line_hint: Option<u32> }
 pub fn unfold(store: &Store, repo: RepoId, selector: &SymbolSelector) -> Result<UnfoldResult>; // multiple matches return typed Ambiguous candidates
 pub fn search(store: &Store, repo: RepoId, query: &str, limit: usize) -> Result<Vec<SearchHit>>;
 pub fn read_bounded(root: &Path, path: &str, range: Option<(u32, u32)>, budget_tokens: usize, counter: &dyn TokenCounter) -> Result<BoundedRead>; // path canonicalized, MUST be under approved root (symlink-resolved)
