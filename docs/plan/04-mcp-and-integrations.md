@@ -2,6 +2,10 @@
 
 Scope: the ten read-only MCP tools shipped in the first slice (D1, D7) and the three client integrations (D4). Claude Desktop is explicitly excluded (D5). Memory tools (`compresso_remember`/`recall`/`forget`) and write-capable tools (`compresso_edit`/`batch_edit`) are later phases and not specified here. Local-only stats per D6; no tool ever transmits data off the device.
 
+Audit repair contracts: `compresso_compress` never submits arbitrary text to budget packing as one disposable node. The generic text path deterministically segments paragraphs, fenced blocks, JSON values, and log/error groups; current-instruction and final non-empty segments are protected anchors. If segmentation cannot preserve structure or retain one non-empty segment, the result is byte-identical passthrough with `fallback_used=true`. Provider payloads use the canonical conversation parser/profile validator instead.
+
+Production MCP transports are stdio and authenticated Streamable HTTP. HTTP binds to loopback by default, reuses the local bearer token, validates Origin/Host, negotiates protocol versions, and enforces session/body/concurrency limits. There is no unauthenticated compatibility endpoint. E16-07 owns it; stdio remains the default.
+
 ## 1. MCP tool surface
 
 ### 1.1 Conventions shared by every tool
@@ -217,45 +221,28 @@ Shipped verbatim as the rmcp server `instructions` (build-doc §13.4: brief, fac
 
 ### 1.7 compresso_unfold
 
-**Description (final copy)**: Returns the exact source body of one named symbol, located via the index's stored line range and read from disk with a content-hash check. This is the precision companion to compresso_outline: fetch only the symbols you need instead of whole files. Read-only; requires an indexed repository.
-
 **inputSchema**:
 
 ```json
 {
   "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "root": { "type": "string", "description": "Absolute repository root. Optional." },
-    "path": { "type": "string", "minLength": 1, "description": "Repo-relative file path." },
-    "symbol": { "type": "string", "minLength": 1, "description": "Qualified symbol name as shown by compresso_outline or compresso_search, e.g. 'SessionManager::start'." },
-    "max_tokens": { "type": "integer", "minimum": 100, "maximum": 100000, "default": 2000 }
+    "root": { "type": "string", "description": "Absolute approved repository root. Optional when cwd is approved." },
+    "path": { "type": "string", "minLength": 1, "description": "Repository-relative file path." },
+    "qualified_name": { "type": "string", "minLength": 1 },
+    "kind": { "type": "string" },
+    "signature_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "start_line_hint": { "type": "integer", "minimum": 1 },
+    "max_tokens": { "type": "integer", "minimum": 100, "maximum": 100000, "default": 4000 }
   },
-  "required": ["path", "symbol"]
+  "required": ["path", "qualified_name"]
 }
 ```
 
-**Result shape**:
+**Result shape**: `{ schema_version, operation_id, status: "found"|"ambiguous"|"not_found", symbol?, content?, stale, candidates, tokens_used, truncated }`. Candidates are bounded to 20 and contain `path`, `qualified_name`, `kind`, `signature_hash`, and line range. Ambiguity is a successful result and never selects an arbitrary match.
 
-```json
-{
-  "schema_version": 1,
-  "operation_id": "01J2X3...",
-  "path": "src/session.rs",
-  "symbol": "SessionManager::start",
-  "kind": "method",
-  "start_line": 42,
-  "end_line": 88,
-  "content": "pub fn start(&mut self, user: UserId) -> Result<Session> {\n    ...\n}",
-  "stale": false,
-  "tokens_used": 310,
-  "token_provider": "openai_o200k",
-  "truncated": false
-}
-```
-
-**Errors**: `not_indexed`, `outside_root`, `not_found` (symbol unknown — message lists up to 5 closest qualified-name matches). Staleness is NOT an error (fail-open, matching 03-interfaces §4): on a blake3 hash mismatch the tool re-locates the symbol in the current on-disk content by name; if found, it serves the current body with `stale: true` and a reindex hint; only if the symbol cannot be re-located in the changed file does it return `not_found` with a `compresso index` instruction.
-
-**Tetris compatibility (D7)**: replaces `tetris_unfold`; identical outline→unfold contract.
+**Errors**: `not_indexed`, `outside_root`, `invalid_arguments`. A missing identity returns `status: "not_found"`; it is not an MCP error. Tests cover overloads, repeated implementations, stale/moved/deleted symbols, bounds, and root escape.
 
 ### 1.8 compresso_context
 
@@ -302,43 +289,25 @@ Default of 4000 mirrors `compression.target_tokens` (build-doc §17); an explici
 
 ### 1.9 compresso_impact
 
-**Description (final copy)**: Reports what depends on a file: the reverse-edge closure (imports, references, tests) to depth 2, so you can see the blast radius of a change before making it. Returns direct dependents, transitive dependents, and test files that exercise the target. Read-only; requires an indexed repository.
-
 **inputSchema**:
 
 ```json
 {
   "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "root": { "type": "string", "description": "Absolute repository root. Optional." },
-    "path": { "type": "string", "minLength": 1, "description": "Repo-relative file path to analyze." },
-    "max_tokens": { "type": "integer", "minimum": 100, "maximum": 100000, "default": 1500 }
+    "root": { "type": "string", "description": "Absolute approved repository root. Optional when cwd is approved." },
+    "path": { "type": "string", "minLength": 1, "description": "Repository-relative file path." },
+    "max_depth": { "type": "integer", "minimum": 1, "maximum": 2, "default": 2 },
+    "max_results": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 }
   },
   "required": ["path"]
 }
 ```
 
-**Result shape**:
+**Result shape**: `{ schema_version, operation_id, path, dependents[], unresolved_edges, ambiguous_edges, complete, truncated }`. Dependents contain path, depth, and edge kind. `complete` is false whenever unresolved/ambiguous imports may alter closure.
 
-```json
-{
-  "schema_version": 1,
-  "operation_id": "01J2X3...",
-  "path": "src/session.rs",
-  "direct_dependents": [ { "path": "src/server.rs", "kind": "imports" } ],
-  "transitive_dependents": [ { "path": "src/main.rs", "via": "src/server.rs", "depth": 2 } ],
-  "tests": [ { "path": "tests/session_test.rs" } ],
-  "dependents_total": 9,
-  "stale": false,
-  "tokens_used": 380,
-  "token_provider": "openai_o200k",
-  "truncated": false
-}
-```
-
-**Errors**: `not_indexed`, `outside_root`, `not_found`. A file with no dependents is a success with empty arrays.
-
-**Tetris compatibility**: counterpart of Tetris impact checking (`tetris_session_insights` impact surface); no direct name mapping in D7.
+**Errors**: `not_indexed`, `outside_root`, `not_found`, `invalid_arguments`. Tests cover aliases, packages, ambiguity, cycles, deletion, depth, result bounds, and root escape.
 
 ### 1.10 compresso_compress
 
@@ -418,7 +387,7 @@ Counts are reported for both `openai_o200k` (exact) and `anthropic_calibrated` (
 }
 ```
 
-**Errors**: `invalid_arguments` (unparseable `since`). An empty store is a success with zeros. `modeled_cost_saved` is always labelled `modeled`; `provider_verified_cost_saved` is post-slice and never fabricated (D6: local-only, no telemetry).
+**Errors**: `invalid_arguments` (unparseable `since`). An empty store is a success with zeros. `modeled_cost_saved` is always labelled `modeled`; `provider_observed_cost` is post-slice and never fabricated (D6: local-only, no telemetry).
 
 **Tetris compatibility**: counterpart of `tetris stats` / `tetris_session_insights`; no argument mapping required by D7.
 
@@ -474,9 +443,12 @@ Three adapters ship in the slice: Claude Code, Codex, Cursor (D4). **Claude Desk
 
 ### 2.1 Shared mechanics (all adapters)
 
+Every integration mutation plan binds full target base_hash, plan, diff, expiry, and session. Apply re-hashes before writing and returns config_drift. Install/uninstall share the contract; uninstall removes receipt-owned keys only.
+
+
 - **Server entry Compresso writes**: `command` is the absolute, resolved path to the installed binary (default `~/.local/bin/compresso` expanded at install time, D23); `args` is exactly `["mcp", "serve"]`. No env vars are written; configuration comes from `~/.config/compresso/config.toml`.
 - **Backup**: before any write, the current config file is copied byte-for-byte to `<config>.compresso-backup-<ISO timestamp>`, where the timestamp is UTC with colons replaced by hyphens for filesystem safety: `date -u +%Y-%m-%dT%H-%M-%SZ`. Example: `~/.claude.json.compresso-backup-2026-07-21T09-15-42Z`. Backups are never overwritten or pruned automatically. If the config file does not exist, no backup is created and the receipt records `backup_path` as the sentinel string `"(none: file created)"`.
-- **Plan preview**: `plan_install` produces a unified diff (`diff -u` format) of the exact bytes to be written, headed by the config path, plus a one-line summary of the owned keys and the backup path that will be used. `compresso integrate <client>` prints the diff and requires interactive confirmation (or `--yes`); the local API two-step (`plan_hash` then approve, 03-interfaces §7) hashes this exact diff.
+- **Plan preview**: `plan_install` produces a unified diff (`diff -u` format) of the exact bytes to be written, headed by the config path, plus a one-line summary of the owned keys and the backup path that will be used. `compresso integrations install <client>` prints the diff and requires interactive confirmation (or `--yes`); the local API two-step (`plan_hash` then approve, 03-interfaces §7) hashes this exact diff.
 - **Write discipline**: parse existing config with a format-preserving parser (`toml_edit` for TOML; JSON written with 2-space indentation preserving key order of untouched keys). Modify only the owned keys. Write atomically: temp file in the same directory, fsync, rename.
 - **Uninstall semantics**: remove only the Compresso-owned key recorded in the receipt. If the user has edited values inside the owned key (e.g. changed `args`), still remove the whole key but print exactly what was removed (the serialized subtree) so the user can restore their edit manually. Never touch sibling keys, comments outside the owned key (TOML), or unrelated formatting. Uninstall takes a fresh backup with the same convention before writing, then sets `uninstalled_at` on the receipt. Restoring the pre-install backup wholesale is never done automatically (it would revert unrelated user edits made since install).
 - **Receipt**: one row in `integration_receipts` (02-schemas §4) per successful install:
@@ -514,7 +486,7 @@ Three adapters ship in the slice: Claude Code, Codex, Cursor (D4). **Claude Desk
 
 ```diff
 --- ~/.claude.json (current)
-+++ ~/.claude.json (after compresso integrate claude-code)
++++ ~/.claude.json (after compresso integrations install claude-code)
 @@
    "mcpServers": {
 +    "compresso": {
@@ -569,6 +541,17 @@ args = ["mcp", "serve"]
 
 ### 2.5 Explicit non-goals
 
-- **Claude Desktop**: no adapter, no detection, no writes to `~/Library/Application Support/Claude/claude_desktop_config.json` under any code path (D5). The CLI responds to `compresso integrate claude-desktop` with a refusal citing this decision.
+- **Claude Desktop**: no adapter, no detection, no writes to `~/Library/Application Support/Claude/claude_desktop_config.json` under any code path (D5). The CLI responds to `compresso integrations install claude-desktop` with a refusal citing this decision.
 - No hooks, wrappers, or PATH shims are installed for any client in the slice; the integration surface is exactly one MCP server entry per client.
 - No automatic migration of Tetris client configs. Tetris entries are never read, modified, or removed by Compresso adapters (D2/D3); users remove Tetris separately.
+
+## 3. Future E15 tool surface
+
+E15 adds versioned `compresso_search_combined`, `compresso_importers`, `compresso_edit_plan`, `compresso_edit_apply`, `compresso_edit_rollback`, `compresso_sql_schema`, `compresso_sql_query`, `compresso_sql_mutate`, `compresso_recall`, `compresso_remember`, `compresso_forget`, `compresso_review`, and `compresso_review_apply` tools. Exact schemas live in `09-woz-inspired-capabilities.md` and `schemas/{search,edit,sql,recall,knowledge,review}/v1.json`.
+
+Search/schema/query are read classes; recall is private-read and opt-in; planning has no side effects; edit/remember/review-apply are write; rollback/forget/SQL mutation are destructive. Every apply request binds an explicit approval to an unexpired plan hash and current base versions (D50). Claude Code and Codex receive schema-identical tools. Browser and terminal tools remain disabled until E15-31/E15-32 and E14-19/E14-20 pass.
+
+
+## 4. Evaluation CLI ownership
+
+The public surface is `compresso eval run|gates|diff-gates|workflow|calibrate-anthropic`. `compresso-eval` is the shared internal library and CI binary; both entry points use one argument/schema implementation. Calibration is maintainer-only and never invoked by CI.

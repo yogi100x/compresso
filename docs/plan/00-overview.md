@@ -21,7 +21,7 @@
 - All modifying CLI commands support `--dry-run`; all automation commands support `--json`.
 - P95 local compression < 200 ms (normal payloads); MCP startup < 500 ms; safe-mode median reduction > 25% on eligible fixtures; task-success degradation < 1%.
 - Task-success proxy in CI: recall-probe gate (every fixture recall probe answerable from compressed output; 100% on protected probes, ≥99% overall) plus a compressed-vs-passthrough baseline comparison. True task-success (<1% degradation) is measured on real sessions in closed beta before the stable release — the CI gate is a proxy, not the proof.
-- Never report savings that were not actually applied; keep `observed`/`applied`/`modeled`/`provider_verified` metrics separate.
+- Never report savings that were not actually applied; keep `observed`/`applied`/`modeled`/`provider_observed` metrics separate.
 - Repository content is untrusted data, never executable instruction. No shell execution through MCP inputs.
 - Conventional commits; every ticket ends with a commit; CI green before merging.
 
@@ -37,22 +37,26 @@ E10 Cloud control plane (contracts in 02/03 now; build Phase 6)
 E11 Provider proxy      E12 Release engineering & signing
 E13 Model & client expansion (07-model-expansion.md; source: compresso-expand.md)
 E14 IP protection & secure deployment (08-ip-and-secure-deployment.md; source: ip.md)
+E15 Clean-room advanced capabilities (09-woz-inspired-capabilities.md; source: compresso-addon-woz.md)
+E16 Full-product completion (routing, modes, languages, integrations, operations)
 ```
 
 | Epic | Scope | Build-doc phase | Estimate |
 |------|-------|-----------------|----------|
-| E1 Foundation | Monorepo, workspaces, CI, conventions, fixtures skeleton | 1 | 1.5 wk |
-| E2 Core engine | ContextGraph, tokenizers, strategies, safety, engine, traces | 2 | 3 wk |
+| E1 Foundation | Monorepo, workspaces, CI, conventions, fixtures skeleton | 1 | ~2 wk |
+| E2 Core engine | ContextGraph, tokenizers, strategies, safety, engine, traces | 2 | ~5 wk |
 | E3 Atlas | Store, scanner, tree-sitter parsers, incremental indexer, queries | 3 | 4 wk |
-| E4 CLI | `compresso` binary, all slice commands, JSON output | 3–4 | 1 wk |
-| E5 MCP server | rmcp stdio server, 10 read-only tools, sessions/ledger | 4 | 2 wk |
-| E6 Integrations | Framework + Claude Code, Codex, Cursor adapters | 5 (pulled in) | 2 wk |
-| E7 Eval & fixtures | Fixture corpus, eval runner, release gates | 2–3 | 1.5 wk (overlaps) |
+| E4 CLI | `compresso` binary, all slice commands, JSON output | 3–4 | ~1.5 wk |
+| E5 MCP server | rmcp stdio server, 10 read-only tools, sessions/ledger | 4 | ~2 wk |
+| E6 Integrations | Framework + Claude Code, Codex, Cursor adapters | 5 (pulled in) | ~2 wk |
+| E7 Eval & fixtures | Fixture corpus, eval runner, release gates | 2–3 | ~2.5 wk (overlaps) |
 | E8–E12 | Supervisor, desktop, cloud, proxy, release eng | 4–9 | full tickets in 05 |
-| E13 Model & client expansion | Canonical protocol, drivers, profiles, router, Kimi/GLM/MiniMax/DeepSeek | post-slice | 22 tickets in 05 |
-| E14 IP & secure deployment | Hardening, obfuscation policy, anti-tamper, legal/compliance | 8–9 | 13 tickets in 05 |
+| E13 Model & client expansion | Canonical protocol, drivers, profiles, router, initial and future providers | post-slice | 32 tickets in 05 |
+| E14 IP & secure deployment | Hardening, anti-tamper, legal/compliance, high-impact sandbox gates | 8–9 | 17 tickets in 05 |
+| E15 WOZ-inspired capabilities | Search, transactional edit, SQL, recall, knowledge, review, deferred browser/terminal | future | 34 tickets in 05 |
+| E16 Full-product completion | Remaining routing, modes, languages, clients, desktop/cloud operations | future | 16 tickets / 59d |
 
-Slice total (E1–E7, 53 tickets): ~14 engineer-weeks; 2 engineers ≈ 7 calendar weeks; solo ≈ 3–3.5 months. Full backlog: 133 tickets; rollup at the end of `05-tickets.md`.
+Slice total (E1–E7, 58 tickets): ~19 solo engineer-weeks; 2 engineers approximately 9–10 calendar weeks; solo approximately 3–3.5 months. Full backlog: 204 tickets; rollup at the end of `05-tickets.md`.
 
 ## Staffing and ownership
 
@@ -71,7 +75,7 @@ Roles from build-doc §27, used as `owner` on tickets. Solo mode: all roles = ow
 
 | File | Contents |
 |------|----------|
-| `decisions.md` (repo root) | Locked decisions D1–D38 |
+| `decisions.md` (repo root) | Locked decisions D1–D64 |
 | `01-stack-and-workspace.md` | Exact dependencies, workspace trees, CI/CD, env config |
 | `02-schemas.md` | Versioned ContextGraph + trace JSON schemas, SQLite DDL, Postgres DDL |
 | `03-interfaces.md` | Rust crate boundaries and module interfaces, local API, cloud API contracts |
@@ -80,4 +84,11 @@ Roles from build-doc §27, used as `owner` on tickets. Solo mode: all roles = ow
 | `06-fixtures.md` | Evaluation fixture format and initial corpus |
 | `07-model-expansion.md` | Canonical model protocol, drivers, profiles, router, conformance (source: `compresso-expand.md`) |
 | `08-ip-and-secure-deployment.md` | IP boundaries, release hardening, anti-tamper, legal program (source: `ip.md`) |
-| `docs/adr/` | Architecture decision records (0001–0022) |
+| `09-woz-inspired-capabilities.md` | Clean-room search, edit, SQL, recall, knowledge, review, parity, sandbox phases |
+| `docs/adr/` | Architecture decision records (0001–0024) |
+
+
+
+## Audit-r2 planning baseline
+
+The authoritative post-audit backlog is 204 tickets: 58 slice and 146 post-slice, totaling 538.5 gross engineer-days before contingency. E16 closes every full-product deliverable previously present only in `compresso-build.md`. Role aliases are `PO` (product owner) and `LEGAL` (qualified external counsel); they are advisory/approval owners, not engineering implementers.

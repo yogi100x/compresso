@@ -419,7 +419,6 @@ Reject a compressed result if:
 - Output is larger than input without an explicit reason.
 - The latency budget was exceeded.
 - Strategy confidence is below policy.
-- Provider or client format is unknown.
 
 ## 11. Routing engine
 
@@ -886,7 +885,7 @@ removed_tokens
 compression_overhead
 net_tokens_saved
 modeled_cost_saved
-provider_verified_cost_saved
+provider_observed_cost_saved
 ```
 
 ## 22. Installer and distribution

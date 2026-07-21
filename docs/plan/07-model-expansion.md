@@ -38,7 +38,7 @@ Extension of the crate-boundary table from `03-interfaces.md` §1:
 
 Dependency rules, extending `01-stack-and-workspace.md` §3: `model-protocol → core(tokens only)`; `providers → model-protocol`; `router → model-protocol` and nothing else internal (the router is a pure function of its inputs — health and evaluation data are passed in, never fetched); `agent → all of the above plus core/atlas/store`. No new crate may depend on `compresso-mcp`, and `compresso-core`, `compresso-atlas`, `compresso-store`, and `compresso-mcp` may not depend on any E13 crate — compression and indexing must keep working with zero providers configured.
 
-**Network exception.** `01-stack` §1 forbids network-I/O crates outside `compresso-updater`. `compresso-providers` becomes the second sanctioned exception (`reqwest`, rustls), enforced in `deny.toml`: it is the only crate that opens outbound connections to model providers, and it does so only for endpoints the user explicitly configured against a signed host allowlist. There are no default cloud calls; a fresh install performs zero provider network I/O.
+Network exceptions follow the owning-crate matrix in 01-stack section 3.1: proxy and providers may reach configured model hosts, agent may reach the account control plane, updater may reach signed release origins, and maintainer calibration is development-only. All other model-expansion crates are offline.
 
 **Relationship to compresso-proxy (E11).** The localhost proxy and the drivers share wire-format knowledge (Anthropic Messages, OpenAI Chat Completions) but have opposite roles: the proxy passively intermediates a host client's own model traffic; the drivers actively originate requests when Compresso owns the agent loop. Shared payload types live in `compresso-providers` and the proxy consumes them; the proxy's passthrough guarantees (ADR-0014) are unchanged.
 
@@ -479,6 +479,10 @@ cloud_prompt_logging = false
 
 ## 6. Error model and resilience
 
+### Prompt-cache stability
+
+Compression is cache-aware. A provider profile declares cache breakpoint semantics and whether usage reports cached input tokens. Once a request prefix has been sent with a stable cache key, Compresso freezes that prefix byte-for-byte for the conversation and compresses only the uncached suffix. Repacking or provider fallback creates a visibly new cache epoch; it never silently mutates a cached prefix. Routing cost uses provider-observed cached/uncached input fields when available and otherwise labels the result modeled. Conformance fixtures compare second-turn cache keys and serialized prefixes.
+
 ```rust
 pub enum ModelErrorKind {
     Authentication, Authorization, InvalidRequest, UnsupportedCapability,
@@ -573,6 +577,10 @@ Promotion to `verified` requires passing the relevant conformance cases on the c
 - **Supply chain.** Profile registries are signed and verified before activation (ed25519, current+next key rotation, mirroring the entitlement pattern of `03-interfaces.md` §9). Profiles cannot define executable code or inject arbitrary secret-bearing headers; schema versions are pinned and unknown security-sensitive fields rejected. Native adapters ship only through the signed Compresso release process — never downloaded at runtime.
 - **Every model response is untrusted input**, identical to the repository-content rule: validated against canonical schemas, gated by the same permission policy for every provider, and unable to alter its own permission level (D48 applies to provider-originated payloads: `protected` is forced on instruction/tool kinds).
 
+## Profile path convention
+
+Profiles live under `profiles/<domain>/`: providers, review, agents, and compression. Provider fixtures mirror `fixtures/providers/<provider>/`; root-level profile files fail plan-lint.
+
 ## 10. E13 ticket seeds
 
 One-line seeds, phased per `compresso-expand.md` §25; a later pass expands these into full tickets in `05-tickets.md`. All depend transitively on E1; provider network tickets additionally require the E13-10 key handling and E13-09 signing tickets so no code path ever ships that could leak a key.
@@ -613,3 +621,14 @@ One-line seeds, phased per `compresso-expand.md` §25; a later pass expands thes
 - [ ] E13-20: Router scoring, explicit fallback chains, circuit breakers, canonical conversation reconstruction on fallback. Owner: R1 · Depends: E13-19, E13-07
 - [ ] E13-21: Agent-loop integration in `compresso-agent` — full canonical loop with permissions, budgets, and provider-state custody over FakeProvider then real drivers. Owner: R1/D1 · Depends: E13-03, E13-14, E13-20
 - [ ] E13-22: CLI surface — `compresso provider add`, `model list`, `model test`, `route set` with `--json`/`--dry-run`. Owner: D1 · Depends: E13-09, E13-10, E13-11, E13-20
+
+## 11. Future expansion phases (D52)
+
+| Phase | Tickets | Scope | Exit criterion |
+|---|---|---|---|
+| E13-F1 | E13-23..25 | Responses API, local inference, enterprise gateways | Canonical tool loop passes without runtime provider branches |
+| E13-F2 | E13-26..29 | Multimodal, realtime, embeddings/reranking, batch | Canonical events, bounds, cancellation, and fixtures per capability |
+| E13-F3 | E13-30 | Evaluation-driven routing calibration | Held-out quality holds or improves without policy-boundary change |
+| E13-F4 | E13-31..32 | Provider SDK and self-hosted registry | Third-party profile requires no core change; rollback tested |
+
+Future definitions are in `05-tickets.md`. Local endpoints remain explicit opt-in and subject to local-network policy. Enterprise gateways are separate profiles, never aliases that silently change billing, residency, or retention.

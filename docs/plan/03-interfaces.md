@@ -13,6 +13,10 @@ Signatures below are the contract between tickets. Implementers may add private 
 | compresso-integrations | D1 | Integration trait + adapters | (external only) |
 | compresso-cli | D1 | bin only, no lib | all above |
 | compresso-eval | R1/PQ | FixtureSet, EvalRunner, Gates | core, atlas |
+| compresso-model-protocol/providers/router | R1/R2 | model contracts, drivers, routing | explicit E13 graph |
+| compresso-search/edit/recall/knowledge/review | R1/R2 | E15 local capabilities | explicit local graph |
+| compresso-sandbox | I1 | OS isolation | OS APIs only |
+| compresso-browser/terminal | R2 | sandboxed workflows | sandbox only |
 
 ## 2. compresso-core
 
@@ -32,15 +36,17 @@ pub struct ContextNode {
     pub recency: Option<u64>,
     pub metadata: serde_json::Map<String, serde_json::Value>,
 }
-pub enum NodeKind { SystemInstruction, UserInstruction, AssistantResponse, ToolDefinition, ToolRequest, ToolResponse, SourceFile, CodeSymbol, SearchResult, CompilerOutput, TestOutput, RepoMap, Summary, Decision, MemoryFact }
+pub enum NodeKind { SystemInstruction, UserInstruction, AssistantResponse, AssistantReasoning, ToolDefinition, ToolRequest, ToolResponse, SourceFile, CodeSymbol, SearchResult, CompilerOutput, TestOutput, RepoMap, Summary, Decision, MemoryFact }
 pub enum Source { Client, Repository { path: String }, Tool { name: String }, Synthetic }
 pub struct ContextEdge { pub from: String, pub to: String, pub kind: EdgeKind, pub weight: f32 }
-pub enum EdgeKind { Imports, Calls, Defines, References, Tests, Supersedes, ProducedByTool, RespondsTo, DependsOn, SameErrorGroup }
+pub enum EdgeKind { Imports, Calls, Defines, References, Tests, Supersedes, ProducedByTool, RespondsTo, DependsOn, SameErrorGroup, DuplicateOf }
 
 impl ContextGraph {
-    pub fn validate(&self) -> Result<(), GraphError>;      // unique ids, edge endpoints, protection invariants (02-schemas §1)
+    pub fn validate(&self) -> Result<(), GraphError>;      // ids, edges, protection, token recount, provider turns, duplicate refs
     pub fn total_tokens(&self) -> usize;
     pub fn from_text(content: &str, kind: NodeKind, counter: &dyn TokenCounter) -> Self; // single-node convenience
+    pub fn recount_changed(&mut self, changed: &BTreeSet<String>, counter: &dyn TokenCounter);
+    pub fn validate_token_counts(&self, counter: &dyn TokenCounter) -> Result<(), GraphError>;
 }
 ```
 
@@ -52,9 +58,9 @@ pub trait TokenCounter: Send + Sync {
     fn provider(&self) -> TokenProvider;
     fn count(&self, text: &str) -> usize;
 }
-pub fn counter_for(provider: TokenProvider) -> &'static dyn TokenCounter; // lazily-initialized singletons
+pub fn counter_for(provider: TokenProvider) -> &'static dyn TokenCounter; // eagerly initialized during process startup singletons
 // AnthropicCalibrated = O200k count × CALIBRATION. Until the calibration ticket (E2-02a) lands measured values in
-// fixtures/provider-payloads/anthropic-counts.json, CALIBRATION = 1.15 (documented interim default, ADR-0017);
+// fixtures/provider-payloads/anthropic-counts/anthropic-counts.json, CALIBRATION = 1.15 (documented interim default, ADR-0017);
 // the ±10% accuracy assertion only activates once measured counts are committed.
 ```
 
@@ -62,7 +68,13 @@ pub fn counter_for(provider: TokenProvider) -> &'static dyn TokenCounter; // laz
 
 ```rust
 pub struct Estimate { pub tokens_saved: usize, pub confidence: f32 }
-pub struct StrategyOutput { pub graph: ContextGraph, pub notes: Vec<String> }
+pub struct StrategyOutput { pub graph: ContextGraph, pub notes: Vec<String>, pub removals: Vec<RemovalRecord> }
+pub struct RemovalRecord {
+    pub strategy_id: String, pub node_id: String, pub kind: RemovalKind,
+    pub locator: Option<String>, pub original_hash: String,
+    pub replacement_hash: Option<String>, pub before_tokens: usize,
+    pub after_tokens: usize, pub units_removed: Option<usize>,
+}
 
 pub trait CompressionStrategy: Send + Sync {
     fn id(&self) -> &'static str;                          // "dedup_exact", "collapse_logs", "compact_json", "pack_budget"
@@ -78,7 +90,7 @@ impl StrategyRegistry {
 }
 ```
 
-Slice strategies (each its own file under `strategies/`): `dedup_exact` (identical unprotected node contents → keep first, replace rest with reference stub), `collapse_logs` (≥3 consecutive lines matching after timestamp/hex/uuid normalization → `<line> [×N repeats]`), `compact_json` (tool_response nodes with valid JSON: minify + truncate long string values/arrays with elision markers, structure preserved), `pack_budget` (drop lowest `priority/token` unprotected nodes until under `max_tokens`; never partial-truncate code).
+Slice strategies: `dedup_exact` creates a typed stub plus `duplicate_of` edge; `collapse_logs` and `compact_json` remove only enumerated units; `pack_budget` drops lowest `priority/token` unprotected atomic groups. It never partial-truncates code, provider turns, tool request/response pairs, or dedup referent groups. Every strategy returns changed node ids; the engine recounts those nodes and updates totals by delta. Strategies must not invoke whole-graph tokenization.
 
 **Lossiness taxonomy (D39)** — safe mode is deterministic and rule-based, NOT lossless, and is never described as lossless in user-facing copy. Mapping enforced by `supports()`:
 
@@ -88,7 +100,7 @@ Slice strategies (each its own file under `strategies/`): `dedup_exact` (identic
 | `Structural` (safe-mode default) | + `collapse_logs`, `compact_json`, `pack_budget` — removal/truncation of whole units (lines, values, nodes), each enumerated in the trace |
 | `Summarizing` | + model-based summarization (aggressive mode, post-slice) |
 
-Every removal or truncation appends a machine-readable entry to `StrategyResult.notes` (`removed node:<id>`, `collapsed <n> lines`, `truncated <pointer>`); the `removals_enumerated` safety check fails the result if token loss is not accounted for by notes.
+Every removal or truncation appends a typed `RemovalRecord`. Notes are explanatory only. Records identify a non-overlapping node/locator, hashes, and before/after token counts. `removals_enumerated` recomputes affected spans and requires the sum of record deltas to equal the graph delta exactly (D51).
 
 ### 2.4 `engine` module
 
@@ -106,7 +118,7 @@ impl Engine {
 }
 ```
 
-Pipeline (build-doc §10.3): validate → mark protected → run strategies in registry order, each within remaining latency budget → safety-check the cumulative result → on any failure restore original graph, set `fallback_used` + `fallback_reason`.
+Pipeline: validate and recount ingress → mark protected/provider-atomic groups → run strategies with differential token accounting and remaining latency budget → safety-check → on failure restore the original graph. Non-empty input may never produce empty output. Provider-shaped input runs its profile conversation validator before serialization; failure is byte-identical passthrough.
 
 ### 2.5 `safety` module
 
@@ -115,7 +127,7 @@ pub struct SafetyCheck { pub name: String, pub passed: bool, pub detail: String 
 pub fn run_all(original: &ContextGraph, candidate: &ContextGraph, budget: &CompressionBudget, elapsed_ms: u64) -> Vec<SafetyCheck>;
 ```
 
-Checks (all must pass; build-doc §10.6): `protected_unchanged` (byte-equal content for every protected node), `no_inflation` (after ≤ before unless a note explains), `json_still_valid` (nodes that were valid JSON still are), `fences_balanced` (``` count parity preserved per node), `refs_valid` (file:line references in output exist in input), `latency_ok`, `schema_valid` (output revalidates), `removals_enumerated` (every removed/truncated token span is accounted for by a strategy note — see lossiness taxonomy §2.3).
+Checks: `protected_unchanged`, `no_inflation`, `json_still_valid`, `fences_balanced`, `refs_valid`, `provider_conversation_valid`, `minimum_output`, `token_counts_valid`, `latency_ok`, `schema_valid`, `removals_enumerated`. `refs_valid` covers file references and dedup referents; `minimum_output` requires a non-empty candidate for non-empty input; provider validation enforces complete turns/tool pairs and immutable reasoning; token validation recounts changed nodes and totals.
 
 ### 2.6 `config` module
 
@@ -151,7 +163,7 @@ impl Store {
     pub fn delete_files(&self, repo: RepoId, paths: &[String]) -> Result<()>;
     pub fn search_symbols(&self, repo: RepoId, query: &str, limit: usize) -> Result<Vec<SymbolHit>>; // FTS5, bm25-ranked
     pub fn symbols_in_file(&self, repo: RepoId, path: &str) -> Result<Vec<SymbolRecord>>;
-    pub fn symbol_by_name(&self, repo: RepoId, qualified: &str) -> Result<Option<(FileRecord, SymbolRecord)>>;
+    pub fn symbols_by_identity(&self, repo: RepoId, selector: &SymbolSelector) -> Result<Vec<(FileRecord, SymbolRecord)>>; // never arbitrary first
     // sessions & operations
     pub fn start_session(&self, client: &str, transport: &str) -> Result<SessionId>;
     pub fn record_operation(&self, op: &OperationRecord) -> Result<()>;   // validates trace_json against schema
@@ -178,7 +190,9 @@ impl ParserRegistry {
     pub fn for_path(path: &Path) -> Option<Language>;      // by extension: rs, ts, tsx, js, jsx, mjs, cjs, py
     pub fn extract(lang: Language, source: &str) -> Result<Extraction, ParseError>;
 }
-pub struct Extraction { pub symbols: Vec<SymbolRecord>, pub imports: Vec<String> }
+pub struct ImportRecord { pub raw: String, pub kind: ImportKind, pub resolved_path: Option<String>, pub resolution: ImportResolution }
+pub enum ImportResolution { Resolved, Ambiguous(Vec<String>), Unresolved(String) }
+pub struct Extraction { pub symbols: Vec<SymbolRecord>, pub imports: Vec<ImportRecord> }
 // tree-sitter queries per language live in queries/<lang>.scm; symbol kinds normalized to store vocabulary
 
 // indexer.rs
@@ -187,12 +201,13 @@ impl Indexer<'_> {
     pub fn index(&self, root: &Path, progress: impl FnMut(IndexProgress)) -> Result<IndexReport, AtlasError>;
     // pipeline: canonicalize+approve root -> scan -> parse ONLY added/changed -> replace_symbols per file transaction -> delete removed -> stamp index_versions
 }
-pub struct IndexReport { pub files_indexed: usize, pub files_skipped: usize, pub symbols: usize, pub duration_ms: u64, pub stale: bool }
+pub struct IndexReport { pub files_indexed: usize, pub files_skipped: usize, pub symbols: usize, pub imports_resolved: usize, pub imports_unresolved: usize, pub duration_ms: u64, pub stale: bool }
 
 // queries.rs — all read-only, all bounded by token budget
 pub fn repo_map(store: &Store, repo: RepoId, budget_tokens: usize) -> Result<RepoMap>;      // dir tree + top symbols per file, PageRank-ish by edge in-degree
 pub fn outline(store: &Store, repo: RepoId, path: &str) -> Result<Outline>;                  // symbol skeleton with line ranges + token estimates
-pub fn unfold(store: &Store, repo: RepoId, path: &str, symbol: &str) -> Result<UnfoldResult>; // exact body via stored line range, read from disk, hash-checked (stale -> flag + reindex hint)
+pub struct SymbolSelector { pub path: String, pub qualified_name: String, pub kind: Option<String>, pub signature_hash: Option<String>, pub start_line_hint: Option<u32> }
+pub fn unfold(store: &Store, repo: RepoId, selector: &SymbolSelector) -> Result<UnfoldResult>; // multiple matches return typed Ambiguous candidates
 pub fn search(store: &Store, repo: RepoId, query: &str, limit: usize) -> Result<Vec<SearchHit>>;
 pub fn read_bounded(root: &Path, path: &str, range: Option<(u32, u32)>, budget_tokens: usize, counter: &dyn TokenCounter) -> Result<BoundedRead>; // path canonicalized, MUST be under approved root (symlink-resolved)
 pub fn impact(store: &Store, repo: RepoId, path: &str) -> Result<ImpactReport>;              // reverse-edge closure, depth 2
@@ -239,11 +254,13 @@ GET  /v1/repos           -> approved repositories + index status
 POST /v1/repos           -> { root } approve + index
 DELETE /v1/repos/:id     -> remove from index
 GET  /v1/config          -> effective config with sources
-PUT  /v1/config          -> validated partial update (atomic file write)
+POST /v1/config/plan     -> { plan, unified_diff, plan_hash, base_hash, expires_at }
+POST /v1/config/apply    -> { approve: true, plan_hash, base_hash }; reject drift/expiry, then atomic write
 GET  /v1/integrations    -> detection + receipt status per client
-POST /v1/integrations/:client/plan       -> { plan, unified_diff, plan_hash, backup_path } (step 1: generate + preview)
-POST /v1/integrations/:client/install    -> body { approve: true, plan_hash } (step 2: plan_hash must match a plan issued this session)
-POST /v1/integrations/:client/uninstall
+POST /v1/integrations/:client/plan       -> { plan, unified_diff, plan_hash, base_hash, backup_path, expires_at }
+POST /v1/integrations/:client/install    -> { approve: true, plan_hash, base_hash }; reject target drift
+POST /v1/integrations/:client/uninstall/plan  -> { plan, unified_diff, plan_hash, base_hash, backup_path, expires_at }
+POST /v1/integrations/:client/uninstall/apply -> { approve: true, plan_hash, base_hash }; restore receipt-owned keys only
 ```
 
 ## 8. Cloud API contract (Phase 6, spec now; `schemas/cloud-api/v1.json`)
@@ -274,16 +291,30 @@ Error shape everywhere: `{ error: { code, message, request_id } }`. Entitlement 
 pub struct EntitlementVerifier { /* embedded ed25519 public keys, keyed by kid */ }
 impl EntitlementVerifier {
     pub fn verify(&self, bundle_jws: &str, now: u64) -> Result<Entitlements, EntitlementError>;
-    // JWS (EdDSA/ed25519), header kid selects among EMBEDDED_KEYS (≥2 for rotation: current + next).
+    // JWS (EdDSA/ed25519), header kid selects among EMBEDDED_KEYS (≥2 for rotation: previous + current + next).
     // Expired-but-within-grace bundles verify with Entitlements::degraded = true.
 }
 pub struct EntitlementCache<'a> { /* store-backed, entitlement_cache table (02-schemas §4) */ }
+pub trait CloudClient: Send + Sync {
+    fn begin_device_authorization(&self) -> Result<DeviceAuthorization, AccountError>;
+    fn poll_device_token(&self, device_code: &SecretString) -> Result<DevicePoll, AccountError>;
+    fn fetch_entitlements(&self, access: &AccessToken) -> Result<String, AccountError>;
+    fn revoke_device(&self, access: &AccessToken) -> Result<(), AccountError>;
+}
+pub struct AccountClient { /* HTTPS CloudClient, bounded polling, refresh rotation, keychain */ }
+// CLI: compresso account login|status|logout. Logout always clears local credentials and revokes when reachable.
 impl EntitlementCache<'_> {
     pub fn current(&self, now: u64) -> Entitlements;          // NEVER errors: missing/invalid/expired-past-grace => Entitlements::local_only()
     pub fn refresh(&self, client: &dyn CloudClient) -> Result<(), EntitlementError>; // background, exponential backoff, jitter
 }
 // Device credentials (refresh token, device private key): OS keychain via the `keyring` crate — never on disk.
-// Key rotation: releases ship current+next public keys; bundles signed with `next` verify on N and N+1 versions.
+// Key rotation: releases carry previous+current+next keys. Server overlap lasts max offline grace plus release support window.
+// Time validation permits ±5 minutes only for nbf/iat; expiry/grace use monotonic elapsed time anchored at fetched_at.
 // Hard rule (owner constraint 4): every failure path degrades to local/free features; nothing here can block
 // compression, MCP, or the underlying assistant.
 ```
+
+
+## 10. E15 capability interfaces
+
+Authoritative E15 state machines are in `09-woz-inspired-capabilities.md`. Public surfaces are `CombinedSearch`, `EditPlanner`/`EditApplier`, `SqlInspector`/`SqlExecutor`, `RecallIndex`, `KnowledgeStore`, `ReviewOrchestrator`, and `ClientCapabilityNegotiator`. Read and apply interfaces are separate types; apply requires an unexpired content-hashed plan and `ApprovalGrant` issued by the permission engine.

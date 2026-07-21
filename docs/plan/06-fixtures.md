@@ -126,7 +126,7 @@ The production gate (build-doc §25.6, D37) is: **safe-mode median token reducti
 5. The gate fails if fewer than 5 eligible fixtures exist, so deleting fixtures cannot game the median.
 6. Independent of eligibility, **every** fixture feeds the other gates: zero protected-node mutations, zero malformed tool/provider payloads, P95 compression latency < 200 ms, and zero `must_not_contain_in_trace` violations across the whole corpus.
 7. A fixture's own `min_reduction_pct` is a per-fixture regression floor; the 25% gate is a corpus median. Both must pass in CI.
-8. Changing `eligible`, `min_reduction_pct`, or deleting a fixture requires a PR that names the gate impact in its description (enforced by review convention, checked by `compresso-eval diff-gates` against the previous manifest set).
+8. Changing `eligible`, `min_reduction_pct`, or deleting a fixture requires a PR that names the gate impact in its description (enforced by review convention, checked by `compresso eval diff-gates` against the previous manifest set).
 9. **Recall gate (D40, task-success proxy)**: across the whole corpus, 100% of `protected = true` recall probes and ≥99% of all recall probes must find their `answer_substring` in the compressed output. Every compression fixture is additionally run in `passthrough` mode as a baseline: passthrough recall must be 100% (a failing passthrough probe means the probe itself is broken, and the run errors rather than counting it). This gate is a CI proxy for the <1% task-success degradation requirement; the real measurement happens on closed-beta sessions before stable (00-overview constraints).
 
 ## 5. Loading and evaluation (`compresso-eval`)
@@ -1095,7 +1095,7 @@ Calibration procedure (offline, run by a maintainer with an Anthropic API key; n
 1. Run `compresso eval calibrate-anthropic --model <current production Claude model>`. For each sample the command calls the Anthropic `POST /v1/messages/count_tokens` API with the sample text as a single user message and records `input_tokens` minus the per-request message envelope overhead (measured once with an empty-string sample and subtracted uniformly).
 2. The command fills `anthropic_tokens`, `anthropic_model`, and `counted_at`, computes `ratio_i = anthropic_tokens_i / o200k_tokens_i` per sample, and sets `calibration_factor` to the median ratio rounded to three decimals.
 3. The updated JSON is committed. `compresso-core::tokens` embeds `calibration_factor` as the `CALIBRATION` constant with a provenance comment naming this fixture, the model, and the date; ADR-0017 records the method.
-4. Every count produced with the factor is tagged `token_provider = "anthropic_calibrated"` — it is an estimate and must never feed `provider_verified_cost_saved` (02-schemas §3).
+4. Every count produced with the factor is tagged `token_provider = "anthropic_calibrated"` — it is an estimate and must never feed `provider_observed_cost` (02-schemas §3).
 5. Recalibrate whenever samples are added, the tokenizer crate is upgraded, or Anthropic announces tokenizer changes; the diff to `calibration_factor` must be called out in the PR.
 
 ## 8. Remaining corpus fixtures (specified, authored during Phase 2)
@@ -1112,4 +1112,25 @@ Calibration procedure (offline, run by a maintainer with an Anthropic API key; n
 
 Gate arithmetic check: the eligible population is fixtures 1–6 and 8–10 from §6 (nine fixtures, ≥ the five-fixture minimum). Their per-fixture floors (80, 60, 40, 50, 30, 25, 70, 30, 40) put the corpus median at 40% — comfortably above the 25% gate, so the gate fails only on real regressions, not authoring optimism.
 
+## 9. Corpus ownership and scale fixtures
 
+E7-07 authors and commits all fifteen named fixtures before E7-02 or E7-03 can pass. E1-05 seed names are aliases only and must be replaced by the canonical paths in §§7–8. CI rejects a manifest whose declared corpus member is absent.
+
+Add three blocking scale fixtures:
+
+- `conversations/provider-tool-loop`: Anthropic and OpenAI canonical turns containing assistant reasoning, parallel tool requests, results, and a later dependent turn. Every compressed result must pass the provider profile validator and preserve protected reasoning byte-exact.
+- `conversations/single-oversize-text`: one non-empty input above budget. Output must be non-empty segmented content or byte-identical fallback, never empty success.
+- `logs/mib-rebuild-stream`: 1 MiB, 4 MiB, and configured-maximum variants. Warm P95 must satisfy the release latency gate; cold tokenizer initialization is measured separately at server startup.
+
+Token fixtures assert that every mutated node's stored count equals an independent recount and that aggregate deltas equal trace deltas.
+
+## 10. Closed-beta task-success protocol
+
+The beta measurement is explicit opt-in local export, never background telemetry. Each enrolled participant receives a signed study manifest containing task ids, repository fixture hashes, success assertions, baseline/safe randomization, and an expiry. The local runner executes paired passthrough and safe-mode tasks in isolated worktrees, evaluates deterministic tests/assertions, strips prompts/source/paths, and shows the aggregate record before export. Export contains only study/task id, arm, success boolean, token/latency counts, client/model/profile versions, and failure category.
+
+Primary endpoint: paired success-rate difference with a two-sided 95% confidence interval. Stable launch requires the lower confidence bound to remain above -1 percentage point, 100% protected recall probes, no broken baseline task, at least 200 valid paired tasks across at least 20 participants, and no single client/provider stratum below -1 point without documented investigation. Refusals and incomplete pairs are reported locally but not exported. Raw local runs can be deleted at any time.
+
+
+## 11. Benchmark-only assets
+
+E7-07 authors `fixtures/benchmarks/json-2000-elements/input.json` and `fixtures/benchmarks/source-200kb/input.ts`; E2-11 consumes them. They are excluded from the fifteen-fixture quality median and pin size, token count, generator, and hash.

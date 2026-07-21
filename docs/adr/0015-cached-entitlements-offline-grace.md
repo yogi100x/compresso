@@ -10,7 +10,7 @@ Paid features must keep working when the machine is offline or the control plane
 
 ## Decision
 
-The control plane issues signed entitlement bundles (JWS EdDSA/ed25519, 30-day offline validity per 03-interfaces §8) that the local runtime caches in the `entitlement_cache` SQLite table (02-schemas §4) and verifies offline via `EntitlementVerifier` (03-interfaces §9) against embedded public keys (current + next, `kid`-selected, rotated across releases). Device credentials live in the OS keychain (`keyring` crate). Refresh happens in the background with exponential backoff; every failure path — missing, invalid, expired-past-grace — degrades to `Entitlements::local_only()`, never an error that blocks local operation.
+The control plane issues signed entitlement bundles (JWS EdDSA/ed25519, 30-day offline validity per 03-interfaces §8) that the local runtime caches in the `entitlement_cache` SQLite table (02-schemas §4) and verifies offline via `EntitlementVerifier` (03-interfaces §9) against embedded public keys (previous + current + next, `kid`-selected, rotated across releases). Server key overlap covers grace plus supported releases. iat/nbf permit five minutes of skew; expiry/grace use monotonic elapsed time anchored to verified fetched_at. Unknown kid refreshes then degrades local-only. Device credentials live in the OS keychain (`keyring` crate). Refresh happens in the background with exponential backoff; every failure path — missing, invalid, expired-past-grace — degrades to `Entitlements::local_only()`, never an error that blocks local operation.
 
 ## Consequences
 
