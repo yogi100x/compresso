@@ -87,21 +87,22 @@ Test cases:
 
 ## E2 — Core engine
 
-### [ ] E2-01: ContextGraph types, validation, serde round-trip
+### [x] E2-01: ContextGraph types, validation, serde round-trip
 Owner: R1 · Estimate: 2d · Depends: E1-01, E1-04
 Files: rust/compresso-core/src/graph.rs, tests in same file + rust/compresso-core/tests/graph_schema_roundtrip.rs
-Description: Implement `ContextGraph`, `ContextNode`, `NodeKind`, `Source`, `ContextEdge`, `EdgeKind`, `GraphError` exactly per `03-interfaces.md` §2.1, with serde renames matching `schemas/context-graph/v1.json` (snake_case kinds, tagged `source`). Implement `ContextGraph::validate()` enforcing the code-level invariants from `02-schemas.md` §1 (unique ids, edge endpoints exist, `protected: true` required for `SystemInstruction`/`UserInstruction`/`ToolDefinition`/`ToolRequest`; arbitrary metadata can never downgrade protection), plus `force_ingress_protection(&mut self) -> Vec<String>` implementing the D48 ingress rule: on any externally supplied graph (MCP, proxy, fixtures loaded as untrusted input) `protected` is forced to `true` for those four kinds and a `protection_forced:<node_id>` note is returned for inclusion in the trace — unprotecting is possible only from trusted local surfaces (CLI `--allow-unprotect`, local config), never from an inbound payload. Also `total_tokens()` and `from_text(content, kind, counter)`.
+Description: Implement `ContextGraph`, `ContextNode`, `NodeKind`, `Source`, `ContextEdge`, `EdgeKind`, `GraphError` exactly per `03-interfaces.md` §2.1, with serde renames matching `schemas/context-graph/v1.json` (snake_case kinds, tagged `source`). Implement `ContextGraph::validate()` enforcing the code-level invariants from `02-schemas.md` §1 (unique ids, edge endpoints exist, `protected: true` required for `SystemInstruction`/`UserInstruction`/`AssistantReasoning`/`ToolDefinition`/`ToolRequest`; arbitrary metadata can never downgrade protection), plus `force_ingress_protection(&mut self) -> Vec<String>` implementing the D48 ingress rule as extended by D53: on any externally supplied graph (MCP, proxy, fixtures loaded as untrusted input) `protected` is forced to `true` for those five kinds and a `protection_forced:<node_id>` note is returned for inclusion in the trace — unprotecting is possible only from trusted local surfaces (CLI `--allow-unprotect`, local config), never from an inbound payload. Also `total_tokens()` and `from_text(content, kind, counter)`.
 Acceptance criteria:
 - A graph containing one node of every `NodeKind` and one edge of every `EdgeKind` serializes to JSON that validates against `schemas/context-graph/v1.json` and deserializes back to an equal value.
 - `validate()` returns typed `GraphError` variants for duplicate ids, dangling edges, and protection violations; never panics on adversarial input.
 - `token_provider` defaults to `openai_o200k` on deserialization when absent.
-- `force_ingress_protection` flips `protected` to true for the four instruction/tool kinds, returns one `protection_forced:<id>` note per flipped node, is a no-op (empty notes) on already-compliant graphs, and cannot be suppressed by any metadata key (D48).
+- `force_ingress_protection` flips `protected` to true for the five instruction/reasoning/tool kinds, returns one `protection_forced:<id>` note per flipped node, is a no-op (empty notes) on already-compliant graphs, and cannot be suppressed by any metadata key (D48, D53).
 Test cases:
 - test_roundtrip_all_kinds_validates_against_schema: build the every-kind graph, serialize, validate with jsonschema against v1.json, deserialize, assert equality.
 - test_validate_rejects_duplicate_ids: two nodes with id "n1" → `Err(GraphError::DuplicateId("n1"))`.
 - test_validate_rejects_dangling_edge: edge from "n1" to "missing" → `Err(GraphError::UnknownEdgeEndpoint { .. })`.
 - test_system_instruction_must_be_protected: node kind `SystemInstruction` with `protected: false` and no trusted-local unprotect → protection-invariant error.
 - test_ingress_forces_protection: external graph with node `sys-1` (`system_instruction`, `protected: false`) → `force_ingress_protection` sets `protected: true`, returns `["protection_forced:sys-1"]`, and `validate()` then passes; adding metadata `"allow_unprotect": true` to the node does not suppress the forcing (D48).
+- test_assistant_reasoning_must_be_protected: `assistant_reasoning` with `protected: false` fails validation; ingress forces it protected and records the note (D53).
 - test_from_text_counts_tokens: `ContextGraph::from_text("fn main() {}", NodeKind::SourceFile, counter)` yields one node with `token_count == counter.count("fn main() {}")` and `total_tokens()` equal to it.
 
 ### [ ] E2-02: TokenCounter providers

@@ -35,6 +35,13 @@ pub struct ContextNode {
     pub protected: bool,
     pub recency: Option<u64>,
     pub metadata: serde_json::Map<String, serde_json::Value>,
+    pub provider_turn: Option<ProviderTurn>,
+}
+pub struct ProviderTurn {
+    pub provider: String,
+    pub turn_id: String,
+    pub tool_call_id: String,
+    pub opaque_state_hash: Option<String>,
 }
 pub enum NodeKind { SystemInstruction, UserInstruction, AssistantResponse, AssistantReasoning, ToolDefinition, ToolRequest, ToolResponse, SourceFile, CodeSymbol, SearchResult, CompilerOutput, TestOutput, RepoMap, Summary, Decision, MemoryFact }
 pub enum Source { Client, Repository { path: String }, Tool { name: String }, Synthetic }

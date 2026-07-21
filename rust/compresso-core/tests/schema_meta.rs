@@ -27,11 +27,40 @@ fn compile_schema(schema: &Value) -> Validator {
         .expect("schema should compile as JSON Schema draft 2020-12")
 }
 
+fn context_graph_schema_from_docs() -> Value {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("docs/plan/02-schemas.md");
+    let contents = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+    let section = contents
+        .split_once("## 1. ContextGraph v1")
+        .expect("schema docs should contain the ContextGraph v1 section")
+        .1;
+    let json = section
+        .split_once("```json\n")
+        .expect("ContextGraph section should contain a JSON block")
+        .1
+        .split_once("\n```")
+        .expect("ContextGraph JSON block should be closed")
+        .0;
+
+    serde_json::from_str(json).expect("documented ContextGraph schema should be JSON")
+}
+
 #[test]
 fn test_context_graph_schema_compiles() {
     let schema = load_schema("context-graph");
 
     compile_schema(&schema);
+}
+
+#[test]
+fn test_context_graph_schema_matches_authoritative_docs() {
+    assert_eq!(
+        load_schema("context-graph"),
+        context_graph_schema_from_docs()
+    );
 }
 
 #[test]

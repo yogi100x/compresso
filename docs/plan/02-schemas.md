@@ -33,7 +33,7 @@ All schemas versioned by integer `schema_version`. Breaking change → new versi
         "token_provider": { "enum": ["openai_o200k", "openai_cl100k", "anthropic_calibrated", "heuristic"], "default": "openai_o200k" },
         "priority": { "type": "number", "minimum": 0, "maximum": 1 },
         "protected": { "type": "boolean" },
-        "recency": { "type": ["integer", "null"], "description": "unix seconds" },
+        "recency": { "type": ["integer", "null"], "minimum": 0, "description": "unix seconds" },
         "metadata": { "type": "object" },
         "provider_turn": { "oneOf": [{ "$ref": "#/$defs/provider_turn" }, { "type": "null" }] }
       }
