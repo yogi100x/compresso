@@ -70,7 +70,7 @@ Test cases:
 - test_fixture_tomls_parse: walk fixtures/, parse every fixture.toml with the `toml` crate, assert `name`, `category`, `description`, `eligible`, `mode`, `[budget]`, one input form, and `[expectations]` present.
 - test_repeated_log_fixture_shape: read repeated-npm-install/input.txt, assert 500 lines and that stripping the leading ISO-8601 timestamp yields a single distinct line.
 
-### [ ] E1-06: Slice release tarball CI job (D42)
+### [x] E1-06: Slice release tarball CI job (D42)
 Owner: I1 · Estimate: 1.5d · Depends: E1-02
 Files: .github/workflows/ci.yml (package job), scripts/package-tarball.sh
 Description: Add a `package` CI job on all four D33 matrix legs producing a per-platform tarball `compresso-<version>-<target>.tar.gz` (targets: aarch64-apple-darwin, x86_64-apple-darwin, x86_64-unknown-linux-gnu, x86_64-pc-windows-msvc) containing exactly the release `compresso` binary (`compresso.exe` on Windows), plus a single aggregated `SHA256SUMS` file in `shasum -a 256 -c`-compatible format covering every tarball. Artifacts uploaded on main pushes; consumed by `installers/install-local.sh` (E4-05). No signing — D42 keeps the slice installer checksum-only; signing/notarization stay E12.

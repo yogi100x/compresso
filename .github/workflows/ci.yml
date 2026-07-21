@@ -22,6 +22,8 @@ jobs:
           args: .github/workflows/ci.yml
       - name: Assert required runner matrix
         run: ruby scripts/ci/check_ci_matrix.rb
+      - name: Test deterministic release packaging
+        run: scripts/package-tarball.sh --self-test
 
   security:
     name: Security gates
@@ -114,4 +116,85 @@ jobs:
           path: |
             target/release/compresso
             target/release/compresso.exe
+          if-no-files-found: error
+
+  package:
+    name: Package (${{ matrix.target }})
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: rust
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            binary: compresso
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            binary: compresso
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            binary: compresso
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            binary: compresso.exe
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Download release binary
+        uses: actions/download-artifact@v4
+        with:
+          name: compresso-${{ matrix.os }}
+          path: package-input
+      - name: Build deterministic tarball
+        shell: bash
+        env:
+          BINARY_NAME: ${{ matrix.binary }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n 1)"
+          test -n "${version}"
+          scripts/package-tarball.sh \
+            "package-input/${BINARY_NAME}" \
+            "${version}" \
+            "${TARGET}" \
+            dist
+      - name: Upload release tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: compresso-package-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  checksums:
+    name: Aggregate release checksums
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: package
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Download release tarballs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: compresso-package-*
+          path: dist
+          merge-multiple: true
+      - name: Generate and verify SHA256SUMS
+        shell: bash
+        run: |
+          archive_count=0
+          for archive in dist/*.tar.gz; do
+            test -f "${archive}" || continue
+            archive_count=$((archive_count + 1))
+          done
+          test "${archive_count}" -eq 4
+          scripts/package-tarball.sh --checksums dist/SHA256SUMS dist/*.tar.gz
+          (cd dist && shasum -a 256 -c SHA256SUMS)
+      - name: Upload checksum manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: compresso-checksums
+          path: dist/SHA256SUMS
           if-no-files-found: error
