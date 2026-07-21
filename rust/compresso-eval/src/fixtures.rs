@@ -12,6 +12,7 @@ use serde_json::{Map, Value};
 use thiserror::Error;
 
 const CONTEXT_GRAPH_SCHEMA: &str = include_str!("../../../schemas/context-graph/v1.json");
+const BENCHMARK_DIRECTORY: &str = "benchmarks";
 const CATEGORIES: [&str; 6] = [
     "adversarial",
     "code",
@@ -341,6 +342,9 @@ fn fixture_manifest_paths(root: &Path) -> Result<Vec<PathBuf>, EvalError> {
 
         let category_path = category_entry.path();
         let category_name = utf8_file_name(&category_path, root)?;
+        if category_name == BENCHMARK_DIRECTORY {
+            continue;
+        }
         if !CATEGORIES.contains(&category_name.as_str()) {
             return Err(invalid_fixture(
                 &category_path,

@@ -1,0 +1,17 @@
+Analysis started.
+```rust
+fn one() {}
+```typescript
+const two = 2;
+```python
+three = 3
+```json
+{"four":4}
+```text
+five
+```
+first closer
+```
+second closer
+```
+third closer leaves two fences open.

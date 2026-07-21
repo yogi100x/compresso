@@ -1,0 +1,29 @@
+name = "outline-large-file"
+category = "code"
+description = "A 900-line TypeScript source file whose exported API must survive source outlining."
+eligible = true
+mode = "safe"
+
+[budget]
+max_tokens = 1500
+max_latency_ms = 200
+
+[[input.files]]
+path = "input.ts"
+kind = "source_file"
+node_id = "large-source"
+protected = false
+priority = 0.5
+
+[expectations]
+min_reduction_pct = 70.0
+expect_fallback = false
+must_preserve = [
+  "export interface SessionSnapshot {",
+  "export function summarizeSession(snapshot: SessionSnapshot): string {",
+]
+
+[[recall_probes]]
+question = "Which function summarizes a session?"
+answer_substring = "summarizeSession(snapshot: SessionSnapshot)"
+protected = true

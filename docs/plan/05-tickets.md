@@ -2191,7 +2191,7 @@ Files: rust/compresso-core/src/{graph,engine,tokens}.rs, rust/compresso-eval/ben
 Description: Recount changed nodes only, enforce count equality, initialize tokenizers at startup, and benchmark 1 MiB/4 MiB/configured-max payloads.
 Acceptance/tests: no strategy invokes full-graph counting; changed and aggregate counts match independent recounts; cold startup stays below 500 ms or fails its distinct gate; warm P95 satisfies the 200 ms product gate.
 
-### [ ] E7-07: Canonical quality and benchmark assets
+### [x] E7-07: Canonical quality and benchmark assets
 Owner: PQ · Estimate: 3d · Depends: E1-05
 Files: fixtures/, docs/plan/06-fixtures.md
 Description: Commit fifteen quality fixtures plus two benchmark assets; canonical seeds are repeated-npm-install and mini-monorepo.

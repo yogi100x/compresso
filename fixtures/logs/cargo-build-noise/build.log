@@ -1,0 +1,201 @@
+$ cargo build --workspace
+   Compiling compresso-core v0.1.0 (/workspace/rust/compresso-core) [rebuild 1]
+   Compiling compresso-atlas v0.1.0 (/workspace/rust/compresso-atlas) [rebuild 1]
+   Compiling compresso-cli v0.1.0 (/workspace/rust/compresso-cli) [rebuild 1]
+   Compiling compresso-store v0.1.0 (/workspace/rust/compresso-store) [rebuild 1]
+   Compiling compresso-eval v0.1.0 (/workspace/rust/compresso-eval) [rebuild 1]
+   Compiling compresso-mcp v0.1.0 (/workspace/rust/compresso-mcp) [rebuild 1]
+   Compiling compresso-integrations v0.1.0 (/workspace/rust/compresso-integrations) [rebuild 1]
+   Compiling compresso-updater v0.1.0 (/workspace/rust/compresso-updater) [rebuild 1]
+warning: unused variable: `candidate`
+  --> rust/compresso-core/src/engine.rs:84:9
+   |
+84 |     let candidate = registry.estimate(&graph);
+   |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_candidate`
+warning: `compresso-core` (lib) generated 1 warning
+    Finished dev [unoptimized + debuginfo] target(s) in 3.01s
+
+   Compiling compresso-core v0.1.0 (/workspace/rust/compresso-core) [rebuild 2]
+   Compiling compresso-atlas v0.1.0 (/workspace/rust/compresso-atlas) [rebuild 2]
+   Compiling compresso-cli v0.1.0 (/workspace/rust/compresso-cli) [rebuild 2]
+   Compiling compresso-store v0.1.0 (/workspace/rust/compresso-store) [rebuild 2]
+   Compiling compresso-eval v0.1.0 (/workspace/rust/compresso-eval) [rebuild 2]
+   Compiling compresso-mcp v0.1.0 (/workspace/rust/compresso-mcp) [rebuild 2]
+   Compiling compresso-integrations v0.1.0 (/workspace/rust/compresso-integrations) [rebuild 2]
+   Compiling compresso-updater v0.1.0 (/workspace/rust/compresso-updater) [rebuild 2]
+warning: unused variable: `candidate`
+  --> rust/compresso-core/src/engine.rs:84:9
+   |
+84 |     let candidate = registry.estimate(&graph);
+   |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_candidate`
+warning: `compresso-core` (lib) generated 1 warning
+    Finished dev [unoptimized + debuginfo] target(s) in 4.02s
+
+   Compiling compresso-core v0.1.0 (/workspace/rust/compresso-core) [rebuild 3]
+   Compiling compresso-atlas v0.1.0 (/workspace/rust/compresso-atlas) [rebuild 3]
+   Compiling compresso-cli v0.1.0 (/workspace/rust/compresso-cli) [rebuild 3]
+   Compiling compresso-store v0.1.0 (/workspace/rust/compresso-store) [rebuild 3]
+   Compiling compresso-eval v0.1.0 (/workspace/rust/compresso-eval) [rebuild 3]
+   Compiling compresso-mcp v0.1.0 (/workspace/rust/compresso-mcp) [rebuild 3]
+   Compiling compresso-integrations v0.1.0 (/workspace/rust/compresso-integrations) [rebuild 3]
+   Compiling compresso-updater v0.1.0 (/workspace/rust/compresso-updater) [rebuild 3]
+warning: unused variable: `candidate`
+  --> rust/compresso-core/src/engine.rs:84:9
+   |
+84 |     let candidate = registry.estimate(&graph);
+   |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_candidate`
+warning: `compresso-core` (lib) generated 1 warning
+    Finished dev [unoptimized + debuginfo] target(s) in 5.03s
+
+   Compiling compresso-core v0.1.0 (/workspace/rust/compresso-core) [rebuild 4]
+   Compiling compresso-atlas v0.1.0 (/workspace/rust/compresso-atlas) [rebuild 4]
+   Compiling compresso-cli v0.1.0 (/workspace/rust/compresso-cli) [rebuild 4]
+   Compiling compresso-store v0.1.0 (/workspace/rust/compresso-store) [rebuild 4]
+   Compiling compresso-eval v0.1.0 (/workspace/rust/compresso-eval) [rebuild 4]
+   Compiling compresso-mcp v0.1.0 (/workspace/rust/compresso-mcp) [rebuild 4]
+   Compiling compresso-integrations v0.1.0 (/workspace/rust/compresso-integrations) [rebuild 4]
+   Compiling compresso-updater v0.1.0 (/workspace/rust/compresso-updater) [rebuild 4]
+warning: unused variable: `candidate`
+  --> rust/compresso-core/src/engine.rs:84:9
+   |
+84 |     let candidate = registry.estimate(&graph);
+   |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_candidate`
+warning: `compresso-core` (lib) generated 1 warning
+    Finished dev [unoptimized + debuginfo] target(s) in 6.04s
+
+   Compiling compresso-core v0.1.0 (/workspace/rust/compresso-core) [rebuild 5]
+   Compiling compresso-atlas v0.1.0 (/workspace/rust/compresso-atlas) [rebuild 5]
+   Compiling compresso-cli v0.1.0 (/workspace/rust/compresso-cli) [rebuild 5]
+   Compiling compresso-store v0.1.0 (/workspace/rust/compresso-store) [rebuild 5]
+   Compiling compresso-eval v0.1.0 (/workspace/rust/compresso-eval) [rebuild 5]
+   Compiling compresso-mcp v0.1.0 (/workspace/rust/compresso-mcp) [rebuild 5]
+   Compiling compresso-integrations v0.1.0 (/workspace/rust/compresso-integrations) [rebuild 5]
+   Compiling compresso-updater v0.1.0 (/workspace/rust/compresso-updater) [rebuild 5]
+warning: unused variable: `candidate`
+  --> rust/compresso-core/src/engine.rs:84:9
+   |
+84 |     let candidate = registry.estimate(&graph);
+   |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_candidate`
+warning: `compresso-core` (lib) generated 1 warning
+    Finished dev [unoptimized + debuginfo] target(s) in 7.05s
+
+   Compiling compresso-core v0.1.0 (/workspace/rust/compresso-core) [rebuild 6]
+   Compiling compresso-atlas v0.1.0 (/workspace/rust/compresso-atlas) [rebuild 6]
+   Compiling compresso-cli v0.1.0 (/workspace/rust/compresso-cli) [rebuild 6]
+   Compiling compresso-store v0.1.0 (/workspace/rust/compresso-store) [rebuild 6]
+   Compiling compresso-eval v0.1.0 (/workspace/rust/compresso-eval) [rebuild 6]
+   Compiling compresso-mcp v0.1.0 (/workspace/rust/compresso-mcp) [rebuild 6]
+   Compiling compresso-integrations v0.1.0 (/workspace/rust/compresso-integrations) [rebuild 6]
+   Compiling compresso-updater v0.1.0 (/workspace/rust/compresso-updater) [rebuild 6]
+warning: unused variable: `candidate`
+  --> rust/compresso-core/src/engine.rs:84:9
+   |
+84 |     let candidate = registry.estimate(&graph);
+   |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_candidate`
+warning: `compresso-core` (lib) generated 1 warning
+    Finished dev [unoptimized + debuginfo] target(s) in 8.06s
+
+   Compiling compresso-core v0.1.0 (/workspace/rust/compresso-core) [rebuild 7]
+   Compiling compresso-atlas v0.1.0 (/workspace/rust/compresso-atlas) [rebuild 7]
+   Compiling compresso-cli v0.1.0 (/workspace/rust/compresso-cli) [rebuild 7]
+   Compiling compresso-store v0.1.0 (/workspace/rust/compresso-store) [rebuild 7]
+   Compiling compresso-eval v0.1.0 (/workspace/rust/compresso-eval) [rebuild 7]
+   Compiling compresso-mcp v0.1.0 (/workspace/rust/compresso-mcp) [rebuild 7]
+   Compiling compresso-integrations v0.1.0 (/workspace/rust/compresso-integrations) [rebuild 7]
+   Compiling compresso-updater v0.1.0 (/workspace/rust/compresso-updater) [rebuild 7]
+warning: unused variable: `candidate`
+  --> rust/compresso-core/src/engine.rs:84:9
+   |
+84 |     let candidate = registry.estimate(&graph);
+   |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_candidate`
+warning: `compresso-core` (lib) generated 1 warning
+    Finished dev [unoptimized + debuginfo] target(s) in 9.07s
+
+   Compiling compresso-core v0.1.0 (/workspace/rust/compresso-core) [rebuild 8]
+   Compiling compresso-atlas v0.1.0 (/workspace/rust/compresso-atlas) [rebuild 8]
+   Compiling compresso-cli v0.1.0 (/workspace/rust/compresso-cli) [rebuild 8]
+   Compiling compresso-store v0.1.0 (/workspace/rust/compresso-store) [rebuild 8]
+   Compiling compresso-eval v0.1.0 (/workspace/rust/compresso-eval) [rebuild 8]
+   Compiling compresso-mcp v0.1.0 (/workspace/rust/compresso-mcp) [rebuild 8]
+   Compiling compresso-integrations v0.1.0 (/workspace/rust/compresso-integrations) [rebuild 8]
+   Compiling compresso-updater v0.1.0 (/workspace/rust/compresso-updater) [rebuild 8]
+warning: unused variable: `candidate`
+  --> rust/compresso-core/src/engine.rs:84:9
+   |
+84 |     let candidate = registry.estimate(&graph);
+   |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_candidate`
+warning: `compresso-core` (lib) generated 1 warning
+    Finished dev [unoptimized + debuginfo] target(s) in 10.08s
+
+   Compiling compresso-core v0.1.0 (/workspace/rust/compresso-core) [rebuild 9]
+   Compiling compresso-atlas v0.1.0 (/workspace/rust/compresso-atlas) [rebuild 9]
+   Compiling compresso-cli v0.1.0 (/workspace/rust/compresso-cli) [rebuild 9]
+   Compiling compresso-store v0.1.0 (/workspace/rust/compresso-store) [rebuild 9]
+   Compiling compresso-eval v0.1.0 (/workspace/rust/compresso-eval) [rebuild 9]
+   Compiling compresso-mcp v0.1.0 (/workspace/rust/compresso-mcp) [rebuild 9]
+   Compiling compresso-integrations v0.1.0 (/workspace/rust/compresso-integrations) [rebuild 9]
+   Compiling compresso-updater v0.1.0 (/workspace/rust/compresso-updater) [rebuild 9]
+warning: unused variable: `candidate`
+  --> rust/compresso-core/src/engine.rs:84:9
+   |
+84 |     let candidate = registry.estimate(&graph);
+   |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_candidate`
+warning: `compresso-core` (lib) generated 1 warning
+    Finished dev [unoptimized + debuginfo] target(s) in 11.09s
+
+   Compiling compresso-core v0.1.0 (/workspace/rust/compresso-core) [rebuild 10]
+   Compiling compresso-atlas v0.1.0 (/workspace/rust/compresso-atlas) [rebuild 10]
+   Compiling compresso-cli v0.1.0 (/workspace/rust/compresso-cli) [rebuild 10]
+   Compiling compresso-store v0.1.0 (/workspace/rust/compresso-store) [rebuild 10]
+   Compiling compresso-eval v0.1.0 (/workspace/rust/compresso-eval) [rebuild 10]
+   Compiling compresso-mcp v0.1.0 (/workspace/rust/compresso-mcp) [rebuild 10]
+   Compiling compresso-integrations v0.1.0 (/workspace/rust/compresso-integrations) [rebuild 10]
+   Compiling compresso-updater v0.1.0 (/workspace/rust/compresso-updater) [rebuild 10]
+warning: unused variable: `candidate`
+  --> rust/compresso-core/src/engine.rs:84:9
+   |
+84 |     let candidate = registry.estimate(&graph);
+   |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_candidate`
+warning: `compresso-core` (lib) generated 1 warning
+    Finished dev [unoptimized + debuginfo] target(s) in 12.010s
+
+   Compiling compresso-core v0.1.0 (/workspace/rust/compresso-core) [rebuild 11]
+   Compiling compresso-atlas v0.1.0 (/workspace/rust/compresso-atlas) [rebuild 11]
+   Compiling compresso-cli v0.1.0 (/workspace/rust/compresso-cli) [rebuild 11]
+   Compiling compresso-store v0.1.0 (/workspace/rust/compresso-store) [rebuild 11]
+   Compiling compresso-eval v0.1.0 (/workspace/rust/compresso-eval) [rebuild 11]
+   Compiling compresso-mcp v0.1.0 (/workspace/rust/compresso-mcp) [rebuild 11]
+   Compiling compresso-integrations v0.1.0 (/workspace/rust/compresso-integrations) [rebuild 11]
+   Compiling compresso-updater v0.1.0 (/workspace/rust/compresso-updater) [rebuild 11]
+warning: unused variable: `candidate`
+  --> rust/compresso-core/src/engine.rs:84:9
+   |
+84 |     let candidate = registry.estimate(&graph);
+   |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_candidate`
+warning: `compresso-core` (lib) generated 1 warning
+    Finished dev [unoptimized + debuginfo] target(s) in 13.011s
+
+   Compiling compresso-core v0.1.0 (/workspace/rust/compresso-core) [rebuild 12]
+   Compiling compresso-atlas v0.1.0 (/workspace/rust/compresso-atlas) [rebuild 12]
+   Compiling compresso-cli v0.1.0 (/workspace/rust/compresso-cli) [rebuild 12]
+   Compiling compresso-store v0.1.0 (/workspace/rust/compresso-store) [rebuild 12]
+   Compiling compresso-eval v0.1.0 (/workspace/rust/compresso-eval) [rebuild 12]
+   Compiling compresso-mcp v0.1.0 (/workspace/rust/compresso-mcp) [rebuild 12]
+   Compiling compresso-integrations v0.1.0 (/workspace/rust/compresso-integrations) [rebuild 12]
+   Compiling compresso-updater v0.1.0 (/workspace/rust/compresso-updater) [rebuild 12]
+warning: unused variable: `candidate`
+  --> rust/compresso-core/src/engine.rs:84:9
+   |
+84 |     let candidate = registry.estimate(&graph);
+   |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_candidate`
+warning: `compresso-core` (lib) generated 1 warning
+    Finished dev [unoptimized + debuginfo] target(s) in 14.012s
+
+error[E0599]: no method named `compress` found for struct `Engine` in the current scope
+  --> rust/compresso-cli/src/main.rs:42:25
+   |
+42 |     let result = engine.compress(graph, budget);
+   |                         ^^^^^^^^ method not found in `Engine`
+   |
+   = note: the method is available through the `CompressionEngine` trait
+error: could not compile `compresso-cli` (bin "compresso") due to 1 previous error

@@ -1,0 +1,121 @@
+schema_version = 1
+hash_algorithm = "sha256"
+
+[[quality]]
+path = "adversarial/fence-bomb"
+eligible = false
+file_count = 2
+size_bytes = 679
+sha256 = "19ece012d20c348f1275a5a83a1f5b8c04318c8115a55736cf96205e7ef16e58"
+
+[[quality]]
+path = "adversarial/malformed-json-payload"
+eligible = false
+file_count = 2
+size_bytes = 597
+sha256 = "bac69c1ae3bc69e7b22c31f302f5ee45a571d745de9b17713887c75080cb519e"
+
+[[quality]]
+path = "adversarial/prompt-injection-repo"
+eligible = false
+file_count = 3
+size_bytes = 1660
+sha256 = "94a7daea5d45d6c32015bfd48790ec04444b1b605ce5afd5001268d77e506363"
+
+[[quality]]
+path = "code/mini-monorepo"
+eligible = false
+file_count = 7
+size_bytes = 3056
+sha256 = "8d2f7d101afed1af229e3ca1427f117d62b2f03dd11fdf166006bf59fb290a44"
+
+[[quality]]
+path = "code/outline-large-file"
+eligible = true
+file_count = 2
+size_bytes = 41782
+sha256 = "bef23ca34ea6141ecb782d628a0d35a5357a556f90d4eb96e7d7ee1e213acca3"
+
+[[quality]]
+path = "conversations/long-session-prune"
+eligible = true
+file_count = 2
+size_bytes = 88537
+sha256 = "b22be0188745a95d5f2fd810e9e13b7727ba3289754bc34b91c4939051671834"
+
+[[quality]]
+path = "conversations/superseded-decisions"
+eligible = true
+file_count = 2
+size_bytes = 3049
+sha256 = "8427ac67ec8a0205dfddfd9a0ae4adabdc163a948eadaa6d6f699c525f81016d"
+
+[[quality]]
+path = "conversations/tool-output-dupes"
+eligible = true
+file_count = 2
+size_bytes = 4622
+sha256 = "126a41362e9a93d981520e31def4ed98bded8dd06718f7ee9bf32177dd60b4d5"
+
+[[quality]]
+path = "debugging/compiler-output-rust"
+eligible = true
+file_count = 2
+size_bytes = 7481
+sha256 = "a8e693a882db8661bbe90377a1d311568be4d9097902d9e492cd9c9c449e6b6d"
+
+[[quality]]
+path = "debugging/test-failure-context"
+eligible = true
+file_count = 2
+size_bytes = 1897
+sha256 = "60a9e39877bf6ca9a5f7a0ab49a916b332fbdb81d2e41f40d60fc39bbec32293"
+
+[[quality]]
+path = "logs/cargo-build-noise"
+eligible = true
+file_count = 2
+size_bytes = 13444
+sha256 = "fc0c20aa36cea51bc74e1947ae982ac25f53f09d2a8a6b1f30d34fe3b9789e16"
+
+[[quality]]
+path = "logs/repeated-npm-install"
+eligible = true
+file_count = 2
+size_bytes = 56230
+sha256 = "594e0ae8617130e503c6e77c3303d813f745e9e760786152879a483a0fbb8315"
+
+[[quality]]
+path = "logs/stack-trace-dupes"
+eligible = true
+file_count = 2
+size_bytes = 8046
+sha256 = "fe4527cb82577d24e72f8bcefbefc6d43c92bd4e99ed42be4d41034167ae61ac"
+
+[[quality]]
+path = "provider-payloads/anthropic-counts"
+eligible = false
+file_count = 2
+size_bytes = 3709
+sha256 = "939411f64091ec3c199acb36394a0fe1542afa3ef00800675a08e6208eee0160"
+
+[[quality]]
+path = "provider-payloads/openai-unknown-fields"
+eligible = false
+file_count = 2
+size_bytes = 1062
+sha256 = "b3a0588d0e376b509cebc8ba2ff83350711db6e9f0014d061b0b702abba893ba"
+
+[[benchmark]]
+path = "benchmarks/json-2000-elements/input.json"
+size_bytes = 426765
+tokens_o200k = 154959
+generator = "node fixtures/benchmarks/generate.mjs"
+sha256 = "ca66f42c2271435ccbe120774a435247592607d115d7b91e00d97ec0c80107c1"
+
+[[benchmark]]
+path = "benchmarks/source-200kb/input.ts"
+size_bytes = 204800
+tokens_o200k = 66596
+generator = "node fixtures/benchmarks/generate.mjs"
+sha256 = "e03ccca590210b642e52f7c90f199407ad562e576543117b3ef181f4d9ec90a8"

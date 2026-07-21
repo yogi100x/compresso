@@ -1,0 +1,88 @@
+2026-07-21T11:02:14.512Z ERROR Unhandled promise rejection: FetchError: request to https://api.internal.acme.dev/v2/sessions failed, reason: connect ECONNREFUSED 10.0.12.44:443
+    at ClientRequest.<anonymous> (/srv/app/node_modules/node-fetch/lib/index.js:1501:11)
+    at ClientRequest.emit (node:events:517:28)
+    at TLSSocket.socketErrorListener (node:_http_client:501:9)
+    at TLSSocket.emit (node:events:517:28)
+    at emitErrorNT (node:internal/streams/destroy:151:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:116:3)
+    at process.processTicksAndRejections (node:internal/process/task_queues:82:21)
+2026-07-21T11:02:19.512Z ERROR Unhandled promise rejection: FetchError: request to https://api.internal.acme.dev/v2/sessions failed, reason: connect ECONNREFUSED 10.0.12.44:443
+    at ClientRequest.<anonymous> (/srv/app/node_modules/node-fetch/lib/index.js:1501:11)
+    at ClientRequest.emit (node:events:517:28)
+    at TLSSocket.socketErrorListener (node:_http_client:501:9)
+    at TLSSocket.emit (node:events:517:28)
+    at emitErrorNT (node:internal/streams/destroy:151:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:116:3)
+    at process.processTicksAndRejections (node:internal/process/task_queues:82:21)
+2026-07-21T11:02:24.512Z ERROR Unhandled promise rejection: FetchError: request to https://api.internal.acme.dev/v2/sessions failed, reason: connect ECONNREFUSED 10.0.12.44:443
+    at ClientRequest.<anonymous> (/srv/app/node_modules/node-fetch/lib/index.js:1501:11)
+    at ClientRequest.emit (node:events:517:28)
+    at TLSSocket.socketErrorListener (node:_http_client:501:9)
+    at TLSSocket.emit (node:events:517:28)
+    at emitErrorNT (node:internal/streams/destroy:151:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:116:3)
+    at process.processTicksAndRejections (node:internal/process/task_queues:82:21)
+2026-07-21T11:02:29.512Z ERROR Unhandled promise rejection: FetchError: request to https://api.internal.acme.dev/v2/sessions failed, reason: connect ECONNREFUSED 10.0.12.44:443
+    at ClientRequest.<anonymous> (/srv/app/node_modules/node-fetch/lib/index.js:1501:11)
+    at ClientRequest.emit (node:events:517:28)
+    at TLSSocket.socketErrorListener (node:_http_client:501:9)
+    at TLSSocket.emit (node:events:517:28)
+    at emitErrorNT (node:internal/streams/destroy:151:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:116:3)
+    at process.processTicksAndRejections (node:internal/process/task_queues:82:21)
+2026-07-21T11:02:34.512Z ERROR Unhandled promise rejection: FetchError: request to https://api.internal.acme.dev/v2/sessions failed, reason: connect ECONNREFUSED 10.0.12.44:443
+    at ClientRequest.<anonymous> (/srv/app/node_modules/node-fetch/lib/index.js:1501:11)
+    at ClientRequest.emit (node:events:517:28)
+    at TLSSocket.socketErrorListener (node:_http_client:501:9)
+    at TLSSocket.emit (node:events:517:28)
+    at emitErrorNT (node:internal/streams/destroy:151:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:116:3)
+    at process.processTicksAndRejections (node:internal/process/task_queues:82:21)
+2026-07-21T11:02:39.512Z ERROR Unhandled promise rejection: FetchError: request to https://api.internal.acme.dev/v2/sessions failed, reason: connect ECONNREFUSED 10.0.12.44:443
+    at ClientRequest.<anonymous> (/srv/app/node_modules/node-fetch/lib/index.js:1501:11)
+    at ClientRequest.emit (node:events:517:28)
+    at TLSSocket.socketErrorListener (node:_http_client:501:9)
+    at TLSSocket.emit (node:events:517:28)
+    at emitErrorNT (node:internal/streams/destroy:151:8)
+    at emitErrorCloseNT (node:internal/streams/destroy:116:3)
+    at process.processTicksAndRejections (node:internal/process/task_queues:82:21)
+2026-07-21 11:03:02.117 ERROR [pool-3-thread-7] c.a.billing.InvoiceWorker - Failed to process invoice batch
+java.lang.NullPointerException: Cannot invoke "com.acme.billing.Customer.getRegion()" because "customer" is null
+    at com.acme.billing.InvoiceWorker.applyTax(InvoiceWorker.java:214)
+    at com.acme.billing.InvoiceWorker.process(InvoiceWorker.java:167)
+    at com.acme.billing.InvoiceWorker.run(InvoiceWorker.java:88)
+    at java.base/java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1136)
+    at java.base/java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:635)
+    at java.base/java.lang.Thread.run(Thread.java:840)
+2026-07-21 11:03:07.117 ERROR [pool-3-thread-7] c.a.billing.InvoiceWorker - Failed to process invoice batch
+java.lang.NullPointerException: Cannot invoke "com.acme.billing.Customer.getRegion()" because "customer" is null
+    at com.acme.billing.InvoiceWorker.applyTax(InvoiceWorker.java:214)
+    at com.acme.billing.InvoiceWorker.process(InvoiceWorker.java:167)
+    at com.acme.billing.InvoiceWorker.run(InvoiceWorker.java:88)
+    at java.base/java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1136)
+    at java.base/java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:635)
+    at java.base/java.lang.Thread.run(Thread.java:840)
+2026-07-21 11:03:12.117 ERROR [pool-3-thread-7] c.a.billing.InvoiceWorker - Failed to process invoice batch
+java.lang.NullPointerException: Cannot invoke "com.acme.billing.Customer.getRegion()" because "customer" is null
+    at com.acme.billing.InvoiceWorker.applyTax(InvoiceWorker.java:214)
+    at com.acme.billing.InvoiceWorker.process(InvoiceWorker.java:167)
+    at com.acme.billing.InvoiceWorker.run(InvoiceWorker.java:88)
+    at java.base/java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1136)
+    at java.base/java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:635)
+    at java.base/java.lang.Thread.run(Thread.java:840)
+2026-07-21 11:03:17.117 ERROR [pool-3-thread-7] c.a.billing.InvoiceWorker - Failed to process invoice batch
+java.lang.NullPointerException: Cannot invoke "com.acme.billing.Customer.getRegion()" because "customer" is null
+    at com.acme.billing.InvoiceWorker.applyTax(InvoiceWorker.java:214)
+    at com.acme.billing.InvoiceWorker.process(InvoiceWorker.java:167)
+    at com.acme.billing.InvoiceWorker.run(InvoiceWorker.java:88)
+    at java.base/java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1136)
+    at java.base/java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:635)
+    at java.base/java.lang.Thread.run(Thread.java:840)
+2026-07-21 11:03:22.117 ERROR [pool-3-thread-7] c.a.billing.InvoiceWorker - Failed to process invoice batch
+java.lang.NullPointerException: Cannot invoke "com.acme.billing.Customer.getRegion()" because "customer" is null
+    at com.acme.billing.InvoiceWorker.applyTax(InvoiceWorker.java:214)
+    at com.acme.billing.InvoiceWorker.process(InvoiceWorker.java:167)
+    at com.acme.billing.InvoiceWorker.run(InvoiceWorker.java:88)
+    at java.base/java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1136)
+    at java.base/java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:635)
+    at java.base/java.lang.Thread.run(Thread.java:840)

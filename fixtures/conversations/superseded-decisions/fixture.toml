@@ -1,0 +1,24 @@
+name = "superseded-decisions"
+category = "conversations"
+description = "Three draft architecture decisions superseded by one authoritative SQLite WAL decision."
+eligible = true
+mode = "safe"
+
+[budget]
+max_tokens = 500
+max_latency_ms = 200
+
+[input]
+graph = "graph.json"
+
+[expectations]
+min_reduction_pct = 30.0
+expect_fallback = false
+must_preserve = [
+  "Final decision: use SQLite in WAL mode with versioned migrations and per-file index updates.",
+]
+
+[[recall_probes]]
+question = "Which storage architecture is authoritative?"
+answer_substring = "SQLite in WAL mode with versioned migrations"
+protected = true
