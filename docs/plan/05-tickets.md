@@ -58,7 +58,7 @@ Test cases:
 - test_bad_kind_rejected: node with `"kind":"banana"` fails validation with a pointer to `/nodes/0/kind`.
 - test_trace_requires_fallback_used: trace document missing `fallback_used` fails against the compression-trace v1 root schema (which `$ref`s `$defs/trace`).
 
-### [ ] E1-05: Fixtures skeleton and conventions doc
+### [x] E1-05: Fixtures skeleton and conventions doc
 Owner: PQ · Estimate: 1.5d · Depends: E1-01
 Files: fixtures/{code,debugging,logs,conversations,provider-payloads,adversarial}/README.md, fixtures/logs/repeated-npm-install/, fixtures/code/mini-monorepo/, docs/plan/06-fixtures.md (skeleton referencing final format), docs/architecture/conventions.md
 Description: Create the six-category fixture directory tree from `06-fixtures.md` §3 (code, debugging, logs, conversations, provider-payloads, adversarial) with at least one seed fixture per category (a 500-line repeated log, a small Rust crate, a failing-test debugging log, a tool-call conversation JSON, an Anthropic count-calibration payload stub, a prompt-injection adversarial repo), each carrying a `fixture.toml` in the authoritative `06-fixtures.md` §2 format: exactly one input form (`graph` | `[[input.files]]`/`[[input.nodes]]` | `repo`), an `[expectations]` table, optional `[[recall_probes]]`, and the top-level `eligible` flag. Write `conventions.md` covering error conventions (thiserror per crate, anyhow in binaries only per D20), commit format, module layout, and test naming (`test_snake_case`).

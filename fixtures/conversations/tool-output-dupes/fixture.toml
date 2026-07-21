@@ -1,0 +1,26 @@
+name = "tool-output-dupes"
+category = "conversations"
+description = "A tool-call transcript that reads the same package manifest three times."
+eligible = true
+mode = "safe"
+
+[budget]
+max_tokens = 1200
+max_latency_ms = 200
+
+[input]
+graph = "graph.json"
+
+[expectations]
+min_reduction_pct = 50.0
+expect_fallback = false
+protected_node_ids = ["sys-1", "user-1", "req-1"]
+must_preserve = [
+  "Never delete files without explicit confirmation.",
+  "\"name\": \"acme-dashboard\"",
+]
+
+[[recall_probes]]
+question = "Which webpack version is currently declared?"
+answer_substring = "\"webpack\": \"^5.91.0\""
+protected = false

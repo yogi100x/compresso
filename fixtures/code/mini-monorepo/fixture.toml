@@ -1,0 +1,24 @@
+name = "mini-monorepo"
+category = "code"
+description = "A small Rust crate plus TypeScript and Python siblings for parser dispatch and import-edge indexing."
+eligible = false
+mode = "safe"
+
+[budget]
+max_tokens = 4000
+max_latency_ms = 200
+
+[input]
+repo = "repo/"
+
+[expectations]
+min_reduction_pct = 0.0
+expect_fallback = false
+
+[expectations.atlas]
+min_files = 5
+min_symbols = 10
+required_edges = [
+  ["rust/src/main.rs", "rust/src/session.rs", "imports"],
+  ["web/src/index.ts", "web/src/api.ts", "imports"],
+]

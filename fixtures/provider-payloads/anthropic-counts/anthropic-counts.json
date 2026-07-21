@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "anthropic_model": null,
+  "counted_at": null,
+  "calibration_factor": null,
+  "samples": [
+    {
+      "id": "s01-short-english",
+      "text": "The quick brown fox jumps over the lazy dog.",
+      "chars": 44,
+      "o200k_tokens": 10,
+      "anthropic_tokens": null
+    },
+    {
+      "id": "s02-rust-code",
+      "text": "pub fn compress(&self, input: ContextGraph, budget: &CompressionBudget) -> CompressionResult {\n    let before = input.total_tokens();\n    self.engine.run(input, budget)\n}",
+      "chars": 170,
+      "o200k_tokens": 38,
+      "anthropic_tokens": null
+    },
+    {
+      "id": "s03-json-payload",
+      "text": "{\"schema_version\":1,\"nodes\":[{\"id\":\"n1\",\"kind\":\"tool_response\",\"content\":\"ok\",\"token_count\":2,\"priority\":0.5,\"protected\":false}],\"edges\":[]}",
+      "chars": 140,
+      "o200k_tokens": 42,
+      "anthropic_tokens": null
+    },
+    {
+      "id": "s04-log-line",
+      "text": "2026-07-21T14:03:22.117Z [webpack-dev-server] Compiled successfully in 4312 ms (hash: 9f1c2ab84d7e)",
+      "chars": 99,
+      "o200k_tokens": 43,
+      "anthropic_tokens": null
+    },
+    {
+      "id": "s05-stack-trace",
+      "text": "    at Object.openSync (node:fs:601:3)\n    at Object.readFileSync (node:fs:469:35)\n    at loadConfig (/app/src/config.js:14:19)",
+      "chars": 127,
+      "o200k_tokens": 43,
+      "anthropic_tokens": null
+    },
+    {
+      "id": "s06-markdown-prose",
+      "text": "## Installation\n\nRun `npm install compresso` and restart your assistant. Compression is **local by default** and never uploads source code.",
+      "chars": 139,
+      "o200k_tokens": 28,
+      "anthropic_tokens": null
+    },
+    {
+      "id": "s07-long-prose",
+      "text": "Compresso is a local-first context intelligence layer for AI coding tools. It reduces unnecessary model context while preserving user intent, system instructions, tool contracts, code correctness, and operational reliability. The core promise is that coding agents receive the smallest useful context, every reduction is explained, and the original input is passed through whenever uncertainty is too high.",
+      "chars": 406,
+      "o200k_tokens": 68,
+      "anthropic_tokens": null
+    },
+    {
+      "id": "s08-unicode-mixed",
+      "text": "naive cafe resume — ✅ 完了 · компрессия завершена · 87% économisé",
+      "chars": 63,
+      "o200k_tokens": 20,
+      "anthropic_tokens": null
+    },
+    {
+      "id": "s09-identifiers",
+      "text": "SessionManager::start_session refreshEntitlementCache compresso_repo_map getUserById to_file_id blake3_hash_hex",
+      "chars": 111,
+      "o200k_tokens": 25,
+      "anthropic_tokens": null
+    },
+    {
+      "id": "s10-python-code",
+      "text": "def collapse_logs(lines: list[str], min_repeats: int = 3) -> list[str]:\n    seen: dict[str, int] = {}\n    for line in lines:\n        key = normalize(line)\n        seen[key] = seen.get(key, 0) + 1\n    return render(seen)",
+      "chars": 219,
+      "o200k_tokens": 66,
+      "anthropic_tokens": null
+    }
+  ]
+}
