@@ -110,6 +110,11 @@ impl StrategyRegistry {
             .filter(|strategy| required_lossiness(strategy.id()) <= lossiness)
             .collect()
     }
+
+    #[cfg(test)]
+    pub(crate) fn from_strategies(strategies: Vec<Box<dyn CompressionStrategy>>) -> Self {
+        Self { strategies }
+    }
 }
 
 fn required_lossiness(strategy_id: &str) -> Lossiness {
