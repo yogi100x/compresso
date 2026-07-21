@@ -1,0 +1,34 @@
+schemas/local-api/README.md
+  s_87261b37472da1::t_720bf8bc855024 1-3
+schemas/compression-trace/v1.json
+  s_87261b37472da1::t_720bf8bc855024 1-72
+rust/compresso-core/tests/schema_meta.rs
+  s_87261b37472da1::t_2279bab875f1c3 67
+  s_87261b37472da1::t_720bf8bc855024 1-66,68-86
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_ce9079d5f95dd4 47
+schemas/cloud-api/README.md
+  s_87261b37472da1::t_720bf8bc855024 1-3
+schemas/context-graph/v1.json
+  s_87261b37472da1::t_720bf8bc855024 1-64
+rust/compresso-core/Cargo.toml
+  s_87261b37472da1::t_720bf8bc855024 10-11
+Cargo.lock
+  s_87261b37472da1::t_6045601bf8ba0e 5-96,124-125,134,165-184,191-292,300-301,303,305-306,310-311,313-317,320-321,323,325-329,333-334,336-342,344-355,359-360,362,364-378,382-383,385,387-392,396-397,399,401-405,409-410,412,414-419,423-424,426-432,434-439,443-444,446-452,454-460,464-465,467,469-471,475-476,478,480-536,538-539,543-544,546,549-550,552,555-556,558-576,578-628,630-1365
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "0207f226908a4a312be061af1fdf5a8156ab89e4",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
