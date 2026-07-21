@@ -205,8 +205,11 @@ Boundary rule: only `compresso-store` contains SQL. Atlas/MCP/CLI call these met
 ```rust
 // scanner.rs
 pub struct ScanResult { pub added: Vec<PathBuf>, pub changed: Vec<PathBuf>, pub removed: Vec<String>, pub skipped: Vec<(PathBuf, SkipReason)> }
-pub fn scan(store: &Store, repo: RepoId, root: &Path) -> Result<ScanResult, AtlasError>;
+pub struct ScanOptions { pub max_file_bytes: u64 }
+pub fn scan(store: &Store, repo: RepoId, root: &Path) -> Result<ScanResult, AtlasError>; // safe default: max_file_bytes = 1_000_000
+pub fn scan_with_options(store: &Store, repo: RepoId, root: &Path, options: ScanOptions) -> Result<ScanResult, AtlasError>;
 // respects .gitignore + built-in exclusions (binaries, >max_file_bytes, node_modules/target/dist/.git, secret-file patterns: .env*, *.pem, id_rsa*)
+// ignored and built-in excluded directories are reported once in skipped and pruned before descent; descendants are intentionally not enumerated
 
 // parsers.rs
 pub type Language = compresso_store::FileLanguage;        // Store owns the canonical persisted language vocabulary
