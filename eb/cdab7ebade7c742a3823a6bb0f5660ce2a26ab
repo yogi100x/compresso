@@ -1,0 +1,24 @@
+rust/compresso-core/tests/engine_modes.rs
+  s_87261b37472da1::t_fbff4f2488a8aa 9,18,32
+  s_87261b37472da1::t_307f0b2cf9fe64 1-8,10-17,19-31,33-39,44-45
+  s_87261b37472da1::t_6561e2791aaf3c 40-43
+rust/compresso-core/src/engine.rs
+  s_87261b37472da1::t_6561e2791aaf3c 89
+  s_87261b37472da1::t_381cd35a3da07a 64-88,90-99
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "ebcdab7ebade7c742a3823a6bb0f5660ce2a26ab",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
