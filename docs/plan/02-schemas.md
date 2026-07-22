@@ -33,7 +33,7 @@ All schemas versioned by integer `schema_version`. Breaking change → new versi
         "token_provider": { "enum": ["openai_o200k", "openai_cl100k", "anthropic_calibrated", "heuristic"], "default": "openai_o200k" },
         "priority": { "type": "number", "minimum": 0, "maximum": 1 },
         "protected": { "type": "boolean" },
-        "recency": { "type": ["integer", "null"], "description": "unix seconds" },
+        "recency": { "type": ["integer", "null"], "minimum": 0, "description": "unix seconds" },
         "metadata": { "type": "object" },
         "provider_turn": { "oneOf": [{ "$ref": "#/$defs/provider_turn" }, { "type": "null" }] }
       }
@@ -43,9 +43,9 @@ All schemas versioned by integer `schema_version`. Breaking change → new versi
       "additionalProperties": false,
       "required": ["provider", "turn_id", "tool_call_id"],
       "properties": {
-        "provider": { "type": "string", "minLength": 1 },
-        "turn_id": { "type": "string", "minLength": 1 },
-        "tool_call_id": { "type": "string", "minLength": 1 },
+        "provider": { "type": "string", "minLength": 1, "description": "typed provider profile identifier" },
+        "turn_id": { "type": "string", "minLength": 1, "description": "typed provider turn identifier" },
+        "tool_call_id": { "type": "string", "minLength": 1, "description": "typed provider tool-call identifier" },
         "opaque_state_hash": { "type": ["string", "null"] }
       }
     },
@@ -289,7 +289,7 @@ CREATE TABLE memory_facts (
 
 CREATE TABLE integration_receipts (
   id INTEGER PRIMARY KEY,
-  client TEXT NOT NULL,                 -- claude-code|codex|cursor
+  client TEXT NOT NULL,                 -- non-authoritative metadata projection; claude-code|codex|cursor
   config_path TEXT NOT NULL,
   keys_owned TEXT NOT NULL,             -- JSON array of exact keys written
   backup_path TEXT NOT NULL,
@@ -313,6 +313,19 @@ CREATE TABLE update_state (               -- used by updater, Phase 8
   last_check_at INTEGER
 );
 ```
+
+`integration_receipts` is a query/reporting projection, not the E6 safety
+receipt. Migration identifiers `0002`–`0005` are reserved by D60, and this
+`0001` table has no lossless fields for `plan_hash` or per-key
+`owned_value_hashes`. The keyed-MAC `FileReceiptStore` per-plan envelope and
+its independently authenticated active-head pointer are canonical for integration restore,
+modified-key comparison, ordering, and idempotence. SQLite MUST NOT authorize
+uninstall or select an active receipt. The CLI writes/repairs this projection
+only after the canonical file receipt is durable; it may reconcile missing or
+stale rows from those records. Config replacement, canonical receipt
+persistence, and projection are not claimed to be one atomic transaction; the
+authenticated integration journal owns crash recovery (04-mcp-and-integrations
+§2.1).
 
 Rules: raw prompts and full source content never stored. Operations come in two kinds: **compression operations** (`compresso_compress`, engine runs) must carry `trace_json`, validated against the trace v1 **root** schema before insert; **retrieval operations** (map, search, read, outline, unfold, context, impact, stats, explain) store `trace_json = NULL` and set `tokens_served`. Retention: operations older than 90 days pruned on startup (configurable).
 

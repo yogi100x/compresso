@@ -8,7 +8,7 @@ Checkbox syntax `[ ]` / `[x]` tracks completion. Owner codes are defined in `00-
 
 ## E1 — Foundation
 
-### [ ] E1-01: Monorepo workspace scaffold
+### [x] E1-01: Monorepo workspace scaffold
 Owner: I1 · Estimate: 2d · Depends: —
 Files: Cargo.toml, rust-toolchain.toml, package.json, pnpm-workspace.yaml, turbo.json, biome.json, rust/*/Cargo.toml, rust/*/src/lib.rs
 Description: Create the workspace exactly per `01-stack-and-workspace.md` §3: Cargo workspace (resolver 3, members `rust/*`, edition 2024, toolchain 1.96 pinned in rust-toolchain.toml) with all ten crates (`compresso-core`, `compresso-atlas`, `compresso-store`, `compresso-mcp`, `compresso-integrations`, `compresso-cli`, `compresso-eval`, plus stub crates `compresso-agent`, `compresso-proxy`, `compresso-updater`), pnpm root workspace with turbo and biome configs, and the directory skeleton (`schemas/`, `fixtures/`, `docs/`, `installers/`, `infra/`, `packages/`, `apps/`). Workspace dependencies declared in `[workspace.dependencies]` per §1 with exact version floors.
@@ -23,19 +23,19 @@ Test cases:
 - test_no_internal_deps_in_core: parse `rust/compresso-core/Cargo.toml`, assert no `compresso-*` entries under `[dependencies]`.
 - test_store_never_imports_atlas: parse `rust/compresso-store/Cargo.toml`, assert `compresso-atlas` absent.
 
-### [ ] E1-02: CI workflow
+### [x] E1-02: CI workflow
 Owner: I1 · Estimate: 2d · Depends: E1-01
 Files: .github/workflows/ci.yml, .github/workflows/release.yml (stub)
-Description: Author `ci.yml` per `01-stack-and-workspace.md` §4: rust job matrix (`macos-14`, `macos-13`, `ubuntu-24.04`, `windows-2022`) running `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo build --release -p compresso-cli`; `Swatinem/rust-cache@v2`; release-binary artifact upload on main. The `eval` job is added in E7-04; the `ts` job is gated off until Phase 6. `release.yml` is a named no-op stub until Phase 8 (E12).
+Description: Author `ci.yml` per `01-stack-and-workspace.md` §4: rust job matrix (`macos-14`, `macos-15-intel`, `ubuntu-24.04`, `windows-2022`) running `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo build --release -p compresso-cli`; `Swatinem/rust-cache@v2`; release-binary artifact upload on main. The `eval` job is added in E7-04; the `ts` job is gated off until Phase 6. `release.yml` is a named no-op stub until Phase 8 (E12).
 Acceptance criteria:
 - CI triggers on push to main and on PRs; all four matrix legs green on the scaffold commit.
 - Clippy runs with `-D warnings` and formatting is enforced via `cargo fmt --check`.
 - Release binary for each platform uploaded as an artifact on main pushes.
 Test cases:
 - test_ci_yaml_valid: `actionlint .github/workflows/ci.yml` exits 0 (run locally and as a CI step).
-- test_matrix_covers_d33: assert ci.yml matrix contains macos-14, macos-13, ubuntu-24.04, windows-2022 (yq assertion in a repo lint script).
+- test_matrix_covers_d33: assert ci.yml matrix contains macos-14, macos-15-intel, ubuntu-24.04, windows-2022 (yq assertion in a repo lint script).
 
-### [ ] E1-03: Supply-chain and capability-boundary checks
+### [x] E1-03: Supply-chain and capability-boundary checks
 Owner: I1 · Estimate: 1d · Depends: E1-02
 Files: deny.toml, scripts/check-crate-capabilities.ts, .github/workflows/ci.yml
 Description: Enforce 01-stack network/process classes per owning crate.
@@ -44,7 +44,7 @@ Acceptance criteria:
 Test cases:
 - reqwest core fail/proxy pass; terminal direct spawn fail; secret canary.
 
-### [ ] E1-04: Commit versioned JSON Schemas
+### [x] E1-04: Commit versioned JSON Schemas
 Owner: R1 · Estimate: 1d · Depends: E1-01
 Files: schemas/context-graph/v1.json, schemas/compression-trace/v1.json, rust/compresso-core/tests/schema_meta.rs
 Description: Commit the two authoritative slice schemas verbatim from `02-schemas.md` §1 and §2 under `schemas/`, and add a meta-validation test that compiles each with the `jsonschema` crate so a malformed edit to a schema file fails CI. `schemas/local-api/` and `schemas/cloud-api/` get versioned placeholder directories with a README naming their epic (E8/E10).
@@ -58,7 +58,7 @@ Test cases:
 - test_bad_kind_rejected: node with `"kind":"banana"` fails validation with a pointer to `/nodes/0/kind`.
 - test_trace_requires_fallback_used: trace document missing `fallback_used` fails against the compression-trace v1 root schema (which `$ref`s `$defs/trace`).
 
-### [ ] E1-05: Fixtures skeleton and conventions doc
+### [x] E1-05: Fixtures skeleton and conventions doc
 Owner: PQ · Estimate: 1.5d · Depends: E1-01
 Files: fixtures/{code,debugging,logs,conversations,provider-payloads,adversarial}/README.md, fixtures/logs/repeated-npm-install/, fixtures/code/mini-monorepo/, docs/plan/06-fixtures.md (skeleton referencing final format), docs/architecture/conventions.md
 Description: Create the six-category fixture directory tree from `06-fixtures.md` §3 (code, debugging, logs, conversations, provider-payloads, adversarial) with at least one seed fixture per category (a 500-line repeated log, a small Rust crate, a failing-test debugging log, a tool-call conversation JSON, an Anthropic count-calibration payload stub, a prompt-injection adversarial repo), each carrying a `fixture.toml` in the authoritative `06-fixtures.md` §2 format: exactly one input form (`graph` | `[[input.files]]`/`[[input.nodes]]` | `repo`), an `[expectations]` table, optional `[[recall_probes]]`, and the top-level `eligible` flag. Write `conventions.md` covering error conventions (thiserror per crate, anyhow in binaries only per D20), commit format, module layout, and test naming (`test_snake_case`).
@@ -70,7 +70,7 @@ Test cases:
 - test_fixture_tomls_parse: walk fixtures/, parse every fixture.toml with the `toml` crate, assert `name`, `category`, `description`, `eligible`, `mode`, `[budget]`, one input form, and `[expectations]` present.
 - test_repeated_log_fixture_shape: read repeated-npm-install/input.txt, assert 500 lines and that stripping the leading ISO-8601 timestamp yields a single distinct line.
 
-### [ ] E1-06: Slice release tarball CI job (D42)
+### [x] E1-06: Slice release tarball CI job (D42)
 Owner: I1 · Estimate: 1.5d · Depends: E1-02
 Files: .github/workflows/ci.yml (package job), scripts/package-tarball.sh
 Description: Add a `package` CI job on all four D33 matrix legs producing a per-platform tarball `compresso-<version>-<target>.tar.gz` (targets: aarch64-apple-darwin, x86_64-apple-darwin, x86_64-unknown-linux-gnu, x86_64-pc-windows-msvc) containing exactly the release `compresso` binary (`compresso.exe` on Windows), plus a single aggregated `SHA256SUMS` file in `shasum -a 256 -c`-compatible format covering every tarball. Artifacts uploaded on main pushes; consumed by `installers/install-local.sh` (E4-05). No signing — D42 keeps the slice installer checksum-only; signing/notarization stay E12.
@@ -87,31 +87,32 @@ Test cases:
 
 ## E2 — Core engine
 
-### [ ] E2-01: ContextGraph types, validation, serde round-trip
+### [x] E2-01: ContextGraph types, validation, serde round-trip
 Owner: R1 · Estimate: 2d · Depends: E1-01, E1-04
 Files: rust/compresso-core/src/graph.rs, tests in same file + rust/compresso-core/tests/graph_schema_roundtrip.rs
-Description: Implement `ContextGraph`, `ContextNode`, `NodeKind`, `Source`, `ContextEdge`, `EdgeKind`, `GraphError` exactly per `03-interfaces.md` §2.1, with serde renames matching `schemas/context-graph/v1.json` (snake_case kinds, tagged `source`). Implement `ContextGraph::validate()` enforcing the code-level invariants from `02-schemas.md` §1 (unique ids, edge endpoints exist, `protected: true` required for `SystemInstruction`/`UserInstruction`/`ToolDefinition`/`ToolRequest`; arbitrary metadata can never downgrade protection), plus `force_ingress_protection(&mut self) -> Vec<String>` implementing the D48 ingress rule: on any externally supplied graph (MCP, proxy, fixtures loaded as untrusted input) `protected` is forced to `true` for those four kinds and a `protection_forced:<node_id>` note is returned for inclusion in the trace — unprotecting is possible only from trusted local surfaces (CLI `--allow-unprotect`, local config), never from an inbound payload. Also `total_tokens()` and `from_text(content, kind, counter)`.
+Description: Implement `ContextGraph`, `ContextNode`, `NodeKind`, `Source`, `ContextEdge`, `EdgeKind`, `GraphError` exactly per `03-interfaces.md` §2.1, with serde renames matching `schemas/context-graph/v1.json` (snake_case kinds, tagged `source`). Implement `ContextGraph::validate()` enforcing the code-level invariants from `02-schemas.md` §1 (unique ids, edge endpoints exist, `protected: true` required for `SystemInstruction`/`UserInstruction`/`AssistantReasoning`/`ToolDefinition`/`ToolRequest`; arbitrary metadata can never downgrade protection), plus `force_ingress_protection(&mut self) -> Vec<String>` implementing the D48 ingress rule as extended by D53: on any externally supplied graph (MCP, proxy, fixtures loaded as untrusted input) `protected` is forced to `true` for those five kinds and a `protection_forced:<node_id>` note is returned for inclusion in the trace — unprotecting is possible only from trusted local surfaces (CLI `--allow-unprotect`, local config), never from an inbound payload. Also `total_tokens()` and `from_text(content, kind, counter)`.
 Acceptance criteria:
 - A graph containing one node of every `NodeKind` and one edge of every `EdgeKind` serializes to JSON that validates against `schemas/context-graph/v1.json` and deserializes back to an equal value.
 - `validate()` returns typed `GraphError` variants for duplicate ids, dangling edges, and protection violations; never panics on adversarial input.
 - `token_provider` defaults to `openai_o200k` on deserialization when absent.
-- `force_ingress_protection` flips `protected` to true for the four instruction/tool kinds, returns one `protection_forced:<id>` note per flipped node, is a no-op (empty notes) on already-compliant graphs, and cannot be suppressed by any metadata key (D48).
+- `force_ingress_protection` flips `protected` to true for the five instruction/reasoning/tool kinds, returns one `protection_forced:<id>` note per flipped node, is a no-op (empty notes) on already-compliant graphs, and cannot be suppressed by any metadata key (D48, D53).
 Test cases:
 - test_roundtrip_all_kinds_validates_against_schema: build the every-kind graph, serialize, validate with jsonschema against v1.json, deserialize, assert equality.
 - test_validate_rejects_duplicate_ids: two nodes with id "n1" → `Err(GraphError::DuplicateId("n1"))`.
 - test_validate_rejects_dangling_edge: edge from "n1" to "missing" → `Err(GraphError::UnknownEdgeEndpoint { .. })`.
 - test_system_instruction_must_be_protected: node kind `SystemInstruction` with `protected: false` and no trusted-local unprotect → protection-invariant error.
 - test_ingress_forces_protection: external graph with node `sys-1` (`system_instruction`, `protected: false`) → `force_ingress_protection` sets `protected: true`, returns `["protection_forced:sys-1"]`, and `validate()` then passes; adding metadata `"allow_unprotect": true` to the node does not suppress the forcing (D48).
+- test_assistant_reasoning_must_be_protected: `assistant_reasoning` with `protected: false` fails validation; ingress forces it protected and records the note (D53).
 - test_from_text_counts_tokens: `ContextGraph::from_text("fn main() {}", NodeKind::SourceFile, counter)` yields one node with `token_count == counter.count("fn main() {}")` and `total_tokens()` equal to it.
 
-### [ ] E2-02: TokenCounter providers
+### [x] E2-02: TokenCounter providers
 Owner: R1 · Estimate: 1.5d · Depends: E1-01, E1-05
 Files: rust/compresso-core/src/tokens.rs, tests in same file
 Description: Implement `TokenProvider`, the `TokenCounter` trait, and `counter_for(provider) -> &'static dyn TokenCounter` per `03-interfaces.md` §2.2: tiktoken-rs `o200k_base` and `cl100k_base` counters, `AnthropicCalibrated` (o200k count × `CALIBRATION`; until E2-02a commits measured counts into `fixtures/provider-payloads/anthropic-counts/anthropic-counts.json`, `CALIBRATION` is the documented interim default `1.15` per ADR-0017 and `03-interfaces.md` §2.2), and a `Heuristic` fallback (bytes/4) for use when tokenizer init fails. Singletons are eagerly initialized during process startup once.
 Acceptance criteria:
 - `counter_for(TokenProvider::OpenAiO200k).count(text)` matches tiktoken-rs `o200k_base` exactly; same for cl100k.
 - `AnthropicCalibrated` returns `ceil(o200k_count × CALIBRATION)` and its `provider()` tag is `AnthropicCalibrated`; CALIBRATION is a named const with a doc comment citing the fixture file and ADR-0017 — interim value `1.15` while the fixture's `anthropic_tokens`/`calibration_factor` are null, replaced by the measured median once E2-02a lands.
-- `counter_for` returns the same static reference on repeated calls (no re-init); counting a 1 MB string completes in < 50 ms in release mode.
+- `counter_for` returns the same static reference on repeated calls (no re-init); counting a representative 1 MiB multiline string completes in < 200 ms after prewarming in release mode, aligned with the canonical warm product gate owned by E2-15.
 Test cases:
 - test_o200k_hello_world: `count("hello world") == 2` for OpenAiO200k.
 - test_empty_string_zero: all four providers return 0 for "".
@@ -119,6 +120,7 @@ Test cases:
 - test_calibration_accuracy_gated_on_fixture: while the fixture's `anthropic_tokens` values are null, the ±10% accuracy assertion is skipped with a `calibration pending (E2-02a)` warning; once they are non-null, calibrated counts must be within 10% of the recorded Anthropic count for every sample.
 - test_counter_for_singleton: `std::ptr::eq(counter_for(OpenAiO200k), counter_for(OpenAiO200k))` is true.
 - test_provider_tag_roundtrip: each counter's `provider()` serializes to the schema enum string (`"openai_o200k"` etc.).
+- test_warm_o200k_one_mib_under_two_hundred_ms_in_release: after prewarming, count one representative 1 MiB multiline input in release mode and assert elapsed time is < 200 ms; E2-15 owns the canonical warm P95 product gate.
 
 ### [ ] E2-02a: Anthropic calibration measurement
 Owner: PQ+R1 · Estimate: 1d · Depends: E2-02, E1-05
@@ -134,7 +136,7 @@ Test cases:
 - test_calibrate_requires_api_key: `compresso eval calibrate-anthropic` without `ANTHROPIC_API_KEY` exits 1 with `error.code == "missing_api_key"` and writes nothing.
 - test_calibrate_never_in_ci: repo lint asserts no CI workflow invokes `calibrate-anthropic`.
 
-### [ ] E2-03: CompressionStrategy trait and StrategyRegistry
+### [x] E2-03: CompressionStrategy trait and StrategyRegistry
 Owner: R1 · Estimate: 1d · Depends: E2-01, E2-02
 Files: rust/compresso-core/src/strategy.rs, tests in same file
 Description: Implement `Estimate`, `StrategyOutput`, `CompressionStrategy` (with `id`, `supports`, `estimate`, `execute`), `StrategyError`, and `StrategyRegistry` per `03-interfaces.md` §2.3. `StrategyRegistry::safe_default(Mode::Safe)` returns the ordered list `[dedup_exact, collapse_logs, compact_json, pack_budget]`; `Mode::Passthrough` returns an empty registry. Add `StrategyRegistry::permitted(&self, lossiness: Lossiness) -> Vec<&dyn CompressionStrategy>` enforcing the D39 lossiness taxonomy (03-interfaces §2.3 table): `Lossiness::None` → `dedup_exact` only; `Structural` (safe-mode default) → all four; `Summarizing` reserved for post-slice aggressive mode. Ships with a `NoopStrategy` test double so the registry is testable before E2-04..07 land.
@@ -148,7 +150,7 @@ Test cases:
 - test_strategy_object_safety: `fn assert_send_sync<T: Send + Sync>() {}` instantiated with `Box<dyn CompressionStrategy>`.
 - test_lossiness_none_permits_dedup_only: `permitted(Lossiness::None)` ids == `["dedup_exact"]`; `permitted(Lossiness::Structural)` ids == all four in registry order (D39).
 
-### [ ] E2-04: Exact-duplicate removal strategy
+### [x] E2-04: Exact-duplicate removal strategy
 Owner: R1 · Estimate: 1d · Depends: E2-03
 Files: rust/compresso-core/src/strategies/dedup_exact.rs, tests in same file
 Description: Implement `dedup_exact` per `03-interfaces.md` §2.3. Each replacement emits `RemovalRecord::DuplicateReference` with node/survivor locator, original/replacement hashes, and exact before/after counts; notes are explanatory only (D51).
@@ -162,7 +164,7 @@ Test cases:
 - test_no_duplicates_not_supported: graph of three distinct contents → `supports() == false`; `execute` (if forced) returns the input unchanged with an explanatory note.
 - test_estimate_matches_execute: `estimate().tokens_saved` equals `before_tokens - after_tokens` measured after execute on the three-duplicate graph, within the stub-token overhead.
 
-### [ ] E2-05: Log-collapse strategy
+### [x] E2-05: Log-collapse strategy
 Owner: R1 · Estimate: 1.5d · Depends: E2-03, E1-05
 Files: rust/compresso-core/src/strategies/collapse_logs.rs, tests in same file
 Description: Implement `collapse_logs` per `03-interfaces.md` §2.3. Each non-overlapping collapsed span emits `RemovalRecord::CollapsedLines` with locator, hashes, exact counts, and removed-line count (D51).
@@ -177,7 +179,7 @@ Test cases:
 - test_protected_log_untouched: same 500-line content in a node with `protected: true` → byte-identical output.
 - test_interleaved_runs: 5×"A", 1×"B", 4×"A" → output `A [×5]`, `B`, `A [×4]` (three lines; runs never merge across interruptions).
 
-### [ ] E2-06: JSON-compaction strategy
+### [x] E2-06: JSON-compaction strategy
 Owner: R1 · Estimate: 1.5d · Depends: E2-03
 Files: rust/compresso-core/src/strategies/compact_json.rs, tests in same file
 Description: Implement `compact_json` per `03-interfaces.md` §2.3. Each non-overlapping elision emits `RemovalRecord::JsonElision` with JSON Pointer, hashes, exact counts, and removed-unit count (D51).
@@ -193,7 +195,7 @@ Test cases:
 - test_structure_preserved: nested object with 4 levels → output has identical key set at every level (recursive key comparison).
 - test_truncations_enumerated_in_notes: every elision marker in the output has a matching `truncated <pointer>` note; a node with no elisions contributes no `truncated` notes.
 
-### [ ] E2-07: Budget-packing strategy
+### [x] E2-07: Budget-packing strategy
 Owner: R1 · Estimate: 1.5d · Depends: E2-03
 Files: rust/compresso-core/src/strategies/pack_budget.rs, tests in same file
 Description: Implement `pack_budget` per `03-interfaces.md` §2.3. Every dropped node emits `RemovalRecord::DroppedNode` with original hash/count and zero replacement count; edge pruning cannot create overlapping records (D51).
@@ -208,7 +210,7 @@ Test cases:
 - test_edges_pruned: edge A→B where B is dropped → edge absent from output and `output.validate()` passes.
 - test_deterministic_tiebreak: two identical-score nodes "n_a" and "n_b" → "n_a" dropped first on two consecutive runs (assert equality of both outputs).
 
-### [ ] E2-08: Safety module with eleven mandatory checks
+### [x] E2-08: Safety module with eleven mandatory checks
 Owner: R1 · Estimate: 2d · Depends: E2-01, E2-02
 Files: rust/compresso-core/src/safety.rs
 Description: Implement the eleven checks in 03 §2.5 in order.
@@ -217,7 +219,7 @@ Acceptance criteria:
 Test cases:
 - one failure per check; all-pass; every failure restores bytes.
 
-### [ ] E2-09: Engine::compress pipeline, trace generation, fallback
+### [x] E2-09: Engine::compress pipeline, trace generation, fallback
 Owner: R1 · Estimate: 2d · Depends: E2-04, E2-05, E2-06, E2-07, E2-08, E1-04
 Files: rust/compresso-core/src/engine.rs, rust/compresso-core/src/trace.rs, tests in both + rust/compresso-core/tests/trace_schema.rs
 Description: Implement `Mode`, `CompressionBudget`, `Lossiness`, `CompressionResult`, `Engine::new(mode, counter)`, and `Engine::compress(input, budget) -> CompressionResult` per `03-interfaces.md` §2.4, plus `Trace` serialization matching `schemas/compression-trace/v1.json`. Pipeline per build-doc §10.3: validate → mark protected → run registry strategies in order within the remaining latency budget → `safety::run_all` on the cumulative result → on any strategy error, failed check, or panic (caught via `catch_unwind`), restore the original graph and set `fallback_used`/`fallback_reason`. `compress` **never returns Err**. Traces carry ULID `operation_id`, per-strategy `StrategyResult`s, all safety checks, and a human-readable explanation with no raw content.
@@ -236,7 +238,7 @@ Test cases:
 - test_safe_mode_on_log_fixture: 500-line log fixture in Safe mode → `after_tokens < before_tokens × 0.5`, `fallback_used == false`, `strategy_results` includes `collapse_logs` with `applied == true`.
 - test_deterministic_output: two compress calls on the same input → outputs serialize to identical JSON (excluding operation_id/created_at).
 
-### [ ] E2-10: Property tests for engine invariants
+### [x] E2-10: Property tests for engine invariants
 Owner: R1 · Estimate: 1d · Depends: E2-09
 Files: rust/compresso-core/tests/proptest_engine.rs
 Description: proptest generators for arbitrary `ContextGraph`s (random kinds, protection flags, contents including unicode, empty strings, lone surrogate-free control chars, JSON and non-JSON) and budgets; assert the two core invariants across thousands of cases: compress never mutates protected nodes, and in Safe mode output tokens ≤ input tokens.
@@ -251,7 +253,7 @@ Test cases:
 - prop_output_always_validates: `result.output.validate().is_ok()` for every case.
 - prop_fallback_implies_identity: whenever `fallback_used`, output serializes byte-equal to input.
 
-### [ ] E2-11: Criterion latency benchmarks with P95 gate
+### [x] E2-11: Criterion latency benchmarks with P95 gate
 Owner: R1 · Estimate: 1.5d · Depends: E2-09, E1-05
 Files: rust/compresso-core/benches/compress_latency.rs, docs/plan/gates.toml (latency section stub consumed fully in E7-03)
 Description: Criterion benchmarks running `Engine::compress` in Safe mode over the committed fixtures (500-line log, 2000-element JSON tool response, 40-node mixed conversation graph, 200 KB source-file graph), reporting P50/P95. Adds a plain `#[test]` (release-profile CI leg) asserting P95 < 200 ms per D37 so regressions fail CI even where criterion output isn't parsed.
@@ -267,7 +269,7 @@ Test cases:
 
 ## E3 — Atlas
 
-### [ ] E3-01: Store::open and migrations
+### [x] E3-01: Store::open and migrations
 Owner: R2 · Estimate: 1.5d · Depends: E1-01
 Files: rust/compresso-store/src/lib.rs, rust/compresso-store/migrations/0001_init.sql, tests in rust/compresso-store/tests/migrations.rs
 Description: Implement `Store::open(path)` and `Store::open_default()` per `03-interfaces.md` §3: open rusqlite (bundled) with WAL and foreign keys on, run pending migrations transactionally from embedded SQL files, record them in `schema_migrations`. Commit `0001_init.sql` byte-for-byte per `02-schemas.md` §4 (all twelve tables, FTS5 `symbols_fts` with triggers, indexes). `open_default` resolves the platform data dir per `01-stack` §5 via `dirs`. Startup prunes `operations` older than 90 days (configurable). Implement the D41 concurrency contract (03-interfaces §3): `Store` wraps a single `Arc<Mutex<rusqlite::Connection>>`, is `Send + Sync` and cheaply cloneable, exposes only blocking methods, and sets `busy_timeout = 5s` at open (guarding against a second process, e.g. the CLI while the MCP server is running); async callers wrap every call in `tokio::task::spawn_blocking`. Escape hatch if profiling ever shows lock contention: a dedicated writer thread behind the same API.
@@ -286,10 +288,10 @@ Test cases:
 - test_busy_timeout_5s: `PRAGMA busy_timeout` == 5000 after open.
 - test_store_send_sync_clone: `fn assert_bounds<T: Send + Sync + Clone>() {}` instantiated with `Store`.
 
-### [ ] E3-02: Repository, file, and symbol DAOs
+### [x] E3-02: Repository, file, and symbol DAOs
 Owner: R2 · Estimate: 1.5d · Depends: E3-01
 Files: rust/compresso-store/src/repos.rs, rust/compresso-store/src/files.rs, rust/compresso-store/src/symbols.rs, tests in same files
-Description: Implement the repository/file/symbol surface of `Store` per `03-interfaces.md` §3: `approve_repo`, `repo_by_root`, `upsert_file`, `file_hashes`, `replace_symbols` (symbols + edges in a single transaction), `delete_files`, `search_symbols` (FTS5, bm25-ranked), `symbols_in_file`, `symbol_by_name`, with `RepoRecord`/`FileRecord`/`SymbolRecord`/`EdgeRecord`/`SymbolHit` types. Only this crate contains SQL.
+Description: Implement the repository/file/symbol surface of `Store` per `03-interfaces.md` §3: `approve_repo`, `repo_by_root`, `upsert_file`, `file_hashes`, `replace_symbols` (symbols + edges in a single transaction), `delete_files`, `search_symbols` (literal FTS5 trigram queries, bm25-ranked with deterministic ties), `symbols_in_file`, and D59-compliant `symbols_by_identity`, with `RepoRecord`/`FileRecord`/`SymbolRecord`/`EdgeRecord`/`SymbolHit` types. `SymbolSelector` is owned by `compresso-store` so Store never depends on Atlas; lookup returns all deterministic candidates and never an arbitrary first match. Only this crate contains SQL.
 Acceptance criteria:
 - `approve_repo` canonicalizes the root and is idempotent (same `RepoId` on repeat); `repo_by_root` finds it by canonical path.
 - `upsert_file` twice for the same `(repo, path)` yields one row with updated hash/size; `delete_files` cascades symbol and edge rows (FK verified).
@@ -301,9 +303,9 @@ Test cases:
 - test_replace_symbols_transactional: seed 3 symbols; call `replace_symbols` with a batch containing an invalid row (end_line < start_line triggers CHECK/validation) → Err, `symbols_in_file` still returns the 3 originals.
 - test_delete_files_cascades: file with 2 symbols and 1 edge; `delete_files` → `symbols` and `edges` rows for it gone, `symbols_fts` no longer matches.
 - test_search_symbols_trigram: symbol `SessionManager::start`; `search_symbols(repo, "essionMan", 10)` returns it ranked first.
-- test_symbol_by_name_qualified: `symbol_by_name(repo, "SessionManager::start")` returns `(FileRecord, SymbolRecord)` with correct path and line range.
+- test_symbols_by_identity_qualified_and_ambiguous: a selector with path + qualified name and optional kind/signature hash/start-line hint returns all matching `(FileRecord, SymbolRecord)` candidates in deterministic order; optional fields are honored and no arbitrary first match is selected.
 
-### [ ] E3-03: Session, operation, receipt, and stats DAOs
+### [x] E3-03: Session, operation, receipt, and stats DAOs
 Owner: R2 · Estimate: 1.5d · Depends: E3-01, E1-04
 Files: rust/compresso-store/src/ops.rs, rust/compresso-store/src/receipts.rs, tests in same files
 Description: Implement `start_session`, `record_operation` implementing the D47 split (02-schemas §4): compression operations (`compresso_compress`, engine runs) must carry `trace_json` validated against the compression-trace v1 **root** schema before insert; retrieval operations (map, search, read, outline, unfold, context, impact, stats, explain) must store `trace_json = NULL` and set `tokens_served`. Implement `stats(since)` returning `StatsSummary` in the savings vocabulary of `02-schemas.md` §3 (`observed_tokens`, `applied_tokens`, `removed_tokens`, `compression_overhead`, `net_tokens_saved`, labelled `modeled_cost_saved`), plus `save_receipt`/`receipts` for `integration_receipts`.
@@ -321,7 +323,7 @@ Test cases:
 - test_stats_since_filters: op at t=100 and t=200; `stats(Some(150))` counts only the second.
 - test_receipt_roundtrip_and_filter: save claude-code and codex receipts → `receipts(Some("codex"))` returns exactly the codex one with `keys_owned == ["mcp_servers.compresso"]`.
 
-### [ ] E3-04: Repository scanner
+### [x] E3-04: Repository scanner
 Owner: R2 · Estimate: 2d · Depends: E3-02
 Files: rust/compresso-atlas/src/scanner.rs, tests in same file + fixtures under rust/compresso-atlas/tests/fixtures/scan-repo/
 Description: Implement `ScanResult` and `scan(store, repo, root)` per `03-interfaces.md` §4: walk with the `ignore` crate (gitignore-aware), apply built-in exclusions (binary sniff, files > `max_file_bytes`, `node_modules/`, `target/`, `dist/`, `.git/`, secret patterns `.env*`, `*.pem`, `id_rsa*`), hash candidates with blake3, and diff against `Store::file_hashes` to produce `added`/`changed`/`removed`/`skipped` with `SkipReason`.
@@ -337,8 +339,8 @@ Test cases:
 - test_removed_detected: delete `src/util.rs` after indexing, rescan → `removed == ["src/util.rs"]`.
 - test_blake3_matches_reference: hash of committed file equals precomputed blake3 hex constant in the test.
 
-### [ ] E3-05: ParserRegistry scaffold + Rust extraction
-Owner: R2 · Estimate: 1.5d · Depends: E3-01
+### [x] E3-05: ParserRegistry scaffold + Rust extraction
+Owner: R2 · Estimate: 1.5d · Depends: E3-02
 Files: rust/compresso-atlas/src/parsers.rs, rust/compresso-atlas/queries/rust.scm, tests + fixture rust/compresso-atlas/tests/fixtures/lang/sample.rs
 Description: Implement `ParserRegistry::for_path` (extension map: rs, ts, tsx, js, jsx, mjs, cjs, py per `03-interfaces.md` §4) and `ParserRegistry::extract(lang, source) -> Extraction` for Rust via tree-sitter-rust and `queries/rust.scm`: functions, methods (with `Type::method` qualified names), structs, enums, traits, consts, type aliases, modules; imports from `use` declarations as written. Symbol kinds normalize to the store vocabulary from 02-schemas §4.
 Acceptance criteria:
@@ -351,7 +353,7 @@ Test cases:
 - test_rust_malformed_no_panic: source `"fn broken( {"` → `Ok(Extraction)` or typed `ParseError`, never a panic (wrapped in catch_unwind assertion).
 - test_for_path_extension_map: table-driven over all eight extensions plus `foo.go → None`.
 
-### [ ] E3-06: TypeScript + TSX extraction
+### [x] E3-06: TypeScript + TSX extraction
 Owner: R2 · Estimate: 1.5d · Depends: E3-05
 Files: rust/compresso-atlas/queries/typescript.scm, rust/compresso-atlas/queries/tsx.scm, tests + fixtures tests/fixtures/lang/sample.ts, sample.tsx
 Description: tree-sitter-typescript (both grammars) queries extracting functions, arrow-function consts, classes, methods, interfaces, enums, type aliases, and exported consts; imports from `import`/`export from` statements. TSX additionally covers function components.
@@ -365,7 +367,7 @@ Test cases:
 - test_tsx_component_extracted: `sample.tsx` with `export function UserCard(props: { name: string }): JSX.Element` → symbol `UserCard`, kind `function`, signature containing `props: { name: string }`.
 - test_type_alias_kind: `export type UserId = string;` → symbol `UserId`, kind `type`.
 
-### [ ] E3-07: JavaScript extraction
+### [x] E3-07: JavaScript extraction
 Owner: R2 · Estimate: 1d · Depends: E3-05
 Files: rust/compresso-atlas/queries/javascript.scm, tests + fixture tests/fixtures/lang/sample.js
 Description: tree-sitter-javascript queries for function declarations, arrow/function-expression consts, classes and methods, and module-level `module.exports` assignments; imports from ESM `import` and CJS `require()` calls with string-literal arguments.
@@ -378,7 +380,7 @@ Test cases:
 - test_js_cjs_and_esm_imports: `const path = require("path");` plus `import express from "express";` → imports `["path", "express"]`.
 - test_js_dynamic_require_ignored: `require(pluginName)` → not present in imports, extraction succeeds.
 
-### [ ] E3-08: Python extraction
+### [x] E3-08: Python extraction
 Owner: R2 · Estimate: 1.5d · Depends: E3-05
 Files: rust/compresso-atlas/queries/python.scm, tests + fixture tests/fixtures/lang/sample.py
 Description: tree-sitter-python queries for module functions, classes, methods (including decorated and async defs), and module-level constants (UPPER_CASE assignments); imports from `import x`, `import x as y`, and `from x import y` forms as written.
@@ -391,7 +393,7 @@ Test cases:
 - test_py_imports_three_forms: `import os`, `import numpy as np`, `from typing import Optional` → imports `["os", "numpy", "typing.Optional"]`.
 - test_py_decorated_line_range: `@retry` on the line above `def push` → symbol start_line is the `def` line and signature notes the decorator.
 
-### [ ] E3-09: Incremental Indexer
+### [x] E3-09: Incremental Indexer
 Owner: R2 · Estimate: 2.5d · Depends: E3-04, E3-05, E3-06, E3-07, E3-08, E2-02
 Files: rust/compresso-atlas/src/indexer.rs, tests in rust/compresso-atlas/tests/indexer_incremental.rs
 Description: Implement `Indexer::index(root, progress)` and `IndexReport` per `03-interfaces.md` §4: canonicalize + `approve_repo` → `scan` → parse only `added`/`changed` via `ParserRegistry` → `replace_symbols` per file in its own transaction → `delete_files` for removed → stamp `index_versions` with `parser_version` and `schema_version`. `token_estimate` computed with `core::tokens` counter. A parser_version mismatch against `index_versions` marks the report `stale` and triggers full reparse.
@@ -407,7 +409,7 @@ Test cases:
 - test_parser_version_bump_flags_stale: stamp index_versions with "0.0.1", run indexer built as "0.0.2" → `stale == true` and all files reparsed.
 - test_per_file_transaction_isolation: inject failure while indexing the 3rd of 5 changed files → first two updated, last three untouched, no partial symbol sets.
 
-### [ ] E3-10: Queries — repo_map and outline
+### [x] E3-10: Queries — repo_map and outline
 Owner: R2 · Estimate: 2d · Depends: E3-09
 Files: rust/compresso-atlas/src/queries.rs, tests in rust/compresso-atlas/tests/queries_map_outline.rs
 Description: Implement `repo_map(store, repo, budget_tokens)` (directory tree + top symbols per file, ranked PageRank-ish by edge in-degree, truncated to the token budget using the core counter) and `outline(store, repo, path)` (full symbol skeleton with line ranges and token estimates) per `03-interfaces.md` §4.
@@ -421,7 +423,7 @@ Test cases:
 - test_outline_line_order_and_ranges: `outline(.., "src/lib.rs")` on the E3-05 fixture → symbols sorted by start_line, ranges matching the extraction test constants.
 - test_outline_missing_path: `outline(.., "src/nope.rs")` → `Err(AtlasError::FileNotIndexed)`.
 
-### [ ] E3-11: Queries - selector-based unfold, search, and bounded read
+### [x] E3-11: Queries - selector-based unfold, search, and bounded read
 Owner: R2 · Estimate: 2.5d · Depends: E3-09
 Files: rust/compresso-atlas/src/queries.rs, tests in rust/compresso-atlas/tests/queries_unfold_search_read.rs
 Description: Implement `unfold(store, repo, selector: &SymbolSelector)`, ranked search, and `read_bounded`. Unfold uses path plus qualified name and optional kind/signature hash/start-line hint. Zero matches returns NotFound; multiple matches returns typed Ambiguous candidates; it never selects an arbitrary body. On stale files it re-parses and matches the complete selector against current content.
@@ -433,7 +435,7 @@ Test cases:
 - `test_unfold_unique_selector_exact_body`, `test_unfold_overload_returns_candidates`, `test_unfold_trait_impl_disambiguated_by_signature`, `test_unfold_stale_relocates_full_selector`, `test_unfold_deleted_not_found`.
 - Search ranking, dotdot/absolute/symlink escapes, internal symlink, range, and token truncation.
 
-### [ ] E3-12: Queries — impact and plan_context
+### [x] E3-12: Queries — impact and plan_context
 Owner: R2 · Estimate: 1.5d · Depends: E3-10, E3-11
 Files: rust/compresso-atlas/src/queries.rs, tests in rust/compresso-atlas/tests/queries_impact_plan.rs
 Description: Implement `impact(store, repo, path)` (reverse-edge closure over `edges`, depth 2, reporting dependent files and the linking edge kinds) and `plan_context(store, repo, task, budget_tokens)` (search-driven pack: repo map slice + outlines + top matching symbol bodies assembled within the token budget) per `03-interfaces.md` §4.
@@ -451,7 +453,7 @@ Test cases:
 
 ## E4 — CLI
 
-### [ ] E4-01: CLI application and canonical command tree
+### [x] E4-01: CLI application and canonical command tree
 Owner: D1 · Estimate: 2d · Depends: E2-09, E3-12
 Files: rust/compresso-cli/src/{main,commands}.rs, rust/compresso-eval/src/cli.rs
 Description: Expose account login|status|logout and eval run|gates|diff-gates|workflow|calibrate-anthropic with all existing commands.
@@ -460,7 +462,7 @@ Acceptance criteria:
 Test cases:
 - command snapshot; both eval entry points; cancelled login writes nothing.
 
-### [ ] E4-02: CLI retrieval, compression, and diagnostics
+### [x] E4-02: CLI retrieval, compression, and diagnostics
 Owner: D1 · Estimate: 2d · Depends: E4-01
 Files: rust/compresso-cli/src/commands/
 Description: Wire canonical interfaces without duplicated logic.
@@ -469,7 +471,7 @@ Acceptance criteria:
 Test cases:
 - JSON snapshots; root, ambiguity, unresolved, stale, malformed, fallback.
 
-### [ ] E4-03: Wire engine commands (compress, explain, stats)
+### [x] E4-03: Wire engine commands (compress, explain, stats)
 Owner: D1 · Estimate: 1d · Depends: E4-01, E2-09, E3-03
 Files: rust/compresso-cli/src/commands/engine.rs, tests in rust/compresso-cli/tests/cli_engine.rs
 Description: `compress` reads stdin (or `--file`), builds a graph via `ContextGraph::from_text` (kind from `--kind`, default `tool_response`), runs `Engine::compress` with mode/budget flags (`--mode safe|passthrough`, `--target-tokens`), prints compressed content, records the operation via `Store::record_operation`; `explain` prints the trace for an operation id (or `--last`) from the store — ids, counts, checks, never raw content; `stats` renders `Store::stats` in the §3 savings vocabulary with `modeled_cost_saved` explicitly labelled `modeled`.
@@ -483,7 +485,7 @@ Test cases:
 - test_explain_last_matches_schema: after a compress, `explain --last --json` → `data.trace` validates against schemas/compression-trace/v1.json and contains no input substring.
 - test_stats_labels_modeled: `stats --json` → keys include `net_tokens_saved` and `modeled_cost_saved`; human mode output contains the word "modeled".
 
-### [ ] E4-04: doctor and config explain
+### [x] E4-04: doctor and config explain
 Owner: D1 · Estimate: 1d · Depends: E4-01, E2-09
 Files: rust/compresso-cli/src/commands/doctor.rs, rust/compresso-core/src/config.rs, tests in both
 Description: Implement `Config::load()` (default < file < env < flag per `03-interfaces.md` §2.6, file at `~/.config/compresso/config.toml`, env overrides `COMPRESSO_MODE`, `COMPRESSO_TARGET_TOKENS`, `COMPRESSO_BYPASS`, `COMPRESSO_LOG`, `COMPRESSO_TELEMETRY` accepted but forced false) and `Config::explain()` backing `compresso config explain` (key, effective value, `ConfigSource`). `compresso doctor` checks: binary resolvable, data dir writable, DB opens and migrations current, config parses, tokenizers initialize, tree-sitter grammars load, and prints pass/fail per check with remediation hints.
@@ -497,7 +499,7 @@ Test cases:
 - test_doctor_all_green_on_healthy_tmp: doctor with temp HOME and fresh db → exit 0, all checks `passed == true`.
 - test_doctor_bad_config_fails_gracefully: config.toml containing `mode = [` → exit 1, JSON check `config_parses.passed == false`, hint names the file path.
 
-### [ ] E4-05: install-local.sh slice installer (D42)
+### [x] E4-05: install-local.sh slice installer (D42)
 Owner: I1 · Estimate: 1.5d · Depends: E1-06, E4-04
 Files: installers/install-local.sh, installers/tests/install_local_test.sh, docs/runbooks/install-local.md
 Description: POSIX-sh installer that (1) detects platform/arch, (2) locates the matching `compresso-<version>-<target>.tar.gz` and `SHA256SUMS` from a local path or URL argument, (3) verifies the SHA256 checksum before unpacking, (4) installs atomically to `~/.local/bin/compresso` (temp file + rename, mode 0755, per D23), (5) is idempotent — a re-run replaces the binary and keeps the prior one as `compresso.previous`, and (6) prints PATH guidance when `~/.local/bin` is not on PATH. Unsigned per D42 (signing/notarization/package managers stay E12); conforms to the 08 §3.4 bootstrap constraints: small enough to read in one sitting, no telemetry, no assistant-config mutation, no mutable second-stage code.
@@ -515,7 +517,7 @@ Test cases:
 
 ## E5 — MCP server
 
-### [ ] E5-01: rmcp server bootstrap and initialize handshake
+### [x] E5-01: rmcp server bootstrap and initialize handshake
 Owner: R2 · Estimate: 1.5d · Depends: E2-09, E3-03, E4-01
 Files: rust/compresso-mcp/src/lib.rs, rust/compresso-mcp/src/server.rs, rust/compresso-cli/src/commands/mcp.rs, tests in rust/compresso-mcp/tests/handshake.rs
 Description: Implement `serve_stdio(deps: McpDeps)` per `03-interfaces.md` §5 using rmcp's ServerHandler over stdio, wire `compresso mcp serve` to it, and register all ten tool declarations from D7 / `04-mcp-and-integrations.md` §1 (`compresso_repo_map`, `compresso_search`, `compresso_read`, `compresso_outline`, `compresso_unfold`, `compresso_context`, `compresso_impact`, `compresso_compress`, `compresso_stats`, `compresso_explain`) with versioned JSON input schemas; handlers stubbed until E5-02..04. Server instructions string ≤200 words, factual, lists tools, never instructs the client to prefer Compresso over its own policy (build-doc §13.4).
@@ -529,7 +531,7 @@ Test cases:
 - test_instructions_word_budget: instructions split_whitespace count ≤ 200; denylist phrases absent.
 - test_malformed_frame_survives: send `{"jsonrpc":"2.0",` then a valid request → valid request still answered.
 
-### [ ] E5-02: Navigation handlers - repo map, outline, selector-based unfold
+### [x] E5-02: Navigation handlers - repo map, outline, selector-based unfold
 Owner: R2 · Estimate: 1.5d · Depends: E5-01, E3-10, E3-11
 Files: rust/compresso-mcp/src/tools/atlas_nav.rs, tests in rust/compresso-mcp/tests/tools_nav.rs
 Description: Implement the three navigation handlers against the exact JSON schemas in 04 §1. Root naming, defaults, bounds, SymbolSelector, ambiguity, and errors must match those schemas.
@@ -540,7 +542,7 @@ Acceptance criteria:
 Test cases:
 - `test_repo_map_budget`, `test_outline_matches_atlas`, `test_unfold_unique`, `test_unfold_ambiguous_candidates`, `test_unfold_signature_disambiguates`, `test_unfold_stale_current`, `test_unfold_deleted_not_found`, `test_unfold_schema_bounds`.
 
-### [ ] E5-03: Tool handlers — compresso_search, compresso_read (gate mode), compresso_context
+### [x] E5-03: Tool handlers — compresso_search, compresso_read (gate mode), compresso_context
 Owner: R2 · Estimate: 1.5d · Depends: E5-01, E3-11, E3-12
 Files: rust/compresso-mcp/src/tools/atlas_read.rs, tests in rust/compresso-mcp/tests/tools_read.rs
 Description: Implement `compresso_search` (→ `search`), `compresso_read` (→ `read_bounded`, plus a `gate: true` argument implementing the Tetris `tetris_context_gate` semantics per D7: return size/token estimate and a worth-reading verdict without file content), and `compresso_context` (→ `plan_context`). All path arguments flow through the E3-11 canonicalization boundary; `OutsideRoot` maps to a stable MCP error code and never echoes the resolved path outside the root.
@@ -555,7 +557,7 @@ Test cases:
 - test_search_tool_hits: `{"query":"SessionManager"}` → first hit qualified_name `SessionManager` with path and line.
 - test_context_tool_budget: `{"task":"session retry logic","max_tokens":800}` → ≤800 tokens.
 
-### [ ] E5-04: Tool handlers — compresso_compress, compresso_impact, compresso_stats, compresso_explain
+### [x] E5-04: Tool handlers — compresso_compress, compresso_impact, compresso_stats, compresso_explain
 Owner: R2 · Estimate: 1.5d · Depends: E5-01, E2-09, E3-03, E3-12
 Files: rust/compresso-mcp/src/tools/engine_tools.rs, tests in rust/compresso-mcp/tests/tools_engine.rs
 Description: `compresso_compress` builds a graph from the `text` argument (D7: compatible with `tetris_compress_text`), runs `Engine::compress` in the configured mode, returns compressed text plus real-tokenizer before/after counts; `compresso_impact` → `impact`; `compresso_stats` → `Store::stats` in the §3 vocabulary; `compresso_explain` returns the stored trace for an `operation_id`. Operation recording follows D47 (02-schemas §4, 04 §1.1): `compresso_compress` records a compression operation whose `trace_json` is the compression-trace v1 document validated against the **root** schema; the retrieval handlers (`compresso_impact`, `compresso_stats`, `compresso_explain`, plus the E5-02/E5-03 navigation and read tools) record `trace_json = NULL` with `tokens_served` set to the tokens returned to the client (E5-05 supplies the session id plumbing).
@@ -572,7 +574,7 @@ Test cases:
 - test_compress_records_root_valid_trace: after a compress call, its `operations` row's `trace_json` validates against the compression-trace v1 root schema.
 - test_retrieval_records_tokens_served: after `compresso_impact`, its `operations` row has `trace_json` NULL and `tokens_served` equal to the returned payload's token count (D47).
 
-### [ ] E5-05: Sessions and operation ledger
+### [x] E5-05: Sessions and operation ledger
 Owner: R2 · Estimate: 1.5d · Depends: E5-01, E3-03
 Files: rust/compresso-mcp/src/session.rs, tests in rust/compresso-mcp/tests/session_ledger.rs
 Description: On MCP connect, call `Store::start_session(client, "stdio")` (client name from initialize clientInfo, `"unknown"` fallback); thread the `SessionId` through `McpDeps` so every tool handler records an `OperationRecord` with the tool name, mode, observed/applied token counts, and — per D47 — `trace_json` for `compresso_compress` only, while retrieval tools record `tokens_served` with `trace_json = NULL`; close the session (set `ended_at`) on disconnect. Bounded concurrency: tool calls execute serially per session (rmcp default) and the ledger write failure never fails the tool response (log + continue, fail-open).
@@ -585,7 +587,7 @@ Test cases:
 - test_operation_per_tool_call: 3 tool calls (search, read, compress) → 3 operations rows sharing the session_id; the search and read rows have `trace_json` NULL with `tokens_served` set, the compress row carries a root-schema-valid trace (D47).
 - test_ledger_failure_fail_open: make DB read-only, call `compresso_search` → valid MCP result returned, stderr contains a ledger warning.
 
-### [ ] E5-06: MCP startup and eager tokenizer lifecycle
+### [x] E5-06: MCP startup and eager tokenizer lifecycle
 Owner: R2 · Estimate: 1.5d · Depends: E5-01, E2-02
 Files: rust/compresso-mcp/src/server.rs, rust/compresso-core/src/tokens.rs, benches/startup.rs
 Description: Initialize configured tokenizers before accepting tools; separate cold startup from warm calls.
@@ -594,7 +596,7 @@ Acceptance criteria:
 Test cases:
 - pre-initialize construction; no handler construction; cold/warm; failure; EOF.
 
-### [ ] E5-07: Manual verification in Claude Code
+### [x] E5-07: Manual verification in Claude Code
 Owner: R2 · Estimate: 1.5d · Depends: E5-02, E5-03, E5-04, E5-05, E5-06
 Files: docs/runbooks/mcp-manual-verification.md
 Description: Register the built server in Claude Code (manual `claude mcp add compresso -- ~/.local/bin/compresso mcp serve` — the E6 adapter is not a dependency), exercise every one of the ten tools against the compresso repo itself (dogfood per D9), and record the results in a runbook checklist: arguments used, response summary, latency observation, and any schema mismatch. File and fix (or ticket) every deviation before closing.
@@ -610,7 +612,7 @@ Test cases:
 
 ## E6 — Integrations
 
-### [ ] E6-01: Integration trait, base-bound plans, and receipts
+### [x] E6-01: Integration trait, base-bound plans, and receipts
 Owner: D1 · Estimate: 2d · Depends: E5-01
 Files: rust/compresso-integrations/src/{lib,plan,receipt}.rs, schemas/integrations/v1.json
 Description: Define detect and plan/apply install/uninstall with full-file base hash, plan, diff, expiry, session, backup.
@@ -619,7 +621,7 @@ Acceptance criteria:
 Test cases:
 - outside-diff rewrite; forged/expired; crash; unknown keys.
 
-### [ ] E6-02: Claude Code adapter
+### [x] E6-02: Claude Code adapter
 Owner: D1 · Estimate: 2d · Depends: E6-01, E5-01
 Files: rust/compresso-integrations/src/claude_code.rs, tests in same file
 Description: Adapter with `client_id() == "claude-code"` implementing detection (CLI on PATH, config file per `04-mcp-and-integrations.md` §2 — user scope `~/.claude.json`, project scope `.mcp.json`), plan/install writing only the Compresso-owned key `mcpServers.compresso` = stdio server entry `{command: <compresso_bin>, args: ["mcp","serve"]}`, verify (config parses and the command path resolves to an existing executable), and uninstall (remove only the owned key; restore untouched siblings). JSON edits preserve unrelated keys and their order-insensitive content exactly. No Claude Desktop paths anywhere (D5).
@@ -634,7 +636,7 @@ Test cases:
 - test_uninstall_skips_user_modified_entry: mutate the compresso entry after install, uninstall → entry retained, RestoreReport warns `key_modified`.
 - test_project_scope_writes_mcp_json: `Scope::Project(dir)` → `.mcp.json` created in dir with the compresso entry, user config untouched.
 
-### [ ] E6-03: Codex integration adapter
+### [x] E6-03: Codex integration adapter
 Owner: D1 · Estimate: 2d · Depends: E6-01
 Files: rust/compresso-integrations/src/codex.rs
 Description: Implement Codex CLI/Desktop without Claude assumptions.
@@ -643,7 +645,7 @@ Acceptance criteria:
 Test cases:
 - fresh/existing/malformed; drift; disable/uninstall/repeat; platforms.
 
-### [ ] E6-04: Cursor adapter
+### [x] E6-04: Cursor adapter
 Owner: D1 · Estimate: 1.5d · Depends: E6-01, E5-01
 Files: rust/compresso-integrations/src/cursor.rs, tests in same file
 Description: Adapter with `client_id() == "cursor"` targeting `~/.cursor/mcp.json` (user scope) and `<project>/.cursor/mcp.json` (project scope) per `04-mcp-and-integrations.md` §2, owning `mcpServers.compresso` with the stdio entry. Same preservation, verify, and uninstall semantics as E6-02; shares the JSON editing helper from E6-01.
@@ -656,7 +658,7 @@ Test cases:
 - test_cursor_uninstall_restores: uninstall → deep-equal to original JSON.
 - test_cursor_project_scope_isolated: `Scope::Project` install → project file has entry, user file byte-unchanged.
 
-### [ ] E6-05: Integration parity and restoration suite
+### [x] E6-05: Integration parity and restoration suite
 Owner: D1+PQ · Estimate: 2d · Depends: E6-02, E6-03, E6-04
 Files: rust/compresso-integrations/tests/parity.rs, fixtures/integrations/
 Description: Run one contract over Claude Code, Codex, Cursor.
@@ -670,7 +672,7 @@ Test cases:
 
 ## E7 — Eval & fixtures
 
-### [ ] E7-01: Fixture loader
+### [x] E7-01: Fixture loader
 Owner: PQ · Estimate: 2d · Depends: E1-05, E2-01
 Files: rust/compresso-eval/src/fixtures.rs, tests in same file
 Description: Implement `FixtureSet` loading the authoritative corpus format from `docs/plan/06-fixtures.md` §2: each fixture directory contains `fixture.toml` declaring exactly one input form (`graph` | `[[input.files]]`/`[[input.nodes]]` | `repo`), an `[expectations]` table (`min_reduction_pct`, `must_preserve`, `must_not_contain`, `must_not_contain_in_trace`, `protected_node_ids`, `expect_fallback`, optional `[expectations.atlas]`), optional `[[recall_probes]]` entries (D40: `question`, `answer_substring`, `protected`), and the top-level `eligible` flag governed by the §4 eligibility rules (adversarial, provider-payloads, and atlas fixtures are ineligible). Loader validates every fixture at load time (unknown TOML keys, name/dir and category/dir mismatch, multiple input forms, eligibility-rule violations are errors), recomputes token counts, and materializes a `ContextGraph` per fixture.
@@ -687,7 +689,7 @@ Test cases:
 - test_eligibility_rule_violation_rejected: temp fixture with `eligible = true` and `mode = "passthrough"` → load error citing the §4 eligibility rules.
 - test_fixture_graph_validates: every loaded fixture's graph `validate().is_ok()`.
 
-### [ ] E7-02: Eval runner CLI
+### [x] E7-02: Eval runner CLI
 Owner: R1 · Estimate: 2d · Depends: E7-01, E2-09
 Files: rust/compresso-eval/src/runner.rs, rust/compresso-eval/src/main.rs, tests in rust/compresso-eval/tests/runner.rs
 Description: Implement `EvalRunner`: for each fixture, run `Engine::compress` in the fixture's declared mode, verify `expected` assertions (required/forbidden substrings, reduction bounds, protected-node byte-equality, output JSON validity where input was JSON), collect per-fixture and aggregate metrics (median reduction on eligible fixtures, P95 latency, protected-mutation count, malformed-JSON count, fallback rate per build-doc §25.3), and emit a JSON report. Binary interface: `cargo run -p compresso-eval -- run fixtures/ --gates docs/plan/gates.toml` per `01-stack` §4.
@@ -701,7 +703,7 @@ Test cases:
 - test_failed_expectation_isolated: inject a temp fixture expecting substring "UNOBTAINIUM" → that row `passed == false`, aggregate still produced, exit code reflects failure only via gates (E7-03).
 - test_protected_mutation_counter_zero: aggregate `protected_mutations == 0` on the committed corpus.
 
-### [ ] E7-03: Release gates file and gate checks
+### [x] E7-03: Release gates file and gate checks
 Owner: PQ · Estimate: 2d · Depends: E7-02, E2-11
 Files: docs/plan/gates.toml, rust/compresso-eval/src/gates.rs, tests in same file
 Description: Implement `Gates` loading `docs/plan/gates.toml` and evaluating the aggregate report against the D37 / build-doc §25.6 slice gates: `median_reduction_eligible > 0.25`, `protected_mutations == 0`, `malformed_json == 0`, `p95_latency_ms < 200`. `compresso-eval -- run ... --gates` exits non-zero with a named failing gate when any gate regresses; gates.toml is the single committed source of thresholds (consumed by CI, referenced by E2-11).
@@ -727,7 +729,7 @@ Test cases:
 - test_ci_eval_wiring: actionlint passes; ci.yml contains the eval invocation string with `--gates docs/plan/gates.toml`.
 - test_gate_regression_fails_ci: scratch-branch verification recorded in the PR description with the failing run link.
 
-### [ ] E7-05: Recall-probe evaluation and passthrough baseline
+### [x] E7-05: Recall-probe evaluation and passthrough baseline
 Owner: PQ · Estimate: 2d · Depends: E7-01, E7-02
 Files: rust/compresso-eval/src/recall.rs, rust/compresso-eval/src/runner.rs (probe wiring), tests in rust/compresso-eval/tests/recall.rs
 Description: Implement the D40 task-success proxy per `06-fixtures.md` §4.9. After each compression fixture run, search every `[[recall_probes]]` entry's `answer_substring` byte-exact over the concatenated output node contents; aggregate corpus-wide into `protected_probe_recall` (probes with `protected = true`) and `overall_probe_recall` (all probes). Additionally run every compression fixture that carries at least one probe in `passthrough` mode as a baseline: a probe failing on passthrough output means the probe itself is broken, and the run errors (broken-probe detection, distinct exit from a gate failure) instead of counting the probe. The eval report gains a `recall` block with per-fixture probe outcomes and the two aggregates.
@@ -741,7 +743,7 @@ Test cases:
 - test_broken_probe_errors_on_passthrough: temp fixture whose probe answer never existed in the input → run errors with `broken_probe`, no recall aggregates emitted.
 - test_protected_probes_bucketed_separately: mixed protected/unprotected probes land in the correct aggregates.
 
-### [ ] E7-06: Recall gates in gates.toml
+### [x] E7-06: Recall gates in gates.toml
 Owner: PQ · Estimate: 1d · Depends: E7-03, E7-05
 Files: docs/plan/gates.toml, rust/compresso-eval/src/gates.rs, tests in same file
 Description: Extend `Gates` and `docs/plan/gates.toml` with the D40 recall thresholds from `06-fixtures.md` §4.9: `protected_probe_recall == 1.0` (100% of protected probes) and `overall_probe_recall >= 0.99`. Gate evaluation consumes the E7-05 recall block; a probes-exist sanity check (mirroring the five-fixture-minimum rule of §4.5) fails the gate when the corpus contains zero recall probes, so deleting probes cannot game the gate. Runs through the existing E7-04 eval CI job unchanged.
@@ -754,6 +756,156 @@ Test cases:
 - test_protected_recall_zero_tolerance: synthetic report with `protected_probe_recall = 0.99` → gate fails naming `protected_probe_recall`.
 - test_overall_recall_boundary: synthetic reports at 0.989 and 0.990 → fail then pass.
 - test_probeless_corpus_fails_gate: synthetic report with zero probes → recall gate fails with reason `no_probes`.
+
+---
+
+## PB — Public package-manager beta
+
+Authorized by D67 and ADR-0025 as a bounded lane after the E1-E7 slice. PB
+pulls only the named beta release-hardening/signing subsets from E12/E14; it
+does not authorize E8-E16, licensing, cloud, desktop, updater, Homebrew, or
+stable publication. The private engine repository remains private. The public
+distribution repository contains auditable packaging code and verified signed
+native artifacts only. Epic estimate: 16.5d.
+
+### [x] PB-01: Public beta distribution decision and contracts
+Owner: PQ+I1 · Estimate: 0.5d · Depends: none
+Files: AGENTS.md, decisions.md, docs/adr/0021-crown-jewel-local-boundary.md, docs/adr/0025-public-package-manager-beta.md, docs/plan/04-mcp-and-integrations.md, docs/plan/05-tickets.md, docs/plan/08-ip-and-secure-deployment.md
+Description: Lock the public package-manager beta boundary and its real release blockers. A session root is the immutable canonical approved repository bound when an MCP server starts, never launcher scratch space. The launcher creates no mutable or temporary state. Define honest channel trust, binary recoverability, the exact E12/E14 subsets pulled forward, and explicit exclusions. D36 remains open and the stable npm tag remains blocked.
+Acceptance criteria:
+- ADR-0025, D67, AGENTS.md, and the MCP contract agree that a session root comes only from explicit `--root` or approved cwd, has no sole-approved-repository fallback, and cannot be changed by a tool call.
+- The decision names repository-bound MCP behavior, truthful provider disclosure, secret exclusions, repository management, `compresso setup CLIENT ROOT`, and the stable `COMPRESSO_LAUNCHER_PATH` upgrade contract as beta blockers owned by PB-02/PB-03.
+- Trust text states that signatures authenticate private-to-public import and enable independent verification, launcher SHA-256 is tamper/corruption detection rather than an unpatchable trust anchor, and full npm/package compromise can replace launcher, binary, and checks.
+- D46, ADR-0021, and 08 §2 retain the same honest recoverability language; D36 remains OPEN.
+- PB-02..PB-08 are dependency ordered, total 16.5d, and every beta acceptance gate has an owner.
+Test cases:
+- `test_pb01_cross_references_resolve`.
+- `test_pb01_session_root_and_launcher_state_contracts_do_not_conflate`.
+- `test_pb01_trust_claims_include_full_npm_compromise`.
+- `test_pb01_scope_scan_and_d36_remains_open`.
+
+### [x] PB-02: Repository-bound MCP and secret-safe disclosure
+Owner: R2+PQ · Estimate: 3d · Depends: PB-01, E6-05
+Files: rust/compresso-cli/src/commands/mcp.rs, rust/compresso-mcp/src/server.rs, rust/compresso-atlas/src/scanner.rs, rust/compresso-store/src/, docs/plan/03-interfaces.md, docs/plan/04-mcp-and-integrations.md
+Description: Make one canonical approved repository the immutable boundary for each MCP process. Bind at startup from explicit `mcp serve --root ROOT` or the canonical cwd's longest approved ancestor; never fall back merely because one repository is approved. Tool roots may only confirm the bound root. Keep provider disclosure truthful and exclude documented secret classes before read, hash, tokenization, parsing, persistence, traces, search, or MCP output.
+Acceptance criteria:
+- Explicit root must be an exact approved canonical repository; cwd binding uses the longest approved ancestor. With neither, repository-independent compression/stats/explain remain available while repository tools fail with an actionable content-free error; a tool call cannot bind the session.
+- A tool cannot select a different repository, including another approved repository, and symlink/path aliases cannot escape the bound root.
+- Server instructions state that Compresso makes no independent network request while the coding client may send returned MCP content to its configured provider.
+- At minimum `.env*`, `*.pem`, and `id_rsa*` are excluded before file contents are opened or indexed and cannot appear in files, symbols, FTS, traces, or MCP results.
+Test cases:
+- `test_mcp_root_explicit_or_approved_cwd_only_without_sole_repo_fallback`.
+- `test_mcp_tool_root_cannot_switch_to_other_approved_repo`.
+- `test_mcp_provider_disclosure_names_client_provider_path`.
+- `test_secret_exclusions_happen_before_read_and_never_reach_store_or_mcp`.
+
+### [x] PB-03: Repository lifecycle and one-command client setup
+Owner: D1+R2 · Estimate: 2.5d · Depends: PB-02, E6-05
+Files: rust/compresso-cli/src/commands/, rust/compresso-store/src/, rust/compresso-integrations/src/, docs/plan/03-interfaces.md, docs/plan/04-mcp-and-integrations.md
+Description: Add deterministic `compresso repos list`, safe `compresso repos remove ROOT`, and `compresso setup CLIENT ROOT`. Setup canonicalizes and indexes the repository, then installs client-appropriate MCP configuration. A global Codex entry omits `--root` so each Codex session binds from its cwd's longest approved ancestor; project-scoped Claude Code/Cursor entries may pass `mcp serve --root CANONICAL_ROOT`. Public launchers export a validated stable `COMPRESSO_LAUNCHER_PATH`; integrations record that normalized absolute lexical package-manager shim, not a resolved/versioned engine path, so upgrades require no client rewrite.
+Acceptance criteria:
+- Repositories list deterministically in text and JSON; remove previews or explicitly confirms removal of Compresso approval/index metadata and never deletes repository files.
+- Setup dry-run mutates nothing and shows index/approval plus exact client-config changes; real setup preserves backup, receipt, idempotence, and reversible uninstall behavior.
+- Global Codex configuration contains no fixed `--root` and is tested from two approved cwd sessions; each binds its own longest approved ancestor. Project-scoped Claude Code/Cursor configuration may include the exact canonical root, and no tool can switch the resulting session.
+- `COMPRESSO_LAUNCHER_PATH` is normalized to an absolute lexical path without resolving away the final shim symlink; its resolved target must be an existing executable regular file. Relative, missing, non-regular, or non-executable targets fail closed, while expected npm/pnpm symlinks remain valid. Direct engine use retains a documented safe fallback.
+- Upgrading package contents beneath the same launcher leaves installed client configuration byte-identical and still invokes the new engine.
+Test cases:
+- `test_repos_list_and_remove_are_deterministic_and_never_delete_source`.
+- `test_setup_dry_run_real_install_receipt_and_uninstall_roundtrip`.
+- `test_setup_codex_global_entry_binds_each_session_from_approved_cwd`.
+- `test_setup_project_scoped_clients_may_pin_exact_canonical_root`.
+- `test_launcher_path_preserves_absolute_lexical_shim_and_validates_target`.
+- `test_package_upgrade_preserves_client_config_and_uses_new_engine`.
+
+### [ ] PB-04: Private signed beta artifact pipeline
+Owner: I1+PQ · Estimate: 3d · Depends: PB-03, E7-04
+Files: Cargo.toml, .github/workflows/package-beta.yml, scripts/release/beta/, schemas/release-manifest/beta-v1.json
+Description: Build the final E1-E7 plus PB-02/PB-03 engine for `aarch64-apple-darwin`, `x86_64-apple-darwin`, and `x86_64-unknown-linux-gnu`. Pull forward only the required E12/E14 subsets: hardened dist build with private split symbols, exact artifact allowlist and secret scan, immutable artifacts, signed versioned manifest, SBOM, and private-workflow provenance. Private symbols, source, signing material, prompts, fixtures, and corpora never enter the public payload.
+Acceptance criteria:
+- Exactly three immutable artifacts are emitted; the signed manifest binds version, target, SHA-256, size, immutable identity, and provenance identity.
+- Public verification material accepts authentic artifacts and rejects mutation, wrong target/version/provenance, extra files, and an untrusted signer.
+- Release blocks on E1-E7/PB tests, E7 gates, payload allowlist, secret scan, signing, manifest validation, SBOM, or provenance failure.
+- Native macOS artifacts receive required OS signing; Linux retains independently verifiable signatures without claiming automatic OS enforcement.
+Test cases:
+- `test_beta_matrix_exact_three_targets`.
+- `test_beta_manifest_signature_digest_and_provenance_reject_tamper`.
+- `test_beta_artifact_allowlist_rejects_each_private_class`.
+- `test_beta_symbols_private_and_native_signing_policy`.
+
+### [ ] PB-05: Single package assembly and stateless launcher
+Owner: D1+I1 · Estimate: 2d · Depends: PB-03, PB-04
+Files: separate public distribution repository bin/compresso, package.json, package payload allowlist, launcher and npm pack tests
+Description: Assemble one `@compresso/cli` beta package with a readable POSIX launcher and the three verified native engines. The launcher self-locates through npm/pnpm layouts, selects one exact target, checks bundled SHA-256 for corruption/tampering, exports its normalized absolute lexical shim as `COMPRESSO_LAUNCHER_PATH` without resolving away the final package-manager symlink, and directly execs the engine. It creates no files, temporary directories, cleanup traps, or session state. The package has no lifecycle script, runtime dependency, or runtime Node.js requirement.
+Acceptance criteria:
+- Launcher behavior is identical from arbitrary cwd, project install, npm global symlink, and pnpm symlink layouts; unsupported OS/architecture executes nothing and reports exact supported targets.
+- A filesystem trace proves the launcher performs no write/mkdir/delete operation and direct exec preserves cwd, argv, streams, signals, and exit status so cwd-derived repository binding remains intact.
+- `npm pack --dry-run` contains exactly the launcher, three artifacts, signed manifest/evidence, public trust material, SBOM/provenance references, notices, and docs; private or unlisted material is absent.
+- Package metadata has no install/preinstall/postinstall/prepare equivalent or runtime dependency; installed execution works without Node/npm/pnpm on PATH.
+Test cases:
+- `test_launcher_self_location_exact_target_and_unsupported_refusal`.
+- `test_launcher_is_stateless_and_exec_transparent`.
+- `test_launcher_sha256_detects_corruption_without_claiming_signature_enforcement`.
+- `test_npm_pack_allowlist_no_lifecycle_and_node_free_runtime`.
+
+### [ ] PB-06: Public import and independent npm publication trust
+Owner: I1+PQ · Estimate: 2d · Depends: PB-04, PB-05
+Files: separate public distribution repository import and publish workflows, verification scripts, trust tests, docs/runbooks/public-beta-import.md
+Description: Import the immutable private release into a separate packaging-only public repository only after independent signature, digest, platform/version, and provenance verification. Prepare a protected publication pipeline with staged approval, native OS signing evidence, npm trusted publishing through OIDC, and npm provenance; use no long-lived npm token. Preserve signatures for external/manual verification while stating clearly that full npm/package compromise can replace launcher, engine, and bundled checks, especially on Linux. PB-08 alone authorizes the registry write.
+Acceptance criteria:
+- Mutable, unsigned, wrong-signer, digest/platform/version/provenance-mismatched, or extra-file imports cannot reach assembly or publication.
+- Protected review is recorded for import, launcher, trust-root, and workflow changes; trust-root changes cannot hide inside artifact import.
+- Public checkout records immutable source reference, manifest/artifact digests, signer identity, provenance, reviewer, SBOM, and exact package composition without private material.
+- The publication workflow uses OIDC/provenance and staged approval with no long-lived token; native OS signing is verified where available, and pipeline validation performs no registry mutation.
+- Verification docs distinguish independent import/manual/OS signatures from launcher SHA-256 and acknowledge that neither prevents a fully compromised package channel from replacing its own checks.
+Test cases:
+- `test_public_import_accepts_only_pinned_signed_release`.
+- `test_public_repo_private_material_scan_and_protected_review`.
+- `test_publish_uses_oidc_provenance_staged_approval_and_native_signing`.
+- `test_trust_claims_cover_full_registry_package_compromise`.
+
+### [ ] PB-07: Truthful beta, provider, platform, and IP disclosure
+Owner: PQ+D1 · Estimate: 1d · Depends: PB-02, PB-03, PB-05, PB-06
+Files: separate public distribution repository README.md, package metadata, docs/beta/, CLI/help snapshot fixtures
+Description: Align package, README, CLI/help, doctor, setup, verification, and uninstall disclosures. Name the proprietary recoverable engine, exact targets, immutable repository session-root behavior, stable launcher upgrade path, persistent data, secret exclusions, provider data path, channel trust and limitations, and beta exclusions. Do not turn accounting labels into live-provider claims.
+Acceptance criteria:
+- All surfaces state that Compresso makes no independent provider request but MCP results may be sent by the configured coding client to its provider under client policy.
+- Docs explain explicit-root/approved-cwd binding, no sole-repository fallback or tool root switching, stateless launcher behavior, and repository list/remove/setup recovery paths.
+- Trust disclosure states native OS signing, npm OIDC/provenance, staged approval, independent verification, launcher SHA-256 limitations, and full package-channel compromise risk.
+- No surface claims stable, Windows, source-open engine, secrecy, unpatchability, losslessness, cloud, licensing, desktop, telemetry, or resolved trademark clearance.
+Test cases:
+- `test_beta_disclosure_snapshots_agree_across_surfaces`.
+- `test_provider_and_session_root_disclosure_is_truthful`.
+- `test_disclosure_names_proprietary_recoverable_engine_and_channel_limits`.
+- `test_forbidden_beta_claim_scan_is_empty`.
+
+### [ ] PB-08: Public beta publication and clean-host acceptance
+Owner: I1+PQ+D1 · Estimate: 2.5d · Depends: PB-06, PB-07
+Files: separate public distribution repository publish workflow, docs/runbooks/public-beta-release.md, beta evidence records
+Description: Publish only `@compresso/cli@beta` after every PB gate passes. Test the packed and published bytes on clean macOS arm64, macOS x86_64, and Linux x86_64 hosts. Exercise repository-bound setup, upgrade stability, Node-free/offline runtime, stateless launcher behavior, secret exclusion, independent verification, recovery, and uninstall. Record immutable evidence and yank/revocation procedure; never change latest/stable or publish Windows.
+Acceptance criteria:
+- Clean hosts run `compresso doctor`, `compresso setup codex ROOT --dry-run`, and `compresso setup codex ROOT`; Codex launched from ROOT completes MCP initialize/tool-list and repository tools bound to ROOT, while another approved root is rejected.
+- Package upgrade preserves client configuration while invoking the upgraded engine; repo list/remove and reversible integration uninstall behave as documented.
+- Network-denied runtime works without Node/npm; install executes no lifecycle/download; launcher creates no mutable state; secret fixtures never reach store or MCP.
+- Release evidence links import review, signatures, OS signing, SBOM, private and npm provenance, clean-host results, package digest, and yank/revocation drill.
+- Only the npm beta tag changes; D36 remains OPEN and Windows, stable, licensing, cloud, desktop, updater, Homebrew, and general E8-E16 stay excluded.
+Test cases:
+- `test_published_beta_clean_host_setup_mcp_and_root_isolation`.
+- `test_published_beta_upgrade_preserves_config_and_node_free_runtime`.
+- `test_published_beta_stateless_launcher_secret_exclusion_and_recovery`.
+- `test_beta_tag_only_d36_open_and_no_windows_artifact`.
+
+### PB beta acceptance gates
+
+| Gate | Requirement | Owner |
+|---|---|---|
+| PB-G1 | MCP binds one immutable canonical approved repository from explicit root or approved cwd only; tools cannot switch roots; provider disclosure and secret exclusions are truthful and tested | PB-02, PB-08 |
+| PB-G2 | Repository list/remove, one-command setup, dry-run/backup/receipt/uninstall, client-appropriate cwd/explicit root binding, and lexical shim-path upgrades work without deleting repository files | PB-03, PB-08 |
+| PB-G3 | Every private artifact verifies against immutable manifest, signature, digest, target, version, and provenance; public payloads exclude private material | PB-04, PB-06 |
+| PB-G4 | The single allowlisted package has no lifecycle/runtime dependency; its launcher self-locates, selects exactly, creates no mutable state, preserves cwd for immutable repository-session binding, directly execs, and detects corruption | PB-05, PB-08 |
+| PB-G5 | Public import, native OS signing, npm OIDC/provenance, and staged approval are auditable; disclosure acknowledges full package-channel compromise and the limits of launcher SHA-256 | PB-06, PB-07, PB-08 |
+| PB-G6 | Package, README, CLI/help, setup, and verification surfaces agree on proprietary recoverability, platforms, provider path, session-root rules, trust limits, and exclusions | PB-07 |
+| PB-G7 | Clean supported hosts complete doctor, setup dry-run/install, repository-bound offline MCP, upgrade, recovery, and uninstall with Node absent at runtime | PB-08 |
+| PB-G8 | Only the npm `beta` tag is changed; D36 remains OPEN; stable/latest, Windows, licensing, cloud, desktop, updater, Homebrew, and general E8-E16 remain out of scope | PB-01, PB-08 |
 
 ---
 
@@ -2165,31 +2317,31 @@ Test cases:
 
 ## Cross-epic correctness tickets
 
-### [ ] E2-12: Provider conversation graph and validator
+### [x] E2-12: Provider conversation graph and validator
 Owner: R1 · Estimate: 2d · Depends: E2-01, E2-08
 Files: rust/compresso-core/src/{graph,provider_conversation}.rs, schemas/context-graph/v1.json, fixtures/conversations/provider-tool-loop/
 Description: Implement protected reasoning nodes, typed provider turn/tool identifiers, atomic assistant/tool groups, and profile-extensible pre/post-compression validation from D53.
 Acceptance/tests: Anthropic/OpenAI single and parallel tool loops remain serializable; orphan request/result, removed owner turn, changed reasoning, unknown opaque state, and cross-provider state replay all force byte-identical fallback.
 
-### [ ] E2-13: Generic-text segmentation and minimum-output invariant
+### [x] E2-13: Generic-text segmentation and minimum-output invariant
 Owner: R1 · Estimate: 2d · Depends: E2-08
 Files: rust/compresso-core/src/segment.rs, rust/compresso-mcp/src/tools/compress.rs, fixtures/conversations/single-oversize-text/
 Description: Segment plain text into deterministic structural units before packing and enforce non-empty output for non-empty input.
 Acceptance/tests: paragraphs/fences/JSON/log groups retain boundaries; final anchor survives; impossible budgets return original bytes with fallback; no successful result contains zero nodes or empty text.
 
-### [ ] E2-14: Dedup referential integrity and atomic packing
+### [x] E2-14: Dedup referential integrity and atomic packing
 Owner: R1 · Estimate: 1.5d · Depends: E2-04, E2-07, E2-08
 Files: rust/compresso-core/src/strategies/{dedup_exact,pack_budget}.rs, rust/compresso-core/src/safety.rs
 Description: Add `duplicate_of` edges and treat referent/stubs as one retention group.
 Acceptance/tests: a retained stub always resolves to one byte-preserved referent; pack cannot orphan, cycle, or multiply-reference a stub; malformed external references force fallback.
 
-### [ ] E2-15: Differential token accounting and large-payload latency
+### [x] E2-15: Differential token accounting and large-payload latency
 Owner: R1+PQ · Estimate: 2.5d · Depends: E2-11, E5-06
 Files: rust/compresso-core/src/{graph,engine,tokens}.rs, rust/compresso-eval/benches/, fixtures/logs/mib-rebuild-stream/
 Description: Recount changed nodes only, enforce count equality, initialize tokenizers at startup, and benchmark 1 MiB/4 MiB/configured-max payloads.
 Acceptance/tests: no strategy invokes full-graph counting; changed and aggregate counts match independent recounts; cold startup stays below 500 ms or fails its distinct gate; warm P95 satisfies the 200 ms product gate.
 
-### [ ] E7-07: Canonical quality and benchmark assets
+### [x] E7-07: Canonical quality and benchmark assets
 Owner: PQ · Estimate: 3d · Depends: E1-05
 Files: fixtures/, docs/plan/06-fixtures.md
 Description: Commit fifteen quality fixtures plus two benchmark assets; canonical seeds are repeated-npm-install and mini-monorepo.
@@ -2514,6 +2666,8 @@ Test cases:
 
 Slice: E1-01, E1-02, E1-03, E1-04, E1-05, E1-06, E2-01, E2-02, E2-02a, E3-01, E2-03, E3-02, E3-03, E2-04, E2-05, E2-06, E2-07, E2-08, E2-12, E2-13, E2-14, E3-04, E3-05, E3-06, E3-07, E3-08, E2-09, E7-01, E7-07, E2-10, E2-11, E3-09, E7-02, E3-10, E3-11, E3-12, E4-01, E4-02, E4-03, E4-04, E4-05, E5-01, E5-02, E5-03, E5-04, E5-05, E5-06, E2-15, E7-03, E7-04, E7-05, E7-06, E5-07, E6-01, E6-02, E6-03, E6-04, E6-05.
 
+Authorized public beta lane: PB-01, PB-02, PB-03, PB-04, PB-05, PB-06, PB-07, PB-08. PB-04 also waits for E7-04 evidence. This lane consumes only the ADR-0025 beta subsets of E12/E14 and does not open the post-slice waves.
+
 Post-slice, wave 1 — local platform: E8-01, E8-02, E8-03, E8-08, E8-04, E8-05, E8-06, E8-07, E14-01, E14-02, E14-03, E14-04.
 Wave 2 — desktop: E9-01, E14-05, E9-02, E9-03, E9-04, E9-05, E9-06, E9-07, E9-08.
 Wave 3 — cloud + local entitlements: E10-01, E10-02, E10-09, E10-03, E10-04, E10-05, E10-06, E10-07, E10-15, E10-08, E10-10, E10-11, E10-12, E10-13, E10-14.
@@ -2526,6 +2680,7 @@ Wave 9 — deferred sandbox actions: E14-19, E14-20, E15-04, E15-31, E15-32.
 
 Parallelism notes:
 - Slice: E2 (R1) and E3 (R2) run concurrently after E1; E7-01/E7-02 (PQ/R1) overlap E2's tail; E4 (D1) starts once E2-09 and E3-12 land; E5 (R2) follows E3; E6 (D1) follows E5-01 and overlaps E5-02..07; E1-06 and E4-05 (I1) slot in any time after E1-02/E4-04. E2-02a is a maintainer task (needs an Anthropic API key) and can land any time after E2-02 without blocking anything — until it lands, the interim 1.15 factor applies.
+- Public beta: PB-02 closes repository isolation, provider disclosure, and secret-exclusion blockers before PB-03 installs repository-bound client configurations. PB-04 signs the resulting engine; PB-05 assembles the stateless launcher/package; PB-06 verifies public import and prepares the protected publication pipeline; PB-07 aligns disclosure; PB-08 alone performs the registry write and clean-host publication and cannot change stable/latest.
 - Post-slice: wave 1 (R2) and wave 3 (F1 owns cloud; R1/R2 own the E10-06..08 local entitlement tickets) run concurrently; wave 2 (D1) follows E8-04. Wave 5 (R1/R2/PQ) is independent of E8–E12 through its first three phases and should start alongside wave 1 to smooth R1/R2 utilization. E11 (R1) needs only E2/E3 and can overlap wave 3. E14-01..04 land early in wave 1 so release hardening inputs (dist profile, IPC suite) are ready when E12-01 starts; E14-05 rides with E9-01.
 - Hard cross-epic edges: existing edges remain; E15 high-impact work needs E14-17; browser/terminal need E14-18 and E15-30.
 - Solo mode: all roles collapse to the owner; the flat lists above remain the execution order.
@@ -2542,6 +2697,7 @@ Parallelism notes:
 | E6 Integrations | 5 | 9.5 | ~2 wk | installed-binary path resolution (D42) |
 | E7 Eval & fixtures | 7 | 13.5 | ~2.5 wk (overlaps E2/E3) | +recall gate tickets (D40) |
 | **Slice total** | **58** | **96 gross** | **~19.2 solo engineer-wk; 2 engineers ≈ 9–10 calendar wk** | Derived directly from ticket bodies |
+| PB Public package beta | 8 | 16.5 | ~3.5 wk | bounded E12/E14 subsets; no stable release |
 | E8 Supervisor & local API | 8 | 20 | ~4 wk | |
 | E9 Desktop (Tauri) | 8 | 25 | ~5 wk | |
 | E10 Cloud + local entitlements | 15 | 43 | ~8.5 wk (F1, with R1/R2 local tickets in parallel) | |
@@ -2551,5 +2707,5 @@ Parallelism notes:
 | E14 IP & secure deployment | 17 | 39 | ~8 wk | +E15 threat/sandbox gates |
 | E15 WOZ-inspired capabilities | 34 | 121.5 | ~24.5 engineer-wk | A-F incremental; G deferred |
 | E16 Full-product completion | 16 | 59 | ~12 engineer-wk, dependency-phased | |
-| **Post-slice total** | **146** | **445.5 gross** | heavily parallel across roles | Derived directly from ticket bodies |
-| **Grand total** | **204** | **541.5 gross** | **~108.3 engineer-wk** | |
+| **Post-slice + PB total** | **154** | **462 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
+| **Grand total** | **212** | **558 gross** | **~111.6 engineer-wk** | |

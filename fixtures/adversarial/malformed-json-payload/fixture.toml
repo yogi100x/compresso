@@ -1,0 +1,22 @@
+name = "malformed-json-payload"
+category = "adversarial"
+description = "A tool response containing JSON truncated mid-string; compact_json must leave it byte-exact."
+eligible = false
+mode = "safe"
+
+[budget]
+max_tokens = 500
+max_latency_ms = 200
+
+[[input.files]]
+path = "input.txt"
+kind = "tool_response"
+node_id = "malformed-json"
+protected = false
+priority = 0.6
+source_tool = "http"
+
+[expectations]
+min_reduction_pct = 0.0
+expect_fallback = false
+must_preserve = ["truncated tail: KEEP_ME"]

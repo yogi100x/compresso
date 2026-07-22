@@ -1,0 +1,27 @@
+name = "openai-unknown-fields"
+category = "provider-payloads"
+description = "A Chat Completions request with plausible future and vendor-extension fields that require passthrough."
+eligible = false
+mode = "passthrough"
+
+[budget]
+max_tokens = 1000
+max_latency_ms = 200
+
+[[input.files]]
+path = "input.json"
+kind = "tool_request"
+node_id = "openai-request"
+protected = true
+priority = 1.0
+source_tool = "openai"
+
+[expectations]
+min_reduction_pct = 0.0
+expect_fallback = false
+protected_node_ids = ["openai-request"]
+must_preserve = [
+  "\"reasoning_effort\": \"low\"",
+  "\"x_vendor_session\": \"session-opaque-42\"",
+  "\"x_compresso_future\"",
+]

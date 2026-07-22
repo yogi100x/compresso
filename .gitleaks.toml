@@ -1,0 +1,17 @@
+title = "Compresso secret scanning"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "compresso-secret-canary"
+description = "Compresso CI secret-scanner canary"
+regex = '''\bCOMPRESSO_SECRET_CANARY_[A-Z0-9]{16}\b'''
+keywords = ["COMPRESSO_SECRET_CANARY_"]
+
+[[allowlists]]
+description = "Deterministic fixture-* keys in the generated JSON benchmark are not credentials"
+condition = "AND"
+targetRules = ["generic-api-key"]
+regexes = ['''^fixture-\d{4}$''']
+paths = ['''^fixtures/benchmarks/json-2000-elements/input\.json$''']

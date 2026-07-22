@@ -1,0 +1,32 @@
+name = "compiler-output-rust"
+category = "debugging"
+description = "One actionable Rust type error followed by thirty repetitive generated-code warnings."
+eligible = true
+mode = "safe"
+
+[budget]
+max_tokens = 1000
+max_latency_ms = 200
+
+[[input.files]]
+path = "input.txt"
+kind = "compiler_output"
+node_id = "rustc-output"
+protected = false
+priority = 0.8
+source_tool = "shell"
+
+[expectations]
+min_reduction_pct = 40.0
+expect_fallback = false
+must_preserve = [
+  "error[E0308]: mismatched types",
+  "74 |     let timeout: Duration = config.timeout_ms;",
+  "expected `Duration`, found `u64`",
+  "Duration::from_millis(config.timeout_ms)",
+]
+
+[[recall_probes]]
+question = "Which conversion fixes the type mismatch?"
+answer_substring = "Duration::from_millis(config.timeout_ms)"
+protected = true

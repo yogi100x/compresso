@@ -1,0 +1,320 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  workflow-lint:
+    name: Workflow lint
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Lint CI workflow
+        uses: docker://rhysd/actionlint:1.7.12
+        with:
+          args: .github/workflows/ci.yml
+      - name: Assert required runner matrix
+        run: ruby scripts/ci/check_ci_matrix.rb
+      - name: Test deterministic release packaging
+        run: scripts/package-tarball.sh --self-test
+
+  security:
+    name: Security gates
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+      - name: Test crate capability boundaries
+        run: node --experimental-strip-types --test scripts/check-crate-capabilities.test.ts
+      - name: Enforce crate capability boundaries
+        run: node --experimental-strip-types scripts/check-crate-capabilities.ts
+      - name: Install Rust security tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit@0.22.2,cargo-deny@0.19.4
+      - name: Audit Rust advisories
+        run: cargo audit
+      - name: Check Rust licenses and bans
+        run: cargo deny check licenses bans
+      - name: Verify secret-scanner canary
+        shell: bash
+        run: |
+          canary_dir="$(mktemp -d)"
+          printf '%s%s\n' 'COMPRESSO_SECRET_CANARY_' '0123456789ABCDEF' > "${canary_dir}/canary.txt"
+          set +e
+          docker run --rm \
+            --workdir /scan \
+            --volume "${canary_dir}:/scan:ro" \
+            --volume "${PWD}/.gitleaks.toml:/gitleaks.toml:ro" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            dir . --config /gitleaks.toml --no-banner
+          scan_status=$?
+          set -e
+          unlink "${canary_dir}/canary.txt"
+          rmdir "${canary_dir}"
+          case "${scan_status}" in
+            0)
+              echo "gitleaks failed to detect the secret canary" >&2
+              exit 1
+              ;;
+            1)
+              echo "gitleaks detected the secret canary"
+              ;;
+            *)
+              echo "gitleaks canary scan failed with status ${scan_status}" >&2
+              exit "${scan_status}"
+              ;;
+          esac
+      - name: Verify benchmark allowlist scope
+        shell: bash
+        run: |
+          probe_dir="$(mktemp -d)"
+          probe_leaf="${probe_dir}/fixtures/benchmarks/json-2000-elements"
+          probe_file="${probe_leaf}/input.json"
+          mkdir -p "${probe_leaf}"
+          printf '{"key": "%s%s"}\n' 'fixture-' '0123' > "${probe_file}"
+          docker run --rm \
+            --workdir /scan \
+            --volume "${probe_dir}:/scan:ro" \
+            --volume "${PWD}/.gitleaks.toml:/gitleaks.toml:ro" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            dir . --config /gitleaks.toml --no-banner
+          printf '{"key": "%s%s"}\n' 'Compresso7xK9Q2mV5p' 'R8sT4zY6' > "${probe_file}"
+          set +e
+          docker run --rm \
+            --workdir /scan \
+            --volume "${probe_dir}:/scan:ro" \
+            --volume "${PWD}/.gitleaks.toml:/gitleaks.toml:ro" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            dir . --config /gitleaks.toml --no-banner
+          scan_status=$?
+          set -e
+          unlink "${probe_file}"
+          rmdir "${probe_leaf}"
+          rmdir "${probe_dir}/fixtures/benchmarks"
+          rmdir "${probe_dir}/fixtures"
+          rmdir "${probe_dir}"
+          case "${scan_status}" in
+            0)
+              echo "gitleaks benchmark allowlist suppressed a non-fixture key" >&2
+              exit 1
+              ;;
+            1)
+              echo "gitleaks benchmark allowlist is value- and path-scoped"
+              ;;
+            *)
+              echo "gitleaks allowlist probe failed with status ${scan_status}" >&2
+              exit "${scan_status}"
+              ;;
+          esac
+      - name: Scan repository for secrets
+        shell: bash
+        run: |
+          docker run --rm \
+            --workdir /repo \
+            --volume "${PWD}:/repo:ro" \
+            --volume "${PWD}/.gitleaks.toml:/gitleaks.toml:ro" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            dir . --config /gitleaks.toml --no-banner
+
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-14
+          - macos-15-intel
+          - ubuntu-24.04
+          - windows-2022
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-${{ matrix.os }}
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Run tests
+        run: cargo test --workspace --no-fail-fast
+      - name: Build release CLI
+        run: cargo build --release -p compresso-cli
+      - name: Upload release binary
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: compresso-${{ matrix.os }}
+          path: |
+            target/release/compresso
+            target/release/compresso.exe
+          if-no-files-found: error
+
+  eval:
+    name: Eval (${{ matrix.os }})
+    needs: rust
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            enforce_latency: false
+          - os: macos-14
+            enforce_latency: true
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Reuse Rust build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-${{ matrix.os }}
+      - name: Run release evaluation gates
+        shell: bash
+        env:
+          ENFORCE_LATENCY: ${{ matrix.enforce_latency }}
+          REPORT_PATH: eval-report-${{ matrix.os }}.json
+        run: |
+          set +e
+          cargo run -p compresso-eval --release -- run fixtures/ --gates docs/plan/gates.toml --json > "${REPORT_PATH}"
+          eval_status=$?
+          set -e
+
+          if ! jq -e '.gates.gates | type == "array"' "${REPORT_PATH}" >/dev/null; then
+            echo "evaluation did not produce a valid gate report" >&2
+            exit 1
+          fi
+
+          if [[ "${ENFORCE_LATENCY}" == "true" ]]; then
+            exit "${eval_status}"
+          fi
+
+          failed_fixtures="$(jq -r '.gates.failed_fixtures | join(", ")' "${REPORT_PATH}")"
+          if [[ -n "${failed_fixtures}" ]]; then
+            echo "release fixtures failed: ${failed_fixtures}" >&2
+            exit 1
+          fi
+
+          failed_non_latency="$(jq -r '[.gates.gates[] | select(.name != "p95_latency_ms" and .passed == false) | .name] | join(", ")' "${REPORT_PATH}")"
+          if [[ -n "${failed_non_latency}" ]]; then
+            echo "non-latency release gates failed: ${failed_non_latency}" >&2
+            exit 1
+          fi
+
+          failed_gates="$(jq -r '[.gates.gates[] | select(.passed == false) | .name] | join(", ")' "${REPORT_PATH}")"
+          if [[ "${eval_status}" -ne 0 && "${failed_gates}" != "p95_latency_ms" ]]; then
+            echo "evaluation failed without a latency-only regression" >&2
+            exit "${eval_status}"
+          fi
+          if [[ "${failed_gates}" == "p95_latency_ms" ]]; then
+            echo "P95 latency is reported on Ubuntu and enforced on macos-14"
+          fi
+      - name: Run large-payload latency gates
+        if: ${{ matrix.enforce_latency }}
+        run: cargo bench -p compresso-eval --bench large_payload_latency -- --noplot
+      - name: Upload evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compresso-eval-${{ matrix.os }}
+          path: eval-report-${{ matrix.os }}.json
+          if-no-files-found: error
+
+  package:
+    name: Package (${{ matrix.target }})
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: rust
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            binary: compresso
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            binary: compresso
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            binary: compresso
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            binary: compresso.exe
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Download release binary
+        uses: actions/download-artifact@v4
+        with:
+          name: compresso-${{ matrix.os }}
+          path: package-input
+      - name: Build deterministic tarball
+        shell: bash
+        env:
+          BINARY_NAME: ${{ matrix.binary }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          version="$(sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n 1)"
+          test -n "${version}"
+          scripts/package-tarball.sh \
+            "package-input/${BINARY_NAME}" \
+            "${version}" \
+            "${TARGET}" \
+            dist
+      - name: Upload release tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: compresso-package-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  checksums:
+    name: Aggregate release checksums
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: package
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Download release tarballs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: compresso-package-*
+          path: dist
+          merge-multiple: true
+      - name: Generate and verify SHA256SUMS
+        shell: bash
+        run: |
+          archive_count=0
+          for archive in dist/*.tar.gz; do
+            test -f "${archive}" || continue
+            archive_count=$((archive_count + 1))
+          done
+          test "${archive_count}" -eq 4
+          scripts/package-tarball.sh --checksums dist/SHA256SUMS dist/*.tar.gz
+          (cd dist && shasum -a 256 -c SHA256SUMS)
+      - name: Upload checksum manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: compresso-checksums
+          path: dist/SHA256SUMS
+          if-no-files-found: error

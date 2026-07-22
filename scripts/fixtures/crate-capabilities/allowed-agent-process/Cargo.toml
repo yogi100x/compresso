@@ -1,0 +1,11 @@
+[package]
+name = "compresso-agent"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+duct = { path = "deps/duct" }
+reqwest = { path = "deps/reqwest" }
+
+[workspace]
+exclude = ["deps/duct", "deps/reqwest"]

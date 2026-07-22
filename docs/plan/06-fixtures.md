@@ -62,12 +62,12 @@ must_preserve = ["..."]              # exact strings that must appear byte-for-b
 must_not_contain = ["..."]           # strings that must NOT appear anywhere in output node content
 must_not_contain_in_trace = ["..."]  # strings that must NOT appear in the trace/explanation (privacy + injection checks)
 protected_node_ids = ["sys-1"]       # these nodes must exist in the output with byte-identical content
+expect_fallback = false              # true => the engine MUST fall back (fallback_used = true, output == input)
 
 [[recall_probes]]                    # task-success proxy (D40): information an agent would need must survive compression
 question = "What caused the webpack build failure?"          # documentation for reviewers; not evaluated
 answer_substring = "Cannot find module 'left-pad'"           # must appear in compressed output node contents
 protected = true                     # protected probes require 100% recall corpus-wide; unprotected feed the >=99% gate
-expect_fallback = false              # true => the engine MUST fall back (fallback_used = true, output == input)
 
 [expectations.atlas]                 # only for category = code fixtures with input.repo
 min_files = 5                        # files indexed (after ignore rules)
@@ -87,7 +87,7 @@ Field semantics:
 | `eligible` | yes | Whether this fixture is in the population for the safe-mode median-reduction gate (§4). |
 | `mode` | yes | Engine mode the fixture runs in. Gate-eligible fixtures must use `safe`. |
 | `budget.max_tokens` | yes | Passed to the engine; also the bound checked by `pack_budget`. |
-| `budget.max_latency_ms` | yes | Per-fixture latency budget; the P95 latency gate is computed over all fixtures. |
+| `budget.max_latency_ms` | yes | Declared product latency budget. Eval measures the complete run without the engine's internal clock cutoff, then enforces the P95 latency gate over all fixtures. |
 | `input.*` | yes | Exactly one input form: `graph`, `files`+`nodes`, or `repo`. |
 | `expectations.min_reduction_pct` | yes | Floor for this fixture's own pass/fail. Distinct from the corpus-median gate. |
 | `expectations.must_preserve` | no | Byte-exact substring search over concatenated output node contents. |
@@ -166,7 +166,7 @@ Loader behavior:
 - `graph = "graph.json"`: parse, validate against `schemas/context-graph/v1.json`, recompute token counts.
 - `[[input.files]]` / `[[input.nodes]]`: build one `ContextNode` per entry in declaration order; ids default to paths; `ContextGraph::validate()` must pass (unique ids, protection invariants per 02-schemas §1).
 - `repo = "repo/"`: copy the tree to a temp dir, run the Atlas indexer against it, evaluate `[expectations.atlas]` only.
-- Compression fixtures run through `Engine::compress` exactly as production does (fail-open, D38): an engine fallback on a fixture with `expect_fallback = false` is an expectation failure, never a crash.
+- Compression fixtures run through the production `Engine::compress` pipeline with one measurement-only exception: the runner removes the internal wall-clock cutoff so a slow sample is measured rather than censored into a timing-dependent fallback. The report's P95 gate enforces latency; every non-latency fail-open path remains active, and a fallback on a fixture with `expect_fallback = false` is an expectation failure, never a crash.
 - Determinism: every compression fixture is run twice; byte-different outputs fail the corpus-wide determinism check (build-doc §25.1).
 
 CLI: `compresso eval run [--fixtures <dir>] [--json]`, `compresso eval gates [--json]` (exit non-zero on gate failure; wired into CI), `compresso eval diff-gates <baseline.json>`.
@@ -180,7 +180,7 @@ CLI: `compresso eval run [--fixtures <dir>] [--json]`, `compresso eval gates [--
 | 3 | `logs/cargo-build-noise` | logs | true | safe | ≥40% reduction on repeated `Compiling`/`warning:` output; final error preserved |
 | 4 | `conversations/tool-output-dupes` | conversations | true | safe | ≥50% reduction; protected system instruction byte-exact (full content in §7.3) |
 | 5 | `conversations/superseded-decisions` | conversations | true | safe | ≥30% reduction; latest decision preserved, superseded drafts removable |
-| 6 | `conversations/long-session-prune` | conversations | true | safe | ≥25% reduction; current user request and last assistant turn preserved |
+| 6 | `conversations/long-session-prune` | conversations | true | safe | ≥25% reduction; stale request summaries are removable; current user request and last assistant turn preserved |
 | 7 | `code/mini-monorepo` | code | false | — | Atlas indexing: 5 files, ≥10 symbols, import edges resolved (full content in §7.4) |
 | 8 | `code/outline-large-file` | code | true | safe | ≥70% reduction outlining a 900-line source file within a 1500-token budget |
 | 9 | `debugging/test-failure-context` | debugging | true | safe | ≥30% reduction; failing assertion and diff preserved verbatim |
@@ -191,7 +191,31 @@ CLI: `compresso eval run [--fixtures <dir>] [--json]`, `compresso eval gates [--
 | 14 | `provider-payloads/anthropic-counts` | provider-payloads | false | — | Calibration data for the Anthropic factor (full content in §7.6); not an engine run |
 | 15 | `provider-payloads/openai-unknown-fields` | provider-payloads | false | passthrough | Chat Completions payload with unknown fields passes through byte-identical |
 
-Six fixtures are written out in full in §7 and are ready to commit as files. The remaining nine are specified in §8 and authored the same way during Phase 2.
+All fifteen fixtures are committed and pinned by `fixtures/corpus.toml`. Six are
+reproduced in full in §7 for review; the other nine retain their concise content
+contracts in §8. The lock file, rather than the illustrative inline copies, is
+the machine-readable authority for canonical paths and bytes.
+
+### 6.1 Canonical corpus lock
+
+`fixtures/corpus.toml` contains exactly fifteen `[[quality]]` entries and two
+`[[benchmark]]` entries in lexicographic path order. Each quality entry pins its
+directory path, eligibility, regular-file count, aggregate byte size, and a
+SHA-256 tree hash. The tree hash is computed over every regular file below the
+fixture directory, sorted by forward-slash relative path. For each file, the
+hashed byte sequence is `path`, NUL, decimal byte size, NUL, raw file bytes,
+NUL. Renaming, deleting, adding, or changing any file therefore changes the
+pin. Symlinks and other non-regular assets are invalid.
+`fixtures/.gitattributes` fixes text assets to LF so hashes and exact byte sizes
+remain identical on every CI platform.
+
+Each benchmark entry pins the exact file path, byte size, exact `openai_o200k`
+token count, generator command, and SHA-256 file hash. Corpus integrity tests
+require the complete path sets, so an absent member cannot be silently skipped.
+The loader recognizes only the exact top-level `benchmarks/` and
+`integrations/` directories as non-quality data. The latter contains E6-05
+client-configuration parity fixtures and never enters compression gates. Every
+other unknown category remains an error.
 
 ## 7. Inline fixture contents
 
@@ -1098,11 +1122,11 @@ Calibration procedure (offline, run by a maintainer with an Anthropic API key; n
 4. Every count produced with the factor is tagged `token_provider = "anthropic_calibrated"` — it is an estimate and must never feed `provider_observed_cost` (02-schemas §3).
 5. Recalibrate whenever samples are added, the tokenizer crate is upgraded, or Anthropic announces tokenizer changes; the diff to `calibration_factor` must be called out in the PR.
 
-## 8. Remaining corpus fixtures (specified, authored during Phase 2)
+## 8. Canonical corpus fixtures specified in brief
 
 - **`logs/cargo-build-noise`** (eligible): ~200 lines of `cargo build` output — repeated `Compiling <crate> v<version>` lines and one 5-line `warning: unused variable` block repeated 12 times across rebuilds — ending in a single `error[E0599]` block. Expect ≥40% reduction; `must_preserve` the full error block.
 - **`conversations/superseded-decisions`** (eligible): `graph.json` with four `decision` nodes where three are connected to the fourth by `supersedes` edges, plus surrounding assistant turns. Expect ≥30% reduction; `must_preserve` the final decision text; the superseded drafts are removable.
-- **`conversations/long-session-prune`** (eligible): 40-turn transcript graph (~12k tokens) with `max_tokens = 6000`. Exercises `pack_budget` priority ordering. Expect ≥25% reduction; `protected_node_ids` covers the system instruction, the current user request, and the in-flight tool request.
+- **`conversations/long-session-prune`** (eligible): 40-turn transcript graph (~12k tokens) with `max_tokens = 6000`. Historical requests 1–19 are archived as unprotected `summary` nodes while `user-20` remains a protected `user_instruction`; every request/response pair retains its `responds_to` edge so `pack_budget` treats each pair atomically. Exercises `pack_budget` priority ordering. Expect ≥25% reduction; `protected_node_ids` covers the system instruction, the current user request, and the in-flight tool request.
 - **`code/outline-large-file`** (eligible): one 900-line TypeScript `source_file` node with `max_tokens = 1500`. Once source-file outlining lands (build-doc §10.2), expect ≥70% reduction; `must_preserve` the two exported symbol signatures named in the task description. Until the outlining strategy exists, this fixture documents the target and is allowed to fail in a named "pending strategies" list in `compresso-eval` output (it still runs; its failure is non-blocking until the strategy ships, at which point it becomes blocking).
 - **`debugging/test-failure-context`** (eligible): jest output for 3 passing suites (verbose) and 1 failing test. Expect ≥30% reduction; `must_preserve` the failing test name, the `expect(received).toEqual(expected)` diff, and the failing file:line.
 - **`debugging/compiler-output-rust`** (eligible): rustc output with one `error[E0308]: mismatched types` block followed by 30 repetitive downstream `warning:` blocks. Expect ≥40% reduction; `must_preserve` the complete first error block including the code span.
@@ -1114,7 +1138,11 @@ Gate arithmetic check: the eligible population is fixtures 1–6 and 8–10 from
 
 ## 9. Corpus ownership and scale fixtures
 
-E7-07 authors and commits all fifteen named fixtures before E7-02 or E7-03 can pass. E1-05 seed names are aliases only and must be replaced by the canonical paths in §§7–8. CI rejects a manifest whose declared corpus member is absent.
+The canonical lock contains all fifteen named fixtures before E7-02 or E7-03
+can pass. E1-05 seeds at `logs/repeated-npm-install` and
+`code/mini-monorepo` retain those canonical identities; the other seed content
+is pinned at its final path in §§7–8. CI rejects a missing, renamed, added, or
+byte-drifted corpus member.
 
 Add three blocking scale fixtures:
 
@@ -1133,4 +1161,18 @@ Primary endpoint: paired success-rate difference with a two-sided 95% confidence
 
 ## 11. Benchmark-only assets
 
-E7-07 authors `fixtures/benchmarks/json-2000-elements/input.json` and `fixtures/benchmarks/source-200kb/input.ts`; E2-11 consumes them. They are excluded from the fifteen-fixture quality median and pin size, token count, generator, and hash.
+E2-11 consumes exactly these two E7-07 assets:
+
+- `fixtures/benchmarks/json-2000-elements/input.json`: an array of exactly
+  2,000 deterministic objects.
+- `fixtures/benchmarks/source-200kb/input.ts`: deterministic TypeScript source
+  of exactly 204,800 bytes.
+
+Run `node fixtures/benchmarks/generate.mjs` from the repository root to recreate
+both byte-for-byte. Their size, `openai_o200k` token count, generator command,
+and SHA-256 hashes are pinned in `fixtures/corpus.toml`.
+
+`FixtureSet::load(fixtures/)` explicitly excludes the `benchmarks/` directory
+and returns exactly the fifteen quality fixtures. Consequently benchmark
+payloads never enter the eligible-fixture population or its quality median;
+the separate corpus-integrity lint still validates them on every Rust test run.

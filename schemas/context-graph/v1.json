@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://compresso.dev/schemas/context-graph/v1.json",
+  "type": "object",
+  "required": ["schema_version", "nodes", "edges"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
+    "edges": { "type": "array", "items": { "$ref": "#/$defs/edge" } }
+  },
+  "$defs": {
+    "node": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind",
+        "content",
+        "source",
+        "token_count",
+        "priority",
+        "protected"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "kind": {
+          "enum": [
+            "system_instruction",
+            "user_instruction",
+            "assistant_response",
+            "assistant_reasoning",
+            "tool_definition",
+            "tool_request",
+            "tool_response",
+            "source_file",
+            "code_symbol",
+            "search_result",
+            "compiler_output",
+            "test_output",
+            "repo_map",
+            "summary",
+            "decision",
+            "memory_fact"
+          ]
+        },
+        "content": { "type": "string" },
+        "source": { "$ref": "#/$defs/source" },
+        "token_count": { "type": "integer", "minimum": 0 },
+        "token_provider": {
+          "enum": [
+            "openai_o200k",
+            "openai_cl100k",
+            "anthropic_calibrated",
+            "heuristic"
+          ],
+          "default": "openai_o200k"
+        },
+        "priority": { "type": "number", "minimum": 0, "maximum": 1 },
+        "protected": { "type": "boolean" },
+        "recency": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "unix seconds"
+        },
+        "metadata": { "type": "object" },
+        "provider_turn": {
+          "oneOf": [{ "$ref": "#/$defs/provider_turn" }, { "type": "null" }]
+        }
+      }
+    },
+    "provider_turn": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "turn_id", "tool_call_id"],
+      "properties": {
+        "provider": { "type": "string", "minLength": 1, "description": "typed provider profile identifier" },
+        "turn_id": { "type": "string", "minLength": 1, "description": "typed provider turn identifier" },
+        "tool_call_id": { "type": "string", "minLength": 1, "description": "typed provider tool-call identifier" },
+        "opaque_state_hash": { "type": ["string", "null"] }
+      }
+    },
+    "source": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type"],
+          "properties": { "type": { "const": "client" } }
+        },
+        {
+          "type": "object",
+          "required": ["type", "path"],
+          "properties": {
+            "type": { "const": "repository" },
+            "path": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type", "name"],
+          "properties": {
+            "type": { "const": "tool" },
+            "name": { "type": "string" }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["type"],
+          "properties": { "type": { "const": "synthetic" } }
+        }
+      ]
+    },
+    "edge": {
+      "type": "object",
+      "required": ["from", "to", "kind", "weight"],
+      "properties": {
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "kind": {
+          "enum": [
+            "imports",
+            "calls",
+            "defines",
+            "references",
+            "tests",
+            "supersedes",
+            "produced_by_tool",
+            "responds_to",
+            "depends_on",
+            "same_error_group",
+            "duplicate_of"
+          ]
+        },
+        "weight": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    }
+  }
+}

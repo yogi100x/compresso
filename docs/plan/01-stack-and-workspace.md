@@ -12,7 +12,7 @@ Versions are floors, pinned by `Cargo.lock` at first build.
 | anyhow | 1.0 | binaries only | Error context at edges |
 | clap (derive) | 4.5 | cli | CLI parsing |
 | tokio (rt-multi-thread, macros, io-std) | 1.45 | mcp, agent | Async runtime (rmcp requirement) |
-| rmcp (server, transport-io) | 0.3 | mcp | Official MCP SDK, stdio transport |
+| rmcp (server, transport-io; default features off) | =1.4.0 | mcp | Official MCP SDK, stdio transport; minimum patched line for RUSTSEC-2026-0189 |
 | rusqlite (bundled) | 0.32 | store | SQLite + FTS5 |
 | tiktoken-rs | 0.6 | core | o200k_base / cl100k_base exact counts |
 | tree-sitter | 0.25 | atlas | Parsing runtime |
@@ -106,11 +106,13 @@ Crate dependency rule: `core` has no internal dependencies; `store → core type
 
 CI parses every `Cargo.toml` and source dependency tree against this table. New capability requires an ADR, matrix update, threat-model update, and a deliberate failing-then-passing boundary test.
 
+A `bounded-local` crate's exact Cargo integration-test target under `tests/` may use `std::process` to execute test artifacts; network APIs, process-capable dependencies, and process use in library, binary, build, example, or benchmark targets remain denied.
+
 ## 4. CI/CD (`.github/workflows/ci.yml`)
 
 Triggers: push to main, PRs. Jobs:
 
-1. `rust` matrix: `macos-14` (ARM64), `macos-13` (x86_64), `ubuntu-24.04` (x86_64), `ubuntu-24.04-arm` (ARM64), `windows-2022` — `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo build --release -p compresso-cli`.
+1. `rust` matrix: `macos-14` (ARM64), `macos-15-intel` (x86_64), `ubuntu-24.04` (x86_64), `windows-2022` — `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo build --release -p compresso-cli`.
 2. `ts` (activates Phase 6): `pnpm install --frozen-lockfile`, `pnpm turbo lint typecheck test`.
 3. `eval` (ubuntu + macos-14): `cargo run -p compresso-eval -- run fixtures/ --gates docs/plan/gates.toml` — fails CI when release gates regress.
 4. `security`: `cargo audit` (advisories), `cargo deny check licenses bans` (added E1; secret scanning via gitleaks action).

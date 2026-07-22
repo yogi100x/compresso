@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "sys-1",
+      "kind": "system_instruction",
+      "content": "You are a coding assistant working in the acme-dashboard repository. Never delete files without explicit confirmation. Always run the test suite before proposing a commit.",
+      "source": { "type": "client" },
+      "token_count": 33,
+      "priority": 1.0,
+      "protected": true
+    },
+    {
+      "id": "user-1",
+      "kind": "user_instruction",
+      "content": "Bump the webpack dependency to the latest 5.x and make sure the build still passes.",
+      "source": { "type": "client" },
+      "token_count": 19,
+      "priority": 1.0,
+      "protected": true
+    },
+    {
+      "id": "req-1",
+      "kind": "tool_request",
+      "content": "{\"tool\":\"read_file\",\"arguments\":{\"path\":\"package.json\"}}",
+      "source": { "type": "client" },
+      "token_count": 15,
+      "priority": 0.9,
+      "protected": true
+    },
+    {
+      "id": "resp-1",
+      "kind": "tool_response",
+      "content": "{\n  \"name\": \"acme-dashboard\",\n  \"version\": \"2.4.1\",\n  \"private\": true,\n  \"scripts\": {\n    \"build\": \"webpack --mode production\",\n    \"watch\": \"webpack serve --mode development --config webpack.dev.js\",\n    \"test\": \"jest --coverage\"\n  },\n  \"dependencies\": {\n    \"axios\": \"^1.7.2\",\n    \"react\": \"^18.3.1\",\n    \"react-dom\": \"^18.3.1\"\n  },\n  \"devDependencies\": {\n    \"typescript\": \"^5.5.3\",\n    \"webpack\": \"^5.91.0\",\n    \"webpack-cli\": \"^5.1.4\",\n    \"webpack-dev-server\": \"^5.0.4\"\n  }\n}",
+      "source": { "type": "tool", "name": "read_file" },
+      "token_count": 148,
+      "priority": 0.6,
+      "protected": false,
+      "recency": 1784629210
+    },
+    {
+      "id": "asst-1",
+      "kind": "assistant_response",
+      "content": "webpack is currently ^5.91.0. I will update it and re-run the build.",
+      "source": { "type": "client" },
+      "token_count": 20,
+      "priority": 0.5,
+      "protected": false,
+      "recency": 1784629260
+    },
+    {
+      "id": "resp-2",
+      "kind": "tool_response",
+      "content": "{\n  \"name\": \"acme-dashboard\",\n  \"version\": \"2.4.1\",\n  \"private\": true,\n  \"scripts\": {\n    \"build\": \"webpack --mode production\",\n    \"watch\": \"webpack serve --mode development --config webpack.dev.js\",\n    \"test\": \"jest --coverage\"\n  },\n  \"dependencies\": {\n    \"axios\": \"^1.7.2\",\n    \"react\": \"^18.3.1\",\n    \"react-dom\": \"^18.3.1\"\n  },\n  \"devDependencies\": {\n    \"typescript\": \"^5.5.3\",\n    \"webpack\": \"^5.91.0\",\n    \"webpack-cli\": \"^5.1.4\",\n    \"webpack-dev-server\": \"^5.0.4\"\n  }\n}",
+      "source": { "type": "tool", "name": "read_file" },
+      "token_count": 148,
+      "priority": 0.6,
+      "protected": false,
+      "recency": 1784629305
+    },
+    {
+      "id": "resp-3",
+      "kind": "tool_response",
+      "content": "{\n  \"name\": \"acme-dashboard\",\n  \"version\": \"2.4.1\",\n  \"private\": true,\n  \"scripts\": {\n    \"build\": \"webpack --mode production\",\n    \"watch\": \"webpack serve --mode development --config webpack.dev.js\",\n    \"test\": \"jest --coverage\"\n  },\n  \"dependencies\": {\n    \"axios\": \"^1.7.2\",\n    \"react\": \"^18.3.1\",\n    \"react-dom\": \"^18.3.1\"\n  },\n  \"devDependencies\": {\n    \"typescript\": \"^5.5.3\",\n    \"webpack\": \"^5.91.0\",\n    \"webpack-cli\": \"^5.1.4\",\n    \"webpack-dev-server\": \"^5.0.4\"\n  }\n}",
+      "source": { "type": "tool", "name": "read_file" },
+      "token_count": 148,
+      "priority": 0.6,
+      "protected": false,
+      "recency": 1784629390
+    }
+  ],
+  "edges": [
+    { "from": "resp-1", "to": "req-1", "kind": "responds_to", "weight": 1.0 },
+    { "from": "resp-2", "to": "req-1", "kind": "responds_to", "weight": 1.0 },
+    { "from": "resp-3", "to": "req-1", "kind": "responds_to", "weight": 1.0 },
+    { "from": "asst-1", "to": "user-1", "kind": "responds_to", "weight": 0.8 }
+  ]
+}

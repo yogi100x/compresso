@@ -1,0 +1,30 @@
+name = "repeated-npm-install"
+category = "logs"
+description = "Five hundred npm fetch lines that differ only by their leading timestamp."
+eligible = true
+mode = "safe"
+
+[budget]
+max_tokens = 2000
+max_latency_ms = 200
+
+[[input.files]]
+path = "input.txt"
+kind = "tool_response"
+node_id = "log-1"
+protected = false
+priority = 0.4
+source_tool = "shell"
+
+[expectations]
+min_reduction_pct = 80.0
+expect_fallback = false
+must_preserve = [
+  "npm http fetch GET 200 https://registry.npmjs.org/typescript 38ms (cache revalidated)",
+]
+must_not_contain_in_trace = ["registry.npmjs.org"]
+
+[[recall_probes]]
+question = "Which package registry request was repeated?"
+answer_substring = "https://registry.npmjs.org/typescript"
+protected = false

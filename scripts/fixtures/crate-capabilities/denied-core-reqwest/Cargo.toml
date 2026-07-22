@@ -1,0 +1,11 @@
+[package]
+name = "compresso-core"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies.http-client]
+package = "reqwest"
+path = "deps/reqwest"
+
+[workspace]
+exclude = ["deps/reqwest"]

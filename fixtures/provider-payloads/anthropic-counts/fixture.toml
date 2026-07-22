@@ -1,0 +1,22 @@
+name = "anthropic-counts"
+category = "provider-payloads"
+description = "Text samples with exact o200k counts and empty Anthropic count-token calibration fields."
+eligible = false
+mode = "safe"
+
+[budget]
+max_tokens = 4000
+max_latency_ms = 200
+
+# Calibration JSON remains a raw E2-02a asset; the fixture loader materializes
+# it as data instead of misclassifying it as a ContextGraph document.
+[[input.files]]
+path = "anthropic-counts.json"
+kind = "tool_response"
+node_id = "anthropic-calibration-data"
+protected = false
+source_tool = "calibration"
+
+[expectations]
+min_reduction_pct = 0.0
+expect_fallback = false

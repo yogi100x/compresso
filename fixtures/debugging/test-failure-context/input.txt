@@ -1,0 +1,42 @@
+PASS src/config/load-config.test.ts
+  loadConfig
+    ✓ applies defaults (8 ms)
+    ✓ rejects unknown modes (3 ms)
+    ✓ preserves explicit budgets (2 ms)
+
+PASS src/cache/token-cache.test.ts
+  TokenCache
+    ✓ returns a cached token count (4 ms)
+    ✓ expires stale entries (7 ms)
+    ✓ isolates providers (2 ms)
+
+PASS src/graph/context-graph.test.ts
+  ContextGraph
+    ✓ rejects duplicate node ids (5 ms)
+    ✓ preserves protected nodes (3 ms)
+    ✓ totals node token counts (1 ms)
+
+FAIL src/api/retry-policy.test.ts
+  retryPolicy
+    ✓ retries transient failures (5 ms)
+    ✕ stops after the configured retry count (11 ms)
+
+  ● retryPolicy > stops after the configured retry count
+
+    expect(received).toEqual(expected)
+
+    Expected: 3
+    Received: 4
+
+      40 |   const attempts = await runWithRetries(alwaysFails, { retries: 3 });
+      41 |
+    > 42 |   expect(attempts).toEqual(3);
+         |                    ^
+      43 | });
+
+      at src/api/retry-policy.test.ts:42:24
+
+Test Suites: 1 failed, 3 passed, 4 total
+Tests:       1 failed, 9 passed, 10 total
+Snapshots:   0 total
+Time:        1.842 s

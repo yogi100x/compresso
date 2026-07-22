@@ -1,0 +1,19 @@
+[package]
+name = "compresso-eval"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+reqwest = { path = "deps/reqwest", optional = true }
+
+[features]
+calibration = ["dep:reqwest"]
+default = ["calibration"]
+
+[[bin]]
+name = "compresso-eval-calibrate"
+path = "src/calibrate.rs"
+required-features = ["calibration"]
+
+[workspace]
+exclude = ["deps/reqwest"]
