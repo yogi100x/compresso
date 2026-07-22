@@ -636,7 +636,7 @@ Test cases:
 - test_uninstall_skips_user_modified_entry: mutate the compresso entry after install, uninstall → entry retained, RestoreReport warns `key_modified`.
 - test_project_scope_writes_mcp_json: `Scope::Project(dir)` → `.mcp.json` created in dir with the compresso entry, user config untouched.
 
-### [ ] E6-03: Codex integration adapter
+### [x] E6-03: Codex integration adapter
 Owner: D1 · Estimate: 2d · Depends: E6-01
 Files: rust/compresso-integrations/src/codex.rs
 Description: Implement Codex CLI/Desktop without Claude assumptions.

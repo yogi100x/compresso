@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use toml_edit::{DocumentMut, Item};
+use toml_edit::{Decor, DocumentMut, Item};
 
 use crate::receipt::{
     CREATED_FILE_BACKUP_SENTINEL, InstallReceipt, RECEIPT_SCHEMA_VERSION, ReceiptError,
@@ -111,6 +111,52 @@ pub struct OwnedKeyMutation {
 
 fn hash_owned_value(value: &[u8]) -> String {
     blake3::hash(value).to_hex().to_string()
+}
+
+/// Hashes a TOML-owned item including formatting attached to a standard table
+/// header. `toml_edit::Table`'s `Display` implementation intentionally renders
+/// only the table body, so hashing `Item::to_string()` alone would ignore a
+/// user-added comment on `[mcp_servers.compresso]`.
+pub(crate) fn hash_toml_owned_item(item: &Item) -> String {
+    let mut hasher = blake3::Hasher::new();
+    match item {
+        Item::Table(table) => {
+            hasher.update(b"table\0");
+            hash_toml_decor(&mut hasher, table.decor());
+        }
+        Item::Value(_) => {
+            hasher.update(b"value\0");
+        }
+        Item::ArrayOfTables(_) => {
+            hasher.update(b"array_of_tables\0");
+        }
+        Item::None => {
+            hasher.update(b"none\0");
+        }
+    }
+    hasher.update(item.to_string().as_bytes());
+    hasher.finalize().to_hex().to_string()
+}
+
+fn hash_toml_decor(hasher: &mut blake3::Hasher, decor: &Decor) {
+    for raw in [decor.prefix(), decor.suffix()] {
+        match raw {
+            Some(raw) => {
+                hasher.update(b"some\0");
+                // DocumentMut de-spans raw strings while parsing. A manually
+                // constructed spanned value cannot occur at this boundary;
+                // retain a distinct marker rather than silently equating it.
+                match raw.as_str() {
+                    Some(value) => hasher.update(value.as_bytes()),
+                    None => hasher.update(b"spanned\0"),
+                };
+            }
+            None => {
+                hasher.update(b"default\0");
+            }
+        }
+        hasher.update(b"\0");
+    }
 }
 
 /// Trusted adapter request used to issue a plan.
@@ -1466,10 +1512,8 @@ fn derive_toml_owned_mutations(
     let mut changes = Vec::with_capacity(owned_paths.len());
     for path in owned_paths {
         let segments = path.split('.').collect::<Vec<_>>();
-        let before = toml_item_at(base_document.as_item(), &segments)
-            .map(|item| hash_owned_value(item.to_string().as_bytes()));
-        let after = toml_item_at(target_document.as_item(), &segments)
-            .map(|item| hash_owned_value(item.to_string().as_bytes()));
+        let before = toml_item_at(base_document.as_item(), &segments).map(hash_toml_owned_item);
+        let after = toml_item_at(target_document.as_item(), &segments).map(hash_toml_owned_item);
         changes.push(OwnedKeyMutation {
             key_path: path.clone(),
             before_value_hash: before,
@@ -2000,6 +2044,22 @@ mod tests {
             })
             .expect_err("unowned TOML rewrite rejected");
         assert!(matches!(error, IntegrationError::InvalidRequest { .. }));
+    }
+
+    #[test]
+    fn test_toml_owned_hash_includes_standard_table_header_decor() {
+        let plain = "[mcp_servers.compresso]\ncommand = \"/bin/compresso\"\n";
+        let commented = "[mcp_servers.compresso] # user note\ncommand = \"/bin/compresso\"\n";
+        let plain = plain.parse::<DocumentMut>().expect("plain TOML");
+        let commented = commented.parse::<DocumentMut>().expect("commented TOML");
+        let path = ["mcp_servers", "compresso"];
+
+        assert_ne!(
+            hash_toml_owned_item(toml_item_at(plain.as_item(), &path).expect("plain owned table")),
+            hash_toml_owned_item(
+                toml_item_at(commented.as_item(), &path).expect("commented owned table")
+            )
+        );
     }
 
     #[test]

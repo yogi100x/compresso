@@ -519,7 +519,7 @@ args = ["mcp", "serve"]
 - **Backup**: `~/.codex/config.toml.compresso-backup-<ISO timestamp>`.
 - **Plan preview**: unified diff of `~/.codex/config.toml` showing the added table (and nothing else changing).
 - **Verification**: (1) `~/.codex/config.toml` re-parses as valid TOML and `mcp_servers.compresso.command` resolves to an existing executable; (2) `codex mcp list` shows `compresso` where the installed Codex version supports the `mcp` subcommand — otherwise the TOML re-parse plus a live `initialize` probe of `compresso mcp serve` stands in; (3) detection report records which verification path ran.
-- **Uninstall**: delete the `[mcp_servers.compresso]` table only, printing its serialized contents if they differ from what the receipt says Compresso wrote. Comments and sibling tables (including other `[mcp_servers.*]` entries) are preserved byte-for-byte by `toml_edit`.
+- **Uninstall**: delete the `[mcp_servers.compresso]` table only when its canonical value and attached table-header decoration still match the authenticated receipt. If either differs, retain the whole table and emit only the content-free warning `key_modified:mcp_servers.compresso`; configuration contents are never copied into status, warning, receipt, or projection output. Comments and sibling tables (including other `[mcp_servers.*]` entries) are preserved byte-for-byte by `toml_edit`.
 
 ### 2.4 Cursor
 
