@@ -645,7 +645,7 @@ Acceptance criteria:
 Test cases:
 - fresh/existing/malformed; drift; disable/uninstall/repeat; platforms.
 
-### [ ] E6-04: Cursor adapter
+### [x] E6-04: Cursor adapter
 Owner: D1 · Estimate: 1.5d · Depends: E6-01, E5-01
 Files: rust/compresso-integrations/src/cursor.rs, tests in same file
 Description: Adapter with `client_id() == "cursor"` targeting `~/.cursor/mcp.json` (user scope) and `<project>/.cursor/mcp.json` (project scope) per `04-mcp-and-integrations.md` §2, owning `mcpServers.compresso` with the stdio entry. Same preservation, verify, and uninstall semantics as E6-02; shares the JSON editing helper from E6-01.
