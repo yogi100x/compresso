@@ -77,14 +77,14 @@ impl ServerHandler for CompressoServer {
         _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
         let registered = self.tools.iter().any(|tool| tool.name == request.name);
-        let navigation = crate::tools::atlas_nav::handles(&request.name);
+        let atlas_tool = crate::tools::handles(&request.name);
         let store = self.deps.store.clone();
         async move {
-            if navigation {
+            if atlas_tool {
                 let name = request.name.into_owned();
                 let arguments = request.arguments;
                 return match tokio::task::spawn_blocking(move || {
-                    crate::tools::atlas_nav::dispatch(&store, &name, arguments)
+                    crate::tools::dispatch(&store, &name, arguments)
                 })
                 .await
                 {
