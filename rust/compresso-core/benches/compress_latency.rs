@@ -33,10 +33,21 @@ fn fixture_cases() -> Vec<FixtureCase> {
     let conversation = serde_json::from_str::<ContextGraph>(CONVERSATION_40)
         .expect("the committed forty-turn conversation graph should deserialize");
 
-    // The corpus models forty user/assistant turns plus the system instruction
-    // and current tool request. Keep all 42 nodes so benchmark and eval inputs
-    // remain byte-for-byte aligned despite the historical benchmark name.
+    // The corpus models forty conversation-turn nodes: archived request
+    // summaries, the current user request, and assistant responses. The system
+    // instruction and current tool request bring the canonical total to 42.
     assert_eq!(conversation.nodes.len(), 42);
+    assert_eq!(
+        conversation
+            .nodes
+            .iter()
+            .filter(|node| matches!(
+                node.kind,
+                NodeKind::Summary | NodeKind::UserInstruction | NodeKind::AssistantResponse
+            ))
+            .count(),
+        40
+    );
 
     vec![
         FixtureCase {

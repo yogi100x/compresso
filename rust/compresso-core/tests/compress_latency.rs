@@ -111,7 +111,7 @@ fn test_latency_fixtures_are_canonical() {
             .iter()
             .filter(|node| matches!(
                 node.kind,
-                NodeKind::UserInstruction | NodeKind::AssistantResponse
+                NodeKind::Summary | NodeKind::UserInstruction | NodeKind::AssistantResponse
             ))
             .count(),
         40
