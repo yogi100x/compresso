@@ -1,7 +1,8 @@
 use std::ffi::OsString;
 use std::io::{Read, Write};
+use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 pub use compresso_eval::cli::CliExitCode;
 use compresso_eval::cli::EvalCommand;
 use compresso_store::Store;
@@ -9,12 +10,14 @@ use compresso_store::Store;
 mod doctor;
 mod engine;
 mod index;
+mod integrations;
 mod mcp;
 mod retrieval;
 
 pub use doctor::{ConfigExplainArgs, ConfigModeArg, DiagnosticEnvironment, DoctorArgs};
 pub use engine::{CompressArgs, ExplainArgs, StatsArgs};
 pub use index::IndexArgs;
+pub use integrations::{IntegrationEnvironment, execute_integrations};
 pub use retrieval::{
     ContextArgs, ImpactArgs, MapArgs, OutlineArgs, ReadArgs, SearchArgs, UnfoldArgs,
 };
@@ -81,6 +84,58 @@ pub struct MutationArgs {
     pub dry_run: bool,
 }
 
+/// Coding-client selector, including the explicitly refused Claude Desktop target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum IntegrationClientArg {
+    #[value(name = "claude-code")]
+    ClaudeCode,
+    #[value(name = "claude-desktop", hide = true)]
+    ClaudeDesktop,
+    Codex,
+    Cursor,
+}
+
+impl IntegrationClientArg {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "claude-code",
+            Self::ClaudeDesktop => "claude-desktop",
+            Self::Codex => "codex",
+            Self::Cursor => "cursor",
+        }
+    }
+}
+
+#[derive(Args, Debug)]
+pub struct IntegrationMutationArgs {
+    /// Coding client whose MCP entry should be changed.
+    #[arg(value_enum)]
+    pub client: IntegrationClientArg,
+    #[command(flatten)]
+    pub output: OutputArgs,
+    /// Preview the exact plan without writing config, receipts, or SQLite.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// Apply the displayed plan without an interactive prompt.
+    #[arg(long)]
+    pub yes: bool,
+    /// Use this repository's project-local MCP config instead of user scope.
+    #[arg(long, value_name = "DIR")]
+    pub project: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+pub struct IntegrationReadArgs {
+    /// Coding client to inspect.
+    #[arg(value_enum)]
+    pub client: IntegrationClientArg,
+    #[command(flatten)]
+    pub output: OutputArgs,
+    /// Inspect this repository's project-local MCP config instead of user scope.
+    #[arg(long, value_name = "DIR")]
+    pub project: Option<PathBuf>,
+}
+
 #[derive(Args, Debug, Default)]
 pub struct DeferredArgs {
     #[command(flatten)]
@@ -107,10 +162,10 @@ pub enum McpCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum IntegrationsCommand {
-    Install(MutationArgs),
-    Status(DeferredArgs),
-    Verify(DeferredArgs),
-    Uninstall(MutationArgs),
+    Install(IntegrationMutationArgs),
+    Status(IntegrationReadArgs),
+    Verify(IntegrationReadArgs),
+    Uninstall(IntegrationMutationArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -168,6 +223,18 @@ pub fn execute(
     errors: &mut impl Write,
 ) -> CliExitCode {
     match cli.command {
+        RootCommand::Integrations { command } => {
+            let environment = match IntegrationEnvironment::system() {
+                Ok(environment) => environment,
+                Err(error) => {
+                    let json = command.json();
+                    let _ = write_error(errors, error.code, &error.message, json);
+                    return CliExitCode::Failure;
+                }
+            };
+            let stdin = std::io::stdin();
+            integrations::execute(command, &environment, &mut stdin.lock(), output, errors)
+        }
         RootCommand::Mcp { command } => mcp::execute(command, errors),
         RootCommand::Eval { command } => compresso_eval::cli::execute(command, output, errors),
         RootCommand::Account { command } => execute_account(command, account, output, errors),
@@ -306,6 +373,16 @@ pub fn execute_with_store_and_input(
     errors: &mut impl Write,
 ) -> CliExitCode {
     match cli.command {
+        RootCommand::Integrations { command } => {
+            let json = command.json();
+            let _ = write_error(
+                errors,
+                "environment_required",
+                "integration commands require an explicit IntegrationEnvironment at injected boundaries",
+                json,
+            );
+            CliExitCode::Failure
+        }
         RootCommand::Eval { command } => compresso_eval::cli::execute(command, output, errors),
         RootCommand::Account { command } => execute_account(command, account, output, errors),
         RootCommand::Index(arguments) => execute_index(arguments, Some(store), cwd, output, errors),
@@ -600,6 +677,15 @@ impl RootCommand {
                 }
             },
             Self::Account { .. } | Self::Eval { .. } => false,
+        }
+    }
+}
+
+impl IntegrationsCommand {
+    fn json(&self) -> bool {
+        match self {
+            Self::Install(arguments) | Self::Uninstall(arguments) => arguments.output.json,
+            Self::Status(arguments) | Self::Verify(arguments) => arguments.output.json,
         }
     }
 }

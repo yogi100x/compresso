@@ -212,8 +212,10 @@ remain identical on every CI platform.
 Each benchmark entry pins the exact file path, byte size, exact `openai_o200k`
 token count, generator command, and SHA-256 file hash. Corpus integrity tests
 require the complete path sets, so an absent member cannot be silently skipped.
-The loader recognizes only the exact top-level `benchmarks/` directory as
-non-quality data; every other unknown category remains an error.
+The loader recognizes only the exact top-level `benchmarks/` and
+`integrations/` directories as non-quality data. The latter contains E6-05
+client-configuration parity fixtures and never enters compression gates. Every
+other unknown category remains an error.
 
 ## 7. Inline fixture contents
 

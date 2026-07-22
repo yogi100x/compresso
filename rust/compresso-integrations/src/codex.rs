@@ -267,7 +267,9 @@ impl CodexAdapter {
         }
     }
 
-    fn checked_config_path(&self) -> Result<PathBuf, IntegrationError> {
+    /// Resolves the shared Codex config path after rejecting symlinked or
+    /// out-of-home targets. Callers must use this before any recovery write.
+    pub fn checked_config_path(&self) -> Result<PathBuf, IntegrationError> {
         checked_config_path(&self.home_dir)
     }
 
@@ -452,7 +454,7 @@ impl Integration for CodexAdapter {
         if current_hash.as_ref() == installed_hash {
             remove_owned_table(&mut document)?;
         } else if !(receipt.uninstalled_at.is_some() && current_hash.is_none()) {
-            warnings.push(format!("key_modified: retained {OWNED_PATH}"));
+            warnings.push(format!("key_modified:{OWNED_PATH}"));
         }
 
         manager.issue(MutationRequest {
@@ -1162,10 +1164,7 @@ mod tests {
                 .iter()
                 .any(|warning| warning.contains("key_modified"))
         );
-        assert_eq!(
-            report.warnings,
-            [format!("key_modified: retained {OWNED_PATH}")]
-        );
+        assert_eq!(report.warnings, [format!("key_modified:{OWNED_PATH}")]);
         assert_eq!(
             fs::read_to_string(&config)
                 .expect("retained config")
