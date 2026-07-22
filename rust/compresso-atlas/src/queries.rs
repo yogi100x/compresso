@@ -5,13 +5,16 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use compresso_core::{TokenCounter, TokenProvider, counter_for};
-use compresso_store::{FileLanguage, RepoId, Store, SymbolKind, SymbolRecord, SymbolSelector};
+use compresso_store::{
+    EdgeKind, FileLanguage, RepoId, Store, SymbolKind, SymbolRecord, SymbolSelector,
+};
 
 use crate::AtlasError;
 use crate::parsers::{ParseError, ParserRegistry};
 
 const TOP_SYMBOLS_PER_FILE: usize = 3;
 const MAX_AMBIGUITY_CANDIDATES: usize = 20;
+const PLAN_CONTEXT_SEARCH_LIMIT: usize = 20;
 const REINDEX_HINT: &str = "Repository index is stale; run `compresso index` and retry.";
 
 /// A deterministic, token-budgeted structural summary of an indexed repository.
@@ -87,6 +90,41 @@ pub struct BoundedRead {
     pub token_provider: TokenProvider,
     pub truncated: bool,
     pub elision: Option<String>,
+}
+
+/// One dependent file reached while walking resolved edges in reverse.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImpactEntry {
+    pub path: String,
+    pub depth: u8,
+    pub edge_kinds: Vec<EdgeKind>,
+}
+
+/// The deterministic reverse dependency closure for one indexed file.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImpactReport {
+    pub path: String,
+    pub dependents: Vec<ImpactEntry>,
+}
+
+/// One exact symbol body included because its identity was returned by task FTS.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContextSymbolBody {
+    pub path: String,
+    pub symbol: SymbolRecord,
+    pub content: String,
+}
+
+/// A deterministic search-driven context pack under one hard tokenizer budget.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContextPlan {
+    pub rendered: String,
+    pub repo_map: Option<RepoMap>,
+    pub outlines: Vec<Outline>,
+    pub symbol_bodies: Vec<ContextSymbolBody>,
+    pub tokens_used: usize,
+    pub token_provider: TokenProvider,
+    pub truncated: bool,
 }
 
 /// Typed structural-query and bounded-filesystem failures.
@@ -357,6 +395,243 @@ pub fn read_bounded(
         truncated,
         elision,
     })
+}
+
+/// Returns resolved reverse dependencies at minimum depths one and two only.
+pub fn impact(store: &Store, repo: RepoId, path: &str) -> Result<ImpactReport, AtlasError> {
+    if store.indexed_file(repo, path)?.is_none() {
+        return Err(AtlasError::FileNotIndexed {
+            repo,
+            path: path.to_owned(),
+        });
+    }
+
+    let mut incoming = BTreeMap::<String, BTreeMap<String, Vec<EdgeKind>>>::new();
+    for edge in store.resolved_edges(repo)? {
+        let kinds = incoming
+            .entry(edge.to_path)
+            .or_default()
+            .entry(edge.from_path)
+            .or_default();
+        if !kinds.contains(&edge.kind) {
+            kinds.push(edge.kind);
+            kinds.sort_by_key(|kind| edge_kind_order(*kind));
+        }
+    }
+
+    let mut discovered = BTreeMap::<String, (u8, Vec<EdgeKind>)>::new();
+    let mut frontier = BTreeSet::from([path.to_owned()]);
+    for depth in 1..=2 {
+        let mut next = BTreeSet::new();
+        for target in &frontier {
+            let Some(importers) = incoming.get(target) else {
+                continue;
+            };
+            for (importer, kinds) in importers {
+                if importer == path {
+                    continue;
+                }
+                match discovered.get_mut(importer) {
+                    Some((known_depth, known_kinds)) if *known_depth == depth => {
+                        for kind in kinds {
+                            if !known_kinds.contains(kind) {
+                                known_kinds.push(*kind);
+                            }
+                        }
+                        known_kinds.sort_by_key(|kind| edge_kind_order(*kind));
+                    }
+                    Some(_) => {}
+                    None => {
+                        discovered.insert(importer.clone(), (depth, kinds.clone()));
+                        next.insert(importer.clone());
+                    }
+                }
+            }
+        }
+        frontier = next;
+    }
+
+    let mut dependents = discovered
+        .into_iter()
+        .map(|(path, (depth, kinds))| ImpactEntry {
+            path,
+            depth,
+            edge_kinds: kinds,
+        })
+        .collect::<Vec<_>>();
+    dependents.sort_by(|left, right| {
+        left.depth
+            .cmp(&right.depth)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    Ok(ImpactReport {
+        path: path.to_owned(),
+        dependents,
+    })
+}
+
+const fn edge_kind_order(kind: EdgeKind) -> u8 {
+    match kind {
+        EdgeKind::Imports => 0,
+        EdgeKind::References => 1,
+        EdgeKind::Tests => 2,
+    }
+}
+
+/// Builds a map, matching-file outlines, and exact FTS-backed bodies under one budget.
+pub fn plan_context(
+    store: &Store,
+    repo: RepoId,
+    task: &str,
+    budget_tokens: usize,
+) -> Result<ContextPlan, AtlasError> {
+    let counter = counter_for(TokenProvider::OpenAiO200k);
+    let mut hits = search(
+        store,
+        repo,
+        task,
+        PLAN_CONTEXT_SEARCH_LIMIT.saturating_add(1),
+    )?;
+    let search_truncated = hits.len() > PLAN_CONTEXT_SEARCH_LIMIT;
+    hits.truncate(PLAN_CONTEXT_SEARCH_LIMIT);
+
+    let map = repo_map(store, repo, budget_tokens / 4)?;
+    let mut candidate_outlines = Vec::new();
+    let mut outlined_paths = BTreeSet::new();
+    for hit in &hits {
+        if outlined_paths.insert(hit.path.clone()) {
+            candidate_outlines.push(outline(store, repo, &hit.path)?);
+        }
+    }
+
+    let mut candidate_bodies = Vec::new();
+    for hit in &hits {
+        let selector = SymbolSelector {
+            path: hit.path.clone(),
+            qualified_name: hit.symbol.qualified_name.clone(),
+            kind: Some(hit.symbol.kind),
+            signature_hash: hit
+                .symbol
+                .signature
+                .as_deref()
+                .map(|signature| blake3::hash(signature.as_bytes()).to_hex().to_string()),
+            start_line_hint: Some(hit.symbol.start_line),
+        };
+        if let UnfoldResult::Found {
+            path,
+            symbol,
+            content,
+            ..
+        } = unfold(store, repo, &selector)?
+        {
+            candidate_bodies.push(ContextSymbolBody {
+                path,
+                symbol,
+                content,
+            });
+        }
+    }
+
+    let mut rendered = String::new();
+    let mut included_map = None;
+    if !map.rendered.is_empty() {
+        let trial = render_context_item(&rendered, "# Repository map\n", &map.rendered, true);
+        if counter.count(&trial) <= budget_tokens {
+            rendered = trial;
+            included_map = Some(map.clone());
+        }
+    }
+
+    let outline_ceiling = budget_tokens.saturating_sub(budget_tokens / 3);
+    let mut outlines = Vec::new();
+    for outline in &candidate_outlines {
+        let item = render_outline(outline);
+        let trial = render_context_item(
+            &rendered,
+            "# Matching outlines\n",
+            &item,
+            outlines.is_empty(),
+        );
+        if counter.count(&trial) <= outline_ceiling {
+            rendered = trial;
+            outlines.push(outline.clone());
+        }
+    }
+
+    let mut symbol_bodies = Vec::new();
+    for body in &candidate_bodies {
+        let item = render_symbol_body(body);
+        let trial = render_context_item(
+            &rendered,
+            "# Matching symbol bodies\n",
+            &item,
+            symbol_bodies.is_empty(),
+        );
+        if counter.count(&trial) <= budget_tokens {
+            rendered = trial;
+            symbol_bodies.push(body.clone());
+        }
+    }
+
+    let tokens_used = counter.count(&rendered);
+    let truncated = search_truncated
+        || map.truncated
+        || included_map.is_none()
+        || outlines.len() < candidate_outlines.len()
+        || symbol_bodies.len() < candidate_bodies.len();
+    Ok(ContextPlan {
+        rendered,
+        repo_map: included_map,
+        outlines,
+        symbol_bodies,
+        tokens_used,
+        token_provider: counter.provider(),
+        truncated,
+    })
+}
+
+fn render_context_item(current: &str, header: &str, item: &str, first_in_section: bool) -> String {
+    let mut rendered = current.to_owned();
+    if first_in_section {
+        if !rendered.is_empty() && !rendered.ends_with("\n\n") {
+            rendered.push('\n');
+        }
+        rendered.push_str(header);
+    }
+    rendered.push_str(item);
+    rendered
+}
+
+fn render_outline(outline: &Outline) -> String {
+    let mut rendered = format!("## {}\n", outline.path);
+    for symbol in &outline.symbols {
+        let _ = writeln!(
+            rendered,
+            "- {:?} {} (lines {}-{}, ~{} tokens)",
+            symbol.kind,
+            symbol.qualified_name,
+            symbol.start_line,
+            symbol.end_line,
+            symbol.token_estimate
+        );
+    }
+    rendered
+}
+
+fn render_symbol_body(body: &ContextSymbolBody) -> String {
+    let mut rendered = format!(
+        "## {} — {} ({:?}, lines {}-{})\n",
+        body.path,
+        body.symbol.qualified_name,
+        body.symbol.kind,
+        body.symbol.start_line,
+        body.symbol.end_line
+    );
+    rendered.push_str(&body.content);
+    if !rendered.ends_with('\n') {
+        rendered.push('\n');
+    }
+    rendered
 }
 
 fn not_found(selector: &SymbolSelector, stale: bool) -> UnfoldResult {
