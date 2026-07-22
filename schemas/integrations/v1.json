@@ -1,0 +1,135 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://compresso.dev/schemas/integrations/v1.json",
+  "title": "Compresso integration mutation documents v1",
+  "oneOf": [
+    { "$ref": "#/$defs/mutation_plan" },
+    { "$ref": "#/$defs/install_receipt" }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "client": {
+      "type": "string",
+      "enum": ["claude-code", "codex", "cursor"]
+    },
+    "owned_key_mutation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key_path", "before_value_hash", "after_value_hash"],
+      "properties": {
+        "key_path": { "type": "string", "minLength": 1 },
+        "before_value_hash": {
+          "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }]
+        },
+        "after_value_hash": {
+          "oneOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }]
+        }
+      }
+    },
+    "owned_value_hashes": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/digest" }
+    },
+    "install_receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "document_type",
+        "plan_hash",
+        "client",
+        "config_path",
+        "keys_owned",
+        "owned_value_hashes",
+        "backup_path",
+        "installed_at",
+        "compresso_version",
+        "uninstalled_at"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "document_type": { "const": "install_receipt" },
+        "plan_hash": { "$ref": "#/$defs/digest" },
+        "client": { "$ref": "#/$defs/client" },
+        "config_path": { "type": "string", "minLength": 1 },
+        "keys_owned": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "owned_value_hashes": { "$ref": "#/$defs/owned_value_hashes" },
+        "backup_path": { "type": "string", "minLength": 1 },
+        "installed_at": { "type": "integer" },
+        "compresso_version": { "type": "string", "minLength": 1 },
+        "uninstalled_at": {
+          "oneOf": [{ "type": "integer" }, { "type": "null" }]
+        }
+      }
+    },
+    "mutation_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "document_type",
+        "operation",
+        "config_format",
+        "client",
+        "config_path",
+        "base_exists",
+        "base_hash",
+        "result_hash",
+        "target_contents",
+        "unified_diff",
+        "diff_hash",
+        "plan_hash",
+        "session_id",
+        "issued_at",
+        "expires_at",
+        "backup_path",
+        "owned_keys",
+        "compresso_version",
+        "prior_receipt",
+        "warnings"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "document_type": { "const": "mutation_plan" },
+        "operation": { "type": "string", "enum": ["install", "uninstall"] },
+        "config_format": { "type": "string", "enum": ["json", "toml"] },
+        "client": { "$ref": "#/$defs/client" },
+        "config_path": { "type": "string", "minLength": 1 },
+        "base_exists": { "type": "boolean" },
+        "base_hash": { "$ref": "#/$defs/digest" },
+        "result_hash": { "$ref": "#/$defs/digest" },
+        "target_contents": { "type": "string" },
+        "unified_diff": { "type": "string", "minLength": 1 },
+        "diff_hash": { "$ref": "#/$defs/digest" },
+        "plan_hash": { "$ref": "#/$defs/digest" },
+        "session_id": { "type": "string", "minLength": 1 },
+        "issued_at": { "type": "integer" },
+        "expires_at": { "type": "integer" },
+        "backup_path": { "type": "string", "minLength": 1 },
+        "owned_keys": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/owned_key_mutation" }
+        },
+        "compresso_version": { "type": "string", "minLength": 1 },
+        "prior_receipt": {
+          "oneOf": [{ "$ref": "#/$defs/install_receipt" }, { "type": "null" }]
+        },
+        "warnings": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}
