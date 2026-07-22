@@ -289,9 +289,10 @@ Security boundary: every path from external input passes `canonicalize()` and `s
 ## 5. compresso-mcp
 
 ```rust
-pub async fn serve_stdio(deps: McpDeps) -> anyhow::Result<()>;   // rmcp ServerHandler; blocks until client disconnect
+pub async fn serve_stdio(deps: McpDeps) -> anyhow::Result<()>;   // binds cwd's longest approved ancestor or remains repository-unbound
+pub async fn serve_stdio_for_root(deps: McpDeps, root: PathBuf) -> anyhow::Result<()>; // exact approved canonical root or actionable startup failure
 pub struct McpDeps { pub store: Store, pub engine: Engine, pub config: Config }
-// One rmcp #[tool] handler per tool in 04-mcp-and-integrations.md §1; handlers call atlas/engine, record operations, and are pure request/response (no background tasks).
+// One rmcp #[tool] handler per tool in 04-mcp-and-integrations.md §1; handlers call atlas/engine, record operations, and are pure request/response (no background tasks). Repository tools can only use the immutable session root; compression/stats/explain remain available in an unbound session.
 // Server instructions string: <=200 words, factual, lists tools, never instructs client to prefer Compresso over its own policy (build-doc §13.4).
 ```
 
