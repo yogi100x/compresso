@@ -108,11 +108,31 @@ pub struct ImpactEntry {
     pub edge_kinds: Vec<EdgeKind>,
 }
 
+/// Caller-supplied bounds for reverse-dependency traversal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ImpactOptions {
+    pub max_depth: u8,
+    pub max_results: usize,
+}
+
+impl Default for ImpactOptions {
+    fn default() -> Self {
+        Self {
+            max_depth: 2,
+            max_results: 100,
+        }
+    }
+}
+
 /// The deterministic reverse dependency closure for one indexed file.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ImpactReport {
     pub path: String,
     pub dependents: Vec<ImpactEntry>,
+    pub unresolved_edges: usize,
+    pub ambiguous_edges: usize,
+    pub complete: bool,
+    pub truncated: bool,
 }
 
 /// One exact symbol body included because its identity was returned by task FTS.
@@ -140,6 +160,8 @@ pub struct ContextPlan {
 pub enum QueryError {
     #[error("repository-map focus must be a lexical repository-relative prefix: {focus:?}")]
     InvalidFocus { focus: String },
+    #[error("invalid impact options: {reason}")]
+    InvalidImpactOptions { reason: &'static str },
     #[error("failed to canonicalize repository query root {path:?}")]
     CanonicalizeRoot {
         path: PathBuf,
@@ -508,6 +530,28 @@ pub fn read_bounded(
 
 /// Returns resolved reverse dependencies at minimum depths one and two only.
 pub fn impact(store: &Store, repo: RepoId, path: &str) -> Result<ImpactReport, AtlasError> {
+    impact_with_options(store, repo, path, ImpactOptions::default())
+}
+
+/// Returns reverse dependencies under explicit depth/result bounds with completeness metadata.
+pub fn impact_with_options(
+    store: &Store,
+    repo: RepoId,
+    path: &str,
+    options: ImpactOptions,
+) -> Result<ImpactReport, AtlasError> {
+    if !(1..=2).contains(&options.max_depth) {
+        return Err(QueryError::InvalidImpactOptions {
+            reason: "max_depth must be between 1 and 2",
+        }
+        .into());
+    }
+    if !(1..=500).contains(&options.max_results) {
+        return Err(QueryError::InvalidImpactOptions {
+            reason: "max_results must be between 1 and 500",
+        }
+        .into());
+    }
     if store.indexed_file(repo, path)?.is_none() {
         return Err(AtlasError::FileNotIndexed {
             repo,
@@ -530,7 +574,7 @@ pub fn impact(store: &Store, repo: RepoId, path: &str) -> Result<ImpactReport, A
 
     let mut discovered = BTreeMap::<String, (u8, Vec<EdgeKind>)>::new();
     let mut frontier = BTreeSet::from([path.to_owned()]);
-    for depth in 1..=2 {
+    for depth in 1..=options.max_depth {
         let mut next = BTreeSet::new();
         for target in &frontier {
             let Some(importers) = incoming.get(target) else {
@@ -573,9 +617,18 @@ pub fn impact(store: &Store, repo: RepoId, path: &str) -> Result<ImpactReport, A
             .cmp(&right.depth)
             .then_with(|| left.path.cmp(&right.path))
     });
+    let truncated = dependents.len() > options.max_results;
+    dependents.truncate(options.max_results);
+    let resolution_counts = store.edge_resolution_counts(repo)?;
     Ok(ImpactReport {
         path: path.to_owned(),
         dependents,
+        unresolved_edges: resolution_counts.unresolved,
+        ambiguous_edges: resolution_counts.ambiguous,
+        complete: resolution_counts.unresolved == 0
+            && resolution_counts.ambiguous == 0
+            && !truncated,
+        truncated,
     })
 }
 

@@ -1,7 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
-use compresso_atlas::{ContextPlan, ImpactEntry, ImpactReport, impact, plan_context, search};
+use compresso_atlas::{
+    AtlasError, ContextPlan, ImpactEntry, ImpactOptions, ImpactReport, QueryError, impact,
+    impact_with_options, plan_context, search,
+};
 use compresso_core::{TokenProvider, counter_for};
 use compresso_store::{
     EdgeKind, EdgeRecord, EdgeResolution, FileLanguage, FileRecord, Store, SymbolKind, SymbolRecord,
@@ -35,6 +38,10 @@ fn test_impact_depth_two() {
                     edge_kinds: vec![EdgeKind::Imports],
                 },
             ],
+            unresolved_edges: 0,
+            ambiguous_edges: 0,
+            complete: true,
+            truncated: false,
         }
     );
     assert!(!first.dependents.iter().any(|entry| entry.path == "d.rs"));
@@ -47,6 +54,97 @@ fn test_impact_depth_two() {
         "a depth-three importer must not be reported"
     );
     assert_eq!(before, after, "impact must not write to SQLite");
+}
+
+#[test]
+fn test_impact_options_bound_depth_results_and_report_completeness() {
+    let fixture = Fixture::new();
+    fixture.seed_impact_chain();
+    let incomplete_source = fixture
+        .store
+        .upsert_file(fixture.repo, &file("d.rs", "hash", 1))
+        .expect("incomplete source should load");
+    fixture
+        .store
+        .replace_symbols(
+            incomplete_source,
+            &[],
+            &[
+                EdgeRecord {
+                    to_path: "missing".to_owned(),
+                    kind: EdgeKind::Imports,
+                    resolution: EdgeResolution::Unresolved("not indexed".to_owned()),
+                },
+                EdgeRecord {
+                    to_path: "crate::choice".to_owned(),
+                    kind: EdgeKind::References,
+                    resolution: EdgeResolution::Ambiguous(vec![
+                        "a.rs".to_owned(),
+                        "b.rs".to_owned(),
+                    ]),
+                },
+            ],
+        )
+        .expect("incomplete edges should replace");
+
+    let depth_one = impact_with_options(
+        &fixture.store,
+        fixture.repo,
+        "c.rs",
+        ImpactOptions {
+            max_depth: 1,
+            max_results: 500,
+        },
+    )
+    .expect("depth-one impact should load");
+    assert_eq!(
+        depth_one
+            .dependents
+            .iter()
+            .map(|entry| (entry.path.as_str(), entry.depth))
+            .collect::<Vec<_>>(),
+        [("b.rs", 1)]
+    );
+    assert_eq!(depth_one.unresolved_edges, 1);
+    assert_eq!(depth_one.ambiguous_edges, 1);
+    assert!(!depth_one.complete);
+    assert!(!depth_one.truncated);
+
+    let limited = impact_with_options(
+        &fixture.store,
+        fixture.repo,
+        "c.rs",
+        ImpactOptions {
+            max_depth: 2,
+            max_results: 1,
+        },
+    )
+    .expect("limited impact should load");
+    assert_eq!(limited.dependents.len(), 1);
+    assert_eq!(limited.dependents[0].path, "b.rs");
+    assert!(limited.truncated);
+}
+
+#[test]
+fn test_impact_options_reject_invalid_bounds() {
+    let fixture = Fixture::new();
+    fixture.seed_impact_chain();
+
+    for options in [
+        ImpactOptions {
+            max_depth: 0,
+            max_results: 100,
+        },
+        ImpactOptions {
+            max_depth: 2,
+            max_results: 501,
+        },
+    ] {
+        assert!(matches!(
+            impact_with_options(&fixture.store, fixture.repo, "c.rs", options),
+            Err(AtlasError::Query(QueryError::InvalidImpactOptions { .. }))
+        ));
+    }
 }
 
 #[test]
