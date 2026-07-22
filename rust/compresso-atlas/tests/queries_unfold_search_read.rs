@@ -1,9 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
+#[cfg(unix)]
+use compresso_atlas::plan_context;
 use compresso_atlas::{
-    AtlasError, Indexer, QueryError, UnfoldResult, outline, plan_context, read_bounded, search,
-    unfold,
+    AtlasError, Indexer, QueryError, UnfoldResult, outline, read_bounded, search, unfold,
 };
 use compresso_core::{TokenCounter, TokenProvider, counter_for};
 use compresso_store::{Store, SymbolKind, SymbolSelector};
