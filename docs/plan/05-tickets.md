@@ -453,7 +453,7 @@ Test cases:
 
 ## E4 — CLI
 
-### [ ] E4-01: CLI application and canonical command tree
+### [x] E4-01: CLI application and canonical command tree
 Owner: D1 · Estimate: 2d · Depends: E2-09, E3-12
 Files: rust/compresso-cli/src/{main,commands}.rs, rust/compresso-eval/src/cli.rs
 Description: Expose account login|status|logout and eval run|gates|diff-gates|workflow|calibrate-anthropic with all existing commands.

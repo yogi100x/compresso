@@ -8,6 +8,7 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
+clap.workspace = true
 compresso-atlas.workspace = true
 compresso-core.workspace = true
 compresso-store.workspace = true
