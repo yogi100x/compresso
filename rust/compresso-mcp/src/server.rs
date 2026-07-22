@@ -6,10 +6,11 @@ use compresso_core::{
     Config, Engine, Mode, TokenProvider, TokenizerInitialization, counter_for,
     initialize_tokenizers,
 };
-use compresso_store::Store;
+use compresso_store::{OperationRecord, Store, StoreError};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Content, Implementation, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
+    CallToolRequestParams, CallToolResult, Content, Implementation, InitializeRequestParams,
+    InitializeResult, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo,
+    Tool, ToolAnnotations,
 };
 use rmcp::service::{
     RequestContext, RoleServer, RxJsonRpcMessage, ServerInitializeError, TxJsonRpcMessage,
@@ -19,6 +20,8 @@ use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
+
+use crate::session::{DiagnosticSink, OperationWriter, SessionRuntime};
 
 const JSON_SCHEMA_VERSION: &str = "https://json-schema.org/draft/2020-12/schema";
 
@@ -42,17 +45,63 @@ pub struct McpDeps {
     pub config: Config,
 }
 
+type OperationWriteHook =
+    dyn Fn(&OperationRecord) -> Result<(), StoreError> + Send + Sync + 'static;
+type DiagnosticHook = dyn Fn(&str) + Send + Sync + 'static;
+
+/// Injectable operation-ledger boundaries for deterministic MCP lifecycle tests.
+///
+/// Normal callers should use [`serve_io`] or [`serve_stdio`].
+#[doc(hidden)]
+#[derive(Clone)]
+pub struct McpLedgerHooks {
+    operation_writer: Arc<OperationWriteHook>,
+    diagnostics: Arc<DiagnosticHook>,
+}
+
+impl McpLedgerHooks {
+    /// Builds test hooks from one operation writer and one warning sink.
+    pub fn new<W, D>(operation_writer: W, diagnostics: D) -> Self
+    where
+        W: Fn(&OperationRecord) -> Result<(), StoreError> + Send + Sync + 'static,
+        D: Fn(&str) + Send + Sync + 'static,
+    {
+        Self {
+            operation_writer: Arc::new(operation_writer),
+            diagnostics: Arc::new(diagnostics),
+        }
+    }
+}
+
+struct HookOperationWriter(Arc<OperationWriteHook>);
+
+impl OperationWriter for HookOperationWriter {
+    fn write(&self, operation: &OperationRecord) -> Result<(), StoreError> {
+        (self.0)(operation)
+    }
+}
+
+struct HookDiagnosticSink(Arc<DiagnosticHook>);
+
+impl DiagnosticSink for HookDiagnosticSink {
+    fn warn(&self, message: &str) {
+        (self.0)(message);
+    }
+}
+
 struct CompressoServer {
     deps: Arc<McpDeps>,
+    session: SessionRuntime,
     tools: Vec<Tool>,
 }
 
 struct PreparedMcpDeps(McpDeps);
 
 impl CompressoServer {
-    fn new(deps: PreparedMcpDeps) -> Self {
+    fn new(deps: PreparedMcpDeps, session: SessionRuntime) -> Self {
         Self {
             deps: Arc::new(deps.0),
+            session,
             tools: tool_declarations(),
         }
     }
@@ -76,6 +125,28 @@ impl ServerHandler for CompressoServer {
         }))
     }
 
+    fn initialize(
+        &self,
+        request: InitializeRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<InitializeResult, McpError>> + Send + '_ {
+        let client = request.client_info.name.clone();
+        if context.peer.peer_info().is_none() {
+            context.peer.set_peer_info(request);
+        }
+        let session = self.session.clone();
+        let info = self.get_info();
+        async move {
+            session.start(&client).await.map_err(|error| {
+                McpError::internal_error(
+                    format!("failed to start local MCP session: {error}"),
+                    None,
+                )
+            })?;
+            Ok(info)
+        }
+    }
+
     fn call_tool(
         &self,
         request: CallToolRequestParams,
@@ -84,15 +155,23 @@ impl ServerHandler for CompressoServer {
         let registered = self.tools.iter().any(|tool| tool.name == request.name);
         let handled = crate::tools::handles(&request.name);
         let deps = Arc::clone(&self.deps);
+        let session = self.session.clone();
         async move {
             if handled {
+                let Some(_call_guard) = session.acquire_call().await else {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "[internal] Compresso MCP session is closing.",
+                    )]));
+                };
                 let name = request.name.into_owned();
                 let arguments = request.arguments;
+                let operation_session = session.clone();
                 return match tokio::task::spawn_blocking(move || {
                     crate::tools::dispatch(
                         &deps.store,
                         &deps.engine,
                         &deps.config,
+                        &operation_session,
                         &name,
                         arguments,
                     )
@@ -161,14 +240,71 @@ where
     W: AsyncWrite + Send + Unpin + 'static,
     F: FnOnce() -> TokenizerInitialization + Send + 'static,
 {
+    serve_io_configured(deps, reader, writer, initialize, None).await
+}
+
+/// Starts the MCP server with deterministic tokenizer and ledger test seams.
+#[doc(hidden)]
+pub async fn serve_io_with_hooks<R, W, F>(
+    deps: McpDeps,
+    reader: R,
+    writer: W,
+    initialize: F,
+    hooks: McpLedgerHooks,
+) -> anyhow::Result<()>
+where
+    R: AsyncRead + Send + Unpin + 'static,
+    W: AsyncWrite + Send + Unpin + 'static,
+    F: FnOnce() -> TokenizerInitialization + Send + 'static,
+{
+    serve_io_configured(deps, reader, writer, initialize, Some(hooks)).await
+}
+
+async fn serve_io_configured<R, W, F>(
+    deps: McpDeps,
+    reader: R,
+    writer: W,
+    initialize: F,
+    hooks: Option<McpLedgerHooks>,
+) -> anyhow::Result<()>
+where
+    R: AsyncRead + Send + Unpin + 'static,
+    W: AsyncWrite + Send + Unpin + 'static,
+    F: FnOnce() -> TokenizerInitialization + Send + 'static,
+{
     let deps = prepare_dependencies(deps, initialize());
-    let transport = ResilientJsonLineTransport::new(reader, writer);
-    let service = match CompressoServer::new(deps).serve(transport).await {
-        Ok(service) => service,
-        Err(ServerInitializeError::ConnectionClosed(_)) => return Ok(()),
-        Err(error) => return Err(error.into()),
+    let session = match hooks {
+        Some(hooks) => SessionRuntime::with_components(
+            deps.0.store.clone(),
+            Arc::new(HookOperationWriter(hooks.operation_writer)),
+            Arc::new(HookDiagnosticSink(hooks.diagnostics)),
+        ),
+        None => SessionRuntime::new(deps.0.store.clone()),
     };
-    service.waiting().await?;
+    let transport = ResilientJsonLineTransport::new(reader, writer);
+    let service_result = CompressoServer::new(deps, session.clone())
+        .serve(transport)
+        .await;
+    let service = match service_result {
+        Ok(service) => service,
+        Err(ServerInitializeError::ConnectionClosed(_)) => {
+            close_session_after_calls(&session).await?;
+            return Ok(());
+        }
+        Err(error) => {
+            close_session_after_calls(&session).await?;
+            return Err(error.into());
+        }
+    };
+    let wait_result = service.waiting().await;
+    let close_result = close_session_after_calls(&session).await;
+    wait_result?;
+    close_result?;
+    Ok(())
+}
+
+async fn close_session_after_calls(session: &SessionRuntime) -> anyhow::Result<()> {
+    session.close().await?;
     Ok(())
 }
 
@@ -432,5 +568,47 @@ mod tests {
         );
 
         assert_eq!(prepared.0.engine.mode(), Mode::Passthrough);
+    }
+
+    #[tokio::test]
+    async fn test_disconnect_waits_for_inflight_call_before_closing_session() {
+        let temp = tempfile::tempdir().expect("temporary directory should be created");
+        let store = Store::open(&temp.path().join("compresso.db")).expect("store should open");
+        let session = SessionRuntime::new(store.clone());
+        let session_id = session
+            .start("disconnect-test")
+            .await
+            .expect("session should start");
+        let call_guard = session
+            .acquire_call()
+            .await
+            .expect("open session should admit a call");
+        let closing_session = session.clone();
+        let close = tokio::spawn(async move { close_session_after_calls(&closing_session).await });
+
+        tokio::task::yield_now().await;
+        assert!(!close.is_finished());
+        assert_eq!(
+            store
+                .session_by_id(&session_id)
+                .expect("session lookup should succeed")
+                .expect("session should exist")
+                .ended_at,
+            None
+        );
+
+        drop(call_guard);
+        close
+            .await
+            .expect("close task should not panic")
+            .expect("close should succeed");
+        assert!(
+            store
+                .session_by_id(&session_id)
+                .expect("session lookup should succeed")
+                .expect("session should exist")
+                .ended_at
+                .is_some()
+        );
     }
 }
