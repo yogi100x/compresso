@@ -33,6 +33,11 @@ fn context_graph_schema_from_docs() -> Value {
         .join("docs/plan/02-schemas.md");
     let contents = fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
+    context_graph_schema_from_text(&contents)
+}
+
+fn context_graph_schema_from_text(contents: &str) -> Value {
+    let contents = contents.replace("\r\n", "\n");
     let section = contents
         .split_once("## 1. ContextGraph v1")
         .expect("schema docs should contain the ContextGraph v1 section")
@@ -60,6 +65,15 @@ fn test_context_graph_schema_matches_authoritative_docs() {
     assert_eq!(
         load_schema("context-graph"),
         context_graph_schema_from_docs()
+    );
+}
+
+#[test]
+fn test_documented_schema_extraction_accepts_crlf() {
+    let docs = "## 1. ContextGraph v1\r\n\r\n```json\r\n{\"type\":\"object\"}\r\n```\r\n";
+    assert_eq!(
+        context_graph_schema_from_text(docs),
+        json!({ "type": "object" })
     );
 }
 
