@@ -7,6 +7,7 @@
 
 mod claude_code;
 mod codex;
+mod cursor;
 mod plan;
 mod receipt;
 
@@ -16,6 +17,10 @@ pub use claude_code::{ClaudeCodeDiscovery, ClaudeCodeIntegration};
 pub use codex::{
     CodexAdapter, CodexIntegration, CodexPlatform, CodexVerificationEvidence,
     CodexVerificationMethod, CodexVersionEvidence,
+};
+pub use cursor::{
+    CursorApplicationEvidence, CursorCliEvidence, CursorDiscovery, CursorIntegration,
+    CursorLiveProbeEvidence, CursorPlatform,
 };
 pub use plan::{
     ApplyReport, ConfigFormat, Detection, InstallCtx, IntegrationError, MutationKind, MutationPlan,
