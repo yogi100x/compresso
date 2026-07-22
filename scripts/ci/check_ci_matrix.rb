@@ -77,7 +77,7 @@ unless large_payload_gate &&
   exit 1
 end
 
-upload = eval_steps.find { |step| step["uses"] == "actions/upload-artifact@v4" }
+upload = eval_steps.find { |step| step["uses"] == "actions/upload-artifact@v7" }
 unless upload && upload["if"] == "always()" &&
        upload.dig("with", "path") == 'eval-report-${{ matrix.os }}.json' &&
        upload.dig("with", "if-no-files-found") == "error"
