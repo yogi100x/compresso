@@ -15,7 +15,10 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use thiserror::Error;
 
 pub use files::{FileLanguage, FileRecord, RelativePathError};
-pub use ops::{ModeledCostSaved, OperationId, OperationRecord, SessionId, StatsSummary};
+pub use ops::{
+    DetailedStatsSummary, ModeledCostSaved, OperationId, OperationRecord, SessionId, SessionRecord,
+    StatsFilter, StatsSummary, ToolStatsSummary,
+};
 pub use receipts::{ReceiptId, ReceiptRecord};
 pub use repos::{FileId, IndexVersionRecord, RepoId, RepoRecord};
 pub use symbols::{
