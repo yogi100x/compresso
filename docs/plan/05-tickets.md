@@ -743,7 +743,7 @@ Test cases:
 - test_broken_probe_errors_on_passthrough: temp fixture whose probe answer never existed in the input → run errors with `broken_probe`, no recall aggregates emitted.
 - test_protected_probes_bucketed_separately: mixed protected/unprotected probes land in the correct aggregates.
 
-### [ ] E7-06: Recall gates in gates.toml
+### [x] E7-06: Recall gates in gates.toml
 Owner: PQ · Estimate: 1d · Depends: E7-03, E7-05
 Files: docs/plan/gates.toml, rust/compresso-eval/src/gates.rs, tests in same file
 Description: Extend `Gates` and `docs/plan/gates.toml` with the D40 recall thresholds from `06-fixtures.md` §4.9: `protected_probe_recall == 1.0` (100% of protected probes) and `overall_probe_recall >= 0.99`. Gate evaluation consumes the E7-05 recall block; a probes-exist sanity check (mirroring the five-fixture-minimum rule of §4.5) fails the gate when the corpus contains zero recall probes, so deleting probes cannot game the gate. Runs through the existing E7-04 eval CI job unchanged.
