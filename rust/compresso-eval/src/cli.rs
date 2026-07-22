@@ -3,8 +3,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand, error::ErrorKind};
+use serde::Serialize;
 
-use crate::{EvalReport, EvalRunError, EvalRunner, FixtureSet};
+use crate::{EvalReport, EvalRunError, EvalRunner, FixtureSet, GateReport, Gates};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CliExitCode {
@@ -49,7 +50,7 @@ pub struct EvalRunArgs {
         conflicts_with = "fixtures"
     )]
     pub fixtures_option: Option<PathBuf>,
-    /// Retained for E7-02 compatibility. E7-03 owns loading and evaluation.
+    /// Evaluate the report against the release thresholds at this path.
     #[arg(long, value_name = "GATES")]
     pub gates: Option<PathBuf>,
     #[arg(long)]
@@ -133,10 +134,15 @@ pub fn execute(
             arguments.gates.as_deref(),
             arguments.json,
             output,
+            errors,
         ),
-        EvalCommand::Gates(_) => Err(CliError::Unavailable {
-            feature: "eval gates (E7-03)",
-        }),
+        EvalCommand::Gates(arguments) => evaluate(
+            &arguments.fixtures,
+            Some(&arguments.gates),
+            arguments.json,
+            output,
+            errors,
+        ),
         EvalCommand::DiffGates(_) => Err(CliError::Unavailable {
             feature: "eval diff-gates",
         }),
@@ -168,17 +174,24 @@ impl EvalCommand {
 
 fn evaluate(
     fixtures: &Path,
-    _gates_path: Option<&Path>,
+    gates_path: Option<&Path>,
     json: bool,
     output: &mut impl Write,
+    errors: &mut impl Write,
 ) -> Result<(), CliError> {
     let set = FixtureSet::load(fixtures).map_err(|error| CliError::Evaluation {
         message: error.to_string(),
     })?;
     let report = EvalRunner.try_run(&set).map_err(CliError::Run)?;
-    // E7-02 accepted and retained --gates without evaluating it. E7-03 owns loading the
-    // thresholds, rendering gate outcomes, and returning the gate-regression exit code.
-    write_output(output, &report, json)
+    let Some(gates_path) = gates_path else {
+        return write_output(output, &report, json);
+    };
+    let gates = Gates::load(gates_path).map_err(|error| CliError::GateConfiguration {
+        message: error.to_string(),
+    })?;
+    let evaluated = gates.evaluate(&report);
+    write_gated_output(output, errors, &report, &evaluated, json)?;
+    ensure_gates_pass(&evaluated)
 }
 
 fn calibrate_anthropic(
@@ -236,12 +249,60 @@ fn write_output(output: &mut impl Write, report: &EvalReport, json: bool) -> Res
     Ok(())
 }
 
+#[derive(Serialize)]
+struct GatedEvalOutput<'a> {
+    #[serde(flatten)]
+    report: &'a EvalReport,
+    gates: &'a GateReport,
+}
+
+fn write_gated_output(
+    output: &mut impl Write,
+    errors: &mut impl Write,
+    report: &EvalReport,
+    gates: &GateReport,
+    json: bool,
+) -> Result<(), CliError> {
+    if !json {
+        write_output(output, report, false)?;
+        for line in gates.lines() {
+            writeln!(errors, "{line}").map_err(|error| CliError::Evaluation {
+                message: format!("failed to write gate report: {error}"),
+            })?;
+        }
+        return Ok(());
+    }
+
+    serde_json::to_writer(&mut *output, &GatedEvalOutput { report, gates }).map_err(|error| {
+        CliError::Evaluation {
+            message: format!("failed to encode gated evaluation report: {error}"),
+        }
+    })?;
+    writeln!(output).map_err(|error| CliError::Evaluation {
+        message: format!("failed to write gated evaluation report: {error}"),
+    })?;
+    Ok(())
+}
+
+fn ensure_gates_pass(gates: &GateReport) -> Result<(), CliError> {
+    if gates.passed {
+        return Ok(());
+    }
+    Err(CliError::GateRegression {
+        names: gates.failed_names(),
+    })
+}
+
 #[derive(Debug, thiserror::Error)]
 enum CliError {
     #[error("{message}")]
     Evaluation { message: String },
     #[error(transparent)]
     Run(EvalRunError),
+    #[error("{message}")]
+    GateConfiguration { message: String },
+    #[error("release gates failed: {names}")]
+    GateRegression { names: String },
     #[error("ANTHROPIC_API_KEY is required for calibration")]
     MissingApiKey,
     #[error("{message}")]
@@ -255,6 +316,8 @@ impl CliError {
         match self {
             Self::Evaluation { .. } => "evaluation_failed",
             Self::Run(error) => error.code(),
+            Self::GateConfiguration { .. } => "gate_configuration",
+            Self::GateRegression { .. } => "gate_regression",
             Self::MissingApiKey => "missing_api_key",
             Self::InvalidArguments { .. } => "invalid_arguments",
             Self::Unavailable { .. } => "unavailable",
@@ -280,6 +343,32 @@ fn write_error(output: &mut impl Write, error: &CliError, json: bool) -> std::io
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{AggregateMetrics, RecallReport};
+
+    fn gates_path() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/plan/gates.toml")
+    }
+
+    fn passing_report() -> EvalReport {
+        EvalReport {
+            schema_version: 1,
+            fixtures: Vec::new(),
+            aggregate: AggregateMetrics {
+                compression_fixtures: 1,
+                eligible_fixtures: 5,
+                median_reduction_eligible: 0.50,
+                p95_latency_ms: 100,
+                protected_mutations: 0,
+                malformed_json: 0,
+                fallback_rate: 0.0,
+            },
+            recall: RecallReport {
+                fixtures: Vec::new(),
+                protected_probe_recall: 1.0,
+                overall_probe_recall: 1.0,
+            },
+        }
+    }
 
     #[test]
     fn test_parse_documented_run_surfaces_and_retains_gates_path() {
@@ -319,5 +408,81 @@ mod tests {
         });
 
         assert_eq!(error.code(), "broken_probe");
+    }
+
+    #[test]
+    fn test_gated_json_output_preserves_report_and_adds_gate_structure() {
+        let report = passing_report();
+        let gates = Gates::load(&gates_path()).expect("committed gates should load");
+        let evaluated = gates.evaluate(&report);
+        let mut output = Vec::new();
+        let mut errors = Vec::new();
+
+        write_gated_output(&mut output, &mut errors, &report, &evaluated, true)
+            .expect("gated JSON should render");
+        let json: serde_json::Value =
+            serde_json::from_slice(&output).expect("gated output should be JSON");
+
+        assert_eq!(json["schema_version"], 1);
+        assert!(json["fixtures"].is_array());
+        assert!(json["aggregate"].is_object());
+        assert!(json["recall"].is_object());
+        assert_eq!(json["gates"]["passed"], true);
+        assert_eq!(json["gates"]["gates"].as_array().map(Vec::len), Some(4));
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_human_gate_output_has_one_named_line_per_gate() {
+        let report = passing_report();
+        let gates = Gates::load(&gates_path()).expect("committed gates should load");
+        let evaluated = gates.evaluate(&report);
+        let mut output = Vec::new();
+        let mut errors = Vec::new();
+
+        write_gated_output(&mut output, &mut errors, &report, &evaluated, false)
+            .expect("human gates should render");
+        let _: EvalReport =
+            serde_json::from_slice(&output).expect("human report should remain valid JSON");
+        let lines = String::from_utf8(errors).expect("gate lines should be UTF-8");
+        let lines = lines.lines().collect::<Vec<_>>();
+
+        assert_eq!(lines.len(), 4);
+        for name in [
+            "median_reduction_eligible",
+            "protected_mutations",
+            "malformed_json",
+            "p95_latency_ms",
+        ] {
+            assert_eq!(lines.iter().filter(|line| line.contains(name)).count(), 1);
+        }
+    }
+
+    #[test]
+    fn test_gate_regression_has_distinct_named_code() {
+        let mut report = passing_report();
+        report.aggregate.median_reduction_eligible = 0.10;
+        let gates = Gates::load(&gates_path()).expect("committed gates should load");
+        let evaluated = gates.evaluate(&report);
+
+        let error = ensure_gates_pass(&evaluated).expect_err("regression should fail");
+
+        assert_eq!(error.code(), "gate_regression");
+        assert!(error.to_string().contains("median_reduction_eligible"));
+        assert!(!error.to_string().contains("protected_mutations"));
+    }
+
+    #[test]
+    fn test_fixture_regression_error_names_failed_fixture() {
+        let evaluated = GateReport {
+            passed: false,
+            gates: Vec::new(),
+            failed_fixtures: vec!["fixture-regression".to_owned()],
+        };
+
+        let error = ensure_gates_pass(&evaluated).expect_err("fixture regression should fail");
+
+        assert_eq!(error.code(), "gate_regression");
+        assert!(error.to_string().contains("fixture:fixture-regression"));
     }
 }

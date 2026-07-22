@@ -703,7 +703,7 @@ Test cases:
 - test_failed_expectation_isolated: inject a temp fixture expecting substring "UNOBTAINIUM" → that row `passed == false`, aggregate still produced, exit code reflects failure only via gates (E7-03).
 - test_protected_mutation_counter_zero: aggregate `protected_mutations == 0` on the committed corpus.
 
-### [ ] E7-03: Release gates file and gate checks
+### [x] E7-03: Release gates file and gate checks
 Owner: PQ · Estimate: 2d · Depends: E7-02, E2-11
 Files: docs/plan/gates.toml, rust/compresso-eval/src/gates.rs, tests in same file
 Description: Implement `Gates` loading `docs/plan/gates.toml` and evaluating the aggregate report against the D37 / build-doc §25.6 slice gates: `median_reduction_eligible > 0.25`, `protected_mutations == 0`, `malformed_json == 0`, `p95_latency_ms < 200`. `compresso-eval -- run ... --gates` exits non-zero with a named failing gate when any gate regresses; gates.toml is the single committed source of thresholds (consumed by CI, referenced by E2-11).
