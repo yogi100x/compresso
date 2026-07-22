@@ -1,0 +1,34 @@
+fixtures/debugging/compiler-output-rust/fixture.toml
+  s_87261b37472da1::t_02a7e152a49c88 8
+fixtures/debugging/test-failure-context/fixture.toml
+  s_87261b37472da1::t_02a7e152a49c88 8
+rust/compresso-eval/tests/corpus_integrity.rs
+  s_87261b37472da1::t_02a7e152a49c88 4,324-327,331-336,340-352
+  s_87261b37472da1::t_c80b76ce7a5d9c 328-330,337-339
+fixtures/conversations/long-session-prune/fixture.toml
+  s_87261b37472da1::t_02a7e152a49c88 3
+fixtures/corpus.toml
+  s_87261b37472da1::t_ea1ba1f0345016 43-44,50-51,65,71-72
+fixtures/conversations/long-session-prune/graph.json
+  s_87261b37472da1::t_e2cb46b0aea50b 18,25,42,49,66,73,90,97,114,121,138,145,162,169,186,193,210,217,234,241,258,265,282,289,306,313,330,337,354,361,378,385,402,409,426,433,450,457
+docs/plan/06-fixtures.md
+  s_87261b37472da1::t_02a7e152a49c88 183,1127
+fixtures/conversations/superseded-decisions/fixture.toml
+  s_87261b37472da1::t_02a7e152a49c88 8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "dd2958fe6d447661f49d35279d3ef77d00ca012e",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
