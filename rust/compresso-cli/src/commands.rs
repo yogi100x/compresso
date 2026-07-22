@@ -8,6 +8,7 @@ use compresso_store::Store;
 
 mod doctor;
 mod engine;
+mod mcp;
 mod retrieval;
 
 pub use doctor::{ConfigExplainArgs, ConfigModeArg, DiagnosticEnvironment, DoctorArgs};
@@ -165,6 +166,7 @@ pub fn execute(
     errors: &mut impl Write,
 ) -> CliExitCode {
     match cli.command {
+        RootCommand::Mcp { command } => mcp::execute(command, errors),
         RootCommand::Eval { command } => compresso_eval::cli::execute(command, output, errors),
         RootCommand::Account { command } => execute_account(command, account, output, errors),
         command if command.is_diagnostic() => {

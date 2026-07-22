@@ -6,13 +6,8 @@ use compresso_cli::{Cli, UnavailableAccountClient, execute};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let stdout = io::stdout();
-    let stderr = io::stderr();
-    let code = execute(
-        cli,
-        &UnavailableAccountClient,
-        &mut stdout.lock(),
-        &mut stderr.lock(),
-    );
+    let mut stdout = io::stdout();
+    let mut stderr = io::stderr();
+    let code = execute(cli, &UnavailableAccountClient, &mut stdout, &mut stderr);
     ExitCode::from(code.value())
 }
