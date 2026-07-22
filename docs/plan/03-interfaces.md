@@ -38,11 +38,14 @@ pub struct ContextNode {
     pub provider_turn: Option<ProviderTurn>,
 }
 pub struct ProviderTurn {
-    pub provider: String,
-    pub turn_id: String,
-    pub tool_call_id: String,
+    pub provider: ProviderId,
+    pub turn_id: ProviderTurnId,
+    pub tool_call_id: ToolCallId,
     pub opaque_state_hash: Option<String>,
 }
+pub struct ProviderId(/* non-empty string */);
+pub struct ProviderTurnId(/* non-empty string */);
+pub struct ToolCallId(/* non-empty string */);
 pub enum NodeKind { SystemInstruction, UserInstruction, AssistantResponse, AssistantReasoning, ToolDefinition, ToolRequest, ToolResponse, SourceFile, CodeSymbol, SearchResult, CompilerOutput, TestOutput, RepoMap, Summary, Decision, MemoryFact }
 pub enum Source { Client, Repository { path: String }, Tool { name: String }, Synthetic }
 pub struct ContextEdge { pub from: String, pub to: String, pub kind: EdgeKind, pub weight: f32 }
@@ -127,8 +130,14 @@ pub struct CompressionResult { pub output: ContextGraph, pub before_tokens: usiz
 pub struct Engine { /* registry, counter, safety */ }
 impl Engine {
     pub fn new(mode: Mode, counter: &'static dyn TokenCounter) -> Self;
+    pub fn with_provider_validator(self, validator: Arc<dyn ProviderConversationValidator>) -> Self;
     pub fn compress(&self, input: ContextGraph, budget: &CompressionBudget) -> CompressionResult;
     // NEVER returns Err: any failure => fallback_used=true, output=input unchanged
+}
+
+pub trait ProviderConversationValidator: Send + Sync {
+    fn validate_pre_compression(&self, graph: &ContextGraph) -> Result<(), ProviderConversationError>;
+    fn validate_post_compression(&self, original: &ContextGraph, candidate: &ContextGraph) -> Result<(), ProviderConversationError>;
 }
 ```
 

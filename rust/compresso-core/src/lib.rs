@@ -2,6 +2,7 @@
 
 pub mod engine;
 pub mod graph;
+pub mod provider_conversation;
 pub mod safety;
 pub mod strategies;
 pub mod strategy;
@@ -10,7 +11,11 @@ pub mod trace;
 
 pub use engine::{CompressionResult, Engine};
 pub use graph::{
-    ContextEdge, ContextGraph, ContextNode, EdgeKind, GraphError, NodeKind, ProviderTurn, Source,
+    ContextEdge, ContextGraph, ContextNode, EdgeKind, GraphError, NodeKind, ProviderId,
+    ProviderIdentifierError, ProviderTurn, ProviderTurnId, Source, ToolCallId,
+};
+pub use provider_conversation::{
+    DefaultProviderConversationValidator, ProviderConversationError, ProviderConversationValidator,
 };
 pub use safety::{SafetyCheck, run_all, run_all_with_removals};
 pub use strategies::{CollapseLogs, CompactJson, DedupExact, PackBudget};

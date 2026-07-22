@@ -2167,7 +2167,7 @@ Test cases:
 
 ## Cross-epic correctness tickets
 
-### [ ] E2-12: Provider conversation graph and validator
+### [x] E2-12: Provider conversation graph and validator
 Owner: R1 · Estimate: 2d · Depends: E2-01, E2-08
 Files: rust/compresso-core/src/{graph,provider_conversation}.rs, schemas/context-graph/v1.json, fixtures/conversations/provider-tool-loop/
 Description: Implement protected reasoning nodes, typed provider turn/tool identifiers, atomic assistant/tool groups, and profile-extensible pre/post-compression validation from D53.
