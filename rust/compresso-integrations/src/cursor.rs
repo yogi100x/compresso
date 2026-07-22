@@ -395,13 +395,14 @@ impl Integration for CursorIntegration {
         self.ensure_supported()?;
         let config_path = self.config_path(&context.scope)?;
         let command = resolved_compresso_command(&self.discovery.platform, &context.compresso_bin)?;
+        let args = expected_server_args(&context.scope)?;
         let mut document = read_json_object(&config_path)?;
         let servers = object_at_or_insert(&mut document, "mcpServers")?;
         servers.insert(
             "compresso".to_owned(),
             json!({
                 "command": command,
-                "args": ["mcp", "serve"]
+                "args": args
             }),
         );
         manager.issue(MutationRequest {
@@ -455,7 +456,9 @@ impl Integration for CursorIntegration {
             .and_then(|document| document.get("mcpServers"))
             .and_then(Value::as_object)
             .and_then(|servers| servers.get("compresso"));
-        let server_entry_valid = entry.is_some_and(is_cursor_server_entry);
+        let server_entry_valid = expected_server_args(scope)
+            .ok()
+            .is_some_and(|args| entry.is_some_and(|entry| is_cursor_server_entry(entry, &args)));
         let binary_resolves = entry
             .and_then(|entry| entry.get("command"))
             .and_then(Value::as_str)
@@ -651,8 +654,10 @@ fn resolved_compresso_command(
     platform: &CursorPlatform,
     path: &Path,
 ) -> Result<String, IntegrationError> {
-    if !path.is_absolute() {
-        return Err(invalid_request("Compresso command path must be absolute"));
+    if !is_normalized_absolute_path(path) {
+        return Err(invalid_request(
+            "Compresso command path must be normalized and absolute",
+        ));
     }
     let resolved = fs::canonicalize(path).map_err(|source| IntegrationError::Io {
         path: path.to_path_buf(),
@@ -663,13 +668,40 @@ fn resolved_compresso_command(
             "Compresso command path must resolve to an executable file",
         ));
     }
-    resolved
-        .to_str()
+    path.to_str()
         .map(str::to_owned)
         .ok_or_else(|| invalid_request("Compresso command path must be valid UTF-8"))
 }
 
-fn is_cursor_server_entry(value: &Value) -> bool {
+fn is_normalized_absolute_path(path: &Path) -> bool {
+    path.is_absolute()
+        && !path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+        && path.components().collect::<PathBuf>().as_os_str() == path.as_os_str()
+}
+
+fn expected_server_args(scope: &Scope) -> Result<Vec<String>, IntegrationError> {
+    let mut args = vec!["mcp".to_owned(), "serve".to_owned()];
+    if let Scope::Project(root) = scope {
+        let canonical_root = fs::canonicalize(root).map_err(|source| IntegrationError::Io {
+            path: root.to_path_buf(),
+            source,
+        })?;
+        if !canonical_root.is_dir() {
+            return Err(invalid_request(
+                "Cursor project scope root must resolve to a directory",
+            ));
+        }
+        let root = canonical_root
+            .to_str()
+            .ok_or_else(|| invalid_request("Cursor project root must be valid UTF-8"))?;
+        args.extend(["--root".to_owned(), root.to_owned()]);
+    }
+    Ok(args)
+}
+
+fn is_cursor_server_entry(value: &Value, expected_args: &[String]) -> bool {
     let Some(entry) = value.as_object() else {
         return false;
     };
@@ -678,7 +710,7 @@ fn is_cursor_server_entry(value: &Value) -> bool {
             .get("command")
             .and_then(Value::as_str)
             .is_some_and(|command| Path::new(command).is_absolute())
-        && entry.get("args") == Some(&json!(["mcp", "serve"]))
+        && entry.get("args") == Some(&json!(expected_args))
 }
 
 fn is_executable_file(platform: &CursorPlatform, path: &Path) -> bool {
@@ -1134,16 +1166,100 @@ mod tests {
         assert_eq!(
             installed["mcpServers"]["compresso"],
             json!({
-                "command": fs::canonicalize(&harness.compresso)
-                    .expect("canonical command")
-                    .to_str()
-                    .expect("UTF-8 command"),
+                "command": harness.compresso.to_str().expect("UTF-8 command"),
                 "args": ["mcp", "serve"]
             })
         );
         assert_eq!(receipt.keys_owned, [OWNED_PATH]);
         assert!(receipt.backup_path.contains(".compresso-backup-"));
         assert!(harness.adapter.verify(&Scope::User).verified);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_cursor_preserves_stable_launcher_symlink_across_upgrade() {
+        use std::os::unix::fs::symlink;
+
+        let harness = Harness::new(CursorPlatform::Linux);
+        let versions = harness._directory.path().join("versions");
+        fs::create_dir(&versions).expect("versions directory created");
+        let first = versions.join("compresso-0.1.0");
+        let second = versions.join("compresso-0.2.0");
+        write_posix_engine(&first, "engine-v1");
+        write_posix_engine(&second, "engine-v2");
+        let stable = harness.bin_directory.join("compresso-stable");
+        symlink(&first, &stable).expect("stable launcher created");
+        assert_eq!(run_stable_launcher(&stable), "engine-v1\n");
+        let manager = PlanManager::new("cursor-stable-launcher").expect("manager");
+        let receipts = MemoryReceiptStore::default();
+        let plan = harness
+            .adapter
+            .plan_install(
+                &manager,
+                &InstallCtx {
+                    compresso_bin: stable.clone(),
+                    scope: Scope::User,
+                },
+            )
+            .expect("install plan");
+        harness
+            .adapter
+            .install(&manager, &PlanApproval::from(&plan), &receipts)
+            .expect("install applies");
+
+        assert_eq!(
+            read_json(&harness.user_config())["mcpServers"]["compresso"]["command"],
+            json!(stable)
+        );
+        let installed_bytes = fs::read(harness.user_config()).expect("installed config bytes");
+        fs::remove_file(&stable).expect("old stable launcher removed");
+        symlink(&second, &stable).expect("stable launcher upgraded");
+        assert_eq!(run_stable_launcher(&stable), "engine-v2\n");
+
+        assert_eq!(
+            fs::read(harness.user_config()).expect("upgraded config bytes"),
+            installed_bytes
+        );
+        assert_eq!(
+            read_json(&harness.user_config())["mcpServers"]["compresso"]["command"],
+            json!(stable)
+        );
+        let upgraded = harness
+            .adapter
+            .clone()
+            .with_live_probe_evidence(expected_probe(&stable));
+        assert!(upgraded.verify(&Scope::User).verified);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_cursor_rejects_non_normalized_absolute_launcher_paths() {
+        let harness = Harness::new(CursorPlatform::Linux);
+        let parent = harness.compresso.parent().expect("bin directory");
+        let parent_text = parent.to_str().expect("UTF-8 bin directory");
+        let nested = parent.join("nested");
+        fs::create_dir(&nested).expect("nested directory created");
+        let cases = [
+            PathBuf::from(format!("{parent_text}/./compresso")),
+            PathBuf::from(format!("{parent_text}//compresso")),
+            nested.join("../compresso"),
+        ];
+        let manager = PlanManager::new("cursor-non-normalized-launcher").expect("manager");
+
+        for path in cases {
+            let error = harness
+                .adapter
+                .plan_install(
+                    &manager,
+                    &InstallCtx {
+                        compresso_bin: path,
+                        scope: Scope::User,
+                    },
+                )
+                .expect_err("non-normalized launcher path rejected");
+            assert!(matches!(error, IntegrationError::InvalidRequest { .. }));
+        }
+        assert!(!harness.user_config().exists());
     }
 
     #[test]
@@ -1209,7 +1325,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cursor_project_scope_isolated() {
+    fn test_cursor_project_scope_pins_and_verifies_exact_canonical_root() {
         let harness = Harness::new(CursorPlatform::Linux);
         let user_original = b"{\"userOnly\":true}\n";
         write_bytes(&harness.user_config(), user_original);
@@ -1229,7 +1345,39 @@ mod tests {
             fs::read(harness.user_config()).expect("user config read"),
             user_original
         );
-        assert!(read_json(&harness.project_config())["mcpServers"]["compresso"].is_object());
+        let installed = read_json(&harness.project_config());
+        assert_eq!(
+            installed["mcpServers"]["compresso"]["args"],
+            json!([
+                "mcp",
+                "serve",
+                "--root",
+                fs::canonicalize(&harness.project)
+                    .expect("canonical project root")
+                    .to_str()
+                    .expect("UTF-8 project root")
+            ])
+        );
+        assert!(
+            harness
+                .adapter
+                .verify(&Scope::Project(harness.project.clone()))
+                .verified
+        );
+
+        let mut changed = installed;
+        changed["mcpServers"]["compresso"]["args"][3] =
+            json!(fs::canonicalize(&harness.home).expect("canonical home"));
+        write_json(&harness.project_config(), &changed);
+        assert_eq!(
+            check(
+                &harness
+                    .adapter
+                    .verify(&Scope::Project(harness.project.clone())),
+                "server_entry"
+            ),
+            Some(false)
+        );
     }
 
     #[test]
@@ -1921,6 +2069,26 @@ mod tests {
             fs::set_permissions(path, fs::Permissions::from_mode(0o700))
                 .expect("test executable mode");
         }
+    }
+
+    #[cfg(unix)]
+    fn write_posix_engine(path: &Path, engine: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::write(path, format!("#!/bin/sh\nprintf '%s\\n' '{engine}'\n"))
+            .expect("POSIX launcher written");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .expect("POSIX launcher executable mode");
+    }
+
+    #[cfg(unix)]
+    fn run_stable_launcher(path: &Path) -> String {
+        let output = std::process::Command::new(path)
+            .output()
+            .expect("POSIX launcher executes");
+        assert!(output.status.success());
+        assert!(output.stderr.is_empty());
+        String::from_utf8(output.stdout).expect("launcher output UTF-8")
     }
 
     fn write_bytes(path: &Path, bytes: &[u8]) {

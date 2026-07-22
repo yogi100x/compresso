@@ -367,6 +367,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "toml",
 ]
 
 [[package]]

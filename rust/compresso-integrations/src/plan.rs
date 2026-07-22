@@ -262,6 +262,17 @@ impl From<&MutationPlan> for PlanApproval {
     }
 }
 
+/// Opaque authority to renew and apply one approved install after a long-running local step.
+///
+/// The authorization is bound to the exact [`PlanManager`] that issued it, cannot be cloned, and
+/// is consumed by [`PlanManager::apply_deferred_install`]. Creating it removes the original plan
+/// from the manager's normal apply registry so the same approval cannot be used twice.
+pub struct DeferredInstallAuthorization {
+    session_id: String,
+    manager_identity: Arc<()>,
+    plan: MutationPlan,
+}
+
 /// Safe uninstall result.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -290,6 +301,15 @@ pub struct ApplyReport {
     pub restore: Option<RestoreReport>,
     /// True when no new filesystem write was needed.
     pub already_applied: bool,
+}
+
+/// Result of applying a deferred install with freshly renewed timing.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeferredInstallApplyReport {
+    /// Exact renewed plan used for the commit.
+    pub plan: MutationPlan,
+    /// Full apply outcome, including whether an existing install was reused.
+    pub report: ApplyReport,
 }
 
 /// Clock boundary for deterministic expiry tests.
@@ -383,6 +403,7 @@ pub enum IntegrationError {
 pub struct PlanManager {
     session_id: String,
     clock: Arc<dyn PlanClock>,
+    deferred_identity: Arc<()>,
     issued: Mutex<BTreeMap<String, MutationPlan>>,
     completed: Mutex<BTreeMap<String, ApplyReport>>,
     apply_lock: Mutex<()>,
@@ -406,6 +427,7 @@ impl PlanManager {
         Ok(Self {
             session_id,
             clock,
+            deferred_identity: Arc::new(()),
             issued: Mutex::new(BTreeMap::new()),
             completed: Mutex::new(BTreeMap::new()),
             apply_lock: Mutex::new(()),
@@ -508,6 +530,23 @@ impl PlanManager {
             .lock()
             .map_err(|_| IntegrationError::LockPoisoned)?;
         let apply_at = self.clock.now_unix_seconds();
+        self.apply_for_kind_locked(
+            approval,
+            receipts,
+            expected_kind,
+            PendingJournalPolicy::Recover,
+            apply_at,
+        )
+    }
+
+    fn apply_for_kind_locked(
+        &self,
+        approval: &PlanApproval,
+        receipts: &dyn ReceiptStore,
+        expected_kind: Option<MutationKind>,
+        pending_journal: PendingJournalPolicy,
+        apply_at: i64,
+    ) -> Result<ApplyReport, IntegrationError> {
         let plan = self.validate_approval_at(approval, apply_at)?;
         if let Some(expected) = expected_kind
             && plan.operation != expected
@@ -517,6 +556,13 @@ impl PlanManager {
                 actual: plan.operation,
             });
         }
+        if matches!(pending_journal, PendingJournalPolicy::Reject)
+            && journal_path(&plan.config_path).exists()
+        {
+            return Err(IntegrationError::PendingRecovery {
+                path: plan.config_path,
+            });
+        }
         if let Some(report) = self
             .completed
             .lock()
@@ -524,16 +570,32 @@ impl PlanManager {
             .get(&approval.plan_hash)
             .cloned()
         {
+            if matches!(pending_journal, PendingJournalPolicy::Reject)
+                && journal_path(&plan.config_path).exists()
+            {
+                return Err(IntegrationError::PendingRecovery {
+                    path: plan.config_path,
+                });
+            }
             return Ok(mark_report_already_applied(report));
         }
         if journal_path(&plan.config_path).exists() {
-            let (recovered_hash, recovered) = recover_journal(&plan.config_path, receipts)?;
-            if recovered_hash == plan.plan_hash {
-                self.completed
-                    .lock()
-                    .map_err(|_| IntegrationError::LockPoisoned)?
-                    .insert(plan.plan_hash.clone(), recovered.clone());
-                return Ok(mark_report_already_applied(recovered));
+            match pending_journal {
+                PendingJournalPolicy::Reject => {
+                    return Err(IntegrationError::PendingRecovery {
+                        path: plan.config_path,
+                    });
+                }
+                PendingJournalPolicy::Recover => {
+                    let (recovered_hash, recovered) = recover_journal(&plan.config_path, receipts)?;
+                    if recovered_hash == plan.plan_hash {
+                        self.completed
+                            .lock()
+                            .map_err(|_| IntegrationError::LockPoisoned)?
+                            .insert(plan.plan_hash.clone(), recovered.clone());
+                        return Ok(mark_report_already_applied(recovered));
+                    }
+                }
             }
         }
 
@@ -548,6 +610,13 @@ impl PlanManager {
             && current_hash == plan.result_hash
             && let Some(receipt) = matching_active_receipt(&plan, receipts)?
         {
+            if matches!(pending_journal, PendingJournalPolicy::Reject)
+                && journal_path(&plan.config_path).exists()
+            {
+                return Err(IntegrationError::PendingRecovery {
+                    path: plan.config_path,
+                });
+            }
             let report = ApplyReport {
                 receipt: Some(receipt),
                 restore: None,
@@ -568,6 +637,13 @@ impl PlanManager {
                     .expect("uninstall authorization was established"),
             )
         {
+            if matches!(pending_journal, PendingJournalPolicy::Reject)
+                && journal_path(&plan.config_path).exists()
+            {
+                return Err(IntegrationError::PendingRecovery {
+                    path: plan.config_path,
+                });
+            }
             self.completed
                 .lock()
                 .map_err(|_| IntegrationError::LockPoisoned)?
@@ -588,6 +664,126 @@ impl PlanManager {
             .map_err(|_| IntegrationError::LockPoisoned)?
             .insert(plan.plan_hash.clone(), commit.report.clone());
         Ok(commit.report)
+    }
+
+    /// Validates and consumes an approved install plan before a long-running local operation.
+    ///
+    /// The plan must still be unexpired, base-bound, and free of pending recovery. Authorization
+    /// performs no filesystem mutation and makes the original approval ineligible for normal
+    /// apply. The returned opaque value may be used exactly once with this manager.
+    pub fn authorize_deferred_install(
+        &self,
+        approval: &PlanApproval,
+    ) -> Result<DeferredInstallAuthorization, IntegrationError> {
+        let _apply_guard = self
+            .apply_lock
+            .lock()
+            .map_err(|_| IntegrationError::LockPoisoned)?;
+        let authorized_at = self.clock.now_unix_seconds();
+        let plan = self.validate_approval_at(approval, authorized_at)?;
+        if plan.operation != MutationKind::Install {
+            return Err(IntegrationError::WrongPlanKind {
+                expected: MutationKind::Install,
+                actual: plan.operation,
+            });
+        }
+        if journal_path(&plan.config_path).exists() {
+            return Err(IntegrationError::PendingRecovery {
+                path: plan.config_path,
+            });
+        }
+        let current = read_target(&plan.config_path)?;
+        if hash_target(&current) != plan.base_hash {
+            return Err(IntegrationError::ConfigDrift {
+                path: plan.config_path,
+            });
+        }
+
+        let removed = self
+            .issued
+            .lock()
+            .map_err(|_| IntegrationError::LockPoisoned)?
+            .remove(&plan.plan_hash)
+            .ok_or(IntegrationError::ForgedPlan)?;
+        Ok(DeferredInstallAuthorization {
+            session_id: self.session_id.clone(),
+            manager_identity: Arc::clone(&self.deferred_identity),
+            plan: removed,
+        })
+    }
+
+    /// Renews and applies one previously authorized deferred install.
+    ///
+    /// Renewal changes only `issued_at`, `expires_at`, and the derived `plan_hash`; the exact
+    /// approved backup path, unified diff, diff hash, base, target bytes, and owned-key effect are
+    /// preserved. Any pending recovery journal fails closed and is never replayed by this path.
+    pub fn apply_deferred_install(
+        &self,
+        authorization: DeferredInstallAuthorization,
+        receipts: &dyn ReceiptStore,
+    ) -> Result<DeferredInstallApplyReport, IntegrationError> {
+        let _apply_guard = self
+            .apply_lock
+            .lock()
+            .map_err(|_| IntegrationError::LockPoisoned)?;
+        if authorization.session_id != self.session_id
+            || !Arc::ptr_eq(&authorization.manager_identity, &self.deferred_identity)
+        {
+            return Err(IntegrationError::SessionMismatch);
+        }
+
+        let source = authorization.plan;
+        if source.session_id != self.session_id
+            || source.operation != MutationKind::Install
+            || source.plan_hash != compute_plan_hash(&source)?
+        {
+            return Err(IntegrationError::ForgedPlan);
+        }
+        if journal_path(&source.config_path).exists() {
+            return Err(IntegrationError::PendingRecovery {
+                path: source.config_path,
+            });
+        }
+        let current = read_target(&source.config_path)?;
+        if hash_target(&current) != source.base_hash {
+            return Err(IntegrationError::ConfigDrift {
+                path: source.config_path,
+            });
+        }
+
+        let apply_at = self.clock.now_unix_seconds();
+        let mut renewed = source;
+        renewed.issued_at = apply_at;
+        renewed.expires_at = apply_at.saturating_add(PLAN_TTL_SECONDS);
+        renewed.plan_hash.clear();
+        renewed.plan_hash = compute_plan_hash(&renewed)?;
+        self.issued
+            .lock()
+            .map_err(|_| IntegrationError::LockPoisoned)?
+            .insert(renewed.plan_hash.clone(), renewed.clone());
+
+        let approval = PlanApproval::from(&renewed);
+        let applied = self.apply_for_kind_locked(
+            &approval,
+            receipts,
+            Some(MutationKind::Install),
+            PendingJournalPolicy::Reject,
+            apply_at,
+        );
+        let report = match applied {
+            Ok(report) => report,
+            Err(error) => {
+                self.issued
+                    .lock()
+                    .map_err(|_| IntegrationError::LockPoisoned)?
+                    .remove(&renewed.plan_hash);
+                return Err(error);
+            }
+        };
+        Ok(DeferredInstallApplyReport {
+            plan: renewed,
+            report,
+        })
     }
 
     /// Applies an install approval and returns its receipt.
@@ -668,6 +864,12 @@ impl PlanManager {
         }
         Ok(plan)
     }
+}
+
+#[derive(Clone, Copy)]
+enum PendingJournalPolicy {
+    Recover,
+    Reject,
 }
 
 fn matching_active_receipt(
@@ -1862,6 +2064,55 @@ mod tests {
         }
     }
 
+    struct ActiveLookupJournalInjector {
+        inner: MemoryReceiptStore,
+        pending_commit: Mutex<Option<PendingCommit>>,
+    }
+
+    impl ActiveLookupJournalInjector {
+        fn new(inner: MemoryReceiptStore, pending_commit: PendingCommit) -> Self {
+            Self {
+                inner,
+                pending_commit: Mutex::new(Some(pending_commit)),
+            }
+        }
+    }
+
+    impl ReceiptStore for ActiveLookupJournalInjector {
+        fn by_plan_hash(&self, plan_hash: &str) -> Result<Option<InstallReceipt>, ReceiptError> {
+            self.inner.by_plan_hash(plan_hash)
+        }
+
+        fn active_for(
+            &self,
+            client: &str,
+            config_path: &Path,
+        ) -> Result<Option<InstallReceipt>, ReceiptError> {
+            if let Some(commit) = self
+                .pending_commit
+                .lock()
+                .map_err(|_| ReceiptError::LockPoisoned)?
+                .take()
+            {
+                write_journal(config_path, &commit, &self.inner)
+                    .expect("authenticated foreign journal should be injected");
+            }
+            self.inner.active_for(client, config_path)
+        }
+
+        fn save(&self, receipt: &InstallReceipt) -> Result<(), ReceiptError> {
+            self.inner.save(receipt)
+        }
+
+        fn seal_journal(&self, payload: &[u8]) -> Result<String, ReceiptError> {
+            self.inner.seal_journal(payload)
+        }
+
+        fn verify_journal(&self, payload: &[u8], mac: &str) -> Result<(), ReceiptError> {
+            self.inner.verify_journal(payload, mac)
+        }
+    }
+
     fn manager(clock: Arc<FakeClock>) -> PlanManager {
         PlanManager::with_clock("session-a", clock).expect("manager")
     }
@@ -1956,6 +2207,338 @@ mod tests {
             .expect("apply just before expiry succeeds");
         assert_eq!(receipt.installed_at, 699);
         assert_eq!(plan.expires_at, 700);
+    }
+
+    #[test]
+    fn test_deferred_install_renews_only_timing_and_hash_after_original_expiry() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("config.json");
+        fs::write(&path, "{}\n").expect("base written");
+        let clock = Arc::new(FakeClock::new(1_700_000_000));
+        let manager = manager(clock.clone());
+        let receipts = MemoryReceiptStore::default();
+        let original = manager
+            .issue(install_request(
+                path.clone(),
+                "{\"mcpServers\":{\"compresso\":{}}}\n",
+            ))
+            .expect("plan issued");
+        let approval = PlanApproval::from(&original);
+        let authorization = manager
+            .authorize_deferred_install(&approval)
+            .expect("deferred install authorized");
+
+        assert!(matches!(
+            manager.authorize_deferred_install(&approval),
+            Err(IntegrationError::ForgedPlan)
+        ));
+        assert!(matches!(
+            manager.apply_install(&approval, &receipts),
+            Err(IntegrationError::ForgedPlan)
+        ));
+        clock.advance(PLAN_TTL_SECONDS + 37);
+
+        let outcome = manager
+            .apply_deferred_install(authorization, &receipts)
+            .expect("deferred install applies after original expiry");
+        assert_eq!(
+            outcome.plan.issued_at,
+            original.issued_at + PLAN_TTL_SECONDS + 37
+        );
+        assert_eq!(
+            outcome.plan.expires_at,
+            outcome.plan.issued_at + PLAN_TTL_SECONDS
+        );
+        assert_ne!(outcome.plan.plan_hash, original.plan_hash);
+        assert_eq!(outcome.plan.backup_path, original.backup_path);
+        assert_eq!(outcome.plan.unified_diff, original.unified_diff);
+        assert_eq!(outcome.plan.diff_hash, original.diff_hash);
+
+        let mut normalized = outcome.plan.clone();
+        normalized.issued_at = original.issued_at;
+        normalized.expires_at = original.expires_at;
+        normalized.plan_hash = original.plan_hash.clone();
+        assert_eq!(
+            normalized, original,
+            "renewal may change only timing and hash"
+        );
+        assert!(!outcome.report.already_applied);
+        let receipt = outcome.report.receipt.as_ref().expect("install receipt");
+        assert_eq!(receipt.plan_hash, outcome.plan.plan_hash);
+        assert_eq!(receipt.backup_path, original.backup_path);
+        assert!(Path::new(&original.backup_path).is_file());
+    }
+
+    #[test]
+    fn test_deferred_install_authorization_is_bound_to_exact_manager() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("config.json");
+        fs::write(&path, "{}\n").expect("base written");
+        let clock = Arc::new(FakeClock::new(1_700_000_000));
+        let issuing_manager = manager(clock.clone());
+        let original = issuing_manager
+            .issue(install_request(
+                path.clone(),
+                "{\"mcpServers\":{\"compresso\":{}}}\n",
+            ))
+            .expect("plan issued");
+        let authorization = issuing_manager
+            .authorize_deferred_install(&PlanApproval::from(&original))
+            .expect("deferred install authorized");
+        let same_named_session = manager(clock);
+
+        let error = same_named_session
+            .apply_deferred_install(authorization, &MemoryReceiptStore::default())
+            .expect_err("another manager cannot consume the authorization");
+        assert!(matches!(error, IntegrationError::SessionMismatch));
+        assert_eq!(fs::read_to_string(path).expect("config readable"), "{}\n");
+    }
+
+    #[test]
+    fn test_deferred_install_rejects_foreign_pending_journal_without_recovery() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("config.json");
+        let base = "{}\n";
+        fs::write(&path, base).expect("base written");
+        let clock = Arc::new(FakeClock::new(1_700_000_000));
+        let manager = manager(clock.clone());
+        let approved = manager
+            .issue(install_request(
+                path.clone(),
+                "{\"mcpServers\":{\"compresso\":{\"command\":\"approved\"}}}\n",
+            ))
+            .expect("approved plan issued");
+        let authorization = manager
+            .authorize_deferred_install(&PlanApproval::from(&approved))
+            .expect("deferred install authorized");
+
+        let receipts = MemoryReceiptStore::default();
+        let foreign_manager =
+            PlanManager::with_clock("foreign-session", clock.clone()).expect("foreign manager");
+        let foreign = foreign_manager
+            .issue(install_request(
+                path.clone(),
+                "{\"mcpServers\":{\"compresso\":{\"command\":\"foreign\"}}}\n",
+            ))
+            .expect("foreign plan issued");
+        let foreign_commit =
+            build_commit(&foreign, clock.now_unix_seconds(), None).expect("foreign commit built");
+        write_journal(&path, &foreign_commit, &receipts).expect("foreign journal injected");
+        let journal = journal_path(&path);
+        let journal_before = fs::read(&journal).expect("foreign journal readable");
+
+        let error = manager
+            .apply_deferred_install(authorization, &receipts)
+            .expect_err("foreign pending recovery must fail closed");
+        assert!(matches!(error, IntegrationError::PendingRecovery { .. }));
+        assert_eq!(fs::read_to_string(&path).expect("config readable"), base);
+        assert_eq!(
+            fs::read(&journal).expect("foreign journal remains readable"),
+            journal_before
+        );
+        assert!(
+            receipts
+                .by_plan_hash(&foreign.plan_hash)
+                .expect("foreign receipt lookup")
+                .is_none()
+        );
+        assert!(!Path::new(&foreign.backup_path).exists());
+        assert!(!Path::new(&approved.backup_path).exists());
+    }
+
+    #[test]
+    fn test_strict_deferred_install_rechecks_journal_after_active_receipt_lookup() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("config.json");
+        let base = "{}\n";
+        let target = "{\"mcpServers\":{\"compresso\":{\"command\":\"installed\"}}}\n";
+        fs::write(&path, base).expect("base written");
+        let clock = Arc::new(FakeClock::new(1_700_000_000));
+        let receipts = MemoryReceiptStore::default();
+        let first_manager = manager(clock.clone());
+        let installed = first_manager
+            .issue(install_request(path.clone(), target))
+            .expect("initial plan issued");
+        let installed_receipt = first_manager
+            .apply_install(&PlanApproval::from(&installed), &receipts)
+            .expect("initial install applies");
+        let installed_bytes = fs::read(&path).expect("installed config readable");
+        let backups_before = backup_files(directory.path());
+
+        let setup_manager =
+            PlanManager::with_clock("setup-session", clock.clone()).expect("setup manager");
+        let approved = setup_manager
+            .issue(install_request(path.clone(), target))
+            .expect("idempotent setup plan issued");
+        let authorization = setup_manager
+            .authorize_deferred_install(&PlanApproval::from(&approved))
+            .expect("idempotent setup plan authorized");
+
+        let foreign_manager = PlanManager::with_clock("foreign-active-lookup", clock.clone())
+            .expect("foreign manager");
+        let foreign = foreign_manager
+            .issue(install_request(
+                path.clone(),
+                "{\"mcpServers\":{\"compresso\":{\"command\":\"foreign\"}}}\n",
+            ))
+            .expect("foreign plan issued");
+        let foreign_commit =
+            build_commit(&foreign, clock.now_unix_seconds(), None).expect("foreign commit built");
+        let receipts = ActiveLookupJournalInjector::new(receipts, foreign_commit);
+
+        let error = setup_manager
+            .apply_deferred_install(authorization, &receipts)
+            .expect_err("journal injected during active lookup must fail closed");
+
+        assert!(matches!(error, IntegrationError::PendingRecovery { .. }));
+        assert_eq!(
+            fs::read(&path).expect("installed config remains readable"),
+            installed_bytes
+        );
+        assert!(journal_path(&path).exists());
+        assert_eq!(backup_files(directory.path()), backups_before);
+        assert_eq!(
+            receipts
+                .inner
+                .active_for("claude-code", &path)
+                .expect("active receipt lookup"),
+            Some(installed_receipt)
+        );
+    }
+
+    #[test]
+    fn test_strict_apply_rechecks_journal_after_uninstall_active_receipt_lookup() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("config.json");
+        fs::write(&path, "{}\n").expect("base written");
+        let clock = Arc::new(FakeClock::new(1_700_000_000));
+        let manager = manager(clock.clone());
+        let receipts = MemoryReceiptStore::default();
+        let installed = manager
+            .issue(install_request(
+                path.clone(),
+                "{\"mcpServers\":{\"compresso\":{\"command\":\"installed\"}}}\n",
+            ))
+            .expect("install plan issued");
+        let installed_receipt = manager
+            .apply_install(&PlanApproval::from(&installed), &receipts)
+            .expect("install applies");
+
+        let user_modified = "{\"mcpServers\":{\"compresso\":{\"command\":\"user-modified\"}}}\n";
+        fs::write(&path, user_modified).expect("user-modified config written");
+        let uninstall = manager
+            .issue(MutationRequest {
+                operation: MutationKind::Uninstall,
+                client: "claude-code".to_owned(),
+                config_path: path.clone(),
+                config_format: ConfigFormat::Json,
+                target_contents: user_modified.to_owned(),
+                owned_paths: vec!["mcpServers.compresso".to_owned()],
+                compresso_version: "0.1.0".to_owned(),
+                prior_receipt: Some(installed_receipt.clone()),
+                warnings: vec!["key_modified:mcpServers.compresso".to_owned()],
+            })
+            .expect("retained-key uninstall plan issued");
+        let backups_before = backup_files(directory.path());
+
+        clock.advance(1);
+        let foreign_manager = PlanManager::with_clock("foreign-uninstall-lookup", clock.clone())
+            .expect("foreign manager");
+        let foreign = foreign_manager
+            .issue(install_request(
+                path.clone(),
+                "{\"mcpServers\":{\"compresso\":{\"command\":\"foreign\"}}}\n",
+            ))
+            .expect("foreign plan issued");
+        let foreign_commit =
+            build_commit(&foreign, clock.now_unix_seconds(), None).expect("foreign commit built");
+        let receipts = ActiveLookupJournalInjector::new(receipts, foreign_commit);
+
+        let _apply_guard = manager.apply_lock.lock().expect("apply lock");
+        let error = manager
+            .apply_for_kind_locked(
+                &PlanApproval::from(&uninstall),
+                &receipts,
+                Some(MutationKind::Uninstall),
+                PendingJournalPolicy::Reject,
+                clock.now_unix_seconds(),
+            )
+            .expect_err("journal injected during uninstall lookup must fail closed");
+
+        assert!(matches!(error, IntegrationError::PendingRecovery { .. }));
+        assert_eq!(
+            fs::read_to_string(&path).expect("config remains readable"),
+            user_modified
+        );
+        assert!(journal_path(&path).exists());
+        assert_eq!(backup_files(directory.path()), backups_before);
+        assert_eq!(
+            receipts
+                .inner
+                .active_for("claude-code", &path)
+                .expect("active receipt lookup"),
+            Some(installed_receipt)
+        );
+    }
+
+    #[test]
+    fn test_strict_apply_rejects_pending_journal_before_completed_plan_shortcut() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("config.json");
+        fs::write(&path, "{}\n").expect("base written");
+        let clock = Arc::new(FakeClock::new(1_700_000_000));
+        let manager = manager(clock.clone());
+        let receipts = MemoryReceiptStore::default();
+        let installed = manager
+            .issue(install_request(
+                path.clone(),
+                "{\"mcpServers\":{\"compresso\":{\"command\":\"installed\"}}}\n",
+            ))
+            .expect("install plan issued");
+        manager
+            .apply_install(&PlanApproval::from(&installed), &receipts)
+            .expect("install applies");
+        let installed_bytes = fs::read(&path).expect("installed config readable");
+
+        let foreign_manager =
+            PlanManager::with_clock("foreign-completed", clock.clone()).expect("foreign manager");
+        let foreign = foreign_manager
+            .issue(install_request(
+                path.clone(),
+                "{\"mcpServers\":{\"compresso\":{\"command\":\"foreign\"}}}\n",
+            ))
+            .expect("foreign plan issued");
+        let foreign_commit =
+            build_commit(&foreign, clock.now_unix_seconds(), None).expect("foreign commit built");
+        write_journal(&path, &foreign_commit, &receipts).expect("foreign journal injected");
+        let journal = journal_path(&path);
+        let journal_before = fs::read(&journal).expect("foreign journal readable");
+
+        let _apply_guard = manager.apply_lock.lock().expect("apply lock");
+        let error = manager
+            .apply_for_kind_locked(
+                &PlanApproval::from(&installed),
+                &receipts,
+                Some(MutationKind::Install),
+                PendingJournalPolicy::Reject,
+                clock.now_unix_seconds(),
+            )
+            .expect_err("strict apply must reject before returning completed state");
+        assert!(matches!(error, IntegrationError::PendingRecovery { .. }));
+        assert_eq!(
+            fs::read(&path).expect("config remains readable"),
+            installed_bytes
+        );
+        assert_eq!(
+            fs::read(&journal).expect("foreign journal remains readable"),
+            journal_before
+        );
+        assert!(
+            receipts
+                .by_plan_hash(&foreign.plan_hash)
+                .expect("foreign receipt lookup")
+                .is_none()
+        );
     }
 
     #[test]

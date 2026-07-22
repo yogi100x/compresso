@@ -203,6 +203,10 @@ impl Store {
     pub fn approve_repo(&self, canonical_root: &Path) -> Result<RepoId>;
     pub fn repo_by_root(&self, canonical_root: &Path) -> Result<Option<RepoRecord>>;
     pub fn repository(&self, repo: RepoId) -> Result<RepoRecord>;
+    pub fn approved_repositories(&self) -> Result<Vec<RepoRecord>>; // canonical-root order
+    pub fn prepare_repo_removal(&self, canonical_root: &Path) -> Result<Option<RepoRemovalPreview>>; // exact record + Store revision
+    pub fn remove_repo_if_unchanged(&self, preview: &RepoRemovalPreview) -> Result<RepoRecord>; // fails closed after any intervening Store write
+    pub fn remove_repo(&self, canonical_root: &Path) -> Result<Option<RepoRecord>>; // exact stored root; cascades index metadata, never source files
     // files & symbols (used only by atlas)
     pub fn upsert_file(&self, repo: RepoId, rec: &FileRecord) -> Result<FileId>;
     pub fn replace_indexed_file(&self, repo: RepoId, rec: &FileRecord, symbols: &[SymbolRecord], edges: &[EdgeRecord]) -> Result<FileId>; // one per-file transaction
@@ -302,10 +306,27 @@ pub trait Integration {
     fn verify(&self) -> VerificationReport;              // config parses + compresso server entry resolves to existing binary
     fn uninstall(&self, receipt: &InstallReceipt) -> Result<RestoreReport>; // remove owned keys only; restore semantics per adapter spec
 }
-pub struct InstallCtx { pub compresso_bin: PathBuf, pub scope: Scope }  // Scope::User | Scope::Project(PathBuf)
+pub struct InstallCtx { pub compresso_bin: PathBuf, pub scope: Scope }  // normalized absolute lexical launcher path; Scope::User | Scope::Project(PathBuf)
 ```
 
-Per-client config details in `04-mcp-and-integrations.md` §2. Claude Desktop: explicitly no adapter (D5).
+Per-client config details in `04-mcp-and-integrations.md` §2. User-scoped entries use `mcp serve`; project-scoped Claude Code/Cursor entries pin `--root CANONICAL_ROOT`. Claude Desktop: explicitly no adapter (D5).
+
+PB-03 CLI orchestration adds deterministic `compresso repos list`, exact and
+confirmable `compresso repos remove ROOT`, and `compresso setup CLIENT ROOT`.
+Repository removal binds confirmation to the exact previewed record and Store
+revision. Setup approves one exact config path, base, target bytes, unified
+diff, diff hash, backup path, and owned-key effect. Before indexing it converts
+that still-valid preview into an opaque, manager-bound, one-use authorization.
+Because indexing may outlive the plan TTL, setup renews only `issued_at`,
+`expires_at`, and the derived plan hash afterward; every approved material
+field remains byte-identical. The strict setup apply path refuses any pending
+recovery journal instead of replaying it, and reports the approved, effective,
+and active-receipt plan identities without calling an idempotent receipt newly
+applied. It also revalidates the repository, project config target, and launcher
+before apply. Dry-run, decline, and JSON without `--yes` open no Store and write
+nothing. The public launcher may provide `COMPRESSO_LAUNCHER_PATH`; the CLI
+validates its executable target but records the normalized, stable absolute
+lexical shim so package upgrades need no config rewrite.
 
 ## 7. Local API contract (supervisor — E8, spec now)
 

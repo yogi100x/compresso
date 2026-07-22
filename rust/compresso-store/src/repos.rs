@@ -19,6 +19,26 @@ pub struct RepoRecord {
     pub last_indexed_at: Option<i64>,
 }
 
+/// Opaque guard binding a destructive removal to the exact Store state previewed.
+///
+/// The connection-local write count detects mutation through this [`Store`] handle, while
+/// SQLite's data version detects commits made through another connection. Callers can inspect
+/// the repository that will be removed, but cannot forge the Store revision fields.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepoRemovalPreview {
+    repository: RepoRecord,
+    local_total_changes: u64,
+    data_version: i64,
+}
+
+impl RepoRemovalPreview {
+    /// Returns the exact repository generation represented by this preview.
+    #[must_use]
+    pub fn repository(&self) -> &RepoRecord {
+        &self.repository
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IndexVersionRecord {
     pub parser_version: String,
@@ -95,6 +115,126 @@ impl Store {
 
         rows.map(|row| row.map_err(StoreError::from).and_then(decode_repo))
             .collect()
+    }
+
+    /// Prepares an approval removal bound to the exact repository and Store revision observed.
+    ///
+    /// Sampling occurs under an immediate transaction so the repository row and both revision
+    /// counters describe one state while concurrent writers are excluded. The transaction is
+    /// released before this method returns; callers may safely prompt for confirmation afterward.
+    pub fn prepare_repo_removal(
+        &self,
+        canonical_root: &Path,
+    ) -> Result<Option<RepoRemovalPreview>, StoreError> {
+        if !canonical_root.is_absolute() {
+            return Err(StoreError::RepositoryRootNotAbsolute {
+                path: canonical_root.to_path_buf(),
+            });
+        }
+        let root_text = path_text(canonical_root)?;
+        let mut connection = self.connection()?;
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let data_version: i64 =
+            transaction.pragma_query_value(None, "data_version", |row| row.get(0))?;
+        let local_total_changes = transaction.total_changes();
+        let raw = transaction
+            .query_row(
+                "SELECT id, root, approved_at, parser_version, schema_version, last_indexed_at FROM repositories WHERE root = ?1",
+                [root_text],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let repository = raw.map(decode_repo).transpose()?;
+        transaction.commit()?;
+        Ok(repository.map(|repository| RepoRemovalPreview {
+            repository,
+            local_total_changes,
+            data_version,
+        }))
+    }
+
+    /// Applies a prepared removal only if the repository and Store revision are unchanged.
+    ///
+    /// An immediate transaction excludes new writers before the revision checks and exact row
+    /// comparison. Any intervening write fails closed, including remove/re-approve cycles whose
+    /// replacement row happens to reuse the same SQLite id and timestamp.
+    pub fn remove_repo_if_unchanged(
+        &self,
+        preview: &RepoRemovalPreview,
+    ) -> Result<RepoRecord, StoreError> {
+        let mut connection = self.connection()?;
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let data_version: i64 =
+            transaction.pragma_query_value(None, "data_version", |row| row.get(0))?;
+        let local_total_changes = transaction.total_changes();
+        if data_version != preview.data_version
+            || local_total_changes != preview.local_total_changes
+        {
+            return Err(StoreError::RepositoryApprovalChanged {
+                path: preview.repository.root.clone(),
+            });
+        }
+
+        let root_text = path_text(&preview.repository.root)?;
+        let current = transaction
+            .query_row(
+                "SELECT id, root, approved_at, parser_version, schema_version, last_indexed_at FROM repositories WHERE root = ?1",
+                [root_text],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
+                    ))
+                },
+            )
+            .optional()?
+            .map(decode_repo)
+            .transpose()?;
+        if current.as_ref() != Some(&preview.repository) {
+            return Err(StoreError::RepositoryApprovalChanged {
+                path: preview.repository.root.clone(),
+            });
+        }
+
+        let removed = transaction.execute(
+            "DELETE FROM repositories WHERE id = ?1 AND root = ?2",
+            params![preview.repository.id, root_text],
+        )?;
+        if removed != 1 {
+            return Err(StoreError::RepositoryApprovalChanged {
+                path: preview.repository.root.clone(),
+            });
+        }
+        transaction.commit()?;
+        Ok(preview.repository.clone())
+    }
+
+    /// Removes the repository whose persisted canonical root exactly matches `canonical_root`.
+    ///
+    /// This intentionally performs no filesystem canonicalization so an approval can be
+    /// removed after its on-disk directory has disappeared. Callers must pass an absolute
+    /// root; SQLite equality supplies the exact-match boundary and foreign keys cascade all
+    /// repository-owned index rows in the same transaction.
+    pub fn remove_repo(&self, canonical_root: &Path) -> Result<Option<RepoRecord>, StoreError> {
+        let Some(preview) = self.prepare_repo_removal(canonical_root)? else {
+            return Ok(None);
+        };
+        self.remove_repo_if_unchanged(&preview).map(Some)
     }
 
     /// Loads one approved repository by its stable identifier.
@@ -238,10 +378,14 @@ fn decode_index_version(raw: (String, i64, i64)) -> Result<IndexVersionRecord, S
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
 
     use tempfile::tempdir;
 
-    use crate::{Store, StoreError};
+    use crate::{
+        EdgeKind, EdgeRecord, EdgeResolution, FileLanguage, FileRecord, Store, StoreError,
+        SymbolKind, SymbolRecord,
+    };
 
     #[test]
     fn test_approve_repo_idempotent() {
@@ -333,6 +477,199 @@ mod tests {
                 fs::canonicalize(alpha).expect("alpha should canonicalize"),
                 fs::canonicalize(zeta).expect("zeta should canonicalize")
             ]
+        );
+    }
+
+    #[test]
+    fn test_remove_repo_exact_match_preserves_adjacent_prefix() {
+        let directory = tempdir().expect("temp directory should be created");
+        let root = directory.path().join("repo");
+        let adjacent = directory.path().join("repo-copy");
+        fs::create_dir(&root).expect("repository should be created");
+        fs::create_dir(&adjacent).expect("adjacent repository should be created");
+        let store = Store::open(&directory.path().join("compresso.db")).expect("store should open");
+        let removed_id = store
+            .approve_repo(&root)
+            .expect("repository should approve");
+        let adjacent_id = store
+            .approve_repo(&adjacent)
+            .expect("adjacent repository should approve");
+        let canonical = fs::canonicalize(&root).expect("repository should canonicalize");
+        let adjacent_canonical =
+            fs::canonicalize(&adjacent).expect("adjacent repository should canonicalize");
+
+        let removed = store
+            .remove_repo(&canonical)
+            .expect("exact repository removal should succeed")
+            .expect("exact repository should be removed");
+
+        assert_eq!(removed.id, removed_id);
+        assert_eq!(removed.root, canonical);
+        assert_eq!(
+            store
+                .repo_by_root(&adjacent_canonical)
+                .expect("adjacent lookup should succeed")
+                .expect("adjacent repository should remain")
+                .id,
+            adjacent_id
+        );
+        assert_eq!(
+            store
+                .remove_repo(&directory.path().join("repo-child"))
+                .expect("unknown exact root should be handled"),
+            None
+        );
+        assert!(matches!(
+            store.remove_repo(Path::new("repo")),
+            Err(StoreError::RepositoryRootNotAbsolute { path }) if path == Path::new("repo")
+        ));
+    }
+
+    #[test]
+    fn test_remove_repo_cascades_indexed_rows_after_directory_disappears() {
+        let directory = tempdir().expect("temp directory should be created");
+        let root = directory.path().join("repo");
+        fs::create_dir(&root).expect("repository should be created");
+        let canonical = fs::canonicalize(&root).expect("repository should canonicalize");
+        let store = Store::open(&directory.path().join("compresso.db")).expect("store should open");
+        let repo = store
+            .approve_repo(&root)
+            .expect("repository should approve");
+        let target = FileRecord {
+            path: "src/target.rs".to_owned(),
+            hash: "target-hash".to_owned(),
+            language: Some(FileLanguage::Rust),
+            size_bytes: 20,
+            token_estimate: 5,
+            indexed_at: 1,
+        };
+        store
+            .replace_indexed_file(
+                repo,
+                &target,
+                &[SymbolRecord {
+                    name: "Target".to_owned(),
+                    qualified_name: "Target".to_owned(),
+                    kind: SymbolKind::Struct,
+                    signature: Some("pub struct Target".to_owned()),
+                    start_line: 1,
+                    end_line: 1,
+                    token_estimate: 3,
+                }],
+                &[],
+            )
+            .expect("target file should index");
+        let source = FileRecord {
+            path: "src/source.rs".to_owned(),
+            hash: "source-hash".to_owned(),
+            language: Some(FileLanguage::Rust),
+            size_bytes: 40,
+            token_estimate: 10,
+            indexed_at: 1,
+        };
+        store
+            .replace_indexed_file(
+                repo,
+                &source,
+                &[SymbolRecord {
+                    name: "source".to_owned(),
+                    qualified_name: "source".to_owned(),
+                    kind: SymbolKind::Function,
+                    signature: Some("pub fn source()".to_owned()),
+                    start_line: 1,
+                    end_line: 2,
+                    token_estimate: 5,
+                }],
+                &[EdgeRecord {
+                    to_path: target.path.clone(),
+                    kind: EdgeKind::References,
+                    resolution: EdgeResolution::Resolved,
+                }],
+            )
+            .expect("source file should index");
+        store
+            .stamp_index_version(repo, "parser-v1", 1)
+            .expect("index version should stamp");
+        fs::remove_dir(&root).expect("empty repository directory should be removable");
+
+        let removed = store
+            .remove_repo(&canonical)
+            .expect("stored root should remove without filesystem access")
+            .expect("approved repository should be removed");
+
+        assert_eq!(removed.id, repo);
+        assert_eq!(removed.root, canonical);
+        assert!(
+            store
+                .repo_by_root(&removed.root)
+                .expect("removed root lookup should succeed")
+                .is_none()
+        );
+        let connection = store.connection().expect("connection lock should succeed");
+        for table in [
+            "repositories",
+            "files",
+            "symbols",
+            "symbols_fts",
+            "edges",
+            "index_versions",
+        ] {
+            let count: i64 = connection
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .expect("cascade count should be readable");
+            assert_eq!(count, 0, "{table} should be empty after removal");
+        }
+    }
+
+    #[test]
+    fn test_prepared_removal_rejects_cross_connection_reapproval_generation() {
+        let directory = tempdir().expect("temp directory should be created");
+        let root = directory.path().join("repo");
+        fs::create_dir(&root).expect("repository should be created");
+        let source = root.join("source.rs");
+        fs::write(&source, "pub fn remains_on_disk() {}\n")
+            .expect("repository source should be written");
+        let canonical = fs::canonicalize(&root).expect("repository should canonicalize");
+        let database = directory.path().join("compresso.db");
+        let store = Store::open(&database).expect("store should open");
+        let external = Store::open(&database).expect("second store connection should open");
+        let original_id = store
+            .approve_repo(&root)
+            .expect("repository should approve");
+        let preview = store
+            .prepare_repo_removal(&canonical)
+            .expect("removal should prepare")
+            .expect("repository should be approved");
+
+        external
+            .remove_repo(&canonical)
+            .expect("original approval should remove")
+            .expect("original approval should exist");
+        let replacement_id = external
+            .approve_repo(&root)
+            .expect("repository should re-approve");
+
+        assert_eq!(
+            replacement_id, original_id,
+            "SQLite should reuse the sole row id"
+        );
+        assert!(matches!(
+            store.remove_repo_if_unchanged(&preview),
+            Err(StoreError::RepositoryApprovalChanged { path }) if path == canonical
+        ));
+        assert_eq!(
+            store
+                .repo_by_root(&canonical)
+                .expect("replacement lookup should succeed")
+                .expect("replacement approval should remain")
+                .id,
+            replacement_id
+        );
+        assert_eq!(
+            fs::read_to_string(source).expect("repository source should remain"),
+            "pub fn remains_on_disk() {}\n"
         );
     }
 

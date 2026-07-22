@@ -12,14 +12,21 @@ mod engine;
 mod index;
 mod integrations;
 mod mcp;
+mod repos;
 mod retrieval;
+mod setup;
 
 pub use doctor::{ConfigExplainArgs, ConfigModeArg, DiagnosticEnvironment, DoctorArgs};
 pub use engine::{CompressArgs, ExplainArgs, StatsArgs};
 pub use index::IndexArgs;
 pub use integrations::{IntegrationEnvironment, execute_integrations};
+pub use repos::{ReposCommand, ReposListArgs, ReposRemoveArgs};
 pub use retrieval::{
     ContextArgs, ImpactArgs, MapArgs, OutlineArgs, ReadArgs, SearchArgs, UnfoldArgs,
+};
+pub use setup::{
+    SetupArgs, SetupClientArg, SetupRuntime, SystemSetupRuntime, execute_setup,
+    execute_setup_with_runtime,
 };
 
 #[derive(Debug, Parser)]
@@ -38,6 +45,7 @@ pub enum RootCommand {
     Init(MutationArgs),
     Doctor(DoctorArgs),
     Index(IndexArgs),
+    Setup(SetupArgs),
     Map(MapArgs),
     Search(SearchArgs),
     Read(ReadArgs),
@@ -59,6 +67,10 @@ pub enum RootCommand {
     Integrations {
         #[command(subcommand)]
         command: IntegrationsCommand,
+    },
+    Repos {
+        #[command(subcommand)]
+        command: ReposCommand,
     },
     Account {
         #[command(subcommand)]
@@ -238,6 +250,25 @@ pub fn execute(
         RootCommand::Mcp { command } => mcp::execute(command, errors),
         RootCommand::Eval { command } => compresso_eval::cli::execute(command, output, errors),
         RootCommand::Account { command } => execute_account(command, account, output, errors),
+        RootCommand::Setup(arguments) => {
+            let json = arguments.output.json;
+            let environment = match IntegrationEnvironment::system() {
+                Ok(environment) => environment,
+                Err(error) => {
+                    let _ = write_error(errors, error.code, &error.message, json);
+                    return CliExitCode::Failure;
+                }
+            };
+            let stdin = std::io::stdin();
+            setup::execute_setup(
+                arguments,
+                None,
+                &environment,
+                &mut stdin.lock(),
+                output,
+                errors,
+            )
+        }
         RootCommand::Index(arguments) => {
             let json = arguments.output.json;
             let cwd = match std::env::current_dir() {
@@ -269,6 +300,35 @@ pub fn execute(
                 };
                 execute_index(arguments, Some(&store), &cwd, output, errors)
             }
+        }
+        RootCommand::Repos { command } => {
+            let json = command.json();
+            let store = match Store::open_default() {
+                Ok(store) => store,
+                Err(_) => {
+                    let _ = write_error(
+                        errors,
+                        "internal",
+                        "failed to open the local Compresso store",
+                        json,
+                    );
+                    return CliExitCode::Failure;
+                }
+            };
+            let cwd = match std::env::current_dir() {
+                Ok(cwd) => cwd,
+                Err(_) => {
+                    let _ = write_error(
+                        errors,
+                        "internal",
+                        "failed to resolve the current working directory",
+                        json,
+                    );
+                    return CliExitCode::Failure;
+                }
+            };
+            let stdin = std::io::stdin();
+            repos::execute(command, &store, &cwd, &mut stdin.lock(), output, errors)
         }
         command if command.is_diagnostic() => {
             let json = command.json();
@@ -383,9 +443,21 @@ pub fn execute_with_store_and_input(
             );
             CliExitCode::Failure
         }
+        RootCommand::Setup(arguments) => {
+            let _ = write_error(
+                errors,
+                "environment_required",
+                "setup requires an explicit IntegrationEnvironment at injected boundaries",
+                arguments.output.json,
+            );
+            CliExitCode::Failure
+        }
         RootCommand::Eval { command } => compresso_eval::cli::execute(command, output, errors),
         RootCommand::Account { command } => execute_account(command, account, output, errors),
         RootCommand::Index(arguments) => execute_index(arguments, Some(store), cwd, output, errors),
+        RootCommand::Repos { command } => {
+            repos::execute(command, store, cwd, input, output, errors)
+        }
         command if command.is_diagnostic() => {
             let json = command.json();
             let environment = match DiagnosticEnvironment::system() {
@@ -653,6 +725,7 @@ impl RootCommand {
             Self::Init(arguments) => arguments.output.json,
             Self::Doctor(arguments) => arguments.output.json,
             Self::Index(arguments) => arguments.output.json,
+            Self::Setup(arguments) => arguments.output.json,
             Self::Map(arguments) => arguments.output.json,
             Self::Search(arguments) => arguments.output.json,
             Self::Read(arguments) => arguments.output.json,
@@ -676,6 +749,7 @@ impl RootCommand {
                     arguments.output.json
                 }
             },
+            Self::Repos { command } => command.json(),
             Self::Account { .. } | Self::Eval { .. } => false,
         }
     }
