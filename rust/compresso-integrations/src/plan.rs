@@ -1421,7 +1421,7 @@ fn reserve_journal(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     let temp = path.with_file_name(format!(".{name}.reserve-{suffix}"));
     write_new_private(&temp, bytes)?;
-    let link_result = reserve_completed_temp(&temp, path);
+    let link_result = publish_completed_temp_no_replace(&temp, path);
     if link_result.is_ok() {
         sync_parent(path)?;
     }
@@ -1438,15 +1438,21 @@ fn reserve_journal(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 #[cfg(not(windows))]
-fn reserve_completed_temp(temp: &Path, journal: &Path) -> std::io::Result<()> {
+pub(crate) fn publish_completed_temp_no_replace(
+    temp: &Path,
+    destination: &Path,
+) -> std::io::Result<()> {
     // hard_link is an atomic, no-replace directory operation: only one
-    // process can publish its fully fsynced journal inode.
-    fs::hard_link(temp, journal)
+    // process can publish its fully fsynced inode.
+    fs::hard_link(temp, destination)
 }
 
 #[cfg(windows)]
-fn reserve_completed_temp(temp: &Path, journal: &Path) -> std::io::Result<()> {
-    move_file_windows(temp, journal, false)
+pub(crate) fn publish_completed_temp_no_replace(
+    temp: &Path,
+    destination: &Path,
+) -> std::io::Result<()> {
+    move_file_windows(temp, destination, false)
 }
 
 fn ensure_backup(commit: &PendingCommit) -> Result<(), IntegrationError> {
