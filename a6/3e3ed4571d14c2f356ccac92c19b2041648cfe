@@ -1,0 +1,49 @@
+rust/compresso-mcp/tests/handshake.rs
+  s_87261b37472da1::t_5c1c83eee46192 1-7,9-105,111-129,131-169,171-206
+  s_87261b37472da1::t_da1a72db8811a0 106-110
+  s_87261b37472da1::t_5352f95350499e 8,130,170
+  s_87261b37472da1::t_9069f819fd6ca5 207-238
+Cargo.toml
+  s_87261b37472da1::t_70f778ea2b2f52 31
+rust/compresso-mcp/src/server.rs
+  s_87261b37472da1::t_f9d0edafe7e7b4 8-9,58,60,65,70,76,261
+  s_87261b37472da1::t_c7cf01dda8356a 311-318,320-327,329-330,337-338
+  s_87261b37472da1::t_7049d7ba1192ff 59,262-267
+  s_87261b37472da1::t_9c1e11e4a4c376 1-7,10-57,61-64,66-69,71-75,77-260,268-310,319,331-336,339-340
+  s_87261b37472da1::t_4775b27fef2479 328
+rust/compresso-cli/Cargo.toml
+  s_87261b37472da1::t_9d73a371593a56 20
+rust/compresso-mcp/Cargo.toml
+  s_87261b37472da1::t_9d73a371593a56 11,15-20
+docs/plan/01-stack-and-workspace.md
+  s_87261b37472da1::t_d606792f565453 15
+rust/compresso-cli/src/commands.rs
+  s_87261b37472da1::t_e58cae09a69f70 11,169
+rust/compresso-cli/src/commands/mcp.rs
+  s_87261b37472da1::t_e58cae09a69f70 1-76
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_7520d0f67407f3 520
+rust/compresso-mcp/src/lib.rs
+  s_87261b37472da1::t_9c1e11e4a4c376 2-5
+rust/compresso-cli/src/main.rs
+  s_87261b37472da1::t_e58cae09a69f70 9-10
+  s_87261b37472da1::t_5352f95350499e 11
+Cargo.lock
+  s_87261b37472da1::t_3dd5badcb51d7a 28-36,95,97,111-121,219-224,247-260,369,413,417-420,451-456,563-568,679-703,710-743,756,758-760,762,872-895,1309-1314,1538-1557,1618-1643,1686-1696,1858-1893,1935-1965,2226-2260,2267-2284
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "a63e3ed4571d14c2f356ccac92c19b2041648cfe",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
