@@ -18,6 +18,9 @@ compresso-store.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [[bin]]
 name = "compresso"
 path = "src/main.rs"

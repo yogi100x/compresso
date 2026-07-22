@@ -324,6 +324,7 @@ dependencies = [
  "compresso-mcp",
  "compresso-store",
  "serde_json",
+ "tempfile",
  "thiserror",
 ]
 

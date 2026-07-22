@@ -4,6 +4,13 @@ use std::io::Write;
 use clap::{Args, Parser, Subcommand};
 pub use compresso_eval::cli::CliExitCode;
 use compresso_eval::cli::EvalCommand;
+use compresso_store::Store;
+
+mod retrieval;
+
+pub use retrieval::{
+    ContextArgs, ImpactArgs, MapArgs, OutlineArgs, ReadArgs, SearchArgs, UnfoldArgs,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -21,13 +28,13 @@ pub enum RootCommand {
     Init(MutationArgs),
     Doctor(DeferredArgs),
     Index(DeferredArgs),
-    Map(DeferredArgs),
-    Search(DeferredArgs),
-    Read(DeferredArgs),
-    Outline(DeferredArgs),
-    Unfold(DeferredArgs),
-    Context(DeferredArgs),
-    Impact(DeferredArgs),
+    Map(MapArgs),
+    Search(SearchArgs),
+    Read(ReadArgs),
+    Outline(OutlineArgs),
+    Unfold(UnfoldArgs),
+    Context(ContextArgs),
+    Impact(ImpactArgs),
     Compress(DeferredArgs),
     Explain(DeferredArgs),
     Stats(DeferredArgs),
@@ -156,6 +163,34 @@ pub fn execute(
     match cli.command {
         RootCommand::Eval { command } => compresso_eval::cli::execute(command, output, errors),
         RootCommand::Account { command } => execute_account(command, account, output, errors),
+        command if command.is_retrieval() => {
+            let json = command.json();
+            let store = match Store::open_default() {
+                Ok(store) => store,
+                Err(_) => {
+                    let _ = write_error(
+                        errors,
+                        "internal",
+                        "failed to open the local Compresso store",
+                        json,
+                    );
+                    return CliExitCode::Failure;
+                }
+            };
+            let cwd = match std::env::current_dir() {
+                Ok(cwd) => cwd,
+                Err(_) => {
+                    let _ = write_error(
+                        errors,
+                        "internal",
+                        "failed to resolve the current working directory",
+                        json,
+                    );
+                    return CliExitCode::Failure;
+                }
+            };
+            execute_retrieval(command, &store, &cwd, output, errors)
+        }
         command => {
             let json = command.json();
             let _ = write_error(
@@ -164,6 +199,65 @@ pub fn execute(
                 "command wiring belongs to a later E4/E5/E6 ticket",
                 json,
             );
+            CliExitCode::Failure
+        }
+    }
+}
+
+/// Executes a command against an injected local store and working directory.
+///
+/// This is the shared boundary used by the binary and deterministic CLI tests;
+/// retrieval behavior remains implemented by Atlas and Store.
+pub fn execute_with_store(
+    cli: Cli,
+    account: &dyn AccountClient,
+    store: &Store,
+    cwd: &std::path::Path,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> CliExitCode {
+    match cli.command {
+        RootCommand::Eval { command } => compresso_eval::cli::execute(command, output, errors),
+        RootCommand::Account { command } => execute_account(command, account, output, errors),
+        command if command.is_retrieval() => execute_retrieval(command, store, cwd, output, errors),
+        command => {
+            let json = command.json();
+            let _ = write_error(
+                errors,
+                "unavailable",
+                "command wiring belongs to a later E4/E5/E6 ticket",
+                json,
+            );
+            CliExitCode::Failure
+        }
+    }
+}
+
+fn execute_retrieval(
+    command: RootCommand,
+    store: &Store,
+    cwd: &std::path::Path,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> CliExitCode {
+    let json = command.json();
+    match retrieval::execute(command, store, cwd) {
+        Ok(rendered) => {
+            let result = if json {
+                serde_json::to_writer(&mut *output, &rendered.json)
+                    .map_err(std::io::Error::other)
+                    .and_then(|()| writeln!(output))
+            } else {
+                writeln!(output, "{}", rendered.human)
+            };
+            if result.is_ok() {
+                CliExitCode::Success
+            } else {
+                CliExitCode::Failure
+            }
+        }
+        Err(error) => {
+            let _ = write_error(errors, error.code, &error.message, json);
             CliExitCode::Failure
         }
     }
@@ -239,21 +333,34 @@ fn write_error(
 }
 
 impl RootCommand {
+    fn is_retrieval(&self) -> bool {
+        matches!(
+            self,
+            Self::Map(_)
+                | Self::Search(_)
+                | Self::Read(_)
+                | Self::Outline(_)
+                | Self::Unfold(_)
+                | Self::Context(_)
+                | Self::Impact(_)
+        )
+    }
+
     fn json(&self) -> bool {
         match self {
             Self::Init(arguments) => arguments.output.json,
             Self::Doctor(arguments)
             | Self::Index(arguments)
-            | Self::Map(arguments)
-            | Self::Search(arguments)
-            | Self::Read(arguments)
-            | Self::Outline(arguments)
-            | Self::Unfold(arguments)
-            | Self::Context(arguments)
-            | Self::Impact(arguments)
             | Self::Compress(arguments)
             | Self::Explain(arguments)
             | Self::Stats(arguments) => arguments.output.json,
+            Self::Map(arguments) => arguments.output.json,
+            Self::Search(arguments) => arguments.output.json,
+            Self::Read(arguments) => arguments.output.json,
+            Self::Outline(arguments) => arguments.output.json,
+            Self::Unfold(arguments) => arguments.output.json,
+            Self::Context(arguments) => arguments.output.json,
+            Self::Impact(arguments) => arguments.output.json,
             Self::Config { command } => match command {
                 ConfigCommand::Explain(arguments) => arguments.output.json,
             },
