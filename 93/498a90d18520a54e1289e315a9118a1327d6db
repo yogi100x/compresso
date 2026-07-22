@@ -1,0 +1,64 @@
+rust/compresso-integrations/tests/launcher_upgrade.rs
+  s_87261b37472da1::t_cc4ba78bf30af0 1-126,129-213
+  s_87261b37472da1::t_05c5d856fb0b65 127-128
+scripts/fixtures/crate-capabilities/denied-bounded-local-production-process/Cargo.toml
+  s_87261b37472da1::t_4d2569855d35ba 1-10
+scripts/fixtures/crate-capabilities/allowed-bounded-local-test-process/src/lib.rs
+  s_87261b37472da1::t_4d2569855d35ba 1
+scripts/fixtures/crate-capabilities/allowed-bounded-local-test-process/tests/e2e.rs
+  s_87261b37472da1::t_4d2569855d35ba 1-7
+scripts/fixtures/crate-capabilities/allowed-bounded-local-test-process/Cargo.toml
+  s_87261b37472da1::t_4d2569855d35ba 1-10
+scripts/fixtures/crate-capabilities/denied-bounded-local-test-network/tests/e2e.rs
+  s_87261b37472da1::t_4d2569855d35ba 1-6
+docs/plan/01-stack-and-workspace.md
+  s_87261b37472da1::t_4d2569855d35ba 109-110
+scripts/fixtures/crate-capabilities/denied-bounded-local-dual-target-process/tests/shared.rs
+  s_87261b37472da1::t_4d2569855d35ba 1-3
+scripts/fixtures/crate-capabilities/denied-bounded-local-test-network/Cargo.toml
+  s_87261b37472da1::t_4d2569855d35ba 1-10
+scripts/fixtures/crate-capabilities/denied-bounded-local-dual-target-process/Cargo.toml
+  s_87261b37472da1::t_4d2569855d35ba 1-14
+scripts/fixtures/crate-capabilities/denied-bounded-local-production-process/src/lib.rs
+  s_87261b37472da1::t_4d2569855d35ba 1-3
+scripts/check-crate-capabilities.test.ts
+  s_87261b37472da1::t_4d2569855d35ba 43-85
+scripts/check-crate-capabilities.ts
+  s_87261b37472da1::t_4d2569855d35ba 6-14,571-612,819-825,830-833
+scripts/fixtures/crate-capabilities/denied-bounded-local-production-process/tests/e2e.rs
+  s_87261b37472da1::t_4d2569855d35ba 1-4
+scripts/fixtures/crate-capabilities/denied-bounded-local-test-network/src/lib.rs
+  s_87261b37472da1::t_4d2569855d35ba 1
+scripts/fixtures/crate-capabilities/allowed-bounded-local-test-process/Cargo.lock
+  s_039ad00031ea4e::t_13b18f9467c400 1-7
+scripts/fixtures/crate-capabilities/denied-bounded-local-dual-target-process/Cargo.lock
+  s_039ad00031ea4e::t_30242a94522220 1-7
+scripts/fixtures/crate-capabilities/denied-bounded-local-production-process/Cargo.lock
+  s_039ad00031ea4e::t_5c13fd27717b30 1-7
+scripts/fixtures/crate-capabilities/denied-bounded-local-test-network/Cargo.lock
+  s_039ad00031ea4e::t_c72fda42934154 1-7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "93498a90d18520a54e1289e315a9118a1327d6db",
+  "prompts": {},
+  "sessions": {
+    "s_039ad00031ea4e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8a90-a129-7eb2-b64a-24cf862821bd",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
