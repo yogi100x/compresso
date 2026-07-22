@@ -174,7 +174,8 @@ pub(crate) fn validate_relative_path(path: &str) -> Result<(), StoreError> {
         Some(RelativePathError::Empty)
     } else if Path::new(path).is_absolute()
         || path.starts_with('/')
-        || (path.as_bytes().get(1) == Some(&b':') && path.as_bytes().get(2) == Some(&b'/'))
+        || (path.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+            && path.as_bytes().get(1) == Some(&b':'))
     {
         Some(RelativePathError::Absolute)
     } else if path.contains('\0') {
@@ -352,6 +353,8 @@ mod tests {
             ("", RelativePathError::Empty),
             ("/src/lib.rs", RelativePathError::Absolute),
             ("C:/src/lib.rs", RelativePathError::Absolute),
+            ("C:src/lib.rs", RelativePathError::Absolute),
+            ("C:", RelativePathError::Absolute),
             ("../src/lib.rs", RelativePathError::ParentTraversal),
             ("src/../lib.rs", RelativePathError::ParentTraversal),
             ("./src/lib.rs", RelativePathError::CurrentDirectory),
