@@ -40,6 +40,9 @@ jobs:
           package-manager-cache: false
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
+        env:
+          # Remove after https://github.com/Swatinem/rust-cache/issues/331 is fixed.
+          NODE_OPTIONS: --disable-warning=DEP0040
       - name: Test crate capability boundaries
         run: node --experimental-strip-types --test scripts/check-crate-capabilities.test.ts
       - name: Enforce crate capability boundaries
@@ -149,6 +152,9 @@ jobs:
         uses: actions/checkout@v7
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
+        env:
+          # Remove after https://github.com/Swatinem/rust-cache/issues/331 is fixed.
+          NODE_OPTIONS: --disable-warning=DEP0040
         with:
           shared-key: ci-${{ matrix.os }}
       - name: Check formatting
@@ -186,6 +192,9 @@ jobs:
         uses: actions/checkout@v7
       - name: Reuse Rust build cache
         uses: Swatinem/rust-cache@v2
+        env:
+          # Remove after https://github.com/Swatinem/rust-cache/issues/331 is fixed.
+          NODE_OPTIONS: --disable-warning=DEP0040
         with:
           shared-key: ci-${{ matrix.os }}
       - name: Run release evaluation gates
@@ -265,6 +274,9 @@ jobs:
         uses: actions/checkout@v7
       - name: Download release binary
         uses: actions/download-artifact@v8
+        env:
+          # Remove after https://github.com/actions/download-artifact/issues/484 is fixed.
+          NODE_OPTIONS: --disable-warning=DEP0005
         with:
           name: compresso-${{ matrix.os }}
           path: package-input
@@ -298,6 +310,9 @@ jobs:
         uses: actions/checkout@v7
       - name: Download release tarballs
         uses: actions/download-artifact@v8
+        env:
+          # Remove after https://github.com/actions/download-artifact/issues/484 is fixed.
+          NODE_OPTIONS: --disable-warning=DEP0005
         with:
           pattern: compresso-package-*
           path: dist
