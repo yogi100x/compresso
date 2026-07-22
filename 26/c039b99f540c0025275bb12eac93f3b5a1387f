@@ -1,0 +1,20 @@
+rust/compresso-eval/src/fixtures.rs
+  s_87261b37472da1::t_6d0762f6da2c7e 1115-1116,1124
+  s_87261b37472da1::t_d8af85a2a008c0 1113-1114,1117-1123,1125-1128,1133,1139-1140
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "26c039b99f540c0025275bb12eac93f3b5a1387f",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
