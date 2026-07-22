@@ -156,7 +156,7 @@ pub enum ConfigError {
     Parse {
         path: PathBuf,
         #[source]
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
     #[error("invalid configuration value for {key}: {reason}")]
     InvalidValue {
@@ -535,7 +535,7 @@ fn read_file_config(path: &Path) -> Result<Option<FileConfig>, ConfigError> {
             .map(Some)
             .map_err(|source| ConfigError::Parse {
                 path: path.to_path_buf(),
-                source,
+                source: Box::new(source),
             }),
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(source) => Err(ConfigError::Read {
@@ -698,10 +698,22 @@ mod tests {
         let path = directory.path().join("config.toml");
         fs::write(&path, "mode = [").expect("bad configuration should be written");
 
-        assert!(matches!(
-            Config::load_from(&path, &BTreeMap::new(), ConfigOverrides::default()),
-            Err(ConfigError::Parse { path: error_path, .. }) if error_path == path
-        ));
+        let error = Config::load_from(&path, &BTreeMap::new(), ConfigOverrides::default())
+            .expect_err("malformed TOML should return a typed parse error");
+        match &error {
+            ConfigError::Parse {
+                path: error_path,
+                source,
+            } => {
+                assert_eq!(error_path, &path);
+                assert!(!source.to_string().is_empty());
+            }
+            other => panic!("expected parse error, got {other:?}"),
+        }
+        assert!(std::error::Error::source(&error).is_some());
+        let message = error.to_string();
+        assert!(message.starts_with("failed to parse configuration file "));
+        assert!(message.contains(path.to_string_lossy().as_ref()));
     }
 
     #[test]
