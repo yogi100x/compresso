@@ -1,0 +1,24 @@
+docs/runbooks/mcp-manual-verification.md
+  s_87261b37472da1::t_f8e521c336d050 1-76
+rust/compresso-mcp/tests/handshake.rs
+  s_87261b37472da1::t_ba13dbdbc92b05 26-27,214-233,235,237-254
+  s_87261b37472da1::t_f0e315b8a7ea1d 234,236
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_e03442b256f32f 599
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "5e8b77b15a75b19963ac2baff93b361c5f97ef93",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
