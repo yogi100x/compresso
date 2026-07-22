@@ -76,6 +76,27 @@ impl Store {
         raw.map(decode_repo).transpose()
     }
 
+    /// Lists every approved repository in deterministic canonical-root order.
+    pub fn approved_repositories(&self) -> Result<Vec<RepoRecord>, StoreError> {
+        let connection = self.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT id, root, approved_at, parser_version, schema_version, last_indexed_at FROM repositories ORDER BY root ASC, id ASC",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+            ))
+        })?;
+
+        rows.map(|row| row.map_err(StoreError::from).and_then(decode_repo))
+            .collect()
+    }
+
     /// Loads one approved repository by its stable identifier.
     pub fn repository(&self, repo: RepoId) -> Result<RepoRecord, StoreError> {
         let connection = self.connection()?;
@@ -283,6 +304,36 @@ mod tests {
             store.approve_repo(&file),
             Err(StoreError::RepositoryRootNotDirectory { path }) if path == canonical_file
         ));
+    }
+
+    #[test]
+    fn test_approved_repositories_sorted_by_root() {
+        let directory = tempdir().expect("temp directory should be created");
+        let alpha = directory.path().join("alpha");
+        let zeta = directory.path().join("zeta");
+        fs::create_dir(&alpha).expect("alpha repository should be created");
+        fs::create_dir(&zeta).expect("zeta repository should be created");
+        let store = Store::open(&directory.path().join("compresso.db")).expect("store should open");
+
+        let zeta_id = store.approve_repo(&zeta).expect("zeta should approve");
+        let alpha_id = store.approve_repo(&alpha).expect("alpha should approve");
+
+        let repositories = store
+            .approved_repositories()
+            .expect("approved repositories should list");
+        assert_eq!(repositories.len(), 2);
+        assert_eq!(repositories[0].id, alpha_id);
+        assert_eq!(repositories[1].id, zeta_id);
+        assert_eq!(
+            repositories
+                .iter()
+                .map(|repository| repository.root.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                fs::canonicalize(alpha).expect("alpha should canonicalize"),
+                fs::canonicalize(zeta).expect("zeta should canonicalize")
+            ]
+        );
     }
 
     #[test]
