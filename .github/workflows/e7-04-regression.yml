@@ -1,0 +1,39 @@
+name: E7-04 regression evidence
+
+on:
+  push:
+    branches:
+      - e7-04-regression
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  eval-regression:
+    name: Eval deliberate regression
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+      - name: Run deliberate release gate regression
+        shell: bash
+        run: |
+          set +e
+          cargo run -p compresso-eval --release -- run fixtures/ --gates docs/plan/gates.toml --json > eval-report-ubuntu-24.04.json 2> eval-error.log
+          eval_status=$?
+          set -e
+          cat eval-error.log
+          jq -e '.gates.gates[] | select(.name == "median_reduction_eligible" and .passed == false)' eval-report-ubuntu-24.04.json
+          test "${eval_status}" -ne 0
+          echo "deliberate gate regression: median_reduction_eligible"
+          exit "${eval_status}"
+      - name: Upload evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compresso-eval-e7-04-regression
+          path: eval-report-ubuntu-24.04.json
+          if-no-files-found: error
