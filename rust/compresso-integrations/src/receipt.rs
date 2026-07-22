@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::plan::{atomic_replace, sync_parent};
+use crate::plan::{atomic_replace, publish_completed_temp_no_replace, sync_parent};
 
 /// Receipt schema version emitted by the first local integration slice.
 pub const RECEIPT_SCHEMA_VERSION: u32 = 1;
@@ -378,21 +378,12 @@ impl FileReceiptStore {
             getrandom::fill(&mut key).map_err(|error| ReceiptError::Entropy {
                 reason: error.to_string(),
             })?;
-            match write_private_file(&self.approval_key_path, &key) {
-                Ok(()) => {
-                    sync_parent(&self.approval_key_path).map_err(|source| ReceiptError::Io {
-                        path: parent.to_path_buf(),
-                        source,
-                    })?
+            publish_private_file_no_replace(&self.approval_key_path, &key).map_err(|source| {
+                ReceiptError::Io {
+                    path: self.approval_key_path.clone(),
+                    source,
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(source) => {
-                    return Err(ReceiptError::Io {
-                        path: self.approval_key_path.clone(),
-                        source,
-                    });
-                }
-            }
+            })?;
         }
 
         let symlink_metadata = fs::symlink_metadata(&self.approval_key_path).map_err(|source| {
@@ -697,9 +688,51 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     file.sync_all()
 }
 
+fn publish_private_file_no_replace(path: &Path, bytes: &[u8]) -> std::io::Result<bool> {
+    let mut random = [0_u8; 12];
+    getrandom::fill(&mut random).map_err(|error| std::io::Error::other(error.to_string()))?;
+    let suffix = random
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let temp = path.with_file_name(format!(".{name}.compresso-tmp-approval-key-{suffix}"));
+
+    if let Err(write_error) = write_private_file(&temp, bytes) {
+        return match remove_if_present(&temp) {
+            Ok(()) => Err(write_error),
+            Err(cleanup_error) => Err(cleanup_error),
+        };
+    }
+    let publish_result = publish_completed_temp_no_replace(&temp, path);
+    let cleanup_result = remove_if_present(&temp);
+    cleanup_result?;
+
+    match publish_result {
+        Ok(()) => {
+            sync_parent(path)?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            sync_parent(path)?;
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+    use std::sync::{Arc, Barrier};
 
     use tempfile::tempdir;
 
@@ -763,35 +796,95 @@ mod tests {
     fn test_separate_file_store_instances_do_not_lose_concurrent_receipts() {
         let directory = tempdir().expect("temp directory");
         let state = directory.path().join("receipts.json");
-        let mut first = receipt(directory.path().join("first.toml"));
-        first.plan_hash = "1".repeat(64);
-        let mut second = receipt(directory.path().join("second.toml"));
-        second.plan_hash = "2".repeat(64);
-        let first_state = state.clone();
-        let second_state = state.clone();
-        let first_thread = std::thread::spawn(move || {
-            FileReceiptStore::new(first_state)
-                .save(&first)
-                .expect("first receipt saves");
-        });
-        let second_thread = std::thread::spawn(move || {
-            FileReceiptStore::new(second_state)
-                .save(&second)
-                .expect("second receipt saves");
-        });
-        first_thread.join().expect("first thread joins");
-        second_thread.join().expect("second thread joins");
+        const STORE_COUNT: usize = 16;
+        let barrier = Arc::new(Barrier::new(STORE_COUNT));
+        let threads = (0..STORE_COUNT)
+            .map(|index| {
+                let state = state.clone();
+                let barrier = Arc::clone(&barrier);
+                let mut value = receipt(directory.path().join(format!("config-{index}.toml")));
+                value.plan_hash = format!("{index:064x}");
+                std::thread::spawn(move || {
+                    let store = FileReceiptStore::new(state);
+                    barrier.wait();
+                    store.save(&value).expect("concurrent receipt saves");
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread.join().expect("receipt thread joins");
+        }
 
         let stored = FileReceiptStore::new(state)
             .load_unlocked()
             .expect("receipts load");
-        assert_eq!(stored.len(), 2);
+        assert_eq!(stored.len(), STORE_COUNT);
         assert_eq!(
             stored
                 .iter()
                 .map(|receipt| receipt.plan_hash.as_str())
                 .collect::<Vec<_>>(),
-            ["1".repeat(64), "2".repeat(64)]
+            (0..STORE_COUNT)
+                .map(|index| format!("{index:064x}"))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            fs::read(directory.path().join("receipts.json.approval-key"))
+                .expect("approval key reads")
+                .len(),
+            32
+        );
+    }
+
+    #[test]
+    fn test_private_file_publication_never_clobbers_and_cleans_temps() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("receipts.json.approval-key");
+        assert!(publish_private_file_no_replace(&path, &[1_u8; 32]).expect("first key publishes"));
+        assert!(
+            !publish_private_file_no_replace(&path, &[2_u8; 32])
+                .expect("second key observes winner")
+        );
+        assert_eq!(fs::read(&path).expect("published key reads"), [1_u8; 32]);
+        assert!(
+            fs::read_dir(directory.path())
+                .expect("directory reads")
+                .all(|entry| !entry
+                    .expect("directory entry reads")
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("compresso-tmp-approval-key"))
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path)
+                    .expect("key metadata reads")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn test_malformed_existing_approval_key_is_not_repaired() {
+        let directory = tempdir().expect("temp directory");
+        let state = directory.path().join("receipts.json");
+        let store = FileReceiptStore::new(state);
+        write_private_file(&store.approval_key_path, &[7_u8; 31])
+            .expect("malformed key fixture writes");
+
+        assert!(matches!(
+            store.seal_journal(b"payload"),
+            Err(ReceiptError::ApprovalKey { reason, .. })
+                if reason == "key must contain exactly 32 bytes"
+        ));
+        assert_eq!(
+            fs::read(&store.approval_key_path).expect("malformed key remains readable"),
+            [7_u8; 31]
         );
     }
 
