@@ -139,7 +139,7 @@ pub enum EvalError {
     Manifest {
         path: PathBuf,
         #[source]
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
     #[error("invalid fixture {path}: {message}")]
     InvalidFixture { path: PathBuf, message: String },
@@ -402,7 +402,7 @@ fn load_fixture(manifest_path: &Path, validator: &Validator) -> Result<Fixture, 
     let manifest: FixtureManifest =
         toml::from_str(&source).map_err(|source| EvalError::Manifest {
             path: manifest_path.to_path_buf(),
-            source,
+            source: Box::new(source),
         })?;
     let directory = manifest_path.parent().ok_or_else(|| {
         invalid_fixture(manifest_path, "fixture manifest has no parent directory")
