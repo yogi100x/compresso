@@ -14,6 +14,13 @@ const CROCKFORD_BASE32: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 static OPERATION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Stable identity shared by compression traces and retrieval operations.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct OperationIdentity {
+    pub id: String,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StrategyResult {
     pub strategy_id: String,
@@ -61,10 +68,10 @@ impl Trace {
         safety_checks: Vec<SafetyCheck>,
         explanation: String,
     ) -> Self {
-        let (operation_id, created_at) = operation_identity();
+        let identity = operation_identity();
         Self {
             schema_version: TRACE_SCHEMA_VERSION,
-            operation_id,
+            operation_id: identity.id,
             session_id: None,
             mode,
             before_tokens,
@@ -75,12 +82,13 @@ impl Trace {
             strategy_results,
             safety_checks,
             explanation,
-            created_at,
+            created_at: identity.created_at,
         }
     }
 }
 
-fn operation_identity() -> (String, i64) {
+/// Generates a process-local unique ULID-compatible operation id and timestamp.
+pub fn operation_identity() -> OperationIdentity {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
@@ -98,7 +106,10 @@ fn operation_identity() -> (String, i64) {
     bytes[..6].copy_from_slice(&timestamp_ms.to_be_bytes()[2..]);
     bytes[6..].copy_from_slice(&digest.as_bytes()[..10]);
     let created_at = i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX);
-    (encode_ulid(bytes), created_at)
+    OperationIdentity {
+        id: encode_ulid(bytes),
+        created_at,
+    }
 }
 
 fn encode_ulid(bytes: [u8; 16]) -> String {
@@ -117,8 +128,8 @@ mod tests {
 
     #[test]
     fn test_operation_identity_is_valid_and_unique() {
-        let first = operation_identity().0;
-        let second = operation_identity().0;
+        let first = operation_identity().id;
+        let second = operation_identity().id;
 
         assert_ne!(first, second);
         for id in [first, second] {
