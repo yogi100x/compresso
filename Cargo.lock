@@ -277,7 +277,9 @@ dependencies = [
 name = "compresso-eval"
 version = "0.1.0"
 dependencies = [
+ "compresso-atlas",
  "compresso-core",
+ "compresso-store",
  "jsonschema",
  "serde",
  "serde_json",
