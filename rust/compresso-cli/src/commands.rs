@@ -8,11 +8,13 @@ use compresso_store::Store;
 
 mod doctor;
 mod engine;
+mod index;
 mod mcp;
 mod retrieval;
 
 pub use doctor::{ConfigExplainArgs, ConfigModeArg, DiagnosticEnvironment, DoctorArgs};
 pub use engine::{CompressArgs, ExplainArgs, StatsArgs};
+pub use index::IndexArgs;
 pub use retrieval::{
     ContextArgs, ImpactArgs, MapArgs, OutlineArgs, ReadArgs, SearchArgs, UnfoldArgs,
 };
@@ -32,7 +34,7 @@ pub struct Cli {
 pub enum RootCommand {
     Init(MutationArgs),
     Doctor(DoctorArgs),
-    Index(DeferredArgs),
+    Index(IndexArgs),
     Map(MapArgs),
     Search(SearchArgs),
     Read(ReadArgs),
@@ -169,6 +171,38 @@ pub fn execute(
         RootCommand::Mcp { command } => mcp::execute(command, errors),
         RootCommand::Eval { command } => compresso_eval::cli::execute(command, output, errors),
         RootCommand::Account { command } => execute_account(command, account, output, errors),
+        RootCommand::Index(arguments) => {
+            let json = arguments.output.json;
+            let cwd = match std::env::current_dir() {
+                Ok(cwd) => cwd,
+                Err(_) => {
+                    let _ = write_error(
+                        errors,
+                        "internal",
+                        "failed to resolve the current working directory",
+                        json,
+                    );
+                    return CliExitCode::Failure;
+                }
+            };
+            if arguments.dry_run {
+                execute_index(arguments, None, &cwd, output, errors)
+            } else {
+                let store = match Store::open_default() {
+                    Ok(store) => store,
+                    Err(_) => {
+                        let _ = write_error(
+                            errors,
+                            "internal",
+                            "failed to open the local Compresso store",
+                            json,
+                        );
+                        return CliExitCode::Failure;
+                    }
+                };
+                execute_index(arguments, Some(&store), &cwd, output, errors)
+            }
+        }
         command if command.is_diagnostic() => {
             let json = command.json();
             let environment = match DiagnosticEnvironment::system() {
@@ -274,6 +308,7 @@ pub fn execute_with_store_and_input(
     match cli.command {
         RootCommand::Eval { command } => compresso_eval::cli::execute(command, output, errors),
         RootCommand::Account { command } => execute_account(command, account, output, errors),
+        RootCommand::Index(arguments) => execute_index(arguments, Some(store), cwd, output, errors),
         command if command.is_diagnostic() => {
             let json = command.json();
             let environment = match DiagnosticEnvironment::system() {
@@ -401,6 +436,36 @@ fn execute_retrieval(
                     .and_then(|()| writeln!(output))
             } else {
                 writeln!(output, "{}", rendered.human)
+            };
+            if result.is_ok() {
+                CliExitCode::Success
+            } else {
+                CliExitCode::Failure
+            }
+        }
+        Err(error) => {
+            let _ = write_error(errors, error.code, &error.message, json);
+            CliExitCode::Failure
+        }
+    }
+}
+
+fn execute_index(
+    arguments: IndexArgs,
+    store: Option<&Store>,
+    cwd: &std::path::Path,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> CliExitCode {
+    let json = arguments.output.json;
+    match index::execute(arguments, store, cwd) {
+        Ok(rendered) => {
+            let result = if json {
+                serde_json::to_writer(&mut *output, &rendered.json)
+                    .map_err(std::io::Error::other)
+                    .and_then(|()| writeln!(output))
+            } else {
+                output.write_all(rendered.human.as_bytes())
             };
             if result.is_ok() {
                 CliExitCode::Success
