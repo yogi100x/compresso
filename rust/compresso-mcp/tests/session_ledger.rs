@@ -6,7 +6,10 @@ use std::time::Duration;
 
 use compresso_atlas::Indexer;
 use compresso_core::{Config, Engine, TokenProvider, counter_for, initialize_tokenizers};
-use compresso_mcp::{McpDeps, McpLedgerHooks, serve_io, serve_io_with_hooks};
+use compresso_mcp::{
+    McpDeps, McpLedgerHooks, serve_io, serve_io_for_root, serve_io_with_hooks,
+    serve_io_with_hooks_for_root,
+};
 use compresso_store::{StatsFilter, Store, StoreError};
 use jsonschema::{Draft, Validator};
 use serde_json::{Value, json};
@@ -36,6 +39,12 @@ impl Harness {
     }
 
     async fn start_with_optional_hooks(store: Store, hooks: Option<McpLedgerHooks>) -> Self {
+        let root = store
+            .approved_repositories()
+            .expect("approved repositories should load")
+            .into_iter()
+            .next()
+            .map(|repository| repository.root);
         let config = Config::default();
         let deps = McpDeps {
             store,
@@ -48,8 +57,24 @@ impl Harness {
         let (client, server) = tokio::io::duplex(512 * 1024);
         let (server_read, server_write) = tokio::io::split(server);
         let server = tokio::spawn(async move {
-            match hooks {
-                Some(hooks) => {
+            match (root, hooks) {
+                (Some(root), Some(hooks)) => {
+                    serve_io_with_hooks_for_root(
+                        deps,
+                        root,
+                        server_read,
+                        server_write,
+                        || {
+                            initialize_tokenizers(&[
+                                TokenProvider::OpenAiO200k,
+                                TokenProvider::AnthropicCalibrated,
+                            ])
+                        },
+                        hooks,
+                    )
+                    .await
+                }
+                (None, Some(hooks)) => {
                     serve_io_with_hooks(
                         deps,
                         server_read,
@@ -64,7 +89,10 @@ impl Harness {
                     )
                     .await
                 }
-                None => serve_io(deps, server_read, server_write).await,
+                (Some(root), None) => {
+                    serve_io_for_root(deps, root, server_read, server_write).await
+                }
+                (None, None) => serve_io(deps, server_read, server_write).await,
             }
         });
         let (client_read, client_write) = tokio::io::split(client);

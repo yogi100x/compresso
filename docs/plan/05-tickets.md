@@ -784,7 +784,7 @@ Test cases:
 - `test_pb01_trust_claims_include_full_npm_compromise`.
 - `test_pb01_scope_scan_and_d36_remains_open`.
 
-### [ ] PB-02: Repository-bound MCP and secret-safe disclosure
+### [x] PB-02: Repository-bound MCP and secret-safe disclosure
 Owner: R2+PQ · Estimate: 3d · Depends: PB-01, E6-05
 Files: rust/compresso-cli/src/commands/mcp.rs, rust/compresso-mcp/src/server.rs, rust/compresso-atlas/src/scanner.rs, rust/compresso-store/src/, docs/plan/03-interfaces.md, docs/plan/04-mcp-and-integrations.md
 Description: Make one canonical approved repository the immutable boundary for each MCP process. Bind at startup from explicit `mcp serve --root ROOT` or the canonical cwd's longest approved ancestor; never fall back merely because one repository is approved. Tool roots may only confirm the bound root. Keep provider disclosure truthful and exclude documented secret classes before read, hash, tokenization, parsing, persistence, traces, search, or MCP output.

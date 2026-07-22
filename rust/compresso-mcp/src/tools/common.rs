@@ -171,47 +171,52 @@ pub(crate) fn optional_u32(
 
 pub(crate) fn resolve_repository(
     store: &Store,
+    session_root: Option<&Path>,
     supplied_root: Option<&str>,
 ) -> Result<RepoRecord, ToolFailure> {
-    if let Some(root) = supplied_root {
-        let root = Path::new(root);
-        if !root.is_absolute() {
+    let Some(session_root) = session_root else {
+        return if supplied_root.is_some() {
+            Err(ToolFailure::outside_root())
+        } else {
+            Err(unresolved_repository())
+        };
+    };
+
+    let canonical_session_root = match fs::canonicalize(session_root) {
+        Ok(canonical) if canonical.is_dir() && canonical == session_root => canonical,
+        _ => return Err(ToolFailure::outside_root()),
+    };
+
+    if let Some(supplied_root) = supplied_root {
+        let supplied_root = Path::new(supplied_root);
+        if !supplied_root.is_absolute() {
             return Err(ToolFailure::invalid(
                 "argument 'root' must be an absolute path.",
             ));
         }
-        let canonical = match fs::canonicalize(root) {
+        let canonical = match fs::canonicalize(supplied_root) {
             Ok(canonical) if canonical.is_dir() => canonical,
-            _ => return Err(not_indexed(root)),
+            _ => return Err(ToolFailure::outside_root()),
         };
-        let repository = store
-            .repo_by_root(&canonical)
-            .map_err(|_| ToolFailure::internal())?
-            .ok_or_else(|| not_indexed(&canonical))?;
-        return indexed_repository(repository);
+        if canonical != canonical_session_root {
+            return Err(ToolFailure::outside_root());
+        }
     }
 
-    let repositories = store
-        .approved_repositories()
+    let repository = store
+        .repo_by_root(&canonical_session_root)
         .map_err(|_| ToolFailure::internal())?;
-    let current = std::env::current_dir()
-        .ok()
-        .and_then(|cwd| fs::canonicalize(cwd).ok());
-    if let Some(current) = current
-        && let Some(repository) = repositories
-            .iter()
-            .filter(|repository| current.starts_with(&repository.root))
-            .max_by_key(|repository| repository.root.components().count())
-    {
-        return indexed_repository(repository.clone());
-    }
-    if repositories.len() == 1 {
-        return indexed_repository(repositories[0].clone());
-    }
-    Err(ToolFailure::new(
+    let Some(repository) = repository else {
+        return Err(unresolved_repository());
+    };
+    indexed_repository(repository)
+}
+
+fn unresolved_repository() -> ToolFailure {
+    ToolFailure::new(
         "not_indexed",
-        "No indexed repository could be resolved. Supply its absolute root or run `compresso index` in that directory, then retry.",
-    ))
+        "No indexed repository is bound to this MCP session. Start Compresso from an approved repository or pass `--root` when starting the server.",
+    )
 }
 
 fn indexed_repository(repository: RepoRecord) -> Result<RepoRecord, ToolFailure> {

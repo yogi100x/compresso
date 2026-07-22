@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use compresso_atlas::Indexer;
 use compresso_core::{Config, Engine, TokenProvider, counter_for};
-use compresso_mcp::{McpDeps, serve_io};
+use compresso_mcp::{McpDeps, serve_io_for_root};
 use compresso_store::Store;
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
@@ -25,6 +25,17 @@ struct Harness {
 
 impl Harness {
     async fn start(store: Store) -> Self {
+        let repositories = store
+            .approved_repositories()
+            .expect("approved repositories should load");
+        let [repository] = repositories.as_slice() else {
+            panic!("read harness requires exactly one repository");
+        };
+        let root = repository.root.clone();
+        Self::start_for_root(store, root).await
+    }
+
+    async fn start_for_root(store: Store, root: PathBuf) -> Self {
         let config = Config::default();
         let deps = McpDeps {
             store,
@@ -36,7 +47,7 @@ impl Harness {
         };
         let (client, server) = tokio::io::duplex(256 * 1024);
         let (server_read, server_write) = tokio::io::split(server);
-        let server = tokio::spawn(serve_io(deps, server_read, server_write));
+        let server = tokio::spawn(serve_io_for_root(deps, root, server_read, server_write));
         let (client_read, client_write) = tokio::io::split(client);
         let mut harness = Self {
             input: client_write,
@@ -323,6 +334,110 @@ async fn test_read_symlink_escape_via_mcp() {
             .to_string()
             .contains(outside.to_string_lossy().as_ref())
     );
+    harness.close().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_bound_root_retarget_cannot_leak_another_approved_repository() {
+    use std::os::unix::fs::symlink;
+
+    const REPO_B_CANARY: &str = "repo_b_private_canary_7319";
+    let temp = tempfile::tempdir().expect("temporary directory should be created");
+    let root_a = temp.path().join("repo-a");
+    let root_b = temp.path().join("repo-b");
+    write_file(
+        &root_a,
+        "src/session.rs",
+        "pub fn session_target() -> &'static str { \"repository a\" }\n",
+    );
+    write_file(
+        &root_b,
+        "src/session.rs",
+        &format!("pub fn session_target() -> &'static str {{ \"{REPO_B_CANARY}\" }}\n"),
+    );
+    let store = Store::open(&temp.path().join("compresso.db")).expect("store should open");
+    let indexer = Indexer::new(&store, counter_for(TokenProvider::OpenAiO200k));
+    indexer.index(&root_a, |_| {}).expect("repo A should index");
+    indexer.index(&root_b, |_| {}).expect("repo B should index");
+    let root_a = fs::canonicalize(root_a).expect("repo A should canonicalize");
+    let root_b = fs::canonicalize(root_b).expect("repo B should canonicalize");
+    let mut harness = Harness::start_for_root(store, root_a.clone()).await;
+    let parked_a = root_a.with_file_name("repo-a-before-retarget");
+    fs::rename(&root_a, &parked_a).expect("repo A should move away from its bound path");
+    symlink(&root_b, &root_a).expect("bound path should retarget to repo B");
+
+    for (tool, arguments) in [
+        (
+            "compresso_context",
+            json!({ "task": "session target", "max_tokens": 800 }),
+        ),
+        (
+            "compresso_read",
+            json!({ "path": "src/session.rs", "max_tokens": 800 }),
+        ),
+    ] {
+        let response = harness.call(tool, arguments).await;
+        assert_tool_error(&response, "outside_root");
+        let rendered = response.to_string();
+        assert!(!rendered.contains(REPO_B_CANARY));
+        assert!(!rendered.contains(root_b.to_string_lossy().as_ref()));
+    }
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_secret_pattern_content_never_reaches_mcp() {
+    const SECRET_CONTENT_CANARY: &str = "mcp_secret_content_canary_4628";
+    let temp = tempfile::tempdir().expect("temporary directory should be created");
+    let root = temp.path().join("repo");
+    write_file(
+        &root,
+        "src/visible.rs",
+        "pub fn visible_symbol() -> bool { true }\n",
+    );
+    write_file(
+        &root,
+        ".ENV.private.rs",
+        &format!(
+            "pub fn never_indexed_symbol() -> &'static str {{ \"{SECRET_CONTENT_CANARY}\" }}\n"
+        ),
+    );
+    let store = Store::open(&temp.path().join("compresso.db")).expect("store should open");
+    let report = Indexer::new(&store, counter_for(TokenProvider::OpenAiO200k))
+        .index(&root, |_| {})
+        .expect("repository should index");
+    assert_eq!(report.files_skipped, 1);
+    let mut harness = Harness::start(store).await;
+
+    for response in [
+        harness
+            .call(
+                "compresso_search",
+                json!({ "query": "never_indexed_symbol" }),
+            )
+            .await,
+        harness
+            .call(
+                "compresso_context",
+                json!({ "task": "never indexed symbol", "max_tokens": 800 }),
+            )
+            .await,
+        harness.call("compresso_repo_map", json!({})).await,
+    ] {
+        let rendered = response.to_string();
+        assert!(!rendered.contains(SECRET_CONTENT_CANARY));
+        assert!(!rendered.contains(".ENV.private.rs"));
+    }
+
+    let response = harness
+        .call(
+            "compresso_read",
+            json!({ "path": ".ENV.private.rs", "max_tokens": 800 }),
+        )
+        .await;
+    assert_tool_error(&response, "not_found");
+    assert!(!response.to_string().contains(SECRET_CONTENT_CANARY));
     harness.close().await;
 }
 

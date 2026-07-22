@@ -11,6 +11,7 @@ use compresso_store::{
 
 use crate::AtlasError;
 use crate::parsers::{ParseError, ParserRegistry};
+use crate::scanner::is_secret_path;
 
 const TOP_SYMBOLS_PER_FILE: usize = 3;
 const MAX_AMBIGUITY_CANDIDATES: usize = 20;
@@ -223,9 +224,16 @@ pub fn repo_map_focused(
 ) -> Result<RepoMap, AtlasError> {
     let focus = focus.map(validate_map_focus).transpose()?.flatten();
     let counter = counter_for(TokenProvider::OpenAiO200k);
-    let files = store.indexed_files(repo)?;
+    let files = store
+        .indexed_files(repo)?
+        .into_iter()
+        .filter(|file| !is_secret_path(Path::new(&file.path)))
+        .collect::<Vec<_>>();
     let mut importers = BTreeMap::<String, BTreeSet<String>>::new();
     for edge in store.resolved_edges(repo)? {
+        if is_secret_path(Path::new(&edge.from_path)) || is_secret_path(Path::new(&edge.to_path)) {
+            continue;
+        }
         importers
             .entry(edge.to_path)
             .or_default()
@@ -315,6 +323,12 @@ fn map_path_matches_focus(path: &str, focus: &str) -> bool {
 
 /// Returns every stored symbol for `path` in deterministic source order.
 pub fn outline(store: &Store, repo: RepoId, path: &str) -> Result<Outline, AtlasError> {
+    if is_secret_path(Path::new(path)) {
+        return Err(AtlasError::FileNotIndexed {
+            repo,
+            path: path.to_owned(),
+        });
+    }
     let Some(file) = store.indexed_file(repo, path)? else {
         return Err(AtlasError::FileNotIndexed {
             repo,
@@ -455,6 +469,7 @@ pub fn search(
     store
         .search_symbols(repo, query, limit)?
         .into_iter()
+        .filter(|hit| !is_secret_path(Path::new(&hit.file.path)))
         .map(|hit| {
             Ok(SearchHit {
                 path: hit.file.path,
@@ -552,7 +567,7 @@ pub fn impact_with_options(
         }
         .into());
     }
-    if store.indexed_file(repo, path)?.is_none() {
+    if is_secret_path(Path::new(path)) || store.indexed_file(repo, path)?.is_none() {
         return Err(AtlasError::FileNotIndexed {
             repo,
             path: path.to_owned(),
@@ -561,6 +576,9 @@ pub fn impact_with_options(
 
     let mut incoming = BTreeMap::<String, BTreeMap<String, Vec<EdgeKind>>>::new();
     for edge in store.resolved_edges(repo)? {
+        if is_secret_path(Path::new(&edge.from_path)) || is_secret_path(Path::new(&edge.to_path)) {
+            continue;
+        }
         let kinds = incoming
             .entry(edge.to_path)
             .or_default()
@@ -858,18 +876,27 @@ enum ResolvedEntry {
     Missing,
 }
 
-fn canonical_query_root(root: &Path) -> Result<PathBuf, QueryError> {
+fn canonical_query_root(root: &Path) -> Result<PathBuf, AtlasError> {
     let canonical = fs::canonicalize(root).map_err(|source| QueryError::CanonicalizeRoot {
         path: root.to_path_buf(),
         source,
     })?;
+    if canonical != root {
+        return Err(AtlasError::OutsideRoot {
+            path: canonical,
+            root: root.to_path_buf(),
+        });
+    }
     if !canonical.is_dir() {
-        return Err(QueryError::RootNotDirectory { path: canonical });
+        return Err(QueryError::RootNotDirectory { path: canonical }.into());
     }
     Ok(canonical)
 }
 
 fn resolve_under_root(root: &Path, requested: &str) -> Result<ResolvedEntry, AtlasError> {
+    if is_secret_path(Path::new(requested)) {
+        return Ok(ResolvedEntry::Missing);
+    }
     let joined = root.join(requested);
     match fs::canonicalize(&joined) {
         Ok(resolved) => {

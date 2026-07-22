@@ -3,6 +3,7 @@ pub(crate) mod atlas_read;
 pub(crate) mod common;
 pub(crate) mod engine_tools;
 
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use compresso_core::{Config, Engine, Mode, TokenProvider, Trace, counter_for};
@@ -26,6 +27,7 @@ pub(crate) fn dispatch(
     engine: &Engine,
     config: &Config,
     session: &SessionRuntime,
+    repository_root: Option<&Path>,
     name: &str,
     arguments: Option<JsonObject>,
 ) -> CallToolResult {
@@ -33,13 +35,13 @@ pub(crate) fn dispatch(
         return common::ToolFailure::internal().into_result();
     };
     let outcome = if atlas_nav::handles(name) {
-        atlas_nav::dispatch(store, name, arguments)
+        atlas_nav::dispatch(store, repository_root, name, arguments)
             .and_then(|payload| retrieval_outcome(payload, name, engine.mode()))
     } else if atlas_read::handles(name) {
-        atlas_read::dispatch(store, name, arguments)
+        atlas_read::dispatch(store, repository_root, name, arguments)
             .and_then(|payload| retrieval_outcome(payload, name, engine.mode()))
     } else {
-        engine_tools::dispatch(store, engine, config, name, arguments)
+        engine_tools::dispatch(store, engine, config, repository_root, name, arguments)
     };
     match outcome {
         Ok(mut success) => {

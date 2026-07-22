@@ -300,13 +300,13 @@ fn metadata_classification_walk(
         let Some(file_type) = entry.file_type() else {
             return true;
         };
-        if !file_type.is_dir() && (file_type.is_symlink() || is_secret_name(entry.file_name())) {
-            return true;
-        }
         let Ok(relative) = entry.path().strip_prefix(&root_for_filter) else {
             unavailable_for_filter.store(true, Ordering::Relaxed);
             return false;
         };
+        if !file_type.is_dir() && (file_type.is_symlink() || is_secret_path(relative)) {
+            return true;
+        }
         let matched = match matcher_for_filter.lock() {
             Ok(mut matcher) => {
                 let (matched, error) = matcher.matched_with_errors(relative, file_type.is_dir());
@@ -403,17 +403,84 @@ fn is_builtin_excluded_directory(entry: &DirEntry) -> bool {
 }
 
 fn is_secret_pattern(relative: &str) -> bool {
-    let Some(name) = Path::new(relative).file_name().and_then(OsStr::to_str) else {
+    is_secret_path(Path::new(relative))
+}
+
+pub(crate) fn is_secret_path(relative: &Path) -> bool {
+    if relative
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .any(is_secret_name)
+    {
         return true;
-    };
-    is_secret_name(OsStr::new(name))
+    }
+
+    let normalized = relative
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    normalized.ends_with(".cargo/credentials")
+        || normalized.ends_with(".cargo/credentials.toml")
+        || normalized.ends_with(".aws/credentials")
+        || normalized.ends_with(".docker/config.json")
+        || normalized.ends_with(".kube/config")
 }
 
 fn is_secret_name(name: &OsStr) -> bool {
     let Some(name) = name.to_str() else {
         return true;
     };
-    name.starts_with(".env") || name.ends_with(".pem") || name.starts_with("id_rsa")
+    let lower = name.to_ascii_lowercase();
+
+    lower.starts_with(".env")
+        || lower.ends_with(".pem")
+        || lower.starts_with("id_rsa")
+        || matches!(
+            lower.as_str(),
+            ".npmrc"
+                | ".pypirc"
+                | ".netrc"
+                | ".git-credentials"
+                | "id_ed25519"
+                | "id_ecdsa"
+                | "id_dsa"
+                | "kubeconfig"
+                | "application_default_credentials.json"
+        )
+        || lower.ends_with(".key")
+        || lower.ends_with(".p12")
+        || lower.ends_with(".pfx")
+        || is_terraform_state_name(&lower)
+        || is_service_account_json_name(&lower)
+}
+
+fn is_terraform_state_name(name: &str) -> bool {
+    name.ends_with(".tfstate")
+        || name.ends_with(".tfstate.backup")
+        || (name.contains(".tfstate.") && name.ends_with(".backup"))
+}
+
+fn is_service_account_json_name(name: &str) -> bool {
+    let Some(stem) = name.strip_suffix(".json") else {
+        return false;
+    };
+    matches!(
+        stem,
+        "service-account"
+            | "service_account"
+            | "service-account-key"
+            | "service_account_key"
+            | "service-account-credentials"
+            | "service_account_credentials"
+    ) || stem.ends_with("-service-account")
+        || stem.ends_with("_service_account")
+        || stem.ends_with("-service-account-key")
+        || stem.ends_with("_service_account_key")
+        || stem.ends_with("-service-account-credentials")
+        || stem.ends_with("_service_account_credentials")
 }
 
 fn relative_path(root: &Path, path: &Path) -> Result<String, ScanError> {
@@ -569,6 +636,54 @@ mod tests {
     #[test]
     fn test_secret_patterns_skipped_without_opening() {
         let fixture = Fixture::new();
+        let secret_paths = [
+            ".env.local",
+            ".ENV.production",
+            ".env.vault/nested.rs",
+            "server.pem",
+            "id_rsa",
+            "ID_RSA.backup",
+            "ID_RSA.archive/nested.rs",
+            ".npmrc",
+            ".pypirc",
+            ".netrc",
+            ".git-credentials",
+            ".ssh/id_ed25519",
+            ".ssh/id_ecdsa",
+            ".ssh/id_dsa",
+            "certificates/client.key",
+            "certificates/client.p12",
+            "certificates/client.pfx",
+            "infra/terraform.tfstate",
+            "infra/production.tfstate.backup",
+            ".cargo/credentials",
+            ".cargo/credentials.toml",
+            ".aws/credentials",
+            ".docker/config.json",
+            "deploy/kubeconfig",
+            ".kube/config",
+            ".config/gcloud/application_default_credentials.json",
+            "deploy/production-service-account.json",
+            "deploy/production_service_account_key.json",
+        ];
+        for relative in secret_paths {
+            let absolute = fixture.root.join(relative);
+            fs::create_dir_all(
+                absolute
+                    .parent()
+                    .expect("secret fixture should have a parent directory"),
+            )
+            .expect("secret fixture parent should be created");
+            fs::write(&absolute, "credential fixture\n").expect("secret fixture should be written");
+        }
+        let protected = secret_paths
+            .iter()
+            .map(|relative| {
+                fs::canonicalize(fixture.root.join(relative))
+                    .expect("secret fixture path should canonicalize")
+            })
+            .collect::<BTreeSet<_>>();
+        let protected_for_scan = protected.clone();
         let inspected = Arc::new(Mutex::new(Vec::new()));
         let inspected_for_scan = Arc::clone(&inspected);
         let result = scan_impl(
@@ -578,6 +693,10 @@ mod tests {
             ScanOptions::default(),
             None,
             &move |path, max_file_bytes| {
+                assert!(
+                    !protected_for_scan.contains(path),
+                    "secret artifact reached the file inspector: {path:?}"
+                );
                 inspected_for_scan
                     .lock()
                     .expect("inspection recorder should lock")
@@ -588,17 +707,53 @@ mod tests {
         .expect("scan should succeed");
 
         let skipped = skipped_map(&result);
-        for path in [".env.local", "server.pem", "id_rsa"] {
+        for path in secret_paths {
             assert_eq!(skipped.get(path), Some(&SkipReason::SecretPattern));
             assert!(!result.added.contains(&PathBuf::from(path)));
         }
         let inspected = inspected.lock().expect("inspection recorder should lock");
-        assert!(inspected.iter().all(|path| {
-            !matches!(
-                path.file_name().and_then(|name| name.to_str()),
-                Some(".env.local" | "server.pem" | "id_rsa")
+        assert!(inspected.iter().all(|path| !protected.contains(path)));
+    }
+
+    #[test]
+    fn test_secret_patterns_do_not_overmatch_source_like_names() {
+        let fixture = Fixture::new();
+        let allowed_paths = [
+            "src/credentials.rs",
+            "src/key.rs",
+            "src/config.json",
+            "docs/service-account-schema.json",
+            "cargo/credentials.toml",
+            "aws/credentials",
+            "docker/config.json",
+            ".docker/config.json.template",
+        ];
+        for relative in allowed_paths {
+            let absolute = fixture.root.join(relative);
+            fs::create_dir_all(
+                absolute
+                    .parent()
+                    .expect("source-like fixture should have a parent directory"),
             )
-        }));
+            .expect("source-like fixture parent should be created");
+            fs::write(&absolute, "non-secret source fixture\n")
+                .expect("source-like fixture should be written");
+        }
+
+        let result =
+            scan(&fixture.store, fixture.repo, &fixture.root).expect("scan should succeed");
+
+        for relative in allowed_paths {
+            assert!(
+                result.added.contains(&PathBuf::from(relative)),
+                "{relative}"
+            );
+            assert_ne!(
+                skipped_map(&result).get(relative),
+                Some(&SkipReason::SecretPattern),
+                "{relative}"
+            );
+        }
     }
 
     #[test]
