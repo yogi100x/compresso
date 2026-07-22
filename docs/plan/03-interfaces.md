@@ -182,6 +182,7 @@ impl Store {
     // repositories
     pub fn approve_repo(&self, canonical_root: &Path) -> Result<RepoId>;
     pub fn repo_by_root(&self, canonical_root: &Path) -> Result<Option<RepoRecord>>;
+    pub fn repository(&self, repo: RepoId) -> Result<RepoRecord>;
     // files & symbols (used only by atlas)
     pub fn upsert_file(&self, repo: RepoId, rec: &FileRecord) -> Result<FileId>;
     pub fn replace_indexed_file(&self, repo: RepoId, rec: &FileRecord, symbols: &[SymbolRecord], edges: &[EdgeRecord]) -> Result<FileId>; // one per-file transaction
@@ -246,6 +247,10 @@ pub struct IndexReport { pub files_indexed: usize, pub files_removed: usize, pub
 // queries.rs — all read-only, all bounded by token budget
 pub struct RepoMap { pub rendered: String, pub files_total: usize, pub files_shown: usize, pub truncated: bool, pub tokens_used: usize, pub token_provider: TokenProvider }
 pub struct Outline { pub path: String, pub language: Option<FileLanguage>, pub symbols: Vec<SymbolRecord> }
+pub struct SymbolIdentity { pub path: String, pub qualified_name: String, pub kind: SymbolKind, pub signature_hash: Option<String>, pub start_line: u32, pub end_line: u32 }
+pub enum UnfoldResult { Found { path: String, symbol: SymbolRecord, content: String, stale: bool, reindex_hint: Option<String> }, Ambiguous { candidates: Vec<SymbolIdentity>, stale: bool, reindex_hint: Option<String> }, NotFound { path: String, qualified_name: String, stale: bool, reindex_hint: String } }
+pub struct SearchHit { pub path: String, pub symbol: SymbolRecord, pub score: f64 }
+pub struct BoundedRead { pub path: String, pub content: String, pub start_line: u32, pub end_line: u32, pub file_tokens_total: usize, pub tokens_used: usize, pub token_provider: TokenProvider, pub truncated: bool, pub elision: Option<String> }
 pub fn repo_map(store: &Store, repo: RepoId, budget_tokens: usize) -> Result<RepoMap>;      // dir tree + top symbols per file, PageRank-ish by edge in-degree
 pub fn outline(store: &Store, repo: RepoId, path: &str) -> Result<Outline>;                  // symbol skeleton with line ranges + token estimates
 pub fn unfold(store: &Store, repo: RepoId, selector: &SymbolSelector) -> Result<UnfoldResult>; // multiple matches return typed Ambiguous candidates

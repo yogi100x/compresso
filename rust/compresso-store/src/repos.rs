@@ -76,6 +76,29 @@ impl Store {
         raw.map(decode_repo).transpose()
     }
 
+    /// Loads one approved repository by its stable identifier.
+    pub fn repository(&self, repo: RepoId) -> Result<RepoRecord, StoreError> {
+        let connection = self.connection()?;
+        let raw = connection
+            .query_row(
+                "SELECT id, root, approved_at, parser_version, schema_version, last_indexed_at FROM repositories WHERE id = ?1",
+                [repo],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, Option<i64>>(5)?,
+                    ))
+                },
+            )
+            .optional()?
+            .ok_or(StoreError::RepositoryNotFound(repo))?;
+        decode_repo(raw)
+    }
+
     /// Returns the most recently stamped parser/schema version for a repository.
     pub fn latest_index_version(
         &self,
@@ -224,6 +247,16 @@ mod tests {
         assert_eq!(record.parser_version, "unindexed");
         assert_eq!(record.schema_version, 1);
         assert_eq!(record.last_indexed_at, None);
+        assert_eq!(
+            store
+                .repository(first)
+                .expect("repository id lookup should succeed"),
+            record
+        );
+        assert!(matches!(
+            store.repository(i64::MAX),
+            Err(StoreError::RepositoryNotFound(id)) if id == i64::MAX
+        ));
 
         let count: i64 = store
             .connection()

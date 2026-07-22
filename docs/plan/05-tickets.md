@@ -423,7 +423,7 @@ Test cases:
 - test_outline_line_order_and_ranges: `outline(.., "src/lib.rs")` on the E3-05 fixture → symbols sorted by start_line, ranges matching the extraction test constants.
 - test_outline_missing_path: `outline(.., "src/nope.rs")` → `Err(AtlasError::FileNotIndexed)`.
 
-### [ ] E3-11: Queries - selector-based unfold, search, and bounded read
+### [x] E3-11: Queries - selector-based unfold, search, and bounded read
 Owner: R2 · Estimate: 2.5d · Depends: E3-09
 Files: rust/compresso-atlas/src/queries.rs, tests in rust/compresso-atlas/tests/queries_unfold_search_read.rs
 Description: Implement `unfold(store, repo, selector: &SymbolSelector)`, ranked search, and `read_bounded`. Unfold uses path plus qualified name and optional kind/signature hash/start-line hint. Zero matches returns NotFound; multiple matches returns typed Ambiguous candidates; it never selects an arbitrary body. On stale files it re-parses and matches the complete selector against current content.
