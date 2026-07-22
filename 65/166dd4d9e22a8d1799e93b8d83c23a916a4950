@@ -1,0 +1,19 @@
+scripts/ci/check_ci_matrix.rb
+  s_87261b37472da1::t_87a0664b987fab 14-19
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "65166dd4d9e22a8d1799e93b8d83c23a916a4950",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
