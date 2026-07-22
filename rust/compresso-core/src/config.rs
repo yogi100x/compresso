@@ -716,6 +716,7 @@ mod tests {
         assert!(message.contains(path.to_string_lossy().as_ref()));
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn test_runtime_paths_honor_xdg_overrides() {
         let environment = BTreeMap::from([
@@ -734,6 +735,35 @@ mod tests {
         assert_eq!(
             paths.database_file,
             PathBuf::from("/tmp/data/compresso/compresso.db")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_runtime_paths_honor_windows_overrides() {
+        let config_root = PathBuf::from(r"C:\Users\example\AppData\Roaming");
+        let data_root = PathBuf::from(r"C:\Users\example\AppData\Local");
+        let environment = BTreeMap::from([
+            (
+                "APPDATA".to_owned(),
+                config_root.to_string_lossy().into_owned(),
+            ),
+            (
+                "LOCALAPPDATA".to_owned(),
+                data_root.to_string_lossy().into_owned(),
+            ),
+        ]);
+
+        let paths = RuntimePaths::from_environment(&environment).expect("paths should resolve");
+
+        assert_eq!(
+            paths.config_file,
+            config_root.join("compresso").join("config.toml")
+        );
+        assert_eq!(paths.data_dir, data_root.join("compresso"));
+        assert_eq!(
+            paths.database_file,
+            data_root.join("compresso").join("compresso.db")
         );
     }
 
