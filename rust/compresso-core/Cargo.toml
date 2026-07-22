@@ -15,6 +15,11 @@ thiserror.workspace = true
 tiktoken-rs.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 jsonschema.workspace = true
 proptest.workspace = true
 toml.workspace = true
+
+[[bench]]
+name = "compress_latency"
+harness = false

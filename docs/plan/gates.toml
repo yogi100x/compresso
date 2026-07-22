@@ -1,0 +1,4 @@
+# D37 / build-doc §25.6: warm local compression P95 must stay below 200 ms.
+# E7-03 extends this file with the remaining slice quality and safety gates.
+[latency]
+p95_ms_max = 200

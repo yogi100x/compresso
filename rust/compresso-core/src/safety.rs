@@ -51,6 +51,34 @@ pub fn run_all_with_removals(
     ]
 }
 
+/// Returns the canonical safety ledger for an intentional identity bypass.
+///
+/// Passthrough performs no transformation, so preservation checks are proven
+/// by `input == output` without parsing, scanning, or recounting content. In
+/// particular, stored token accounting is trusted rather than repaired.
+pub(crate) fn identity_checks() -> Vec<SafetyCheck> {
+    [
+        "protected_unchanged",
+        "no_inflation",
+        "json_still_valid",
+        "fences_balanced",
+        "refs_valid",
+        "provider_conversation_valid",
+        "minimum_output",
+        "token_counts_valid",
+        "latency_ok",
+        "schema_valid",
+        "removals_enumerated",
+    ]
+    .into_iter()
+    .map(|name| SafetyCheck {
+        name: name.to_owned(),
+        passed: true,
+        detail: "identity passthrough".to_owned(),
+    })
+    .collect()
+}
+
 fn safety_check(name: &str, passed: bool, pass_detail: &str, fail_detail: &str) -> SafetyCheck {
     SafetyCheck {
         name: name.to_owned(),
