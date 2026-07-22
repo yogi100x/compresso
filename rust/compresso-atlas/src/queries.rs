@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use compresso_core::{TokenCounter, TokenProvider, counter_for};
 use compresso_store::{
@@ -34,6 +34,14 @@ pub struct Outline {
     pub path: String,
     pub language: Option<FileLanguage>,
     pub symbols: Vec<SymbolRecord>,
+}
+
+/// Stored outline paired with the current on-disk hash state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CurrentOutline {
+    pub outline: Outline,
+    pub stale: bool,
+    pub reindex_hint: Option<String>,
 }
 
 /// Stable identity returned when a selector matches more than one symbol.
@@ -130,6 +138,8 @@ pub struct ContextPlan {
 /// Typed structural-query and bounded-filesystem failures.
 #[derive(Debug, thiserror::Error)]
 pub enum QueryError {
+    #[error("repository-map focus must be a lexical repository-relative prefix: {focus:?}")]
+    InvalidFocus { focus: String },
     #[error("failed to canonicalize repository query root {path:?}")]
     CanonicalizeRoot {
         path: PathBuf,
@@ -179,6 +189,17 @@ pub enum QueryError {
 /// File importance is the number of distinct indexed files with resolved incoming
 /// edges. Ties and final tree presentation are repository-relative path ordered.
 pub fn repo_map(store: &Store, repo: RepoId, budget_tokens: usize) -> Result<RepoMap, AtlasError> {
+    repo_map_focused(store, repo, None, budget_tokens)
+}
+
+/// Builds a repository map while ranking a validated relative prefix first.
+pub fn repo_map_focused(
+    store: &Store,
+    repo: RepoId,
+    focus: Option<&str>,
+    budget_tokens: usize,
+) -> Result<RepoMap, AtlasError> {
+    let focus = focus.map(validate_map_focus).transpose()?.flatten();
     let counter = counter_for(TokenProvider::OpenAiO200k);
     let files = store.indexed_files(repo)?;
     let mut importers = BTreeMap::<String, BTreeSet<String>>::new();
@@ -194,14 +215,21 @@ pub fn repo_map(store: &Store, repo: RepoId, budget_tokens: usize) -> Result<Rep
         .map(|file| {
             let in_degree = importers.get(&file.path).map_or(0, BTreeSet::len);
             let symbols = store.symbols_in_file(repo, &file.path)?;
-            Ok((file.path.clone(), in_degree, symbols))
+            let focused = focus.is_some_and(|focus| map_path_matches_focus(&file.path, focus));
+            Ok((file.path.clone(), focused, in_degree, symbols))
         })
         .collect::<Result<Vec<_>, compresso_store::StoreError>>()?;
-    ranked.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    ranked.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| right.2.cmp(&left.2))
+            .then_with(|| left.0.cmp(&right.0))
+    });
 
     let mut selected = BTreeMap::<String, Vec<String>>::new();
     let mut budget_truncated_symbols = false;
-    for (path, _, symbols) in ranked {
+    for (path, _, _, symbols) in ranked {
         let top_symbols = symbols
             .into_iter()
             .take(TOP_SYMBOLS_PER_FILE)
@@ -238,6 +266,31 @@ pub fn repo_map(store: &Store, repo: RepoId, budget_tokens: usize) -> Result<Rep
     })
 }
 
+fn validate_map_focus(focus: &str) -> Result<Option<&str>, QueryError> {
+    if focus.is_empty() {
+        return Ok(None);
+    }
+    let bytes = focus.as_bytes();
+    let windows_drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    let unsafe_separator = focus.starts_with('\\') || focus.contains('\\');
+    let safe_components = Path::new(focus)
+        .components()
+        .all(|component| matches!(component, Component::Normal(_)));
+    if windows_drive || unsafe_separator || !safe_components {
+        return Err(QueryError::InvalidFocus {
+            focus: focus.to_owned(),
+        });
+    }
+    Ok(Some(focus.trim_end_matches('/')))
+}
+
+fn map_path_matches_focus(path: &str, focus: &str) -> bool {
+    path == focus
+        || path
+            .strip_prefix(focus)
+            .is_some_and(|remainder| remainder.starts_with('/'))
+}
+
 /// Returns every stored symbol for `path` in deterministic source order.
 pub fn outline(store: &Store, repo: RepoId, path: &str) -> Result<Outline, AtlasError> {
     let Some(file) = store.indexed_file(repo, path)? else {
@@ -252,6 +305,62 @@ pub fn outline(store: &Store, repo: RepoId, path: &str) -> Result<Outline, Atlas
         language: file.language,
         symbols,
     })
+}
+
+/// Returns a stored outline while safely detecting current on-disk hash drift.
+pub fn outline_current(
+    store: &Store,
+    repo: RepoId,
+    path: &str,
+) -> Result<CurrentOutline, AtlasError> {
+    let outline = outline(store, repo, path)?;
+    let repository = store.repository(repo)?;
+    let root = canonical_query_root(&repository.root)?;
+    let Some(indexed) = store.indexed_file(repo, path)? else {
+        return Err(AtlasError::FileNotIndexed {
+            repo,
+            path: path.to_owned(),
+        });
+    };
+    let ResolvedEntry::File(resolved) = resolve_under_root(&root, path)? else {
+        return Err(QueryError::NotFound {
+            path: root.join(path),
+        }
+        .into());
+    };
+    let current = fs::read(&resolved).map_err(|source| QueryError::Read {
+        path: resolved,
+        source,
+    })?;
+    let stale = blake3::hash(&current).to_hex().as_str() != indexed.hash;
+    Ok(CurrentOutline {
+        outline,
+        stale,
+        reindex_hint: stale.then(|| REINDEX_HINT.to_owned()),
+    })
+}
+
+/// Reports whether any indexed file has drifted, disappeared, or escaped its root.
+pub fn repository_stale(store: &Store, repo: RepoId) -> Result<bool, AtlasError> {
+    let repository = store.repository(repo)?;
+    let root = canonical_query_root(&repository.root)?;
+    for indexed in store.indexed_files(repo)? {
+        let resolved = match resolve_under_root(&root, &indexed.path) {
+            Ok(ResolvedEntry::File(resolved)) => resolved,
+            Ok(ResolvedEntry::Missing)
+            | Err(AtlasError::OutsideRoot { .. })
+            | Err(AtlasError::Query(QueryError::NotAFile { .. })) => return Ok(true),
+            Err(error) => return Err(error),
+        };
+        let current = fs::read(&resolved).map_err(|source| QueryError::Read {
+            path: resolved,
+            source,
+        })?;
+        if blake3::hash(&current).to_hex().as_str() != indexed.hash {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Returns an exact current symbol body or a typed ambiguous/not-found outcome.

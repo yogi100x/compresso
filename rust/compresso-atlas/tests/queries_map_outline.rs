@@ -1,6 +1,8 @@
 use std::fs;
 
-use compresso_atlas::{AtlasError, outline, repo_map};
+use compresso_atlas::{
+    AtlasError, QueryError, outline, outline_current, repo_map, repo_map_focused, repository_stale,
+};
 use compresso_core::counter_for;
 use compresso_store::{
     EdgeKind, EdgeRecord, EdgeResolution, FileLanguage, FileRecord, Store, SymbolKind, SymbolRecord,
@@ -51,6 +53,46 @@ fn test_repo_map_ranks_by_indegree() {
     assert!(one_file.rendered.contains("core.rs"));
     assert!(!one_file.rendered.contains("leaf.rs"));
     assert!(one_file.truncated);
+}
+
+#[test]
+fn test_repo_map_focus_biases_prefix_under_tight_budget() {
+    let fixture = Fixture::new();
+    fixture.seed_ranked_repository();
+    let full = repo_map_focused(
+        &fixture.store,
+        fixture.repo,
+        Some("src/leaf.rs"),
+        usize::MAX,
+    )
+    .expect("focused map should render");
+
+    let one_file = (0..=full.tokens_used)
+        .find_map(|budget| {
+            let map =
+                repo_map_focused(&fixture.store, fixture.repo, Some("src/leaf.rs"), budget).ok()?;
+            (map.files_shown == 1).then_some(map)
+        })
+        .expect("some budget should fit exactly one focused file");
+
+    assert!(one_file.rendered.contains("leaf.rs"));
+    assert!(!one_file.rendered.contains("core.rs"));
+    assert!(one_file.truncated);
+}
+
+#[test]
+fn test_repo_map_focus_rejects_escape_and_absolute() {
+    let fixture = Fixture::new();
+    fixture.seed_ranked_repository();
+
+    for focus in ["../outside", "src/../outside", "/absolute", r"C:\absolute"] {
+        let error = repo_map_focused(&fixture.store, fixture.repo, Some(focus), usize::MAX)
+            .expect_err("unsafe focus should be rejected");
+        assert!(
+            matches!(error, AtlasError::Query(QueryError::InvalidFocus { focus: ref rejected }) if rejected == focus),
+            "unexpected error for {focus:?}: {error:?}"
+        );
+    }
 }
 
 #[test]
@@ -143,6 +185,84 @@ fn test_outline_missing_path() {
         AtlasError::FileNotIndexed { repo, path }
             if repo == fixture.repo && path == "src/nope.rs"
     ));
+}
+
+#[test]
+fn test_outline_current_reports_hash_drift() {
+    let fixture = Fixture::new();
+    let repository = fixture
+        .store
+        .repository(fixture.repo)
+        .expect("repository should load");
+    let relative = "src/current.rs";
+    let path = repository.root.join(relative);
+    fs::create_dir_all(path.parent().expect("file should have a parent"))
+        .expect("source directory should be created");
+    let original = "pub fn current() {}\n";
+    fs::write(&path, original).expect("source should be written");
+    fixture
+        .store
+        .upsert_file(
+            fixture.repo,
+            &FileRecord {
+                path: relative.to_owned(),
+                hash: blake3::hash(original.as_bytes()).to_hex().to_string(),
+                language: Some(FileLanguage::Rust),
+                size_bytes: original.len() as u64,
+                token_estimate: 6,
+                indexed_at: 10,
+            },
+        )
+        .expect("indexed file should insert");
+
+    let fresh =
+        outline_current(&fixture.store, fixture.repo, relative).expect("fresh outline should load");
+    assert!(!fresh.stale);
+    assert_eq!(fresh.reindex_hint, None);
+
+    fs::write(&path, "pub fn changed() {}\n").expect("source should change");
+    let stale = outline_current(&fixture.store, fixture.repo, relative)
+        .expect("stale outline should still load");
+    assert!(stale.stale);
+    assert!(stale.reindex_hint.is_some());
+    assert_eq!(stale.outline.path, relative);
+}
+
+#[test]
+fn test_repository_stale_detects_changed_and_deleted_file() {
+    let fixture = Fixture::new();
+    let repository = fixture
+        .store
+        .repository(fixture.repo)
+        .expect("repository should load");
+    let relative = "src/tracked.rs";
+    let path = repository.root.join(relative);
+    fs::create_dir_all(path.parent().expect("file should have a parent"))
+        .expect("source directory should be created");
+    let original = "pub fn tracked() {}\n";
+    fs::write(&path, original).expect("source should be written");
+    fixture
+        .store
+        .upsert_file(
+            fixture.repo,
+            &FileRecord {
+                path: relative.to_owned(),
+                hash: blake3::hash(original.as_bytes()).to_hex().to_string(),
+                language: Some(FileLanguage::Rust),
+                size_bytes: original.len() as u64,
+                token_estimate: 6,
+                indexed_at: 10,
+            },
+        )
+        .expect("indexed file should insert");
+
+    assert!(!repository_stale(&fixture.store, fixture.repo).expect("fresh repo should inspect"));
+    fs::write(&path, "pub fn drifted() {}\n").expect("source should change");
+    assert!(repository_stale(&fixture.store, fixture.repo).expect("drift should inspect"));
+    fs::write(&path, original).expect("source should restore");
+    assert!(!repository_stale(&fixture.store, fixture.repo).expect("restored repo should inspect"));
+    fs::remove_file(&path).expect("source should delete");
+    assert!(repository_stale(&fixture.store, fixture.repo).expect("deletion should inspect"));
 }
 
 struct Fixture {
