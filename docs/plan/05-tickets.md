@@ -435,7 +435,7 @@ Test cases:
 - `test_unfold_unique_selector_exact_body`, `test_unfold_overload_returns_candidates`, `test_unfold_trait_impl_disambiguated_by_signature`, `test_unfold_stale_relocates_full_selector`, `test_unfold_deleted_not_found`.
 - Search ranking, dotdot/absolute/symlink escapes, internal symlink, range, and token truncation.
 
-### [ ] E3-12: Queries — impact and plan_context
+### [x] E3-12: Queries — impact and plan_context
 Owner: R2 · Estimate: 1.5d · Depends: E3-10, E3-11
 Files: rust/compresso-atlas/src/queries.rs, tests in rust/compresso-atlas/tests/queries_impact_plan.rs
 Description: Implement `impact(store, repo, path)` (reverse-edge closure over `edges`, depth 2, reporting dependent files and the linking edge kinds) and `plan_context(store, repo, task, budget_tokens)` (search-driven pack: repo map slice + outlines + top matching symbol bodies assembled within the token budget) per `03-interfaces.md` §4.
