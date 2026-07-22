@@ -612,7 +612,7 @@ Test cases:
 
 ## E6 — Integrations
 
-### [ ] E6-01: Integration trait, base-bound plans, and receipts
+### [x] E6-01: Integration trait, base-bound plans, and receipts
 Owner: D1 · Estimate: 2d · Depends: E5-01
 Files: rust/compresso-integrations/src/{lib,plan,receipt}.rs, schemas/integrations/v1.json
 Description: Define detect and plan/apply install/uninstall with full-file base hash, plan, diff, expiry, session, backup.
