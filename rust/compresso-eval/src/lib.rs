@@ -12,7 +12,7 @@ pub use fixtures::{
 };
 pub use gates::{
     GateError, GateFailureReason, GateName, GateOperator, GateOutcome, GateReport, Gates,
-    LatencyGates, ReductionGates, SafetyGates,
+    LatencyGates, RecallGates, ReductionGates, SafetyGates,
 };
 pub use recall::{EvalRunError, FixtureRecallOutcome, RecallProbeOutcome, RecallReport};
 pub use runner::{

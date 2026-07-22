@@ -18,6 +18,7 @@ pub struct Gates {
     pub reduction: ReductionGates,
     pub safety: SafetyGates,
     pub latency: LatencyGates,
+    pub recall: RecallGates,
 }
 
 /// Safe-mode reduction thresholds.
@@ -40,6 +41,14 @@ pub struct SafetyGates {
 #[serde(deny_unknown_fields)]
 pub struct LatencyGates {
     pub p95_ms_max: u64,
+}
+
+/// D40 recall thresholds.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecallGates {
+    pub protected_min: f64,
+    pub overall_min: f64,
 }
 
 /// Errors at the versioned release-gate configuration boundary.
@@ -66,7 +75,7 @@ pub enum GateError {
     },
 }
 
-/// The D37 aggregate gate results in deterministic presentation order.
+/// The D37 and D40 aggregate gate results in deterministic presentation order.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 pub struct GateReport {
     pub passed: bool,
@@ -94,6 +103,9 @@ pub enum GateName {
     ProtectedMutations,
     MalformedJson,
     P95LatencyMs,
+    RecallProbeCount,
+    ProtectedProbeRecall,
+    OverallProbeRecall,
 }
 
 /// Stable reasons for gate failures requiring more context than a comparison.
@@ -101,6 +113,7 @@ pub enum GateName {
 #[serde(rename_all = "snake_case")]
 pub enum GateFailureReason {
     InsufficientEligibleFixtures,
+    NoProbes,
 }
 
 /// The strict comparison required by one release gate.
@@ -112,6 +125,8 @@ pub enum GateOperator {
     Equal,
     #[serde(rename = "<")]
     LessThan,
+    #[serde(rename = ">=")]
+    GreaterThanOrEqual,
 }
 
 impl Gates {
@@ -129,10 +144,16 @@ impl Gates {
         Ok(gates)
     }
 
-    /// Applies the four D37 gates. Fixture failures remain report data and
+    /// Applies the D37 and D40 gates. Fixture failures remain report data and
     /// also fail the overall gate result without becoming threshold rows.
     pub fn evaluate(&self, report: &EvalReport) -> GateReport {
         let aggregate = &report.aggregate;
+        let probe_count = report
+            .recall
+            .fixtures
+            .iter()
+            .map(|fixture| fixture.probes.len())
+            .sum::<usize>();
         let mut reduction = GateOutcome::new(
             GateName::MedianReductionEligible,
             GateOperator::GreaterThan,
@@ -161,6 +182,25 @@ impl Gates {
                 GateOperator::LessThan,
                 self.latency.p95_ms_max as f64,
                 aggregate.p95_latency_ms as f64,
+            ),
+            GateOutcome::new(
+                GateName::RecallProbeCount,
+                GateOperator::GreaterThan,
+                0.0,
+                probe_count as f64,
+            )
+            .with_failure_reason(GateFailureReason::NoProbes),
+            GateOutcome::new(
+                GateName::ProtectedProbeRecall,
+                GateOperator::Equal,
+                self.recall.protected_min,
+                report.recall.protected_probe_recall,
+            ),
+            GateOutcome::new(
+                GateName::OverallProbeRecall,
+                GateOperator::GreaterThanOrEqual,
+                self.recall.overall_min,
+                report.recall.overall_probe_recall,
             ),
         ];
         let mut failed_fixtures = report
@@ -210,6 +250,19 @@ impl Gates {
                 reason: "D37 requires zero tolerance",
             });
         }
+        if self.recall.protected_min != 1.0 {
+            return Err(GateError::InvalidThreshold {
+                name: "protected_min",
+                reason: "D40 requires exactly 1.0",
+            });
+        }
+        if !self.recall.overall_min.is_finite() || !(0.99..=1.0).contains(&self.recall.overall_min)
+        {
+            return Err(GateError::InvalidThreshold {
+                name: "overall_min",
+                reason: "D40 requires a finite threshold between 0.99 and 1.0",
+            });
+        }
         Ok(())
     }
 }
@@ -229,6 +282,13 @@ impl GateOutcome {
     fn fail_with_reason(mut self, reason: GateFailureReason) -> Self {
         self.passed = false;
         self.reason = Some(reason);
+        self
+    }
+
+    fn with_failure_reason(mut self, reason: GateFailureReason) -> Self {
+        if !self.passed {
+            self.reason = Some(reason);
+        }
         self
     }
 
@@ -285,6 +345,9 @@ impl GateName {
             Self::ProtectedMutations => "protected_mutations",
             Self::MalformedJson => "malformed_json",
             Self::P95LatencyMs => "p95_latency_ms",
+            Self::RecallProbeCount => "recall_probe_count",
+            Self::ProtectedProbeRecall => "protected_probe_recall",
+            Self::OverallProbeRecall => "overall_probe_recall",
         }
     }
 }
@@ -293,6 +356,7 @@ impl GateFailureReason {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::InsufficientEligibleFixtures => "insufficient_eligible_fixtures",
+            Self::NoProbes => "no_probes",
         }
     }
 }
@@ -303,6 +367,7 @@ impl GateOperator {
             Self::GreaterThan => ">",
             Self::Equal => "==",
             Self::LessThan => "<",
+            Self::GreaterThanOrEqual => ">=",
         }
     }
 
@@ -311,6 +376,7 @@ impl GateOperator {
             Self::GreaterThan => observed > threshold,
             Self::Equal => observed == threshold,
             Self::LessThan => observed < threshold,
+            Self::GreaterThanOrEqual => observed >= threshold,
         }
     }
 }
@@ -331,7 +397,7 @@ mod tests {
 
     use crate::{
         AggregateMetrics, EvalReport, EvalRunner, EvaluationKind, ExpectationFailure,
-        FixtureOutcome, FixtureSet, RecallReport,
+        FixtureOutcome, FixtureRecallOutcome, FixtureSet, RecallProbeOutcome, RecallReport,
     };
 
     fn gates_path() -> PathBuf {
@@ -357,11 +423,47 @@ mod tests {
                 fallback_rate: 0.0,
             },
             recall: RecallReport {
-                fixtures: Vec::new(),
+                fixtures: vec![FixtureRecallOutcome {
+                    fixture: "synthetic-recall".to_owned(),
+                    probes: vec![RecallProbeOutcome {
+                        fixture: "synthetic-recall".to_owned(),
+                        probe_index: 0,
+                        protected: true,
+                        passed: true,
+                    }],
+                }],
                 protected_probe_recall: 1.0,
                 overall_probe_recall: 1.0,
             },
         }
+    }
+
+    fn report_with_recall(
+        protected_probe_recall: f64,
+        overall_probe_recall: f64,
+        probe_count: usize,
+    ) -> EvalReport {
+        let mut report = report(0.50, 0, 0, 100);
+        report.recall = RecallReport {
+            fixtures: if probe_count == 0 {
+                Vec::new()
+            } else {
+                vec![FixtureRecallOutcome {
+                    fixture: "synthetic-recall".to_owned(),
+                    probes: (0..probe_count)
+                        .map(|probe_index| RecallProbeOutcome {
+                            fixture: "synthetic-recall".to_owned(),
+                            probe_index,
+                            protected: probe_index == 0,
+                            passed: true,
+                        })
+                        .collect(),
+                }]
+            },
+            protected_probe_recall,
+            overall_probe_recall,
+        };
+        report
     }
 
     #[test]
@@ -373,6 +475,14 @@ mod tests {
         assert_eq!(gates.safety.protected_mutations_max, 0);
         assert_eq!(gates.safety.malformed_json_max, 0);
         assert_eq!(gates.latency.p95_ms_max, 200);
+    }
+
+    #[test]
+    fn test_recall_gates_toml_matches_d40() {
+        let gates = Gates::load(&gates_path()).expect("committed gates should load");
+
+        assert_eq!(gates.recall.protected_min, 1.0);
+        assert_eq!(gates.recall.overall_min, 0.99);
     }
 
     #[test]
@@ -449,8 +559,8 @@ mod tests {
         let json = serde_json::to_value(&evaluated).expect("gate report should serialize");
 
         assert!(evaluated.passed);
-        assert_eq!(lines.len(), 4);
-        assert_eq!(json["gates"].as_array().map(Vec::len), Some(4));
+        assert_eq!(lines.len(), 7);
+        assert_eq!(json["gates"].as_array().map(Vec::len), Some(7));
         for (line, gate) in lines.iter().zip(&evaluated.gates) {
             assert!(line.contains(gate.name.as_str()));
             assert!(line.contains("threshold"));
@@ -552,6 +662,110 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn test_recall_gate_validation_rejects_weakened_thresholds() {
+        let mut gates = Gates::load(&gates_path()).expect("committed gates should load");
+        gates.recall.protected_min = 0.99;
+        assert!(matches!(
+            gates.validate(),
+            Err(GateError::InvalidThreshold {
+                name: "protected_min",
+                ..
+            })
+        ));
+
+        gates.recall.protected_min = 1.0;
+        gates.recall.overall_min = 0.989;
+        assert!(matches!(
+            gates.validate(),
+            Err(GateError::InvalidThreshold {
+                name: "overall_min",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_protected_recall_zero_tolerance() {
+        let gates = Gates::load(&gates_path()).expect("committed gates should load");
+        let evaluated = gates.evaluate(&report_with_recall(0.99, 1.0, 100));
+
+        assert!(
+            !evaluated
+                .gate(GateName::ProtectedProbeRecall)
+                .expect("protected recall gate should be present")
+                .passed
+        );
+        assert!(
+            evaluated
+                .gate(GateName::OverallProbeRecall)
+                .expect("overall recall gate should be present")
+                .passed
+        );
+        assert!(evaluated.failed_names().contains("protected_probe_recall"));
+    }
+
+    #[test]
+    fn test_overall_recall_boundary() {
+        let gates = Gates::load(&gates_path()).expect("committed gates should load");
+        let below = gates.evaluate(&report_with_recall(1.0, 0.989, 100));
+        let exact = gates.evaluate(&report_with_recall(1.0, 0.990, 100));
+
+        assert!(
+            !below
+                .gate(GateName::OverallProbeRecall)
+                .expect("overall recall gate should be present")
+                .passed
+        );
+        assert!(
+            exact
+                .gate(GateName::OverallProbeRecall)
+                .expect("overall recall gate should be present")
+                .passed
+        );
+    }
+
+    #[test]
+    fn test_probeless_corpus_fails_gate() {
+        let gates = Gates::load(&gates_path()).expect("committed gates should load");
+        let evaluated = gates.evaluate(&report_with_recall(1.0, 1.0, 0));
+        let population = evaluated
+            .gate(GateName::RecallProbeCount)
+            .expect("recall population gate should be present");
+
+        assert!(!evaluated.passed);
+        assert!(!population.passed);
+        assert_eq!(population.reason, Some(GateFailureReason::NoProbes));
+        assert!(population.line().contains("reason no_probes"));
+    }
+
+    #[test]
+    fn test_recall_gates_pass_on_committed_corpus() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+        let set = FixtureSet::load(&fixtures).expect("committed fixtures should load");
+        let report = EvalRunner
+            .try_run(&set)
+            .expect("committed recall probes should pass the passthrough baseline");
+        let gates = Gates::load(&gates_path()).expect("committed gates should load");
+        let evaluated = gates.evaluate(&report);
+
+        let population = evaluated
+            .gate(GateName::RecallProbeCount)
+            .expect("recall population gate should be present");
+        let protected = evaluated
+            .gate(GateName::ProtectedProbeRecall)
+            .expect("protected recall gate should be present");
+        let overall = evaluated
+            .gate(GateName::OverallProbeRecall)
+            .expect("overall recall gate should be present");
+        assert_eq!(population.observed, 10.0);
+        assert!(population.passed);
+        assert_eq!(protected.observed, 1.0);
+        assert!(protected.passed);
+        assert_eq!(overall.observed, 1.0);
+        assert!(overall.passed);
     }
 
     #[test]

@@ -343,7 +343,7 @@ fn write_error(output: &mut impl Write, error: &CliError, json: bool) -> std::io
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AggregateMetrics, RecallReport};
+    use crate::{AggregateMetrics, FixtureRecallOutcome, RecallProbeOutcome, RecallReport};
 
     fn gates_path() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/plan/gates.toml")
@@ -363,7 +363,15 @@ mod tests {
                 fallback_rate: 0.0,
             },
             recall: RecallReport {
-                fixtures: Vec::new(),
+                fixtures: vec![FixtureRecallOutcome {
+                    fixture: "synthetic".to_owned(),
+                    probes: vec![RecallProbeOutcome {
+                        fixture: "synthetic".to_owned(),
+                        probe_index: 0,
+                        protected: true,
+                        passed: true,
+                    }],
+                }],
                 protected_probe_recall: 1.0,
                 overall_probe_recall: 1.0,
             },
@@ -428,7 +436,7 @@ mod tests {
         assert!(json["aggregate"].is_object());
         assert!(json["recall"].is_object());
         assert_eq!(json["gates"]["passed"], true);
-        assert_eq!(json["gates"]["gates"].as_array().map(Vec::len), Some(4));
+        assert_eq!(json["gates"]["gates"].as_array().map(Vec::len), Some(7));
         assert!(errors.is_empty());
     }
 
@@ -447,12 +455,15 @@ mod tests {
         let lines = String::from_utf8(errors).expect("gate lines should be UTF-8");
         let lines = lines.lines().collect::<Vec<_>>();
 
-        assert_eq!(lines.len(), 4);
+        assert_eq!(lines.len(), 7);
         for name in [
             "median_reduction_eligible",
             "protected_mutations",
             "malformed_json",
             "p95_latency_ms",
+            "recall_probe_count",
+            "protected_probe_recall",
+            "overall_probe_recall",
         ] {
             assert_eq!(lines.iter().filter(|line| line.contains(name)).count(), 1);
         }
