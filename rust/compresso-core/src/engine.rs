@@ -5,8 +5,12 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::graph::ContextGraph;
-use crate::safety::{SafetyCheck, identity_checks, run_all, run_all_with_removals};
-use crate::strategy::{CompressionBudget, Mode, RemovalKind, RemovalRecord, StrategyRegistry};
+use crate::safety::{
+    SafetyCheck, identity_checks, run_all, run_all_with_removals, run_preflight_after_recount,
+};
+use crate::strategy::{
+    CompressionBudget, Mode, RemovalKind, RemovalRecord, StrategyExecution, StrategyRegistry,
+};
 use crate::tokens::{TokenCounter, TokenProvider, counter_for};
 use crate::trace::{StrategyResult, Trace};
 
@@ -89,7 +93,8 @@ impl Engine {
         force_protection(&mut ingress, budget);
         let before_tokens = ingress.total_tokens();
         let ingress_validation = ingress.validate();
-        let preflight_checks = run_all(&ingress, &ingress, budget, elapsed_ms(started.elapsed()));
+        let preflight_checks =
+            run_preflight_after_recount(&ingress, budget, elapsed_ms(started.elapsed()));
 
         if budget.max_tokens == 0 || budget.max_latency_ms == 0 {
             return self.fallback(
@@ -175,8 +180,10 @@ impl Engine {
             let strategy_started = Instant::now();
             let before = current.total_tokens();
 
-            let supported = match catch_unwind(AssertUnwindSafe(|| strategy.supports(&current))) {
-                Ok(supported) => supported,
+            let combined = match catch_unwind(AssertUnwindSafe(|| {
+                strategy.execute_if_supported(&current, budget)
+            })) {
+                Ok(combined) => combined,
                 Err(_) => {
                     strategy_results.push(failed_strategy_result(
                         strategy_id,
@@ -201,52 +208,116 @@ impl Engine {
                     );
                 }
             };
-            if !supported {
-                strategy_results.push(StrategyResult {
-                    strategy_id: strategy_id.to_owned(),
-                    applied: false,
-                    before_tokens: before,
-                    after_tokens: before,
-                    duration_ms: duration_ms(strategy_started.elapsed()),
-                    confidence: None,
-                    notes: Vec::new(),
-                    removals: Vec::new(),
-                    skipped_reason: Some("not_supported".to_owned()),
-                });
-                continue;
-            }
+            let (estimate, output) = match combined {
+                StrategyExecution::Legacy => {
+                    let supported =
+                        match catch_unwind(AssertUnwindSafe(|| strategy.supports(&current))) {
+                            Ok(supported) => supported,
+                            Err(_) => {
+                                strategy_results.push(failed_strategy_result(
+                                    strategy_id,
+                                    before,
+                                    strategy_started.elapsed(),
+                                    None,
+                                    "strategy panicked",
+                                ));
+                                let safety_checks = run_all_with_removals(
+                                    &ingress,
+                                    &current,
+                                    budget,
+                                    elapsed_ms(started.elapsed()),
+                                    &safety_ledger,
+                                );
+                                return self.fallback(
+                                    original,
+                                    before_tokens,
+                                    strategy_results,
+                                    safety_checks,
+                                    format!("strategy_panic:{strategy_id}"),
+                                );
+                            }
+                        };
+                    if !supported {
+                        strategy_results.push(not_supported_strategy_result(
+                            strategy_id,
+                            before,
+                            strategy_started.elapsed(),
+                        ));
+                        continue;
+                    }
 
-            let estimate = match catch_unwind(AssertUnwindSafe(|| strategy.estimate(&current))) {
-                Ok(estimate) => estimate,
-                Err(_) => {
-                    strategy_results.push(failed_strategy_result(
+                    let estimate =
+                        match catch_unwind(AssertUnwindSafe(|| strategy.estimate(&current))) {
+                            Ok(estimate) => estimate,
+                            Err(_) => {
+                                strategy_results.push(failed_strategy_result(
+                                    strategy_id,
+                                    before,
+                                    strategy_started.elapsed(),
+                                    None,
+                                    "strategy panicked",
+                                ));
+                                let safety_checks = run_all_with_removals(
+                                    &ingress,
+                                    &current,
+                                    budget,
+                                    elapsed_ms(started.elapsed()),
+                                    &safety_ledger,
+                                );
+                                return self.fallback(
+                                    original,
+                                    before_tokens,
+                                    strategy_results,
+                                    safety_checks,
+                                    format!("strategy_panic:{strategy_id}"),
+                                );
+                            }
+                        };
+
+                    let output =
+                        match catch_unwind(AssertUnwindSafe(|| strategy.execute(&current, budget)))
+                        {
+                            Ok(output) => output,
+                            Err(_) => {
+                                strategy_results.push(failed_strategy_result(
+                                    strategy_id,
+                                    before,
+                                    strategy_started.elapsed(),
+                                    Some(estimate.confidence),
+                                    "strategy panicked",
+                                ));
+                                let safety_checks = run_all_with_removals(
+                                    &ingress,
+                                    &current,
+                                    budget,
+                                    elapsed_ms(started.elapsed()),
+                                    &safety_ledger,
+                                );
+                                return self.fallback(
+                                    original,
+                                    before_tokens,
+                                    strategy_results,
+                                    safety_checks,
+                                    format!("strategy_panic:{strategy_id}"),
+                                );
+                            }
+                        };
+                    (estimate, output)
+                }
+                StrategyExecution::NotSupported => {
+                    strategy_results.push(not_supported_strategy_result(
                         strategy_id,
                         before,
                         strategy_started.elapsed(),
-                        None,
-                        "strategy panicked",
                     ));
-                    let safety_checks = run_all_with_removals(
-                        &ingress,
-                        &current,
-                        budget,
-                        elapsed_ms(started.elapsed()),
-                        &safety_ledger,
-                    );
-                    return self.fallback(
-                        original,
-                        before_tokens,
-                        strategy_results,
-                        safety_checks,
-                        format!("strategy_panic:{strategy_id}"),
-                    );
+                    continue;
                 }
+                StrategyExecution::Executed { estimate, output } => (estimate, output),
             };
 
-            let output = match catch_unwind(AssertUnwindSafe(|| strategy.execute(&current, budget)))
-            {
-                Ok(Ok(output)) => output,
-                Ok(Err(_)) => {
+            let output = match output {
+                Ok(output) => output,
+                Err(_) => {
                     strategy_results.push(failed_strategy_result(
                         strategy_id,
                         before,
@@ -267,29 +338,6 @@ impl Engine {
                         strategy_results,
                         safety_checks,
                         format!("strategy_error:{strategy_id}"),
-                    );
-                }
-                Err(_) => {
-                    strategy_results.push(failed_strategy_result(
-                        strategy_id,
-                        before,
-                        strategy_started.elapsed(),
-                        Some(estimate.confidence),
-                        "strategy panicked",
-                    ));
-                    let safety_checks = run_all_with_removals(
-                        &ingress,
-                        &current,
-                        budget,
-                        elapsed_ms(started.elapsed()),
-                        &safety_ledger,
-                    );
-                    return self.fallback(
-                        original,
-                        before_tokens,
-                        strategy_results,
-                        safety_checks,
-                        format!("strategy_panic:{strategy_id}"),
                     );
                 }
             };
@@ -482,6 +530,24 @@ fn elapsed_ms(duration: Duration) -> u64 {
 
 fn duration_ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1_000.0
+}
+
+fn not_supported_strategy_result(
+    strategy_id: &str,
+    tokens: usize,
+    duration: Duration,
+) -> StrategyResult {
+    StrategyResult {
+        strategy_id: strategy_id.to_owned(),
+        applied: false,
+        before_tokens: tokens,
+        after_tokens: tokens,
+        duration_ms: duration_ms(duration),
+        confidence: None,
+        notes: Vec::new(),
+        removals: Vec::new(),
+        skipped_reason: Some("not_supported".to_owned()),
+    }
 }
 
 fn failed_strategy_result(
@@ -766,6 +832,67 @@ mod tests {
         }
     }
 
+    struct CombinedHookStrategy;
+
+    impl CompressionStrategy for CombinedHookStrategy {
+        fn id(&self) -> &'static str {
+            "combined_hook"
+        }
+
+        fn supports(&self, _input: &ContextGraph) -> bool {
+            panic!("legacy supports must not run")
+        }
+
+        fn estimate(&self, _input: &ContextGraph) -> Estimate {
+            panic!("legacy estimate must not run")
+        }
+
+        fn execute(
+            &self,
+            _input: &ContextGraph,
+            _budget: &CompressionBudget,
+        ) -> Result<StrategyOutput, StrategyError> {
+            panic!("legacy execute must not run")
+        }
+
+        fn execute_if_supported(
+            &self,
+            input: &ContextGraph,
+            _budget: &CompressionBudget,
+        ) -> StrategyExecution {
+            StrategyExecution::Executed {
+                estimate: Estimate {
+                    tokens_saved: 0,
+                    confidence: 0.75,
+                },
+                output: Ok(StrategyOutput {
+                    graph: input.clone(),
+                    notes: vec!["combined execution used".to_owned()],
+                    removals: Vec::new(),
+                }),
+            }
+        }
+    }
+
+    #[test]
+    fn test_engine_uses_combined_execution_hook_without_legacy_calls() {
+        let input = graph(vec![node("n1", NodeKind::Summary, "keep this", false)]);
+        let engine =
+            Engine::with_strategies(Mode::Safe, counter(), vec![Box::new(CombinedHookStrategy)]);
+
+        let result = engine.compress(input.clone(), &budget());
+
+        assert_eq!(result.output, input);
+        assert!(!result.fallback_used, "{:?}", result.fallback_reason);
+        assert_eq!(result.strategy_results.len(), 1);
+        assert_eq!(result.strategy_results[0].strategy_id, "combined_hook");
+        assert_eq!(result.strategy_results[0].confidence, Some(0.75));
+        assert_eq!(
+            result.strategy_results[0].skipped_reason.as_deref(),
+            Some("no_change")
+        );
+    }
+
     #[test]
     fn test_never_err_on_panicking_strategy() {
         let input = graph(vec![node("n1", NodeKind::Summary, "keep this", false)]);
@@ -828,6 +955,31 @@ mod tests {
                 .fallback_reason
                 .as_deref()
                 .is_some_and(|reason| reason.contains("removals_enumerated"))
+        );
+    }
+
+    #[test]
+    fn test_preflight_uses_fresh_ingress_recount_proof() {
+        let content = "stale caller accounting is repaired before preflight";
+        let mut input = graph(vec![node("summary", NodeKind::Summary, content, false)]);
+        input.nodes[0].token_count = 0;
+        let mut invalid_budget = budget();
+        invalid_budget.max_tokens = 0;
+
+        let result = Engine::new(Mode::Safe, counter()).compress(input.clone(), &invalid_budget);
+
+        assert!(result.fallback_used);
+        assert_eq!(result.output, input);
+        assert_eq!(result.before_tokens, counter().count(content));
+        let token_check = result
+            .safety_checks
+            .iter()
+            .find(|check| check.name == "token_counts_valid")
+            .expect("preflight should retain the canonical token-count check");
+        assert!(token_check.passed);
+        assert_eq!(
+            token_check.detail,
+            "ingress token counts verified by immediate provider recount"
         );
     }
 

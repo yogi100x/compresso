@@ -36,6 +36,50 @@ pub fn run_all_with_removals(
     elapsed_ms: u64,
     removals: &[RemovalRecord],
 ) -> Vec<SafetyCheck> {
+    run_all_with_token_check(
+        original,
+        candidate,
+        budget,
+        elapsed_ms,
+        removals,
+        token_counts_valid(candidate),
+    )
+}
+
+/// Runs the canonical preflight ledger after the engine has just recounted
+/// every ingress node with its declared provider.
+///
+/// This crate-private proof path avoids repeating that provider recount. The
+/// caller may only mark protection between the recount and this call; final
+/// candidate validation must continue through [`run_all_with_removals`].
+pub(crate) fn run_preflight_after_recount(
+    ingress: &ContextGraph,
+    budget: &CompressionBudget,
+    elapsed_ms: u64,
+) -> Vec<SafetyCheck> {
+    run_all_with_token_check(
+        ingress,
+        ingress,
+        budget,
+        elapsed_ms,
+        &[],
+        safety_check(
+            "token_counts_valid",
+            true,
+            "ingress token counts verified by immediate provider recount",
+            "unreachable: ingress recount proof is invalid",
+        ),
+    )
+}
+
+fn run_all_with_token_check(
+    original: &ContextGraph,
+    candidate: &ContextGraph,
+    budget: &CompressionBudget,
+    elapsed_ms: u64,
+    removals: &[RemovalRecord],
+    token_count_check: SafetyCheck,
+) -> Vec<SafetyCheck> {
     vec![
         protected_unchanged(original, candidate, budget),
         no_inflation(original, candidate),
@@ -44,7 +88,7 @@ pub fn run_all_with_removals(
         refs_valid(original, candidate, removals),
         provider_conversation_valid(original, candidate),
         minimum_output(original, candidate),
-        token_counts_valid(candidate),
+        token_count_check,
         latency_ok(budget, elapsed_ms),
         schema_valid(candidate),
         removals_enumerated(original, candidate, removals),

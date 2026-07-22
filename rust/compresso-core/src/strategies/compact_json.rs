@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::graph::{ContextGraph, NodeKind};
 use crate::strategy::{
     CompressionBudget, CompressionStrategy, Estimate, RemovalKind, RemovalRecord, StrategyError,
-    StrategyOutput,
+    StrategyExecution, StrategyOutput,
 };
 use crate::tokens::counter_for;
 
@@ -43,14 +43,7 @@ impl CompressionStrategy for CompactJson {
 
     fn estimate(&self, input: &ContextGraph) -> Estimate {
         let plan = compact_plan(input);
-        if plan.changes.is_empty() {
-            Estimate::default()
-        } else {
-            Estimate {
-                tokens_saved: plan.tokens_saved,
-                confidence: 1.0,
-            }
-        }
+        estimate_for_plan(&plan)
     }
 
     fn execute(
@@ -59,21 +52,53 @@ impl CompressionStrategy for CompactJson {
         _budget: &CompressionBudget,
     ) -> Result<StrategyOutput, StrategyError> {
         let plan = compact_plan(input);
-        let mut graph = input.clone();
-        let mut removals = Vec::new();
+        Ok(execute_plan(input, plan))
+    }
 
-        for change in plan.changes {
-            let node = &mut graph.nodes[change.index];
-            node.content = change.content;
-            node.token_count = change.token_count;
-            removals.extend(change.removals);
+    fn execute_if_supported(
+        &self,
+        input: &ContextGraph,
+        _budget: &CompressionBudget,
+    ) -> StrategyExecution {
+        let plan = compact_plan(input);
+        if plan.changes.is_empty() {
+            StrategyExecution::NotSupported
+        } else {
+            let estimate = estimate_for_plan(&plan);
+            StrategyExecution::Executed {
+                estimate,
+                output: Ok(execute_plan(input, plan)),
+            }
         }
+    }
+}
 
-        Ok(StrategyOutput {
-            graph,
-            notes: plan.notes,
-            removals,
-        })
+fn estimate_for_plan(plan: &CompactPlan) -> Estimate {
+    if plan.changes.is_empty() {
+        Estimate::default()
+    } else {
+        Estimate {
+            tokens_saved: plan.tokens_saved,
+            confidence: 1.0,
+        }
+    }
+}
+
+fn execute_plan(input: &ContextGraph, plan: CompactPlan) -> StrategyOutput {
+    let mut graph = input.clone();
+    let mut removals = Vec::new();
+
+    for change in plan.changes {
+        let node = &mut graph.nodes[change.index];
+        node.content = change.content;
+        node.token_count = change.token_count;
+        removals.extend(change.removals);
+    }
+
+    StrategyOutput {
+        graph,
+        notes: plan.notes,
+        removals,
     }
 }
 
@@ -552,6 +577,32 @@ mod tests {
     }
 
     #[test]
+    fn test_combined_execution_matches_public_estimate_and_output() {
+        let content = serde_json::to_string(&json!({
+            "items": (0..2_000).collect::<Vec<_>>(),
+            "message": "x".repeat(1_000),
+        }))
+        .expect("fixture JSON should serialize");
+        let graph = graph_with(node("json", NodeKind::ToolResponse, &content, false));
+        let expected_estimate = CompactJson.estimate(&graph);
+        let expected_output = CompactJson
+            .execute(&graph, &budget())
+            .expect("standalone JSON compaction should execute");
+
+        let StrategyExecution::Executed { estimate, output } =
+            CompactJson.execute_if_supported(&graph, &budget())
+        else {
+            panic!("the compactable JSON fixture should use combined execution");
+        };
+
+        assert_eq!(estimate, expected_estimate);
+        assert_eq!(
+            output.expect("combined JSON compaction should execute"),
+            expected_output
+        );
+    }
+
+    #[test]
     fn test_truncate_2000_element_array() {
         let content = serde_json::to_string(&(0..2_000).collect::<Vec<_>>()).unwrap();
         let (_, output) = execute(&content);
@@ -611,6 +662,10 @@ mod tests {
                 .any(|note| note.contains("skipped_reason"))
         );
         assert!(!CompactJson.supports(&graph));
+        assert_eq!(
+            CompactJson.execute_if_supported(&graph, &budget()),
+            StrategyExecution::NotSupported
+        );
     }
 
     #[test]

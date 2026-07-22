@@ -16,7 +16,7 @@ pub use safety::{SafetyCheck, run_all, run_all_with_removals};
 pub use strategies::{CollapseLogs, CompactJson, DedupExact, PackBudget};
 pub use strategy::{
     CompressionBudget, CompressionStrategy, Estimate, Lossiness, Mode, RemovalKind, RemovalRecord,
-    StrategyError, StrategyOutput, StrategyRegistry,
+    StrategyError, StrategyExecution, StrategyOutput, StrategyRegistry,
 };
 pub use tokens::{CALIBRATION, TokenCounter, TokenProvider, counter_for};
 pub use trace::{StrategyResult, Trace};

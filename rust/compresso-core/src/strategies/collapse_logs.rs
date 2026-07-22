@@ -1,7 +1,7 @@
 use crate::graph::{ContextGraph, NodeKind};
 use crate::strategy::{
     CompressionBudget, CompressionStrategy, Estimate, RemovalKind, RemovalRecord, StrategyError,
-    StrategyOutput,
+    StrategyExecution, StrategyOutput,
 };
 use crate::tokens::counter_for;
 
@@ -42,14 +42,7 @@ impl CompressionStrategy for CollapseLogs {
 
     fn estimate(&self, input: &ContextGraph) -> Estimate {
         let plan = collapse_plan(input);
-        if plan.changes.is_empty() {
-            Estimate::default()
-        } else {
-            Estimate {
-                tokens_saved: plan.tokens_saved,
-                confidence: 1.0,
-            }
-        }
+        estimate_for_plan(&plan)
     }
 
     fn execute(
@@ -58,21 +51,53 @@ impl CompressionStrategy for CollapseLogs {
         _budget: &CompressionBudget,
     ) -> Result<StrategyOutput, StrategyError> {
         let plan = collapse_plan(input);
-        let mut graph = input.clone();
-        let mut removals = Vec::new();
+        Ok(execute_plan(input, plan))
+    }
 
-        for change in plan.changes {
-            let node = &mut graph.nodes[change.index];
-            node.content = change.content;
-            node.token_count = change.token_count;
-            removals.extend(change.removals);
+    fn execute_if_supported(
+        &self,
+        input: &ContextGraph,
+        _budget: &CompressionBudget,
+    ) -> StrategyExecution {
+        let plan = collapse_plan(input);
+        if plan.changes.is_empty() {
+            StrategyExecution::NotSupported
+        } else {
+            let estimate = estimate_for_plan(&plan);
+            StrategyExecution::Executed {
+                estimate,
+                output: Ok(execute_plan(input, plan)),
+            }
         }
+    }
+}
 
-        Ok(StrategyOutput {
-            graph,
-            notes: plan.notes,
-            removals,
-        })
+fn estimate_for_plan(plan: &CollapsePlan) -> Estimate {
+    if plan.changes.is_empty() {
+        Estimate::default()
+    } else {
+        Estimate {
+            tokens_saved: plan.tokens_saved,
+            confidence: 1.0,
+        }
+    }
+}
+
+fn execute_plan(input: &ContextGraph, plan: CollapsePlan) -> StrategyOutput {
+    let mut graph = input.clone();
+    let mut removals = Vec::new();
+
+    for change in plan.changes {
+        let node = &mut graph.nodes[change.index];
+        node.content = change.content;
+        node.token_count = change.token_count;
+        removals.extend(change.removals);
+    }
+
+    StrategyOutput {
+        graph,
+        notes: plan.notes,
+        removals,
     }
 }
 
@@ -496,12 +521,42 @@ mod tests {
     }
 
     #[test]
+    fn test_combined_execution_matches_public_estimate_and_output() {
+        let graph = graph_with(node(
+            "log-1",
+            NodeKind::ToolResponse,
+            FIVE_HUNDRED_LINES,
+            false,
+        ));
+        let expected_estimate = CollapseLogs.estimate(&graph);
+        let expected_output = CollapseLogs
+            .execute(&graph, &budget())
+            .expect("standalone collapse should execute");
+
+        let StrategyExecution::Executed { estimate, output } =
+            CollapseLogs.execute_if_supported(&graph, &budget())
+        else {
+            panic!("the committed log fixture should use combined execution");
+        };
+
+        assert_eq!(estimate, expected_estimate);
+        assert_eq!(
+            output.expect("combined collapse should execute"),
+            expected_output
+        );
+    }
+
+    #[test]
     fn test_two_repeats_untouched() {
         let content =
             "2026-07-21T09:00:00Z request completed\n2026-07-21T09:00:01Z request completed\n";
         let graph = graph_with(node("log", NodeKind::ToolResponse, content, false));
 
         assert!(!CollapseLogs.supports(&graph));
+        assert_eq!(
+            CollapseLogs.execute_if_supported(&graph, &budget()),
+            StrategyExecution::NotSupported
+        );
         let output = CollapseLogs
             .execute(&graph, &budget())
             .expect("two repeats should be a no-op");

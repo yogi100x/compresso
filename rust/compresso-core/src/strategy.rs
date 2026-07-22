@@ -70,6 +70,23 @@ pub enum StrategyError {
     NotImplemented { strategy_id: &'static str },
 }
 
+/// Optional single-pass result for strategies whose planning is expensive.
+///
+/// The default [`CompressionStrategy::execute_if_supported`] implementation
+/// returns `Legacy`, preserving the original `supports` → `estimate` →
+/// `execute` engine contract for existing implementations. Strategies may
+/// override the hook to plan once and return either `NotSupported` or the
+/// exact estimate and execution result derived from that plan.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StrategyExecution {
+    Legacy,
+    NotSupported,
+    Executed {
+        estimate: Estimate,
+        output: Result<StrategyOutput, StrategyError>,
+    },
+}
+
 pub trait CompressionStrategy: Send + Sync {
     fn id(&self) -> &'static str;
     fn supports(&self, input: &ContextGraph) -> bool;
@@ -79,6 +96,14 @@ pub trait CompressionStrategy: Send + Sync {
         input: &ContextGraph,
         budget: &CompressionBudget,
     ) -> Result<StrategyOutput, StrategyError>;
+
+    fn execute_if_supported(
+        &self,
+        _input: &ContextGraph,
+        _budget: &CompressionBudget,
+    ) -> StrategyExecution {
+        StrategyExecution::Legacy
+    }
 }
 
 pub struct StrategyRegistry {
@@ -269,6 +294,10 @@ mod tests {
             .execute(&graph, &test_budget())
             .expect("noop strategy should execute");
 
+        assert_eq!(
+            NoopStrategy.execute_if_supported(&graph, &test_budget()),
+            StrategyExecution::Legacy
+        );
         assert_eq!(NoopStrategy.estimate(&graph), Estimate::default());
         assert_eq!(output.graph, graph);
         assert!(output.notes.is_empty());
