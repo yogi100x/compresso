@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::process;
 use std::sync::OnceLock;
@@ -35,6 +36,17 @@ impl SessionId {
     pub fn into_string(self) -> String {
         self.0
     }
+
+    /// Parses a canonical 26-character Crockford-base32 session identifier.
+    pub fn parse(value: &str) -> Result<Self, StoreError> {
+        if !is_ulid(value) {
+            return Err(StoreError::InvalidField {
+                field: "session id",
+                reason: "must be a canonical 26-character ULID",
+            });
+        }
+        Ok(Self(value.to_owned()))
+    }
 }
 
 impl AsRef<str> for SessionId {
@@ -47,6 +59,16 @@ impl fmt::Display for SessionId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
     }
+}
+
+/// One persisted MCP/client connection lifecycle.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionRecord {
+    pub id: SessionId,
+    pub client: String,
+    pub transport: String,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
 }
 
 /// One operation-ledger row at the Store boundary.
@@ -104,6 +126,28 @@ pub struct StatsSummary {
     pub modeled_cost_saved: ModeledCostSaved,
     /// Fraction of selected operations whose fallback flag is set.
     pub fallback_rate: f64,
+}
+
+/// Optional filters for detailed local savings metrics.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct StatsFilter {
+    pub since: Option<i64>,
+    pub session_id: Option<SessionId>,
+}
+
+/// Per-tool savings breakdown using the same fixed vocabulary as the total.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ToolStatsSummary {
+    pub tool: String,
+    pub operations: u64,
+    pub net_tokens_saved: i64,
+}
+
+/// Aggregate savings plus a deterministic tool-name-ordered breakdown.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DetailedStatsSummary {
+    pub summary: StatsSummary,
+    pub by_tool: Vec<ToolStatsSummary>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -164,6 +208,39 @@ impl Store {
             return Err(StoreError::SessionNotFound(session.as_str().to_owned()));
         }
         Ok(())
+    }
+
+    /// Loads one persisted session lifecycle by its typed identifier.
+    pub fn session_by_id(&self, session: &SessionId) -> Result<Option<SessionRecord>, StoreError> {
+        let connection = self.connection()?;
+        let raw = connection
+            .query_row(
+                "SELECT id, client, transport, started_at, ended_at FROM sessions WHERE id = ?1",
+                [session.as_str()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, Option<i64>>(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        raw.map(|(id, client, transport, started_at, ended_at)| {
+            Ok(SessionRecord {
+                id: SessionId::parse(&id).map_err(|_| StoreError::InvalidStoredValue {
+                    field: "sessions.id",
+                    value: id,
+                })?,
+                client,
+                transport,
+                started_at,
+                ended_at,
+            })
+        })
+        .transpose()
     }
 
     /// Validates and atomically records one operation and its trace strategy rows.
@@ -274,19 +351,35 @@ impl Store {
 
     /// Aggregates retained operation rows, optionally starting at a Unix timestamp.
     pub fn stats(&self, since: Option<i64>) -> Result<StatsSummary, StoreError> {
+        Ok(self
+            .detailed_stats(&StatsFilter {
+                since,
+                session_id: None,
+            })?
+            .summary)
+    }
+
+    /// Aggregates retained rows with optional time/session filters and a tool breakdown.
+    pub fn detailed_stats(&self, filter: &StatsFilter) -> Result<DetailedStatsSummary, StoreError> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
-            "SELECT tool, observed_tokens, applied_tokens, compression_overhead, fallback_used FROM operations WHERE (?1 IS NULL OR created_at >= ?1) ORDER BY created_at, id",
+            "SELECT tool, observed_tokens, applied_tokens, compression_overhead, fallback_used FROM operations WHERE (?1 IS NULL OR created_at >= ?1) AND (?2 IS NULL OR session_id = ?2) ORDER BY created_at, id",
         )?;
-        let rows = statement.query_map([since], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-                row.get::<_, i64>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, i64>(4)?,
-            ))
-        })?;
+        let rows = statement.query_map(
+            params![
+                filter.since,
+                filter.session_id.as_ref().map(SessionId::as_str)
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )?;
 
         let mut operations = 0_u64;
         let mut observed_tokens = 0_u64;
@@ -294,6 +387,7 @@ impl Store {
         let mut removed_tokens = 0_u64;
         let mut compression_overhead = 0_u64;
         let mut fallbacks = 0_u64;
+        let mut by_tool = BTreeMap::<String, (u64, u64, u64)>::new();
         for row in rows {
             let (tool, observed, applied, overhead, fallback) = row?;
             let kind = classify_stored_tool(&tool)?;
@@ -307,7 +401,16 @@ impl Store {
             applied_tokens = applied_tokens.saturating_add(applied);
             compression_overhead = compression_overhead.saturating_add(overhead);
             if kind == OperationKind::Compression && !fallback {
-                removed_tokens = removed_tokens.saturating_add(observed.saturating_sub(applied));
+                let removed = observed.saturating_sub(applied);
+                removed_tokens = removed_tokens.saturating_add(removed);
+                let entry = by_tool.entry(tool).or_default();
+                entry.0 = entry.0.saturating_add(1);
+                entry.1 = entry.1.saturating_add(removed);
+                entry.2 = entry.2.saturating_add(overhead);
+            } else {
+                let entry = by_tool.entry(tool).or_default();
+                entry.0 = entry.0.saturating_add(1);
+                entry.2 = entry.2.saturating_add(overhead);
             }
             if fallback {
                 fallbacks = fallbacks.saturating_add(1);
@@ -319,7 +422,7 @@ impl Store {
         } else {
             fallbacks as f64 / operations as f64
         };
-        Ok(StatsSummary {
+        let summary = StatsSummary {
             operations,
             observed_tokens,
             applied_tokens,
@@ -331,7 +434,18 @@ impl Store {
                 label: "modeled".to_owned(),
             },
             fallback_rate,
-        })
+        };
+        let by_tool = by_tool
+            .into_iter()
+            .map(
+                |(tool, (operations, removed_tokens, compression_overhead))| ToolStatsSummary {
+                    tool,
+                    operations,
+                    net_tokens_saved: signed_token_difference(removed_tokens, compression_overhead),
+                },
+            )
+            .collect();
+        Ok(DetailedStatsSummary { summary, by_tool })
     }
 }
 
@@ -442,6 +556,21 @@ fn validate_operation_shape(
                 return Err(StoreError::OperationTraceIdMismatch {
                     operation_id: operation.id.clone(),
                     trace_operation_id: trace_id.to_owned(),
+                });
+            }
+            let trace_session = match trace.get("session_id") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(session_id)) => Some(session_id.as_str()),
+                Some(_) => {
+                    return Err(StoreError::InvalidTrace {
+                        reason: "root session_id must be a string or null".to_owned(),
+                    });
+                }
+            };
+            let operation_session = operation.session_id.as_ref().map(SessionId::as_str);
+            if trace_session != operation_session {
+                return Err(StoreError::InvalidTrace {
+                    reason: "root session_id must match the operation session".to_owned(),
                 });
             }
             validate_trace_accounting(&trace, operation)?;
@@ -660,6 +789,12 @@ fn generate_session_identity() -> Result<(SessionId, i64), StoreError> {
     Ok((id, started_at))
 }
 
+fn is_ulid(value: &str) -> bool {
+    value.len() == 26
+        && matches!(value.as_bytes().first(), Some(b'0'..=b'7'))
+        && value.bytes().all(|byte| CROCKFORD_BASE32.contains(&byte))
+}
+
 fn encode_ulid(bytes: [u8; 16]) -> String {
     let mut value = u128::from_be_bytes(bytes);
     let mut encoded = [b'0'; 26];
@@ -714,7 +849,7 @@ mod tests {
     use serde_json::{Value, json};
     use tempfile::tempdir;
 
-    use crate::{OperationRecord, Store, StoreError};
+    use crate::{OperationRecord, SessionId, StatsFilter, Store, StoreError};
 
     fn setup() -> (tempfile::TempDir, Store) {
         let directory = tempdir().expect("temp directory should be created");
@@ -829,7 +964,33 @@ mod tests {
         let session = store
             .start_session("test-harness", "stdio")
             .expect("session should start");
+        assert_eq!(
+            SessionId::parse(session.as_str()).expect("generated session should parse"),
+            session
+        );
+        for invalid in [
+            "",
+            "lowercase0000000000000000",
+            "80000000000000000000000000",
+        ] {
+            assert!(matches!(
+                SessionId::parse(invalid),
+                Err(StoreError::InvalidField {
+                    field: "session id",
+                    ..
+                })
+            ));
+        }
         store.close_session(&session).expect("session should close");
+        let record = store
+            .session_by_id(&session)
+            .expect("session lookup should succeed")
+            .expect("session should exist");
+        assert_eq!(record.id, session);
+        assert_eq!(record.client, "test-harness");
+        assert_eq!(record.transport, "stdio");
+        assert!(record.started_at > 0);
+        assert!(record.ended_at.is_some());
         let ended_at: Option<i64> = store
             .connection()
             .expect("connection should lock")
@@ -1295,6 +1456,137 @@ mod tests {
         let stats = store.stats(None).expect("stats should aggregate");
         assert_eq!(stats.removed_tokens, 0);
         assert_eq!(stats.net_tokens_saved, -10);
+    }
+
+    #[test]
+    fn test_detailed_stats_filters_session_and_groups_tools() {
+        let (_directory, store) = setup();
+        let first_session = store
+            .start_session("first", "stdio")
+            .expect("first session should start");
+        let second_session = store
+            .start_session("second", "stdio")
+            .expect("second session should start");
+
+        let mut first_compression = operation(
+            "first-compression",
+            "compresso_compress",
+            (1_000, 700),
+            false,
+            None,
+            Some(trace_with_session(
+                "first-compression",
+                1_000,
+                700,
+                first_session.as_str(),
+            )),
+            100,
+        );
+        first_compression.session_id = Some(first_session.clone());
+        store
+            .record_operation(&first_compression)
+            .expect("first compression should record");
+
+        let mut retrieval = operation(
+            "first-read",
+            "compresso_read",
+            (80, 80),
+            false,
+            Some(80),
+            None,
+            110,
+        );
+        retrieval.session_id = Some(first_session.clone());
+        store
+            .record_operation(&retrieval)
+            .expect("retrieval should record");
+
+        let mut second_compression = operation(
+            "second-compression",
+            "compresso_compress",
+            (500, 400),
+            false,
+            None,
+            Some(trace_with_session(
+                "second-compression",
+                500,
+                400,
+                second_session.as_str(),
+            )),
+            120,
+        );
+        second_compression.session_id = Some(second_session);
+        store
+            .record_operation(&second_compression)
+            .expect("second compression should record");
+
+        let detailed = store
+            .detailed_stats(&StatsFilter {
+                since: Some(90),
+                session_id: Some(first_session),
+            })
+            .expect("session stats should load");
+        assert_eq!(detailed.summary.operations, 2);
+        assert_eq!(detailed.summary.observed_tokens, 1_080);
+        assert_eq!(detailed.summary.applied_tokens, 780);
+        assert_eq!(detailed.summary.net_tokens_saved, 300);
+        assert_eq!(
+            detailed
+                .by_tool
+                .iter()
+                .map(|item| (item.tool.as_str(), item.operations, item.net_tokens_saved))
+                .collect::<Vec<_>>(),
+            [("compresso_compress", 1, 300), ("compresso_read", 1, 0)]
+        );
+    }
+
+    #[test]
+    fn test_compression_trace_session_must_match_operation_session() {
+        let (_directory, store) = setup();
+        let session = store
+            .start_session("codex", "stdio")
+            .expect("session should start");
+        let mut missing = operation(
+            "missing-trace-session",
+            "compresso_compress",
+            (10, 8),
+            false,
+            None,
+            Some(valid_trace("missing-trace-session", 10, 8, vec![])),
+            100,
+        );
+        missing.session_id = Some(session.clone());
+        assert!(matches!(
+            store.record_operation(&missing),
+            Err(StoreError::InvalidTrace { .. })
+        ));
+
+        let mut wrong = operation(
+            "wrong-trace-session",
+            "compresso_compress",
+            (10, 8),
+            false,
+            None,
+            Some(trace_with_session(
+                "wrong-trace-session",
+                10,
+                8,
+                "00000000000000000000000000",
+            )),
+            100,
+        );
+        wrong.session_id = Some(session);
+        assert!(matches!(
+            store.record_operation(&wrong),
+            Err(StoreError::InvalidTrace { .. })
+        ));
+    }
+
+    fn trace_with_session(id: &str, before: u64, after: u64, session_id: &str) -> String {
+        let mut trace: Value = serde_json::from_str(&valid_trace(id, before, after, vec![]))
+            .expect("fixture trace should parse");
+        trace["session_id"] = json!(session_id);
+        trace.to_string()
     }
 
     fn operation_count(store: &Store) -> i64 {
