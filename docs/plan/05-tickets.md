@@ -499,7 +499,7 @@ Test cases:
 - test_doctor_all_green_on_healthy_tmp: doctor with temp HOME and fresh db → exit 0, all checks `passed == true`.
 - test_doctor_bad_config_fails_gracefully: config.toml containing `mode = [` → exit 1, JSON check `config_parses.passed == false`, hint names the file path.
 
-### [ ] E4-05: install-local.sh slice installer (D42)
+### [x] E4-05: install-local.sh slice installer (D42)
 Owner: I1 · Estimate: 1.5d · Depends: E1-06, E4-04
 Files: installers/install-local.sh, installers/tests/install_local_test.sh, docs/runbooks/install-local.md
 Description: POSIX-sh installer that (1) detects platform/arch, (2) locates the matching `compresso-<version>-<target>.tar.gz` and `SHA256SUMS` from a local path or URL argument, (3) verifies the SHA256 checksum before unpacking, (4) installs atomically to `~/.local/bin/compresso` (temp file + rename, mode 0755, per D23), (5) is idempotent — a re-run replaces the binary and keeps the prior one as `compresso.previous`, and (6) prints PATH guidance when `~/.local/bin` is not on PATH. Unsigned per D42 (signing/notarization/package managers stay E12); conforms to the 08 §3.4 bootstrap constraints: small enough to read in one sitting, no telemetry, no assistant-config mutation, no mutable second-stage code.
