@@ -35,7 +35,17 @@ pub struct ContextNode {
     pub protected: bool,
     pub recency: Option<u64>,
     pub metadata: serde_json::Map<String, serde_json::Value>,
+    pub provider_turn: Option<ProviderTurn>,
 }
+pub struct ProviderTurn {
+    pub provider: ProviderId,
+    pub turn_id: ProviderTurnId,
+    pub tool_call_id: ToolCallId,
+    pub opaque_state_hash: Option<String>,
+}
+pub struct ProviderId(/* non-empty string */);
+pub struct ProviderTurnId(/* non-empty string */);
+pub struct ToolCallId(/* non-empty string */);
 pub enum NodeKind { SystemInstruction, UserInstruction, AssistantResponse, AssistantReasoning, ToolDefinition, ToolRequest, ToolResponse, SourceFile, CodeSymbol, SearchResult, CompilerOutput, TestOutput, RepoMap, Summary, Decision, MemoryFact }
 pub enum Source { Client, Repository { path: String }, Tool { name: String }, Synthetic }
 pub struct ContextEdge { pub from: String, pub to: String, pub kind: EdgeKind, pub weight: f32 }
@@ -48,6 +58,10 @@ impl ContextGraph {
     pub fn recount_changed(&mut self, changed: &BTreeSet<String>, counter: &dyn TokenCounter);
     pub fn validate_token_counts(&self, counter: &dyn TokenCounter) -> Result<(), GraphError>;
 }
+
+// E2-13 generic-text boundary. Only a single-node, edge-free, non-provider
+// graph is segmented; existing conversation/repository graphs remain intact.
+pub fn segment_graph(input: &ContextGraph) -> Result<ContextGraph, SegmentError>;
 ```
 
 ### 2.2 `tokens` module
@@ -81,6 +95,13 @@ pub trait CompressionStrategy: Send + Sync {
     fn supports(&self, input: &ContextGraph) -> bool;
     fn estimate(&self, input: &ContextGraph) -> Estimate;
     fn execute(&self, input: &ContextGraph, budget: &CompressionBudget) -> Result<StrategyOutput, StrategyError>;
+    fn execute_if_supported(&self, input: &ContextGraph, budget: &CompressionBudget) -> StrategyExecution;
+}
+
+pub enum StrategyExecution {
+    Legacy,                                               // default: engine preserves supports → estimate → execute behavior
+    NotSupported,
+    Executed { estimate: Estimate, output: Result<StrategyOutput, StrategyError> },
 }
 
 pub struct StrategyRegistry { /* ordered Vec<Box<dyn CompressionStrategy>> */ }
@@ -90,7 +111,7 @@ impl StrategyRegistry {
 }
 ```
 
-Slice strategies: `dedup_exact` creates a typed stub plus `duplicate_of` edge; `collapse_logs` and `compact_json` remove only enumerated units; `pack_budget` drops lowest `priority/token` unprotected atomic groups. It never partial-truncates code, provider turns, tool request/response pairs, or dedup referent groups. Every strategy returns changed node ids; the engine recounts those nodes and updates totals by delta. Strategies must not invoke whole-graph tokenization.
+Slice strategies: `dedup_exact` creates a typed stub plus `DuplicateReference.locator` while preserving the existing edge set; `collapse_logs` and `compact_json` remove only enumerated units; `pack_budget` drops lowest `priority/token` unprotected atomic groups. It never partial-truncates code, provider turns, tool request/response pairs, or dedup referent groups. Every strategy returns changed node ids; the engine recounts those nodes and updates totals by delta. Strategies must not invoke whole-graph tokenization. The combined execution hook is backward-compatible: its default `Legacy` result retains the three public calls, while a costly strategy may override it to derive `supports`, the exact estimate, and the exact output from one immutable plan.
 
 **Lossiness taxonomy (D39)** — safe mode is deterministic and rule-based, NOT lossless, and is never described as lossless in user-facing copy. Mapping enforced by `supports()`:
 
@@ -113,8 +134,14 @@ pub struct CompressionResult { pub output: ContextGraph, pub before_tokens: usiz
 pub struct Engine { /* registry, counter, safety */ }
 impl Engine {
     pub fn new(mode: Mode, counter: &'static dyn TokenCounter) -> Self;
+    pub fn with_provider_validator(self, validator: Arc<dyn ProviderConversationValidator>) -> Self;
     pub fn compress(&self, input: ContextGraph, budget: &CompressionBudget) -> CompressionResult;
     // NEVER returns Err: any failure => fallback_used=true, output=input unchanged
+}
+
+pub trait ProviderConversationValidator: Send + Sync {
+    fn validate_pre_compression(&self, graph: &ContextGraph) -> Result<(), ProviderConversationError>;
+    fn validate_post_compression(&self, original: &ContextGraph, candidate: &ContextGraph) -> Result<(), ProviderConversationError>;
 }
 ```
 
@@ -124,7 +151,11 @@ Pipeline: validate and recount ingress → mark protected/provider-atomic groups
 
 ```rust
 pub struct SafetyCheck { pub name: String, pub passed: bool, pub detail: String }
+// Compatibility wrapper: uses an empty removal ledger. Identity candidates may
+// pass removals_enumerated; any non-identity graph delta fails that check.
 pub fn run_all(original: &ContextGraph, candidate: &ContextGraph, budget: &CompressionBudget, elapsed_ms: u64) -> Vec<SafetyCheck>;
+// Engine path: receives the cumulative typed ledger from applied strategies.
+pub fn run_all_with_removals(original: &ContextGraph, candidate: &ContextGraph, budget: &CompressionBudget, elapsed_ms: u64, removals: &[RemovalRecord]) -> Vec<SafetyCheck>;
 ```
 
 Checks: `protected_unchanged`, `no_inflation`, `json_still_valid`, `fences_balanced`, `refs_valid`, `provider_conversation_valid`, `minimum_output`, `token_counts_valid`, `latency_ok`, `schema_valid`, `removals_enumerated`. `refs_valid` covers file references and dedup referents; `minimum_output` requires a non-empty candidate for non-empty input; provider validation enforces complete turns/tool pairs and immutable reasoning; token validation recounts changed nodes and totals.
@@ -144,6 +175,21 @@ impl Config {
 
 ```rust
 pub struct Store { /* Arc<Mutex<rusqlite::Connection>>, WAL */ }
+pub type RepoId = i64;
+pub type FileId = i64;
+pub struct RepoRecord { pub id: RepoId, pub root: PathBuf, pub approved_at: i64, pub parser_version: String, pub schema_version: u32, pub last_indexed_at: Option<i64> }
+pub struct IndexVersionRecord { pub parser_version: String, pub schema_version: u32, pub created_at: i64 }
+pub enum FileLanguage { Rust, TypeScript, Tsx, JavaScript, Python }
+pub struct FileRecord { pub path: String, pub hash: String, pub language: Option<FileLanguage>, pub size_bytes: u64, pub token_estimate: usize, pub indexed_at: i64 }
+pub enum SymbolKind { Function, Method, Struct, Class, Enum, Trait, Interface, Const, Type, Module }
+pub struct SymbolRecord { pub name: String, pub qualified_name: String, pub kind: SymbolKind, pub signature: Option<String>, pub start_line: u32, pub end_line: u32, pub token_estimate: usize }
+pub enum EdgeKind { Imports, References, Tests }
+pub enum EdgeResolution { Resolved, Ambiguous(Vec<String>), Unresolved(String) }
+pub struct EdgeRecord { pub to_path: String, pub kind: EdgeKind, pub resolution: EdgeResolution }
+pub struct ResolvedEdgeRecord { pub from_path: String, pub to_path: String, pub kind: EdgeKind }
+pub struct SymbolHit { pub file: FileRecord, pub symbol: SymbolRecord, pub rank: f64 }
+// D59: selector ownership stays in Store to avoid a Store -> Atlas dependency. Lookup returns all candidates.
+pub struct SymbolSelector { pub path: String, pub qualified_name: String, pub kind: Option<SymbolKind>, pub signature_hash: Option<String>, pub start_line_hint: Option<u32> }
 // Concurrency contract (D41, ADR-0004): Store is Send + Sync and cheaply cloneable (Arc). ONE process, ONE
 // connection guarded by a Mutex: every method acquires the lock, so writes are serialized by construction and
 // reads never observe partial transactions. busy_timeout = 5s guards against a second process (e.g. CLI while
@@ -156,14 +202,26 @@ impl Store {
     // repositories
     pub fn approve_repo(&self, canonical_root: &Path) -> Result<RepoId>;
     pub fn repo_by_root(&self, canonical_root: &Path) -> Result<Option<RepoRecord>>;
+    pub fn repository(&self, repo: RepoId) -> Result<RepoRecord>;
+    pub fn approved_repositories(&self) -> Result<Vec<RepoRecord>>; // canonical-root order
+    pub fn prepare_repo_removal(&self, canonical_root: &Path) -> Result<Option<RepoRemovalPreview>>; // exact record + Store revision
+    pub fn remove_repo_if_unchanged(&self, preview: &RepoRemovalPreview) -> Result<RepoRecord>; // fails closed after any intervening Store write
+    pub fn remove_repo(&self, canonical_root: &Path) -> Result<Option<RepoRecord>>; // exact stored root; cascades index metadata, never source files
     // files & symbols (used only by atlas)
     pub fn upsert_file(&self, repo: RepoId, rec: &FileRecord) -> Result<FileId>;
+    pub fn replace_indexed_file(&self, repo: RepoId, rec: &FileRecord, symbols: &[SymbolRecord], edges: &[EdgeRecord]) -> Result<FileId>; // one per-file transaction
     pub fn file_hashes(&self, repo: RepoId) -> Result<HashMap<String, String>>;  // path -> blake3
+    pub fn indexed_files(&self, repo: RepoId) -> Result<Vec<FileRecord>>; // deterministic path order
+    pub fn indexed_file(&self, repo: RepoId, path: &str) -> Result<Option<FileRecord>>;
     pub fn replace_symbols(&self, file: FileId, symbols: &[SymbolRecord], edges: &[EdgeRecord]) -> Result<()>; // single transaction
     pub fn delete_files(&self, repo: RepoId, paths: &[String]) -> Result<()>;
     pub fn search_symbols(&self, repo: RepoId, query: &str, limit: usize) -> Result<Vec<SymbolHit>>; // FTS5, bm25-ranked
     pub fn symbols_in_file(&self, repo: RepoId, path: &str) -> Result<Vec<SymbolRecord>>;
+    pub fn resolved_edges(&self, repo: RepoId) -> Result<Vec<ResolvedEdgeRecord>>; // deterministic, resolved rows only
+    pub fn unresolved_edge_sources(&self, repo: RepoId) -> Result<Vec<String>>; // deterministic sources to reconsider when paths expand
     pub fn symbols_by_identity(&self, repo: RepoId, selector: &SymbolSelector) -> Result<Vec<(FileRecord, SymbolRecord)>>; // never arbitrary first
+    pub fn latest_index_version(&self, repo: RepoId) -> Result<Option<IndexVersionRecord>>;
+    pub fn stamp_index_version(&self, repo: RepoId, parser_version: &str, schema_version: u32) -> Result<()>;
     // sessions & operations
     pub fn start_session(&self, client: &str, transport: &str) -> Result<SessionId>;
     pub fn record_operation(&self, op: &OperationRecord) -> Result<()>;   // validates trace_json against schema
@@ -171,6 +229,7 @@ impl Store {
     // receipts
     pub fn save_receipt(&self, r: &ReceiptRecord) -> Result<()>;
     pub fn receipts(&self, client: Option<&str>) -> Result<Vec<ReceiptRecord>>;
+    pub fn total_changes(&self) -> Result<u64>; // connection-local read-only acceptance proof
 }
 ```
 
@@ -181,15 +240,20 @@ Boundary rule: only `compresso-store` contains SQL. Atlas/MCP/CLI call these met
 ```rust
 // scanner.rs
 pub struct ScanResult { pub added: Vec<PathBuf>, pub changed: Vec<PathBuf>, pub removed: Vec<String>, pub skipped: Vec<(PathBuf, SkipReason)> }
-pub fn scan(store: &Store, repo: RepoId, root: &Path) -> Result<ScanResult, AtlasError>;
+pub struct ScanOptions { pub max_file_bytes: u64 }
+pub fn scan(store: &Store, repo: RepoId, root: &Path) -> Result<ScanResult, AtlasError>; // safe default: max_file_bytes = 1_000_000
+pub fn scan_with_options(store: &Store, repo: RepoId, root: &Path, options: ScanOptions) -> Result<ScanResult, AtlasError>;
 // respects .gitignore + built-in exclusions (binaries, >max_file_bytes, node_modules/target/dist/.git, secret-file patterns: .env*, *.pem, id_rsa*)
+// ignored and built-in excluded directories are reported once in skipped and pruned before descent; descendants are intentionally not enumerated
 
 // parsers.rs
+pub type Language = compresso_store::FileLanguage;        // Store owns the canonical persisted language vocabulary
 pub struct ParserRegistry;
 impl ParserRegistry {
     pub fn for_path(path: &Path) -> Option<Language>;      // by extension: rs, ts, tsx, js, jsx, mjs, cjs, py
     pub fn extract(lang: Language, source: &str) -> Result<Extraction, ParseError>;
 }
+pub enum ImportKind { Use, Import, ExportFrom, Require, FromImport }
 pub struct ImportRecord { pub raw: String, pub kind: ImportKind, pub resolved_path: Option<String>, pub resolution: ImportResolution }
 pub enum ImportResolution { Resolved, Ambiguous(Vec<String>), Unresolved(String) }
 pub struct Extraction { pub symbols: Vec<SymbolRecord>, pub imports: Vec<ImportRecord> }
@@ -199,14 +263,20 @@ pub struct Extraction { pub symbols: Vec<SymbolRecord>, pub imports: Vec<ImportR
 pub struct Indexer<'a> { /* store, registry, counter */ }
 impl Indexer<'_> {
     pub fn index(&self, root: &Path, progress: impl FnMut(IndexProgress)) -> Result<IndexReport, AtlasError>;
-    // pipeline: canonicalize+approve root -> scan -> parse ONLY added/changed -> replace_symbols per file transaction -> delete removed -> stamp index_versions
+    // pipeline: canonicalize+approve root -> scan -> parse ONLY added/changed -> replace_indexed_file per file transaction -> delete removed -> stamp index_versions
 }
-pub struct IndexReport { pub files_indexed: usize, pub files_skipped: usize, pub symbols: usize, pub imports_resolved: usize, pub imports_unresolved: usize, pub duration_ms: u64, pub stale: bool }
+pub enum IndexProgress { Parsing { path: PathBuf }, Removed { path: String } }
+pub struct IndexReport { pub files_indexed: usize, pub files_removed: usize, pub files_skipped: usize, pub symbols: usize, pub imports_resolved: usize, pub imports_unresolved: usize, pub duration_ms: u64, pub stale: bool }
 
 // queries.rs — all read-only, all bounded by token budget
+pub struct RepoMap { pub rendered: String, pub files_total: usize, pub files_shown: usize, pub truncated: bool, pub tokens_used: usize, pub token_provider: TokenProvider }
+pub struct Outline { pub path: String, pub language: Option<FileLanguage>, pub symbols: Vec<SymbolRecord> }
+pub struct SymbolIdentity { pub path: String, pub qualified_name: String, pub kind: SymbolKind, pub signature_hash: Option<String>, pub start_line: u32, pub end_line: u32 }
+pub enum UnfoldResult { Found { path: String, symbol: SymbolRecord, content: String, stale: bool, reindex_hint: Option<String> }, Ambiguous { candidates: Vec<SymbolIdentity>, stale: bool, reindex_hint: Option<String> }, NotFound { path: String, qualified_name: String, stale: bool, reindex_hint: String } }
+pub struct SearchHit { pub path: String, pub symbol: SymbolRecord, pub score: f64 }
+pub struct BoundedRead { pub path: String, pub content: String, pub start_line: u32, pub end_line: u32, pub file_tokens_total: usize, pub tokens_used: usize, pub token_provider: TokenProvider, pub truncated: bool, pub elision: Option<String> }
 pub fn repo_map(store: &Store, repo: RepoId, budget_tokens: usize) -> Result<RepoMap>;      // dir tree + top symbols per file, PageRank-ish by edge in-degree
 pub fn outline(store: &Store, repo: RepoId, path: &str) -> Result<Outline>;                  // symbol skeleton with line ranges + token estimates
-pub struct SymbolSelector { pub path: String, pub qualified_name: String, pub kind: Option<String>, pub signature_hash: Option<String>, pub start_line_hint: Option<u32> }
 pub fn unfold(store: &Store, repo: RepoId, selector: &SymbolSelector) -> Result<UnfoldResult>; // multiple matches return typed Ambiguous candidates
 pub fn search(store: &Store, repo: RepoId, query: &str, limit: usize) -> Result<Vec<SearchHit>>;
 pub fn read_bounded(root: &Path, path: &str, range: Option<(u32, u32)>, budget_tokens: usize, counter: &dyn TokenCounter) -> Result<BoundedRead>; // path canonicalized, MUST be under approved root (symlink-resolved)
@@ -219,9 +289,10 @@ Security boundary: every path from external input passes `canonicalize()` and `s
 ## 5. compresso-mcp
 
 ```rust
-pub async fn serve_stdio(deps: McpDeps) -> anyhow::Result<()>;   // rmcp ServerHandler; blocks until client disconnect
+pub async fn serve_stdio(deps: McpDeps) -> anyhow::Result<()>;   // binds cwd's longest approved ancestor or remains repository-unbound
+pub async fn serve_stdio_for_root(deps: McpDeps, root: PathBuf) -> anyhow::Result<()>; // exact approved canonical root or actionable startup failure
 pub struct McpDeps { pub store: Store, pub engine: Engine, pub config: Config }
-// One rmcp #[tool] handler per tool in 04-mcp-and-integrations.md §1; handlers call atlas/engine, record operations, and are pure request/response (no background tasks).
+// One rmcp #[tool] handler per tool in 04-mcp-and-integrations.md §1; handlers call atlas/engine, record operations, and are pure request/response (no background tasks). Repository tools can only use the immutable session root; compression/stats/explain remain available in an unbound session.
 // Server instructions string: <=200 words, factual, lists tools, never instructs client to prefer Compresso over its own policy (build-doc §13.4).
 ```
 
@@ -236,10 +307,27 @@ pub trait Integration {
     fn verify(&self) -> VerificationReport;              // config parses + compresso server entry resolves to existing binary
     fn uninstall(&self, receipt: &InstallReceipt) -> Result<RestoreReport>; // remove owned keys only; restore semantics per adapter spec
 }
-pub struct InstallCtx { pub compresso_bin: PathBuf, pub scope: Scope }  // Scope::User | Scope::Project(PathBuf)
+pub struct InstallCtx { pub compresso_bin: PathBuf, pub scope: Scope }  // normalized absolute lexical launcher path; Scope::User | Scope::Project(PathBuf)
 ```
 
-Per-client config details in `04-mcp-and-integrations.md` §2. Claude Desktop: explicitly no adapter (D5).
+Per-client config details in `04-mcp-and-integrations.md` §2. User-scoped entries use `mcp serve`; project-scoped Claude Code/Cursor entries pin `--root CANONICAL_ROOT`. Claude Desktop: explicitly no adapter (D5).
+
+PB-03 CLI orchestration adds deterministic `compresso repos list`, exact and
+confirmable `compresso repos remove ROOT`, and `compresso setup CLIENT ROOT`.
+Repository removal binds confirmation to the exact previewed record and Store
+revision. Setup approves one exact config path, base, target bytes, unified
+diff, diff hash, backup path, and owned-key effect. Before indexing it converts
+that still-valid preview into an opaque, manager-bound, one-use authorization.
+Because indexing may outlive the plan TTL, setup renews only `issued_at`,
+`expires_at`, and the derived plan hash afterward; every approved material
+field remains byte-identical. The strict setup apply path refuses any pending
+recovery journal instead of replaying it, and reports the approved, effective,
+and active-receipt plan identities without calling an idempotent receipt newly
+applied. It also revalidates the repository, project config target, and launcher
+before apply. Dry-run, decline, and JSON without `--yes` open no Store and write
+nothing. The public launcher may provide `COMPRESSO_LAUNCHER_PATH`; the CLI
+validates its executable target but records the normalized, stable absolute
+lexical shim so package upgrades need no config rewrite.
 
 ## 7. Local API contract (supervisor — E8, spec now)
 

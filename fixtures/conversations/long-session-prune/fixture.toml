@@ -1,0 +1,25 @@
+name = "long-session-prune"
+category = "conversations"
+description = "A forty-turn coding transcript whose archived request summaries can yield to the active request, latest result, and in-flight tool request."
+eligible = true
+mode = "safe"
+
+[budget]
+max_tokens = 6000
+max_latency_ms = 200
+
+[input]
+graph = "graph.json"
+
+[expectations]
+min_reduction_pct = 25.0
+expect_fallback = false
+protected_node_ids = ["sys-1", "user-20", "req-current"]
+must_preserve = [
+  "ACTIVE RESULT: the failing boundary is parser_version drift in src/indexer.rs:214.",
+]
+
+[[recall_probes]]
+question = "Where is the active parser-version failure?"
+answer_substring = "src/indexer.rs:214"
+protected = true

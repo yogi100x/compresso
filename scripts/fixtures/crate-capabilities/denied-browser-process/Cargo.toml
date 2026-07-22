@@ -1,0 +1,10 @@
+[package]
+name = "compresso-browser"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+duct = { path = "deps/duct" }
+
+[workspace]
+exclude = ["deps/duct"]

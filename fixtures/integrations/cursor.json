@@ -1,0 +1,16 @@
+{
+  "fixtureSecret": "integration-fixture-secret-cursor",
+  "mcpServers": {
+    "other": {
+      "command": "/opt/example/cursor-server",
+      "args": [
+        "--local"
+      ]
+    }
+  },
+  "editor": {
+    "unknownSetting": {
+      "keep": true
+    }
+  }
+}

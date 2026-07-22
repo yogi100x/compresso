@@ -1,0 +1,21 @@
+schema_version = 1
+
+[reduction]
+# D37 / build-doc §25.6: eligible safe-mode median reduction must be above 25%.
+median_reduction_eligible_min = 0.25
+
+[safety]
+# D37 / build-doc §25.6: protected-node mutations have zero tolerance.
+protected_mutations_max = 0
+# D37 / build-doc §25.6: malformed tool/provider JSON has zero tolerance.
+malformed_json_max = 0
+
+[latency]
+# D37 / build-doc §25.6: warm local compression P95 must stay below 200 ms.
+p95_ms_max = 200
+
+[recall]
+# D40 / 06-fixtures.md §4.9: protected recall probes require 100% recall.
+protected_min = 1.0
+# D40 / 06-fixtures.md §4.9: all recall probes require at least 99% recall.
+overall_min = 0.99

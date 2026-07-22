@@ -1,0 +1,2193 @@
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use serde::{Deserialize, Serialize};
+
+use crate::graph::ContextGraph;
+use crate::provider_conversation::{
+    DefaultProviderConversationValidator, ProviderConversationValidator,
+};
+use crate::safety::{
+    SafetyCheck, identity_checks, run_after_differential_recount, run_all_with_provider_validator,
+    run_preflight_after_recount,
+};
+use crate::segment::{is_generic_text_graph, segment_graph};
+use crate::strategy::{
+    CompressionBudget, Mode, RemovalKind, RemovalRecord, StrategyExecution, StrategyOutput,
+    StrategyRegistry,
+};
+use crate::tokens::{TokenCounter, TokenProvider, counter_for, exact_repeated_line};
+use crate::trace::{StrategyResult, Trace};
+
+/// Maximum untrusted compression body accepted by the slice MCP boundary.
+pub const MAX_COMPRESSION_INPUT_BYTES: usize = 8 * 1024 * 1024;
+
+#[cfg(test)]
+use crate::safety::run_all;
+#[cfg(test)]
+use crate::strategy::CompressionStrategy;
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompressionResult {
+    pub output: ContextGraph,
+    pub before_tokens: usize,
+    pub after_tokens: usize,
+    pub strategy_results: Vec<StrategyResult>,
+    pub safety_checks: Vec<SafetyCheck>,
+    pub fallback_used: bool,
+    pub fallback_reason: Option<String>,
+    pub trace: Trace,
+}
+
+pub struct Engine {
+    mode: Mode,
+    counter: &'static dyn TokenCounter,
+    registry: StrategyRegistry,
+    provider_validator: Arc<dyn ProviderConversationValidator>,
+}
+
+impl Engine {
+    pub fn new(mode: Mode, counter: &'static dyn TokenCounter) -> Self {
+        Self {
+            mode,
+            counter,
+            registry: StrategyRegistry::safe_default(mode),
+            provider_validator: Arc::new(DefaultProviderConversationValidator),
+        }
+    }
+
+    pub fn with_provider_validator(
+        mut self,
+        validator: Arc<dyn ProviderConversationValidator>,
+    ) -> Self {
+        self.provider_validator = validator;
+        self
+    }
+
+    /// Returns the engine's configured default compression mode.
+    pub const fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// Compresses one request in an explicit mode without mutating this engine.
+    pub fn compress_in_mode(
+        &self,
+        mode: Mode,
+        input: ContextGraph,
+        budget: &CompressionBudget,
+    ) -> CompressionResult {
+        if mode == self.mode {
+            return self.compress(input, budget);
+        }
+        Self {
+            mode,
+            counter: self.counter,
+            registry: StrategyRegistry::safe_default(mode),
+            provider_validator: Arc::clone(&self.provider_validator),
+        }
+        .compress(input, budget)
+    }
+
+    /// Returns the caller's graph byte-identically with a valid fallback trace.
+    pub fn fail_open(&self, input: ContextGraph, reason: impl Into<String>) -> CompressionResult {
+        let before_tokens = recounted_total(&input);
+        self.fallback(
+            input,
+            before_tokens,
+            Vec::new(),
+            identity_checks(),
+            reason.into(),
+        )
+    }
+
+    /// Compresses `input` without exposing a fallible API.
+    ///
+    /// Every rejected candidate, strategy failure, and caught panic restores
+    /// the exact caller-owned graph supplied to this method.
+    pub fn compress(&self, input: ContextGraph, budget: &CompressionBudget) -> CompressionResult {
+        let original = input;
+        catch_unwind(AssertUnwindSafe(|| {
+            self.compress_inner(original.clone(), budget)
+        }))
+        .unwrap_or_else(|_| {
+            let before_tokens = recounted_total(&original);
+            let safety_checks = self.run_safety_checks(&original, &original, budget, 0, &[]);
+            self.fallback(
+                original,
+                before_tokens,
+                Vec::new(),
+                safety_checks,
+                "engine_panic".to_owned(),
+            )
+        })
+    }
+
+    fn compress_inner(
+        &self,
+        original: ContextGraph,
+        budget: &CompressionBudget,
+    ) -> CompressionResult {
+        let started = Instant::now();
+
+        if self.mode == Mode::Passthrough {
+            let before_tokens = original.total_tokens();
+            return self.complete(
+                original,
+                before_tokens,
+                before_tokens,
+                Vec::new(),
+                identity_checks(),
+                false,
+                None,
+                "Passthrough mode.".to_owned(),
+                None,
+            );
+        }
+
+        let generic_text_ingress = is_generic_text_graph(&original);
+        let segmented_ingress = match segment_graph(&original) {
+            Ok(graph) => graph,
+            Err(error) => {
+                let before_tokens = recounted_total(&original);
+                let safety_checks = self.run_safety_checks(
+                    &original,
+                    &original,
+                    budget,
+                    elapsed_ms(started.elapsed()),
+                    &[],
+                );
+                return self.fallback(
+                    original,
+                    before_tokens,
+                    Vec::new(),
+                    safety_checks,
+                    format!("segmentation:{error}"),
+                );
+            }
+        };
+        let mut ingress = segmented_ingress;
+        recount_graph(&mut ingress);
+        force_protection(&mut ingress, budget);
+        let before_tokens = ingress.total_tokens();
+        let ingress_validation = ingress.validate();
+        let preflight_checks = run_preflight_after_recount(
+            &ingress,
+            budget,
+            elapsed_ms(started.elapsed()),
+            self.provider_validator.as_ref(),
+        );
+
+        if budget.max_tokens == 0 || budget.max_latency_ms == 0 {
+            return self.fallback(
+                original,
+                before_tokens,
+                Vec::new(),
+                preflight_checks,
+                "validation:invalid_budget".to_owned(),
+            );
+        }
+        if ingress_validation.is_err() {
+            return self.fallback(
+                original,
+                before_tokens,
+                Vec::new(),
+                preflight_checks,
+                "validation:context_graph".to_owned(),
+            );
+        }
+        if let Some(failed) = first_failed_check(&preflight_checks) {
+            let reason = format!("safety_check_failed:{failed}");
+            return self.fallback(
+                original,
+                before_tokens,
+                Vec::new(),
+                preflight_checks,
+                reason,
+            );
+        }
+
+        if matches!(self.mode, Mode::Balanced | Mode::Aggressive) {
+            let reason = format!("unsupported_mode:{}", mode_name(self.mode));
+            return self.fallback(
+                original,
+                before_tokens,
+                Vec::new(),
+                preflight_checks,
+                reason,
+            );
+        }
+
+        let mut current = ingress.clone();
+        let mut current_tokens = before_tokens;
+        let mut strategy_results = Vec::new();
+        let mut safety_ledger = Vec::new();
+
+        for strategy in self.registry.permitted(budget.allowed_lossiness) {
+            if elapsed_ms(started.elapsed()) > budget.max_latency_ms {
+                let safety_checks = self.run_verified_safety_checks(
+                    &ingress,
+                    &current,
+                    budget,
+                    elapsed_ms(started.elapsed()),
+                    &safety_ledger,
+                );
+                return self.fallback(
+                    original,
+                    before_tokens,
+                    strategy_results,
+                    safety_checks,
+                    "latency_budget_exceeded".to_owned(),
+                );
+            }
+
+            let strategy_id = match catch_unwind(AssertUnwindSafe(|| strategy.id())) {
+                Ok(strategy_id) => strategy_id,
+                Err(_) => {
+                    let safety_checks = self.run_verified_safety_checks(
+                        &ingress,
+                        &current,
+                        budget,
+                        elapsed_ms(started.elapsed()),
+                        &safety_ledger,
+                    );
+                    return self.fallback(
+                        original,
+                        before_tokens,
+                        strategy_results,
+                        safety_checks,
+                        "strategy_panic:unknown_strategy".to_owned(),
+                    );
+                }
+            };
+            let strategy_started = Instant::now();
+            let before = current_tokens;
+
+            let combined = match catch_unwind(AssertUnwindSafe(|| {
+                strategy.execute_if_supported(&current, budget)
+            })) {
+                Ok(combined) => combined,
+                Err(_) => {
+                    strategy_results.push(failed_strategy_result(
+                        strategy_id,
+                        before,
+                        strategy_started.elapsed(),
+                        None,
+                        "strategy panicked",
+                    ));
+                    let safety_checks = self.run_verified_safety_checks(
+                        &ingress,
+                        &current,
+                        budget,
+                        elapsed_ms(started.elapsed()),
+                        &safety_ledger,
+                    );
+                    return self.fallback(
+                        original,
+                        before_tokens,
+                        strategy_results,
+                        safety_checks,
+                        format!("strategy_panic:{strategy_id}"),
+                    );
+                }
+            };
+            let (estimate, output) = match combined {
+                StrategyExecution::Legacy => {
+                    let supported =
+                        match catch_unwind(AssertUnwindSafe(|| strategy.supports(&current))) {
+                            Ok(supported) => supported,
+                            Err(_) => {
+                                strategy_results.push(failed_strategy_result(
+                                    strategy_id,
+                                    before,
+                                    strategy_started.elapsed(),
+                                    None,
+                                    "strategy panicked",
+                                ));
+                                let safety_checks = self.run_verified_safety_checks(
+                                    &ingress,
+                                    &current,
+                                    budget,
+                                    elapsed_ms(started.elapsed()),
+                                    &safety_ledger,
+                                );
+                                return self.fallback(
+                                    original,
+                                    before_tokens,
+                                    strategy_results,
+                                    safety_checks,
+                                    format!("strategy_panic:{strategy_id}"),
+                                );
+                            }
+                        };
+                    if !supported {
+                        strategy_results.push(not_supported_strategy_result(
+                            strategy_id,
+                            before,
+                            strategy_started.elapsed(),
+                        ));
+                        continue;
+                    }
+
+                    let estimate =
+                        match catch_unwind(AssertUnwindSafe(|| strategy.estimate(&current))) {
+                            Ok(estimate) => estimate,
+                            Err(_) => {
+                                strategy_results.push(failed_strategy_result(
+                                    strategy_id,
+                                    before,
+                                    strategy_started.elapsed(),
+                                    None,
+                                    "strategy panicked",
+                                ));
+                                let safety_checks = self.run_verified_safety_checks(
+                                    &ingress,
+                                    &current,
+                                    budget,
+                                    elapsed_ms(started.elapsed()),
+                                    &safety_ledger,
+                                );
+                                return self.fallback(
+                                    original,
+                                    before_tokens,
+                                    strategy_results,
+                                    safety_checks,
+                                    format!("strategy_panic:{strategy_id}"),
+                                );
+                            }
+                        };
+
+                    let output =
+                        match catch_unwind(AssertUnwindSafe(|| strategy.execute(&current, budget)))
+                        {
+                            Ok(output) => output,
+                            Err(_) => {
+                                strategy_results.push(failed_strategy_result(
+                                    strategy_id,
+                                    before,
+                                    strategy_started.elapsed(),
+                                    Some(estimate.confidence),
+                                    "strategy panicked",
+                                ));
+                                let safety_checks = self.run_verified_safety_checks(
+                                    &ingress,
+                                    &current,
+                                    budget,
+                                    elapsed_ms(started.elapsed()),
+                                    &safety_ledger,
+                                );
+                                return self.fallback(
+                                    original,
+                                    before_tokens,
+                                    strategy_results,
+                                    safety_checks,
+                                    format!("strategy_panic:{strategy_id}"),
+                                );
+                            }
+                        };
+                    (estimate, output)
+                }
+                StrategyExecution::NotSupported => {
+                    strategy_results.push(not_supported_strategy_result(
+                        strategy_id,
+                        before,
+                        strategy_started.elapsed(),
+                    ));
+                    continue;
+                }
+                StrategyExecution::Executed { estimate, output } => (estimate, output),
+            };
+
+            let mut output = match output {
+                Ok(output) => output,
+                Err(_) => {
+                    strategy_results.push(failed_strategy_result(
+                        strategy_id,
+                        before,
+                        strategy_started.elapsed(),
+                        Some(estimate.confidence),
+                        "strategy returned an error",
+                    ));
+                    let safety_checks = self.run_verified_safety_checks(
+                        &ingress,
+                        &current,
+                        budget,
+                        elapsed_ms(started.elapsed()),
+                        &safety_ledger,
+                    );
+                    return self.fallback(
+                        original,
+                        before_tokens,
+                        strategy_results,
+                        safety_checks,
+                        format!("strategy_error:{strategy_id}"),
+                    );
+                }
+            };
+
+            let after =
+                match reconcile_strategy_accounting(&current, before, &mut output, self.counter) {
+                    Ok(after) => after,
+                    Err(reason) => {
+                        strategy_results.push(failed_strategy_result(
+                            strategy_id,
+                            before,
+                            strategy_started.elapsed(),
+                            Some(estimate.confidence),
+                            "strategy returned an invalid accounting proof",
+                        ));
+                        let safety_checks = self.run_verified_safety_checks(
+                            &ingress,
+                            &current,
+                            budget,
+                            elapsed_ms(started.elapsed()),
+                            &safety_ledger,
+                        );
+                        return self.fallback(
+                            original,
+                            before_tokens,
+                            strategy_results,
+                            safety_checks,
+                            format!("strategy_accounting_error:{strategy_id}:{reason}"),
+                        );
+                    }
+                };
+            let applied = output.graph != current;
+            let notes = redact_leaking_notes(output.notes, &ingress);
+            let removals = output.removals;
+            extend_safety_ledger(&mut safety_ledger, &removals, &ingress);
+            strategy_results.push(StrategyResult {
+                strategy_id: strategy_id.to_owned(),
+                applied,
+                before_tokens: before,
+                after_tokens: after,
+                duration_ms: duration_ms(strategy_started.elapsed()),
+                confidence: Some(estimate.confidence),
+                notes,
+                removals,
+                skipped_reason: (!applied).then(|| "no_change".to_owned()),
+            });
+            current = output.graph;
+            current_tokens = after;
+        }
+
+        let elapsed = elapsed_ms(started.elapsed());
+        let safety_checks =
+            self.run_verified_safety_checks(&ingress, &current, budget, elapsed, &safety_ledger);
+        if generic_text_ingress && current_tokens > budget.max_tokens {
+            return self.fallback(
+                original,
+                before_tokens,
+                strategy_results,
+                safety_checks,
+                "unsatisfiable_budget".to_owned(),
+            );
+        }
+        if let Some(failed) = first_failed_check(&safety_checks) {
+            let reason = format!("safety_check_failed:{failed}");
+            return self.fallback(
+                original,
+                before_tokens,
+                strategy_results,
+                safety_checks,
+                reason,
+            );
+        }
+
+        let after_tokens = current_tokens;
+        self.complete(
+            current,
+            before_tokens,
+            after_tokens,
+            strategy_results,
+            safety_checks,
+            false,
+            None,
+            "Compression done.".to_owned(),
+            Some(&ingress),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn complete(
+        &self,
+        output: ContextGraph,
+        before_tokens: usize,
+        after_tokens: usize,
+        strategy_results: Vec<StrategyResult>,
+        safety_checks: Vec<SafetyCheck>,
+        fallback_used: bool,
+        fallback_reason: Option<String>,
+        explanation: String,
+        trace_source: Option<&ContextGraph>,
+    ) -> CompressionResult {
+        let (trace_strategy_results, trace_safety_checks, trace_fallback_reason, trace_explanation) =
+            if let Some(trace_source) = trace_source {
+                (
+                    sanitize_strategy_results(&strategy_results, trace_source),
+                    sanitize_safety_checks(&safety_checks, trace_source),
+                    fallback_reason
+                        .as_deref()
+                        .map(|reason| sanitize_trace_text(reason, trace_source)),
+                    sanitize_trace_text(&explanation, trace_source),
+                )
+            } else {
+                (
+                    strategy_results.clone(),
+                    safety_checks.clone(),
+                    fallback_reason.clone(),
+                    explanation,
+                )
+            };
+        let trace = Trace::new(
+            self.mode,
+            before_tokens,
+            after_tokens,
+            configured_provider(self.counter),
+            fallback_used,
+            trace_fallback_reason,
+            trace_strategy_results,
+            trace_safety_checks,
+            trace_explanation,
+        );
+        CompressionResult {
+            output,
+            before_tokens,
+            after_tokens,
+            strategy_results,
+            safety_checks,
+            fallback_used,
+            fallback_reason,
+            trace,
+        }
+    }
+
+    fn fallback(
+        &self,
+        original: ContextGraph,
+        before_tokens: usize,
+        strategy_results: Vec<StrategyResult>,
+        safety_checks: Vec<SafetyCheck>,
+        reason: String,
+    ) -> CompressionResult {
+        self.complete(
+            original.clone(),
+            before_tokens,
+            before_tokens,
+            strategy_results,
+            safety_checks,
+            true,
+            Some(reason),
+            "Original returned.".to_owned(),
+            Some(&original),
+        )
+    }
+
+    fn run_safety_checks(
+        &self,
+        original: &ContextGraph,
+        candidate: &ContextGraph,
+        budget: &CompressionBudget,
+        elapsed_ms: u64,
+        removals: &[RemovalRecord],
+    ) -> Vec<SafetyCheck> {
+        run_all_with_provider_validator(
+            original,
+            candidate,
+            budget,
+            elapsed_ms,
+            removals,
+            self.provider_validator.as_ref(),
+        )
+    }
+
+    fn run_verified_safety_checks(
+        &self,
+        original: &ContextGraph,
+        candidate: &ContextGraph,
+        budget: &CompressionBudget,
+        elapsed_ms: u64,
+        removals: &[RemovalRecord],
+    ) -> Vec<SafetyCheck> {
+        run_after_differential_recount(
+            original,
+            candidate,
+            budget,
+            elapsed_ms,
+            removals,
+            self.provider_validator.as_ref(),
+        )
+    }
+
+    #[cfg(test)]
+    fn with_strategies(
+        mode: Mode,
+        counter: &'static dyn TokenCounter,
+        strategies: Vec<Box<dyn CompressionStrategy>>,
+    ) -> Self {
+        Self {
+            mode,
+            counter,
+            registry: StrategyRegistry::from_strategies(strategies),
+            provider_validator: Arc::new(DefaultProviderConversationValidator),
+        }
+    }
+}
+
+fn force_protection(graph: &mut ContextGraph, budget: &CompressionBudget) {
+    for node in &mut graph.nodes {
+        if node.kind.requires_protection() || budget.protected_kinds.contains(&node.kind) {
+            node.protected = true;
+        }
+    }
+
+    let protected_turns = graph
+        .nodes
+        .iter()
+        .filter(|node| node.protected)
+        .filter_map(|node| node.provider_turn.as_ref())
+        .map(|turn| (turn.provider.clone(), turn.turn_id.clone()))
+        .collect::<BTreeSet<_>>();
+    for node in &mut graph.nodes {
+        if node.provider_turn.as_ref().is_some_and(|turn| {
+            protected_turns.contains(&(turn.provider.clone(), turn.turn_id.clone()))
+        }) {
+            node.protected = true;
+        }
+    }
+}
+
+fn recount_graph(graph: &mut ContextGraph) {
+    for node in &mut graph.nodes {
+        node.token_count = counter_for(node.token_provider).count(&node.content);
+    }
+}
+
+fn recounted_total(graph: &ContextGraph) -> usize {
+    graph.nodes.iter().fold(0_usize, |total, node| {
+        total.saturating_add(counter_for(node.token_provider).count(&node.content))
+    })
+}
+
+fn reconcile_strategy_accounting(
+    current: &ContextGraph,
+    before_tokens: usize,
+    output: &mut StrategyOutput,
+    counter: &dyn TokenCounter,
+) -> Result<usize, &'static str> {
+    let current_nodes = unique_node_map(current)?;
+    let candidate_nodes = unique_node_map(&output.graph)?;
+    let current_total = checked_stored_total(current).ok_or("aggregate_overflow")?;
+    if current_total != before_tokens {
+        return Err("ingress_aggregate_mismatch");
+    }
+
+    let mut actual_changed = BTreeSet::new();
+    for (&id, current_node) in &current_nodes {
+        if candidate_nodes.get(id).copied() != Some(*current_node) {
+            actual_changed.insert(id.to_owned());
+        }
+    }
+    for &id in candidate_nodes.keys() {
+        if !current_nodes.contains_key(id) {
+            actual_changed.insert(id.to_owned());
+        }
+    }
+    if actual_changed != output.changed_node_ids {
+        return Err("changed_node_set_mismatch");
+    }
+
+    let current_order = current
+        .nodes
+        .iter()
+        .filter(|node| candidate_nodes.contains_key(node.id.as_str()))
+        .map(|node| node.id.as_str());
+    let candidate_order = output
+        .graph
+        .nodes
+        .iter()
+        .filter(|node| current_nodes.contains_key(node.id.as_str()))
+        .map(|node| node.id.as_str());
+    if !current_order.eq(candidate_order) {
+        return Err("node_order_mismatch");
+    }
+
+    let old_changed_tokens = output
+        .changed_node_ids
+        .iter()
+        .try_fold(0_usize, |total, id| match current_nodes.get(id.as_str()) {
+            Some(node) => total.checked_add(node.token_count),
+            None => Some(total),
+        })
+        .ok_or("delta_overflow")?;
+    let declared_counts = output
+        .graph
+        .nodes
+        .iter()
+        .filter(|node| output.changed_node_ids.contains(&node.id))
+        .map(|node| (node.id.clone(), node.token_count))
+        .collect::<BTreeMap<_, _>>();
+    let claimed_after = checked_stored_total(&output.graph).ok_or("aggregate_overflow")?;
+
+    output
+        .graph
+        .recount_changed(&output.changed_node_ids, counter);
+
+    for node in output
+        .graph
+        .nodes
+        .iter()
+        .filter(|node| output.changed_node_ids.contains(&node.id))
+    {
+        if declared_counts.get(&node.id).copied() != Some(node.token_count) {
+            return Err("changed_node_count_mismatch");
+        }
+    }
+
+    let new_changed_tokens = output
+        .changed_node_ids
+        .iter()
+        .try_fold(0_usize, |total, id| {
+            match output.graph.nodes.iter().find(|node| node.id == *id) {
+                Some(node) => total.checked_add(node.token_count),
+                None => Some(total),
+            }
+        })
+        .ok_or("delta_overflow")?;
+    let expected_after = before_tokens
+        .checked_sub(old_changed_tokens)
+        .and_then(|unchanged| unchanged.checked_add(new_changed_tokens))
+        .ok_or("delta_overflow")?;
+    if signed_delta(before_tokens, claimed_after)
+        != signed_delta(old_changed_tokens, new_changed_tokens)
+    {
+        return Err("changed_node_delta_mismatch");
+    }
+    if claimed_after != expected_after
+        || checked_stored_total(&output.graph) != Some(expected_after)
+    {
+        return Err("aggregate_mismatch");
+    }
+    Ok(expected_after)
+}
+
+fn unique_node_map(
+    graph: &ContextGraph,
+) -> Result<BTreeMap<&str, &crate::graph::ContextNode>, &'static str> {
+    let mut nodes = BTreeMap::new();
+    for node in &graph.nodes {
+        if nodes.insert(node.id.as_str(), node).is_some() {
+            return Err("duplicate_node_id");
+        }
+    }
+    Ok(nodes)
+}
+
+fn checked_stored_total(graph: &ContextGraph) -> Option<usize> {
+    graph
+        .nodes
+        .iter()
+        .try_fold(0_usize, |total, node| total.checked_add(node.token_count))
+}
+
+fn signed_delta(before: usize, after: usize) -> i128 {
+    before as i128 - after as i128
+}
+
+fn configured_provider(counter: &'static dyn TokenCounter) -> TokenProvider {
+    catch_unwind(AssertUnwindSafe(|| counter.provider())).unwrap_or(TokenProvider::Heuristic)
+}
+
+fn first_failed_check(checks: &[SafetyCheck]) -> Option<&str> {
+    checks
+        .iter()
+        .find(|check| !check.passed)
+        .map(|check| check.name.as_str())
+}
+
+fn elapsed_ms(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn duration_ms(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1_000.0
+}
+
+fn not_supported_strategy_result(
+    strategy_id: &str,
+    tokens: usize,
+    duration: Duration,
+) -> StrategyResult {
+    StrategyResult {
+        strategy_id: strategy_id.to_owned(),
+        applied: false,
+        before_tokens: tokens,
+        after_tokens: tokens,
+        duration_ms: duration_ms(duration),
+        confidence: None,
+        notes: Vec::new(),
+        removals: Vec::new(),
+        skipped_reason: Some("not_supported".to_owned()),
+    }
+}
+
+fn failed_strategy_result(
+    strategy_id: &str,
+    tokens: usize,
+    duration: Duration,
+    confidence: Option<f32>,
+    skipped_reason: &str,
+) -> StrategyResult {
+    StrategyResult {
+        strategy_id: strategy_id.to_owned(),
+        applied: false,
+        before_tokens: tokens,
+        after_tokens: tokens,
+        duration_ms: duration_ms(duration),
+        confidence,
+        notes: Vec::new(),
+        removals: Vec::new(),
+        skipped_reason: Some(skipped_reason.to_owned()),
+    }
+}
+
+fn extend_safety_ledger(
+    ledger: &mut Vec<RemovalRecord>,
+    records: &[RemovalRecord],
+    ingress: &ContextGraph,
+) {
+    for record in records {
+        let mut record = record.clone();
+        if record.kind == RemovalKind::DroppedNode
+            && let Some(original) = ingress.nodes.iter().find(|node| node.id == record.node_id)
+        {
+            // A final whole-node drop supersedes earlier partial transformations
+            // of that node. Rebase it to the ingress graph so the final ledger
+            // exactly reconciles the graph delta without overlapping regions.
+            ledger.retain(|existing| existing.node_id != record.node_id);
+            record.original_hash = content_hash(&original.content);
+            record.before_tokens = original.token_count;
+        }
+        ledger.push(record);
+    }
+}
+
+fn redact_leaking_notes(notes: Vec<String>, ingress: &ContextGraph) -> Vec<String> {
+    notes
+        .into_iter()
+        .map(|note| {
+            if contains_input_fragment(&note, ingress, 20) {
+                "[redacted strategy note]".to_owned()
+            } else {
+                note
+            }
+        })
+        .collect()
+}
+
+fn sanitize_strategy_results(
+    results: &[StrategyResult],
+    trace_source: &ContextGraph,
+) -> Vec<StrategyResult> {
+    results
+        .iter()
+        .cloned()
+        .map(|mut result| {
+            result.strategy_id = sanitize_trace_text(&result.strategy_id, trace_source);
+            result.notes = result
+                .notes
+                .into_iter()
+                .map(|note| sanitize_trace_text(&note, trace_source))
+                .collect();
+            result.skipped_reason = result
+                .skipped_reason
+                .as_deref()
+                .map(|reason| sanitize_trace_text(reason, trace_source));
+            for removal in &mut result.removals {
+                removal.strategy_id = sanitize_trace_text(&removal.strategy_id, trace_source);
+                removal.node_id = sanitize_trace_text(&removal.node_id, trace_source);
+                removal.locator = removal
+                    .locator
+                    .as_deref()
+                    .map(|locator| sanitize_trace_text(locator, trace_source));
+                removal.original_hash = sanitize_trace_text(&removal.original_hash, trace_source);
+                removal.replacement_hash = removal
+                    .replacement_hash
+                    .as_deref()
+                    .map(|hash| sanitize_trace_text(hash, trace_source));
+            }
+            result
+        })
+        .collect()
+}
+
+fn sanitize_safety_checks(checks: &[SafetyCheck], trace_source: &ContextGraph) -> Vec<SafetyCheck> {
+    checks
+        .iter()
+        .cloned()
+        .map(|mut check| {
+            check.name = sanitize_trace_text(&check.name, trace_source);
+            check.detail = sanitize_trace_text(&check.detail, trace_source);
+            check
+        })
+        .collect()
+}
+
+fn sanitize_trace_text(value: &str, trace_source: &ContextGraph) -> String {
+    if contains_input_fragment(value, trace_source, 20) {
+        "[redacted]".to_owned()
+    } else {
+        value.to_owned()
+    }
+}
+
+fn contains_input_fragment(value: &str, ingress: &ContextGraph, minimum_chars: usize) -> bool {
+    let boundaries = value
+        .char_indices()
+        .map(|(index, _)| index)
+        .chain(std::iter::once(value.len()))
+        .collect::<Vec<_>>();
+    if boundaries.len() <= minimum_chars {
+        return false;
+    }
+    let fragments = boundaries
+        .windows(minimum_chars + 1)
+        .map(|window| &value[window[0]..window[minimum_chars]])
+        .collect::<Vec<_>>();
+    ingress.nodes.iter().any(|node| {
+        let search_space = fragment_search_space(&node.content, minimum_chars);
+        fragments
+            .iter()
+            .any(|fragment| search_space.contains(*fragment))
+    })
+}
+
+fn fragment_search_space(content: &str, minimum_chars: usize) -> Cow<'_, str> {
+    let Some((line, repeats)) = exact_repeated_line(content) else {
+        return Cow::Borrowed(content);
+    };
+    let line_chars = line.chars().count();
+    if line_chars == 0 {
+        return Cow::Borrowed(content);
+    }
+    // Every fixed-width substring in a periodic stream starts within one
+    // period. One period plus the requested width is therefore a complete,
+    // exact search space, including fragments that cross a line boundary.
+    let needed_repeats = (line_chars + minimum_chars)
+        .div_ceil(line_chars)
+        .min(repeats);
+    Cow::Owned(line.repeat(needed_repeats))
+}
+
+fn content_hash(content: &str) -> String {
+    blake3::hash(content.as_bytes()).to_hex().to_string()
+}
+
+fn mode_name(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Safe => "safe",
+        Mode::Balanced => "balanced",
+        Mode::Aggressive => "aggressive",
+        Mode::Passthrough => "passthrough",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use serde_json::{Map, Value};
+
+    use super::*;
+    use crate::graph::{
+        ContextEdge, ContextNode, EdgeKind, NodeKind, ProviderId, ProviderTurn, ProviderTurnId,
+        Source, ToolCallId,
+    };
+    use crate::provider_conversation::ProviderConversationError;
+    use crate::strategy::{Estimate, Lossiness, StrategyError, StrategyOutput};
+
+    const LOG_FIXTURE: &str = include_str!("../../../fixtures/logs/repeated-npm-install/input.txt");
+
+    fn counter() -> &'static dyn TokenCounter {
+        counter_for(TokenProvider::Heuristic)
+    }
+
+    struct CountingCounter {
+        calls: AtomicUsize,
+    }
+
+    impl TokenCounter for CountingCounter {
+        fn provider(&self) -> TokenProvider {
+            TokenProvider::Heuristic
+        }
+
+        fn count(&self, text: &str) -> usize {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            text.len()
+        }
+    }
+
+    fn node(id: &str, kind: NodeKind, content: &str, protected: bool) -> ContextNode {
+        ContextNode {
+            id: id.to_owned(),
+            kind,
+            content: content.to_owned(),
+            source: Source::Synthetic,
+            token_count: counter().count(content),
+            token_provider: counter().provider(),
+            priority: 0.5,
+            protected,
+            recency: None,
+            metadata: Map::new(),
+            provider_turn: None,
+        }
+    }
+
+    fn graph(nodes: Vec<ContextNode>) -> ContextGraph {
+        ContextGraph {
+            schema_version: 1,
+            nodes,
+            edges: Vec::new(),
+        }
+    }
+
+    fn provider_turn(provider: &str, turn: &str, call: &str) -> ProviderTurn {
+        ProviderTurn {
+            provider: ProviderId::new(provider).unwrap(),
+            turn_id: ProviderTurnId::new(turn).unwrap(),
+            tool_call_id: ToolCallId::new(call).unwrap(),
+            opaque_state_hash: None,
+        }
+    }
+
+    fn provider_graph() -> ContextGraph {
+        let first = provider_turn("profile-a", "turn-1", "call-1");
+        let second = provider_turn("profile-a", "turn-1", "call-2");
+        let mut owner = node("owner", NodeKind::AssistantResponse, "owner", false);
+        owner.provider_turn = Some(first.clone());
+        let mut reasoning = node(
+            "reasoning",
+            NodeKind::AssistantReasoning,
+            "protected reasoning",
+            true,
+        );
+        reasoning.provider_turn = Some(first.clone());
+        let mut request_one = node("request-1", NodeKind::ToolRequest, "request one", true);
+        request_one.provider_turn = Some(first.clone());
+        let mut response_one = node("response-1", NodeKind::ToolResponse, "result one", false);
+        response_one.provider_turn = Some(first);
+        let mut request_two = node("request-2", NodeKind::ToolRequest, "request two", true);
+        request_two.provider_turn = Some(second.clone());
+        let mut response_two = node("response-2", NodeKind::ToolResponse, "result two", false);
+        response_two.provider_turn = Some(second);
+        ContextGraph {
+            schema_version: 1,
+            nodes: vec![
+                owner,
+                reasoning,
+                request_one,
+                response_one,
+                request_two,
+                response_two,
+            ],
+            edges: vec![
+                ContextEdge {
+                    from: "response-1".to_owned(),
+                    to: "request-1".to_owned(),
+                    kind: EdgeKind::RespondsTo,
+                    weight: 1.0,
+                },
+                ContextEdge {
+                    from: "response-2".to_owned(),
+                    to: "request-2".to_owned(),
+                    kind: EdgeKind::RespondsTo,
+                    weight: 1.0,
+                },
+            ],
+        }
+    }
+
+    fn budget() -> CompressionBudget {
+        CompressionBudget {
+            max_tokens: 2_000,
+            max_latency_ms: 2_000,
+            allowed_lossiness: crate::strategy::Lossiness::Summarizing,
+            protected_kinds: Vec::new(),
+        }
+    }
+
+    struct PanickingStrategy;
+
+    impl CompressionStrategy for PanickingStrategy {
+        fn id(&self) -> &'static str {
+            "panicking_test_strategy"
+        }
+
+        fn supports(&self, _input: &ContextGraph) -> bool {
+            true
+        }
+
+        fn estimate(&self, _input: &ContextGraph) -> Estimate {
+            Estimate {
+                tokens_saved: 1,
+                confidence: 1.0,
+            }
+        }
+
+        fn execute(
+            &self,
+            _input: &ContextGraph,
+            _budget: &CompressionBudget,
+        ) -> Result<StrategyOutput, StrategyError> {
+            panic!("injected strategy panic")
+        }
+    }
+
+    struct SlowNoopStrategy;
+
+    impl CompressionStrategy for SlowNoopStrategy {
+        fn id(&self) -> &'static str {
+            "slow_noop_test_strategy"
+        }
+
+        fn supports(&self, _input: &ContextGraph) -> bool {
+            true
+        }
+
+        fn estimate(&self, _input: &ContextGraph) -> Estimate {
+            Estimate::default()
+        }
+
+        fn execute(
+            &self,
+            input: &ContextGraph,
+            _budget: &CompressionBudget,
+        ) -> Result<StrategyOutput, StrategyError> {
+            std::thread::sleep(Duration::from_millis(25));
+            Ok(StrategyOutput {
+                graph: input.clone(),
+                changed_node_ids: BTreeSet::new(),
+                notes: Vec::new(),
+                removals: Vec::new(),
+            })
+        }
+    }
+
+    struct ProtectedMutation;
+
+    impl CompressionStrategy for ProtectedMutation {
+        fn id(&self) -> &'static str {
+            "protected_mutation"
+        }
+
+        fn supports(&self, _input: &ContextGraph) -> bool {
+            true
+        }
+
+        fn estimate(&self, _input: &ContextGraph) -> Estimate {
+            Estimate {
+                tokens_saved: 1,
+                confidence: 1.0,
+            }
+        }
+
+        fn execute(
+            &self,
+            input: &ContextGraph,
+            _budget: &CompressionBudget,
+        ) -> Result<StrategyOutput, StrategyError> {
+            let mut graph = input.clone();
+            graph.nodes[0].content = "changed".to_owned();
+            graph.nodes[0].token_count = counter().count("changed");
+            Ok(StrategyOutput {
+                graph,
+                changed_node_ids: BTreeSet::from(["system".to_owned()]),
+                notes: Vec::new(),
+                removals: Vec::new(),
+            })
+        }
+    }
+
+    struct SilentDrop;
+
+    impl CompressionStrategy for SilentDrop {
+        fn id(&self) -> &'static str {
+            "silent_drop"
+        }
+
+        fn supports(&self, _input: &ContextGraph) -> bool {
+            true
+        }
+
+        fn estimate(&self, input: &ContextGraph) -> Estimate {
+            Estimate {
+                tokens_saved: input.total_tokens(),
+                confidence: 1.0,
+            }
+        }
+
+        fn execute(
+            &self,
+            input: &ContextGraph,
+            _budget: &CompressionBudget,
+        ) -> Result<StrategyOutput, StrategyError> {
+            let mut graph = input.clone();
+            graph.nodes.pop();
+            Ok(StrategyOutput {
+                graph,
+                changed_node_ids: BTreeSet::from(["drop".to_owned()]),
+                notes: Vec::new(),
+                removals: Vec::new(),
+            })
+        }
+    }
+
+    struct CombinedHookStrategy;
+
+    impl CompressionStrategy for CombinedHookStrategy {
+        fn id(&self) -> &'static str {
+            "combined_hook"
+        }
+
+        fn supports(&self, _input: &ContextGraph) -> bool {
+            panic!("legacy supports must not run")
+        }
+
+        fn estimate(&self, _input: &ContextGraph) -> Estimate {
+            panic!("legacy estimate must not run")
+        }
+
+        fn execute(
+            &self,
+            _input: &ContextGraph,
+            _budget: &CompressionBudget,
+        ) -> Result<StrategyOutput, StrategyError> {
+            panic!("legacy execute must not run")
+        }
+
+        fn execute_if_supported(
+            &self,
+            input: &ContextGraph,
+            _budget: &CompressionBudget,
+        ) -> StrategyExecution {
+            StrategyExecution::Executed {
+                estimate: Estimate {
+                    tokens_saved: 0,
+                    confidence: 0.75,
+                },
+                output: Ok(StrategyOutput {
+                    graph: input.clone(),
+                    changed_node_ids: BTreeSet::new(),
+                    notes: vec!["combined execution used".to_owned()],
+                    removals: Vec::new(),
+                }),
+            }
+        }
+    }
+
+    struct MissingChangeProof;
+
+    impl CompressionStrategy for MissingChangeProof {
+        fn id(&self) -> &'static str {
+            "missing_change_proof"
+        }
+
+        fn supports(&self, _input: &ContextGraph) -> bool {
+            true
+        }
+
+        fn estimate(&self, _input: &ContextGraph) -> Estimate {
+            Estimate {
+                tokens_saved: 1,
+                confidence: 1.0,
+            }
+        }
+
+        fn execute(
+            &self,
+            input: &ContextGraph,
+            _budget: &CompressionBudget,
+        ) -> Result<StrategyOutput, StrategyError> {
+            let mut graph = input.clone();
+            graph.nodes[0].content = "short".to_owned();
+            graph.nodes[0].token_count = counter().count("short");
+            Ok(StrategyOutput {
+                graph,
+                changed_node_ids: BTreeSet::new(),
+                notes: Vec::new(),
+                removals: Vec::new(),
+            })
+        }
+    }
+
+    struct ExtraChangeProof;
+
+    impl CompressionStrategy for ExtraChangeProof {
+        fn id(&self) -> &'static str {
+            "extra_change_proof"
+        }
+
+        fn supports(&self, _input: &ContextGraph) -> bool {
+            true
+        }
+
+        fn estimate(&self, _input: &ContextGraph) -> Estimate {
+            Estimate::default()
+        }
+
+        fn execute(
+            &self,
+            input: &ContextGraph,
+            _budget: &CompressionBudget,
+        ) -> Result<StrategyOutput, StrategyError> {
+            Ok(StrategyOutput {
+                graph: input.clone(),
+                changed_node_ids: BTreeSet::from([input.nodes[0].id.clone()]),
+                notes: Vec::new(),
+                removals: Vec::new(),
+            })
+        }
+    }
+
+    struct StaleChangedCount;
+
+    impl CompressionStrategy for StaleChangedCount {
+        fn id(&self) -> &'static str {
+            "stale_changed_count"
+        }
+
+        fn supports(&self, _input: &ContextGraph) -> bool {
+            true
+        }
+
+        fn estimate(&self, _input: &ContextGraph) -> Estimate {
+            Estimate {
+                tokens_saved: 1,
+                confidence: 1.0,
+            }
+        }
+
+        fn execute(
+            &self,
+            input: &ContextGraph,
+            _budget: &CompressionBudget,
+        ) -> Result<StrategyOutput, StrategyError> {
+            let mut graph = input.clone();
+            graph.nodes[0].content = "x".to_owned();
+            Ok(StrategyOutput {
+                graph,
+                changed_node_ids: BTreeSet::from([input.nodes[0].id.clone()]),
+                notes: Vec::new(),
+                removals: Vec::new(),
+            })
+        }
+    }
+
+    enum ProviderMutation {
+        RemoveOwner,
+        ChangeReasoning,
+        ReplayAcrossProvider,
+    }
+
+    struct ProviderMutationStrategy(ProviderMutation);
+
+    impl CompressionStrategy for ProviderMutationStrategy {
+        fn id(&self) -> &'static str {
+            "provider_mutation"
+        }
+
+        fn supports(&self, _input: &ContextGraph) -> bool {
+            true
+        }
+
+        fn estimate(&self, input: &ContextGraph) -> Estimate {
+            Estimate {
+                tokens_saved: input.total_tokens(),
+                confidence: 1.0,
+            }
+        }
+
+        fn execute(
+            &self,
+            input: &ContextGraph,
+            _budget: &CompressionBudget,
+        ) -> Result<StrategyOutput, StrategyError> {
+            let mut graph = input.clone();
+            let changed_node_ids;
+            match self.0 {
+                ProviderMutation::RemoveOwner => {
+                    graph.nodes.retain(|node| node.id != "owner");
+                    changed_node_ids = BTreeSet::from(["owner".to_owned()]);
+                }
+                ProviderMutation::ChangeReasoning => {
+                    let reasoning = graph
+                        .nodes
+                        .iter_mut()
+                        .find(|node| node.id == "reasoning")
+                        .unwrap();
+                    reasoning.content.push_str(" changed");
+                    reasoning.token_count = counter().count(&reasoning.content);
+                    changed_node_ids = BTreeSet::from(["reasoning".to_owned()]);
+                }
+                ProviderMutation::ReplayAcrossProvider => {
+                    for node in &mut graph.nodes {
+                        if let Some(turn) = &mut node.provider_turn {
+                            turn.provider = ProviderId::new("profile-b").unwrap();
+                        }
+                    }
+                    changed_node_ids = graph.nodes.iter().map(|node| node.id.clone()).collect();
+                }
+            }
+            Ok(StrategyOutput {
+                graph,
+                changed_node_ids,
+                notes: Vec::new(),
+                removals: Vec::new(),
+            })
+        }
+    }
+
+    struct KnownOpaqueState;
+
+    impl ProviderConversationValidator for KnownOpaqueState {
+        fn validate_pre_compression(
+            &self,
+            graph: &ContextGraph,
+        ) -> Result<(), ProviderConversationError> {
+            known_opaque_state(graph)
+        }
+
+        fn validate_post_compression(
+            &self,
+            _original: &ContextGraph,
+            candidate: &ContextGraph,
+        ) -> Result<(), ProviderConversationError> {
+            known_opaque_state(candidate)
+        }
+    }
+
+    fn known_opaque_state(graph: &ContextGraph) -> Result<(), ProviderConversationError> {
+        graph
+            .nodes
+            .iter()
+            .filter_map(|node| node.provider_turn.as_ref())
+            .all(|turn| turn.opaque_state_hash.as_deref() == Some("known-state"))
+            .then_some(())
+            .ok_or(ProviderConversationError::UnknownOpaqueState)
+    }
+
+    struct RejectPostCompression;
+
+    impl ProviderConversationValidator for RejectPostCompression {
+        fn validate_post_compression(
+            &self,
+            _original: &ContextGraph,
+            _candidate: &ContextGraph,
+        ) -> Result<(), ProviderConversationError> {
+            Err(ProviderConversationError::UnknownOpaqueState)
+        }
+    }
+
+    #[test]
+    fn test_engine_uses_combined_execution_hook_without_legacy_calls() {
+        let input = graph(vec![node("n1", NodeKind::Summary, "keep this", false)]);
+        let engine =
+            Engine::with_strategies(Mode::Safe, counter(), vec![Box::new(CombinedHookStrategy)]);
+
+        let result = engine.compress(input.clone(), &budget());
+
+        assert_eq!(result.output, input);
+        assert!(!result.fallback_used, "{:?}", result.fallback_reason);
+        assert_eq!(result.strategy_results.len(), 1);
+        assert_eq!(result.strategy_results[0].strategy_id, "combined_hook");
+        assert_eq!(result.strategy_results[0].confidence, Some(0.75));
+        assert_eq!(
+            result.strategy_results[0].skipped_reason.as_deref(),
+            Some("no_change")
+        );
+    }
+
+    #[test]
+    fn test_missing_or_extra_changed_node_proof_fails_open() {
+        for strategy in [
+            Box::new(MissingChangeProof) as Box<dyn CompressionStrategy>,
+            Box::new(ExtraChangeProof) as Box<dyn CompressionStrategy>,
+        ] {
+            let input = graph(vec![node(
+                "n1",
+                NodeKind::Summary,
+                "a deliberately longer original value",
+                false,
+            )]);
+            let engine = Engine::with_strategies(Mode::Safe, counter(), vec![strategy]);
+
+            let result = engine.compress(input.clone(), &budget());
+
+            assert_eq!(result.output, input);
+            assert!(result.fallback_used);
+            assert!(
+                result
+                    .fallback_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("changed_node_set_mismatch")),
+                "{:?}",
+                result.fallback_reason
+            );
+        }
+    }
+
+    #[test]
+    fn test_stale_changed_node_count_fails_open() {
+        let input = graph(vec![node(
+            "n1",
+            NodeKind::Summary,
+            "a deliberately longer original value",
+            false,
+        )]);
+        let engine =
+            Engine::with_strategies(Mode::Safe, counter(), vec![Box::new(StaleChangedCount)]);
+
+        let result = engine.compress(input.clone(), &budget());
+
+        assert_eq!(result.output, input);
+        assert!(result.fallback_used);
+        assert!(
+            result
+                .fallback_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("changed_node_count_mismatch")),
+            "{:?}",
+            result.fallback_reason
+        );
+    }
+
+    #[test]
+    fn test_applied_strategy_and_aggregate_deltas_match_independent_recount() {
+        let input = graph(vec![node(
+            "log-1",
+            NodeKind::ToolResponse,
+            LOG_FIXTURE,
+            false,
+        )]);
+
+        let result = Engine::new(Mode::Safe, counter()).compress(input, &budget());
+
+        assert!(!result.fallback_used, "{:?}", result.fallback_reason);
+        let independent_total = result.output.nodes.iter().fold(0_usize, |total, node| {
+            total.saturating_add(counter_for(node.token_provider).count(&node.content))
+        });
+        assert_eq!(result.after_tokens, independent_total);
+        assert!(result.safety_checks.iter().any(|check| {
+            check.name == "token_counts_valid"
+                && check.passed
+                && check.detail == "candidate token counts verified by exact changed-node recount"
+        }));
+        for strategy in result
+            .strategy_results
+            .iter()
+            .filter(|strategy| strategy.applied)
+        {
+            let removal_delta = strategy.removals.iter().fold(0_usize, |total, removal| {
+                total.saturating_add(removal.before_tokens - removal.after_tokens)
+            });
+            assert_eq!(
+                strategy.before_tokens - strategy.after_tokens,
+                removal_delta,
+                "{}",
+                strategy.strategy_id
+            );
+        }
+    }
+
+    #[test]
+    fn test_reconciliation_recounts_only_changed_survivors_and_subtracts_drops() {
+        let mut current = graph(vec![
+            node("unchanged", NodeKind::Summary, "same", false),
+            node("changed", NodeKind::Summary, "before", false),
+            node("dropped", NodeKind::Summary, "drop", false),
+        ]);
+        for node in &mut current.nodes {
+            node.token_provider = TokenProvider::Heuristic;
+            node.token_count = node.content.len();
+        }
+        let before = current.total_tokens();
+        let mut candidate = current.clone();
+        candidate.nodes[1].content = "after".to_owned();
+        candidate.nodes[1].token_count = "after".len();
+        candidate.nodes.pop();
+        let mut output = StrategyOutput {
+            graph: candidate,
+            changed_node_ids: BTreeSet::from(["changed".to_owned(), "dropped".to_owned()]),
+            notes: Vec::new(),
+            removals: Vec::new(),
+        };
+        let counting = CountingCounter {
+            calls: AtomicUsize::new(0),
+        };
+
+        let after = reconcile_strategy_accounting(&current, before, &mut output, &counting)
+            .expect("the exact proof should reconcile");
+
+        assert_eq!(counting.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(after, "same".len() + "after".len());
+        assert_eq!(output.graph.nodes[0].token_count, "same".len());
+    }
+
+    #[test]
+    fn test_periodic_trace_sanitization_search_space_is_exact() {
+        let line = "0123456789abcdefghijklmnopqrstuvwxyz\n";
+        let content = line.repeat(1_000);
+        let search_space = fragment_search_space(&content, 20);
+
+        assert!(search_space.len() < content.len());
+        assert!(search_space.contains("tuvwxyz\n0123456789ab"));
+        assert_eq!(
+            search_space.contains("not present in periodic input"),
+            content.contains("not present in periodic input")
+        );
+    }
+
+    #[test]
+    fn test_orphan_provider_request_and_result_fail_open_byte_identical() {
+        for missing in ["request-1", "response-1"] {
+            let mut input = provider_graph();
+            input.nodes.retain(|node| node.id != missing);
+            input
+                .edges
+                .retain(|edge| edge.from != missing && edge.to != missing);
+            let bytes = serde_json::to_vec(&input).unwrap();
+
+            let result = Engine::new(Mode::Safe, counter()).compress(input, &budget());
+
+            assert!(result.fallback_used, "missing {missing}");
+            assert_eq!(serde_json::to_vec(&result.output).unwrap(), bytes);
+            assert!(
+                result
+                    .safety_checks
+                    .iter()
+                    .any(|check| { check.name == "provider_conversation_valid" && !check.passed })
+            );
+        }
+    }
+
+    #[test]
+    fn test_provider_owner_reasoning_and_cross_provider_mutations_fail_open() {
+        for mutation in [
+            ProviderMutation::RemoveOwner,
+            ProviderMutation::ChangeReasoning,
+            ProviderMutation::ReplayAcrossProvider,
+        ] {
+            let input = provider_graph();
+            let bytes = serde_json::to_vec(&input).unwrap();
+            let engine = Engine::with_strategies(
+                Mode::Safe,
+                counter(),
+                vec![Box::new(ProviderMutationStrategy(mutation))],
+            );
+
+            let result = engine.compress(input, &budget());
+
+            assert!(result.fallback_used);
+            assert_eq!(serde_json::to_vec(&result.output).unwrap(), bytes);
+            assert!(
+                result
+                    .safety_checks
+                    .iter()
+                    .any(|check| { check.name == "provider_conversation_valid" && !check.passed })
+            );
+        }
+    }
+
+    #[test]
+    fn test_unknown_opaque_state_requires_profile_pre_and_post_validation() {
+        let mut input = provider_graph();
+        for node in &mut input.nodes {
+            if let Some(turn) = &mut node.provider_turn {
+                turn.opaque_state_hash = Some("known-state".to_owned());
+            }
+        }
+        let bytes = serde_json::to_vec(&input).unwrap();
+
+        let rejected = Engine::new(Mode::Safe, counter()).compress(input.clone(), &budget());
+        assert!(rejected.fallback_used);
+        assert_eq!(serde_json::to_vec(&rejected.output).unwrap(), bytes);
+
+        let accepted = Engine::new(Mode::Safe, counter())
+            .with_provider_validator(Arc::new(KnownOpaqueState))
+            .compress(input, &budget());
+        assert!(!accepted.fallback_used, "{:?}", accepted.fallback_reason);
+        assert!(accepted.safety_checks.iter().all(|check| check.passed));
+    }
+
+    #[test]
+    fn test_profile_post_validation_failure_is_byte_identical_fallback() {
+        let input = provider_graph();
+        let bytes = serde_json::to_vec(&input).unwrap();
+
+        let result = Engine::new(Mode::Safe, counter())
+            .with_provider_validator(Arc::new(RejectPostCompression))
+            .compress(input, &budget());
+
+        assert!(result.fallback_used);
+        assert_eq!(serde_json::to_vec(&result.output).unwrap(), bytes);
+        assert!(
+            result
+                .safety_checks
+                .iter()
+                .any(|check| { check.name == "provider_conversation_valid" && !check.passed })
+        );
+    }
+
+    #[test]
+    fn test_segmented_final_anchor_survives_budget_packing() {
+        let content =
+            "discard this historical paragraph\n\ndiscard this second paragraph\n\nFINAL ANCHOR";
+        let input = graph(vec![node("text", NodeKind::Summary, content, false)]);
+        let segmented = segment_graph(&input).unwrap();
+        let mut small_budget = budget();
+        small_budget.max_tokens = segmented
+            .nodes
+            .iter()
+            .filter(|node| node.protected)
+            .map(|node| node.token_count)
+            .sum();
+
+        let result = Engine::new(Mode::Safe, counter()).compress(input, &small_budget);
+
+        assert!(!result.fallback_used, "{:?}", result.fallback_reason);
+        assert_eq!(result.output.nodes.len(), 2);
+        assert_eq!(
+            result.output.nodes[0].content,
+            "discard this historical paragraph\n\n"
+        );
+        assert_eq!(result.output.nodes[1].content, "FINAL ANCHOR");
+        assert!(result.output.nodes.iter().all(|node| node.protected));
+    }
+
+    #[test]
+    fn test_impossible_segment_anchor_budget_falls_back_byte_identical() {
+        let content = format!("{}\n\nFINAL", "required source prelude ".repeat(20));
+        let input = graph(vec![node("text", NodeKind::SourceFile, &content, false)]);
+        let bytes = serde_json::to_vec(&input).unwrap();
+        let mut impossible = budget();
+        impossible.max_tokens = 1;
+
+        let result = Engine::new(Mode::Safe, counter()).compress(input, &impossible);
+
+        assert!(result.fallback_used);
+        assert_eq!(
+            result.fallback_reason.as_deref(),
+            Some("unsatisfiable_budget")
+        );
+        assert_eq!(serde_json::to_vec(&result.output).unwrap(), bytes);
+    }
+
+    #[test]
+    fn test_impossible_unsplit_instruction_budget_falls_back_byte_identical() {
+        let input = graph(vec![node(
+            "instruction",
+            NodeKind::UserInstruction,
+            "one indivisible current instruction",
+            true,
+        )]);
+        let bytes = serde_json::to_vec(&input).unwrap();
+        let mut impossible = budget();
+        impossible.max_tokens = 1;
+
+        let result = Engine::new(Mode::Safe, counter()).compress(input, &impossible);
+
+        assert!(result.fallback_used);
+        assert_eq!(
+            result.fallback_reason.as_deref(),
+            Some("unsatisfiable_budget")
+        );
+        assert_eq!(serde_json::to_vec(&result.output).unwrap(), bytes);
+    }
+
+    #[test]
+    fn test_unbalanced_generic_text_fence_falls_back_byte_identical() {
+        let input = graph(vec![node(
+            "text",
+            NodeKind::Summary,
+            "before\n\n```rust\nfn main() {}\n",
+            false,
+        )]);
+        let bytes = serde_json::to_vec(&input).unwrap();
+
+        let result = Engine::new(Mode::Safe, counter()).compress(input, &budget());
+
+        assert!(result.fallback_used);
+        assert!(
+            result
+                .fallback_reason
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with("segmentation:"))
+        );
+        assert_eq!(serde_json::to_vec(&result.output).unwrap(), bytes);
+    }
+
+    #[test]
+    fn test_nonempty_graph_with_empty_text_cannot_succeed() {
+        let input = graph(vec![node("text", NodeKind::Summary, "", false)]);
+        let bytes = serde_json::to_vec(&input).unwrap();
+
+        let result = Engine::new(Mode::Safe, counter()).compress(input, &budget());
+
+        assert!(result.fallback_used);
+        assert_eq!(
+            result.fallback_reason.as_deref(),
+            Some("safety_check_failed:minimum_output")
+        );
+        assert_eq!(serde_json::to_vec(&result.output).unwrap(), bytes);
+    }
+
+    #[test]
+    fn test_never_err_on_panicking_strategy() {
+        let input = graph(vec![node("n1", NodeKind::Summary, "keep this", false)]);
+        let original_json = serde_json::to_vec(&input).expect("input should serialize");
+        let engine =
+            Engine::with_strategies(Mode::Safe, counter(), vec![Box::new(PanickingStrategy)]);
+
+        let result = engine.compress(input, &budget());
+
+        assert!(result.fallback_used);
+        assert!(
+            result
+                .fallback_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("panicking_test_strategy"))
+        );
+        assert_eq!(
+            serde_json::to_vec(&result.output).expect("output should serialize"),
+            original_json
+        );
+    }
+
+    #[test]
+    fn test_failed_safety_restores_original() {
+        let input = graph(vec![node(
+            "system",
+            NodeKind::SystemInstruction,
+            "protected instruction",
+            true,
+        )]);
+        let engine =
+            Engine::with_strategies(Mode::Safe, counter(), vec![Box::new(ProtectedMutation)]);
+
+        let result = engine.compress(input.clone(), &budget());
+
+        assert_eq!(result.output, input);
+        assert!(result.fallback_used);
+        assert!(
+            result
+                .safety_checks
+                .iter()
+                .any(|check| { check.name == "protected_unchanged" && !check.passed })
+        );
+    }
+
+    #[test]
+    fn test_removals_enumerated_failure_falls_back() {
+        let input = graph(vec![
+            node("keep", NodeKind::Summary, "keep this", false),
+            node("drop", NodeKind::Summary, "drop this", false),
+        ]);
+        let engine = Engine::with_strategies(Mode::Safe, counter(), vec![Box::new(SilentDrop)]);
+
+        let result = engine.compress(input.clone(), &budget());
+
+        assert_eq!(result.output, input);
+        assert!(result.fallback_used);
+        assert!(
+            result
+                .fallback_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("removals_enumerated"))
+        );
+    }
+
+    #[test]
+    fn test_latency_deadline_overrun_fails_open_byte_identical() {
+        let input = graph(vec![node(
+            "summary",
+            NodeKind::Summary,
+            "the original must survive a deadline overrun",
+            false,
+        )]);
+        let engine =
+            Engine::with_strategies(Mode::Safe, counter(), vec![Box::new(SlowNoopStrategy)]);
+        let mut deadline = budget();
+        deadline.max_latency_ms = 5;
+
+        let result = engine.compress(input.clone(), &deadline);
+
+        assert_eq!(result.output, input);
+        assert!(result.fallback_used);
+        assert!(matches!(
+            result.fallback_reason.as_deref(),
+            Some("latency_budget_exceeded" | "safety_check_failed:latency_ok")
+        ));
+        assert!(
+            result
+                .safety_checks
+                .iter()
+                .any(|check| check.name == "latency_ok" && !check.passed)
+        );
+    }
+
+    #[test]
+    fn test_preflight_uses_fresh_ingress_recount_proof() {
+        let content = "stale caller accounting is repaired before preflight";
+        let mut input = graph(vec![node("summary", NodeKind::Summary, content, false)]);
+        input.nodes[0].token_count = 0;
+        let mut invalid_budget = budget();
+        invalid_budget.max_tokens = 0;
+
+        let result = Engine::new(Mode::Safe, counter()).compress(input.clone(), &invalid_budget);
+
+        assert!(result.fallback_used);
+        assert_eq!(result.output, input);
+        assert_eq!(result.before_tokens, counter().count(content));
+        let token_check = result
+            .safety_checks
+            .iter()
+            .find(|check| check.name == "token_counts_valid")
+            .expect("preflight should retain the canonical token-count check");
+        assert!(token_check.passed);
+        assert_eq!(
+            token_check.detail,
+            "ingress token counts verified by immediate provider recount"
+        );
+    }
+
+    #[test]
+    fn test_passthrough_identity() {
+        let mut input = graph(vec![node(
+            "summary",
+            NodeKind::Summary,
+            "caller bytes remain untouched",
+            false,
+        )]);
+        // Passthrough deliberately trusts stored accounting. Safe mode would
+        // reject this stale count during preflight, but identity needs neither
+        // a recount nor a content scan.
+        input.nodes[0].token_count = usize::MAX;
+        let serialized_input = serde_json::to_vec(&input).expect("input serializes");
+        assert!(
+            run_all(&input, &input, &budget(), 0)
+                .iter()
+                .any(|check| check.name == "token_counts_valid" && !check.passed)
+        );
+
+        let result = Engine::new(Mode::Passthrough, counter()).compress(input.clone(), &budget());
+
+        assert_eq!(result.output, input);
+        assert_eq!(
+            serde_json::to_vec(&result.output).expect("output serializes"),
+            serialized_input
+        );
+        assert_eq!(result.before_tokens, usize::MAX);
+        assert_eq!(result.after_tokens, usize::MAX);
+        assert!(result.strategy_results.is_empty());
+        assert!(!result.fallback_used);
+        assert!(result.fallback_reason.is_none());
+        let expected_names = [
+            "protected_unchanged",
+            "no_inflation",
+            "json_still_valid",
+            "fences_balanced",
+            "refs_valid",
+            "provider_conversation_valid",
+            "minimum_output",
+            "token_counts_valid",
+            "latency_ok",
+            "schema_valid",
+            "removals_enumerated",
+        ];
+        assert_eq!(
+            result
+                .safety_checks
+                .iter()
+                .map(|check| check.name.as_str())
+                .collect::<Vec<_>>(),
+            expected_names
+        );
+        assert!(result.safety_checks.iter().all(|check| check.passed));
+        assert_eq!(result.trace.safety_checks, result.safety_checks);
+        assert_eq!(result.trace.mode, Mode::Passthrough);
+    }
+
+    #[test]
+    fn test_safe_mode_on_log_fixture() {
+        let input = graph(vec![node(
+            "log-1",
+            NodeKind::ToolResponse,
+            LOG_FIXTURE,
+            false,
+        )]);
+        let result = Engine::new(Mode::Safe, counter()).compress(input, &budget());
+
+        assert!(!result.fallback_used, "{:?}", result.fallback_reason);
+        assert!(result.after_tokens * 2 < result.before_tokens);
+        assert!(
+            result
+                .strategy_results
+                .iter()
+                .any(|strategy| { strategy.strategy_id == "collapse_logs" && strategy.applied })
+        );
+        assert_eq!(result.safety_checks.len(), 11);
+        assert!(result.safety_checks.iter().all(|check| check.passed));
+    }
+
+    #[test]
+    fn test_trace_leaks_no_content() {
+        let input = graph(vec![node(
+            "log-1",
+            NodeKind::ToolResponse,
+            LOG_FIXTURE,
+            false,
+        )]);
+        let result = Engine::new(Mode::Safe, counter()).compress(input.clone(), &budget());
+        let trace = serde_json::to_string(&result.trace).expect("trace should serialize");
+
+        for node in input.nodes {
+            let boundaries = node
+                .content
+                .char_indices()
+                .map(|(index, _)| index)
+                .chain(std::iter::once(node.content.len()))
+                .collect::<Vec<_>>();
+            for window in boundaries.windows(21) {
+                assert!(!trace.contains(&node.content[window[0]..window[20]]));
+            }
+        }
+    }
+
+    #[test]
+    fn test_trace_redacts_content_derived_ids_locators_and_safety_detail() {
+        const NODE_ID_CANARY: &str = "node-id-canary-7f4e2d9c8b1a";
+        const JSON_KEY_CANARY: &str = "json-key-canary-4c8d2e7f9a1b";
+        const CONTENT_CANARY: &str = "content-canary-3a7e9d2c8f1b";
+        const SAFETY_DETAIL_CANARY: &str = "protected nodes are byte-identical";
+
+        let mut object = Map::new();
+        object.insert(
+            "content_derived_id".to_owned(),
+            Value::String(NODE_ID_CANARY.to_owned()),
+        );
+        object.insert(
+            JSON_KEY_CANARY.to_owned(),
+            Value::String(format!("{CONTENT_CANARY}{}", "x".repeat(600))),
+        );
+        object.insert(
+            "safety_detail".to_owned(),
+            Value::String(SAFETY_DETAIL_CANARY.to_owned()),
+        );
+        let content = serde_json::to_string(&Value::Object(object))
+            .expect("adversarial content should serialize");
+        let input = graph(vec![node(
+            NODE_ID_CANARY,
+            NodeKind::ToolResponse,
+            &content,
+            false,
+        )]);
+
+        let result = Engine::new(Mode::Safe, counter()).compress(input, &budget());
+        assert!(!result.fallback_used, "{:?}", result.fallback_reason);
+        let internal_removal = result
+            .strategy_results
+            .iter()
+            .find(|strategy| strategy.strategy_id == "compact_json")
+            .and_then(|strategy| strategy.removals.first())
+            .expect("compact_json should emit an internal removal");
+        assert_eq!(internal_removal.node_id, NODE_ID_CANARY);
+        assert!(
+            internal_removal
+                .locator
+                .as_deref()
+                .is_some_and(|locator| locator.contains(JSON_KEY_CANARY))
+        );
+
+        let trace_json = serde_json::to_string(&result.trace).expect("trace should serialize");
+        for canary in [
+            NODE_ID_CANARY,
+            JSON_KEY_CANARY,
+            CONTENT_CANARY,
+            SAFETY_DETAIL_CANARY,
+        ] {
+            assert!(!trace_json.contains(canary), "trace leaked {canary}");
+        }
+        let trace_removal = result
+            .trace
+            .strategy_results
+            .iter()
+            .find(|strategy| strategy.strategy_id == "compact_json")
+            .and_then(|strategy| strategy.removals.first())
+            .expect("trace should retain the typed removal");
+        assert_eq!(trace_removal.kind, RemovalKind::JsonElision);
+        assert_eq!(trace_removal.node_id, "[redacted]");
+        assert_eq!(trace_removal.locator.as_deref(), Some("[redacted]"));
+        assert!(
+            result.trace.safety_checks.iter().any(|check| {
+                check.name == "protected_unchanged" && check.detail == "[redacted]"
+            })
+        );
+    }
+
+    #[test]
+    fn test_deterministic_output() {
+        let input = graph(vec![node(
+            "log-1",
+            NodeKind::ToolResponse,
+            LOG_FIXTURE,
+            false,
+        )]);
+        let engine = Engine::new(Mode::Safe, counter());
+
+        let first = engine.compress(input.clone(), &budget());
+        let second = engine.compress(input, &budget());
+
+        assert_eq!(
+            serde_json::to_vec(&first.output).expect("first output should serialize"),
+            serde_json::to_vec(&second.output).expect("second output should serialize")
+        );
+        assert_ne!(first.trace.operation_id, second.trace.operation_id);
+    }
+
+    #[test]
+    fn test_lossiness_none_only_attempts_dedup() {
+        let input = graph(vec![node(
+            "log-1",
+            NodeKind::ToolResponse,
+            LOG_FIXTURE,
+            false,
+        )]);
+        let mut budget = budget();
+        budget.allowed_lossiness = Lossiness::None;
+
+        let result = Engine::new(Mode::Safe, counter()).compress(input, &budget);
+
+        assert_eq!(result.strategy_results.len(), 1);
+        assert_eq!(result.strategy_results[0].strategy_id, "dedup_exact");
+    }
+
+    #[test]
+    fn test_unsupported_modes_have_typed_fallback_reasons() {
+        let input = graph(vec![node("n1", NodeKind::Summary, "content", false)]);
+        for mode in [Mode::Balanced, Mode::Aggressive] {
+            let result = Engine::new(mode, counter()).compress(input.clone(), &budget());
+            assert_eq!(result.output, input);
+            assert!(result.fallback_used);
+            assert_eq!(
+                result.fallback_reason.as_deref(),
+                Some(match mode {
+                    Mode::Balanced => "unsupported_mode:balanced",
+                    Mode::Aggressive => "unsupported_mode:aggressive",
+                    _ => unreachable!(),
+                })
+            );
+        }
+    }
+}

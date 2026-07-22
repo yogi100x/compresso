@@ -1,0 +1,32 @@
+name = "test-failure-context"
+category = "debugging"
+description = "Verbose Jest output with three passing suites and one failing retry-policy assertion."
+eligible = true
+mode = "safe"
+
+[budget]
+max_tokens = 200
+max_latency_ms = 200
+
+[[input.files]]
+path = "input.txt"
+kind = "tool_response"
+node_id = "test-output"
+protected = false
+priority = 0.7
+source_tool = "shell"
+
+[expectations]
+min_reduction_pct = 30.0
+expect_fallback = false
+must_preserve = [
+  "FAIL src/api/retry-policy.test.ts",
+  "retryPolicy > stops after the configured retry count",
+  "expect(received).toEqual(expected)",
+  "at src/api/retry-policy.test.ts:42:24",
+]
+
+[[recall_probes]]
+question = "What retry count did the failing test expect?"
+answer_substring = "Expected: 3"
+protected = true

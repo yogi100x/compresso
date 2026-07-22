@@ -1,0 +1,31 @@
+name = "stack-trace-dupes"
+category = "logs"
+description = "Repeated Node and Java stack traces whose timestamps and worker names vary while root causes remain stable."
+eligible = true
+mode = "safe"
+
+[budget]
+max_tokens = 1500
+max_latency_ms = 200
+
+[[input.files]]
+path = "service.log"
+kind = "tool_response"
+node_id = "log-1"
+protected = false
+priority = 0.4
+source_tool = "shell"
+
+[expectations]
+min_reduction_pct = 60.0
+expect_fallback = false
+must_preserve = [
+  "FetchError: request to https://api.internal.acme.dev/v2/sessions failed, reason: connect ECONNREFUSED 10.0.12.44:443",
+  "java.lang.NullPointerException: Cannot invoke \"com.acme.billing.Customer.getRegion()\" because \"customer\" is null",
+  "at com.acme.billing.InvoiceWorker.applyTax(InvoiceWorker.java:214)",
+]
+
+[[recall_probes]]
+question = "Where did the Java exception originate?"
+answer_substring = "InvoiceWorker.applyTax(InvoiceWorker.java:214)"
+protected = true

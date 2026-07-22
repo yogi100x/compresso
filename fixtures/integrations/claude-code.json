@@ -1,0 +1,19 @@
+{
+  "fixtureSecret": "integration-fixture-secret-claude-code",
+  "mcpServers": {
+    "other": {
+      "command": "/opt/example/other-server",
+      "args": [
+        "--read-only"
+      ]
+    }
+  },
+  "theme": {
+    "name": "night",
+    "unknown": [
+      1,
+      2,
+      3
+    ]
+  }
+}

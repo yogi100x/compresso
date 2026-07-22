@@ -1,0 +1,15 @@
+name: Release (Phase 8 stub)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  phase-eight-placeholder:
+    name: Phase 8 release placeholder
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Report deferred release pipeline
+        run: echo "Release publishing is deferred to E12."

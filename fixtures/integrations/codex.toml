@@ -1,0 +1,10 @@
+# Synthetic integration restoration fixture.
+fixture_secret = "integration-fixture-secret-codex"
+model = "gpt-fixture"
+
+[mcp_servers.other]
+command = "/opt/example/other-server"
+args = ["--read-only"]
+
+[features]
+unknown_setting = true # preserve this decoration
