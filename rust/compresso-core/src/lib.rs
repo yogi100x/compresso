@@ -31,4 +31,4 @@ pub use strategy::{
     StrategyError, StrategyExecution, StrategyOutput, StrategyRegistry,
 };
 pub use tokens::{CALIBRATION, TokenCounter, TokenProvider, counter_for};
-pub use trace::{StrategyResult, Trace};
+pub use trace::{OperationIdentity, StrategyResult, Trace, operation_identity};
