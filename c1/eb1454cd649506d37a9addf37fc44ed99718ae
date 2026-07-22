@@ -1,0 +1,50 @@
+rust/compresso-core/src/lib.rs
+  s_87261b37472da1::t_773abf0533dee7 7,22
+rust/compresso-core/tests/fixtures/generic-text/single-oversize-text.txt
+  s_87261b37472da1::t_327b32f4ee70f9 1-14
+rust/compresso-core/tests/generic_text.rs
+  s_87261b37472da1::t_327b32f4ee70f9 1-6,8-49,57-86,108-109
+  s_87261b37472da1::t_79c086a6eb252c 7
+  s_87261b37472da1::t_aa53cc69a8cf6b 87-107
+  s_87261b37472da1::t_6d565406e37102 50-56
+docs/plan/03-interfaces.md
+  s_87261b37472da1::t_38d0d8b7eaeb92 61-64
+rust/compresso-core/src/engine.rs
+  s_87261b37472da1::t_b1998ea20aee5e 112-118,1219-1220
+  s_87261b37472da1::t_a8303e4399c1b5 1217-1218,1221,1223,1230-1233,1241-1297
+  s_87261b37472da1::t_cd265884b6a649 1222,1224-1229,1234-1240
+  s_87261b37472da1::t_401cb9503633d1 108,128-129,409
+  s_87261b37472da1::t_773abf0533dee7 15,109-111,119-127,410-417
+rust/compresso-core/src/safety.rs
+  s_87261b37472da1::t_b1998ea20aee5e 371-372
+  s_87261b37472da1::t_38ec2b25ee23ed 1187-1198
+  s_87261b37472da1::t_d2dfb1c7d45e39 1186
+rust/compresso-core/src/segment.rs
+  s_87261b37472da1::t_5099d924022d82 202,278-281
+  s_87261b37472da1::t_b1998ea20aee5e 98-99,161,238-242,322,357-361,420-424
+  s_87261b37472da1::t_787f3c0c272d74 5,396
+  s_87261b37472da1::t_6f6911105ad66f 92-93
+  s_87261b37472da1::t_765a60a40010ca 1-4,6-38,43-91,94-97,100-109,111-144,146-160,162-200,223-237,243-245,247-277,282-321,323-355,363-395,397-419,425-476,488
+  s_87261b37472da1::t_38d0d8b7eaeb92 477-487
+  s_87261b37472da1::t_401cb9503633d1 39-42,145,201,203-222
+  s_87261b37472da1::t_773abf0533dee7 356,362
+  s_87261b37472da1::t_6b4cb97ab9df3d 110,246
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_737eea66c8d121 2176
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "c1eb1454cd649506d37a9addf37fc44ed99718ae",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
