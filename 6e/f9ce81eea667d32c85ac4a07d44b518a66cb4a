@@ -1,0 +1,30 @@
+rust/compresso-integrations/src/plan.rs
+  s_87261b37472da1::t_ab06a88b94f756 273-275,496-500,518-523,644,646,648,690,696-699,706,708-725,728-735,748,772,776
+  s_87261b37472da1::t_fbeaffba64d20e 300-302,797-801,851-856
+  s_87261b37472da1::t_17085537e1aa1b 913-915,917
+  s_87261b37472da1::t_48bdab3a0d52a5 537,701,703-704,736,2056,2168,2205,2265,2485-2486,2544,2595-2596,2655
+  s_87261b37472da1::t_c7b1213d7cbbec 691-695
+  s_87261b37472da1::t_fff0c84ceb65b9 916
+  s_87261b37472da1::t_ec7b5141390822 2081-2112,2114-2152
+  s_87261b37472da1::t_f27d6e1fb1dbff 288-299,2080,2481-2484,2487-2543,2545-2594,2597-2654,2656-2698
+  s_87261b37472da1::t_aa567449c68cbe 649-689,700,702,705,707,726-727
+  s_87261b37472da1::t_a82c6f3b3661c0 2113,2699
+docs/plan/04-mcp-and-integrations.md
+  s_87261b37472da1::t_69f4211f7b98dd 453-455
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "6ef9ce81eea667d32c85ac4a07d44b518a66cb4a",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
