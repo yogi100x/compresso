@@ -706,18 +706,28 @@ fn publish_private_file_no_replace(path: &Path, bytes: &[u8]) -> std::io::Result
         };
     }
     let publish_result = publish_completed_temp_no_replace(&temp, path);
+    let destination_exists = match &publish_result {
+        Ok(()) => true,
+        Err(error) => error.kind() == std::io::ErrorKind::AlreadyExists,
+    };
+    let pre_cleanup_sync_result = if publish_result.is_ok() {
+        sync_parent(path)
+    } else {
+        Ok(())
+    };
     let cleanup_result = remove_if_present(&temp);
+    let post_cleanup_sync_result = if destination_exists && cleanup_result.is_ok() {
+        sync_parent(path)
+    } else {
+        Ok(())
+    };
+    pre_cleanup_sync_result?;
     cleanup_result?;
+    post_cleanup_sync_result?;
 
     match publish_result {
-        Ok(()) => {
-            sync_parent(path)?;
-            Ok(true)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            sync_parent(path)?;
-            Ok(false)
-        }
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
         Err(error) => Err(error),
     }
 }
