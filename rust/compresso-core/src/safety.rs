@@ -907,7 +907,9 @@ fn node_shape_unchanged(original: &ContextNode, candidate: &ContextNode) -> bool
         && original.source == candidate.source
         && original.token_provider == candidate.token_provider
         && original.priority == candidate.priority
-        && original.protected == candidate.protected
+        // Protection may be strengthened after a destructive transformation
+        // creates the sole surviving representative, but never weakened.
+        && (!original.protected || candidate.protected)
         && original.recency == candidate.recency
         && original.metadata == candidate.metadata
         && original.provider_turn == candidate.provider_turn
@@ -1608,6 +1610,25 @@ mod tests {
             .execute(&log_graph, &structural_budget)
             .unwrap();
 
+        let trace_content = concat!(
+            "2026-07-21T11:02:14.512Z ERROR FetchError: refused\n",
+            "    at Client.open (/srv/client.js:10:3)\n",
+            "2026-07-21T11:02:19.518Z ERROR FetchError: refused\n",
+            "    at Client.open (/srv/client.js:10:3)\n",
+            "2026-07-21T11:02:24.531Z ERROR FetchError: refused\n",
+            "    at Client.open (/srv/client.js:10:3)\n",
+        );
+        let trace_graph = graph(vec![node(
+            "trace",
+            NodeKind::ToolResponse,
+            trace_content,
+            false,
+        )]);
+        let trace_output = CollapseLogs
+            .execute(&trace_graph, &structural_budget)
+            .unwrap();
+        assert!(trace_output.graph.nodes[0].protected);
+
         let json_graph = graph(vec![node(
             "json",
             NodeKind::ToolResponse,
@@ -1634,6 +1655,7 @@ mod tests {
         for (original, output, check_budget) in [
             (&duplicate_graph, &duplicate_output, &structural_budget),
             (&log_graph, &log_output, &structural_budget),
+            (&trace_graph, &trace_output, &structural_budget),
             (&json_graph, &json_output, &structural_budget),
             (&pack_graph, &pack_output, &pack_budget),
         ] {
@@ -1649,6 +1671,16 @@ mod tests {
                     .collect::<Vec<_>>()
             );
         }
+    }
+
+    #[test]
+    fn test_node_shape_allows_only_protection_escalation() {
+        let unprotected = node("trace", NodeKind::ToolResponse, "trace", false);
+        let mut protected = unprotected.clone();
+        protected.protected = true;
+
+        assert!(node_shape_unchanged(&unprotected, &protected));
+        assert!(!node_shape_unchanged(&protected, &unprotected));
     }
 
     #[test]

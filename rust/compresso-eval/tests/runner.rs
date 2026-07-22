@@ -101,6 +101,26 @@ fn test_log_fixture_expectations() {
 }
 
 #[test]
+fn test_stack_trace_fixture_meets_floor_without_fallback() {
+    let row = committed_report()
+        .fixtures
+        .iter()
+        .find(|row| row.id == "stack-trace-dupes")
+        .expect("stack trace fixture should be present");
+
+    assert!(!row.fallback_used, "fallback={:?}", row.fallback_reason);
+    assert!(
+        row.reduction_pct >= 60.0,
+        "stack trace reduction was {}% ({} -> {} tokens); failures={:?}",
+        row.reduction_pct,
+        row.before_tokens,
+        row.after_tokens,
+        row.failures,
+    );
+    assert!(row.passed, "failures={:?}", row.failures);
+}
+
+#[test]
 fn test_failed_expectation_isolated() {
     let set = committed_fixtures();
     let mut bad = set
