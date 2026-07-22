@@ -1,0 +1,54 @@
+rust/compresso-core/src/safety.rs
+  s_87261b37472da1::t_11ecbbd3a7817f 1655,1676-1681,1683-1687,1720-1723,1749-1750,1752-1756,1759-1768,1770-1773
+  s_87261b37472da1::t_32f48d56fbff02 204-207,1682,1757-1758,1769
+  s_87261b37472da1::t_9a5da2d74a1061 315
+  s_87261b37472da1::t_e9243b188d3d94 1751
+  s_87261b37472da1::t_18f0b8807edacf 197,289,314,319,329-372,374,376-396,406-425,1774
+  s_87261b37472da1::t_3bc1c88e65e7c3 373,375
+  s_87261b37472da1::t_bac3fd11b0c715 397-405,426
+  s_87261b37472da1::t_3ef3aa41ef588c 308-311,1703-1719
+  s_87261b37472da1::t_d4b855b0256d37 427,1724,1775
+rust/compresso-core/src/strategies/dedup_exact.rs
+  s_87261b37472da1::t_9a5da2d74a1061 4,418-419
+  s_87261b37472da1::t_11ecbbd3a7817f 228-245
+  s_87261b37472da1::t_18f0b8807edacf 3,66,93-98,100,111-114,120-121,123,440
+  s_87261b37472da1::t_eae0dca3e330c6 117,122,412-417,420-439
+  s_87261b37472da1::t_3c1a4cceba943d 441
+rust/compresso-eval/src/runner.rs
+  s_87261b37472da1::t_32f48d56fbff02 475-478
+  s_87261b37472da1::t_52574947c7c2b5 10-11,462,469-474,479-497,666-668,671-780
+  s_87261b37472da1::t_2148fbd8930f93 781
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_43e6363ab9e784 2182
+rust/compresso-core/tests/dedup_integrity.rs
+  s_87261b37472da1::t_211224a338d3e0 7-9,116-134,137-154,156-157
+  s_87261b37472da1::t_32f48d56fbff02 53-54,135-136,155
+  s_87261b37472da1::t_11ecbbd3a7817f 1-6,10-52,55-58,60-115,158
+  s_87261b37472da1::t_18f0b8807edacf 59
+rust/compresso-core/src/strategies/pack_budget.rs
+  s_87261b37472da1::t_18f0b8807edacf 5,162-166
+  s_87261b37472da1::t_11ecbbd3a7817f 564-565,568,590-638
+  s_87261b37472da1::t_de92b987b8e654 639
+rust/compresso-core/src/strategies/compact_json.rs
+  s_87261b37472da1::t_bac3fd11b0c715 7,110,117-121
+  s_87261b37472da1::t_52912eeb827101 122-123
+rust/compresso-core/src/strategies/collapse_logs.rs
+  s_87261b37472da1::t_bac3fd11b0c715 2,109,116-120
+  s_87261b37472da1::t_86181e7858e7f2 121-122
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "9c68728ba3b8091c4bb8c2508c10b63e735cc761",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
