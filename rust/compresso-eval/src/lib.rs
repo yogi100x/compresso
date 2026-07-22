@@ -2,12 +2,17 @@
 
 pub mod cli;
 pub mod fixtures;
+pub mod gates;
 pub mod recall;
 pub mod runner;
 
 pub use fixtures::{
     AtlasExpectations, EvalError, Expectations, Fixture, FixtureBudget, FixtureCategory,
     FixtureInput, FixtureSet, RecallProbe, RequiredEdge,
+};
+pub use gates::{
+    GateError, GateFailureReason, GateName, GateOperator, GateOutcome, GateReport, Gates,
+    LatencyGates, ReductionGates, SafetyGates,
 };
 pub use recall::{EvalRunError, FixtureRecallOutcome, RecallProbeOutcome, RecallReport};
 pub use runner::{
