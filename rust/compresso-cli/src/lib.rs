@@ -3,6 +3,7 @@
 pub mod commands;
 
 pub use commands::{
-    AccountClient, AccountError, AccountLogin, AccountStatus, Cli, CliExitCode, MutationArgs,
-    OutputArgs, RootCommand, UnavailableAccountClient, execute,
+    AccountClient, AccountError, AccountLogin, AccountStatus, Cli, CliExitCode, ContextArgs,
+    ImpactArgs, MapArgs, MutationArgs, OutlineArgs, OutputArgs, ReadArgs, RootCommand, SearchArgs,
+    UnavailableAccountClient, UnfoldArgs, execute, execute_with_store,
 };

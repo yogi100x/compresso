@@ -462,7 +462,7 @@ Acceptance criteria:
 Test cases:
 - command snapshot; both eval entry points; cancelled login writes nothing.
 
-### [ ] E4-02: CLI retrieval, compression, and diagnostics
+### [x] E4-02: CLI retrieval, compression, and diagnostics
 Owner: D1 · Estimate: 2d · Depends: E4-01
 Files: rust/compresso-cli/src/commands/
 Description: Wire canonical interfaces without duplicated logic.
