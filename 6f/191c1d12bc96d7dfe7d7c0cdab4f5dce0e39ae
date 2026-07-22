@@ -1,0 +1,21 @@
+scripts/ci/check_ci_matrix.rb
+  s_87261b37472da1::t_84fe2515369af0 80
+.github/workflows/ci.yml
+  s_87261b37472da1::t_84fe2515369af0 18,33,37,40,149,164,186,236,265,267,285,298,300,317
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "6f191c1d12bc96d7dfe7d7c0cdab4f5dce0e39ae",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
