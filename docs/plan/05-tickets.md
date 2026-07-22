@@ -471,7 +471,7 @@ Acceptance criteria:
 Test cases:
 - JSON snapshots; root, ambiguity, unresolved, stale, malformed, fallback.
 
-### [ ] E4-03: Wire engine commands (compress, explain, stats)
+### [x] E4-03: Wire engine commands (compress, explain, stats)
 Owner: D1 · Estimate: 1d · Depends: E4-01, E2-09, E3-03
 Files: rust/compresso-cli/src/commands/engine.rs, tests in rust/compresso-cli/tests/cli_engine.rs
 Description: `compress` reads stdin (or `--file`), builds a graph via `ContextGraph::from_text` (kind from `--kind`, default `tool_response`), runs `Engine::compress` with mode/budget flags (`--mode safe|passthrough`, `--target-tokens`), prints compressed content, records the operation via `Store::record_operation`; `explain` prints the trace for an operation id (or `--last`) from the store — ids, counts, checks, never raw content; `stats` renders `Store::stats` in the §3 savings vocabulary with `modeled_cost_saved` explicitly labelled `modeled`.

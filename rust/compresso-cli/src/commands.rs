@@ -1,13 +1,15 @@
 use std::ffi::OsString;
-use std::io::Write;
+use std::io::{Read, Write};
 
 use clap::{Args, Parser, Subcommand};
 pub use compresso_eval::cli::CliExitCode;
 use compresso_eval::cli::EvalCommand;
 use compresso_store::Store;
 
+mod engine;
 mod retrieval;
 
+pub use engine::{CompressArgs, ExplainArgs, StatsArgs};
 pub use retrieval::{
     ContextArgs, ImpactArgs, MapArgs, OutlineArgs, ReadArgs, SearchArgs, UnfoldArgs,
 };
@@ -35,9 +37,9 @@ pub enum RootCommand {
     Unfold(UnfoldArgs),
     Context(ContextArgs),
     Impact(ImpactArgs),
-    Compress(DeferredArgs),
-    Explain(DeferredArgs),
-    Stats(DeferredArgs),
+    Compress(CompressArgs),
+    Explain(ExplainArgs),
+    Stats(StatsArgs),
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
@@ -163,6 +165,23 @@ pub fn execute(
     match cli.command {
         RootCommand::Eval { command } => compresso_eval::cli::execute(command, output, errors),
         RootCommand::Account { command } => execute_account(command, account, output, errors),
+        command if command.is_engine() => {
+            let json = command.json();
+            let store = match Store::open_default() {
+                Ok(store) => store,
+                Err(_) => {
+                    let _ = write_error(
+                        errors,
+                        "internal",
+                        "failed to open the local Compresso store",
+                        json,
+                    );
+                    return CliExitCode::Failure;
+                }
+            };
+            let stdin = std::io::stdin();
+            execute_engine(command, &store, &mut stdin.lock(), output, errors)
+        }
         command if command.is_retrieval() => {
             let json = command.json();
             let store = match Store::open_default() {
@@ -216,9 +235,31 @@ pub fn execute_with_store(
     output: &mut impl Write,
     errors: &mut impl Write,
 ) -> CliExitCode {
+    execute_with_store_and_input(
+        cli,
+        account,
+        store,
+        cwd,
+        &mut std::io::empty(),
+        output,
+        errors,
+    )
+}
+
+/// Executes a command with injected local Store, cwd, and compression input.
+pub fn execute_with_store_and_input(
+    cli: Cli,
+    account: &dyn AccountClient,
+    store: &Store,
+    cwd: &std::path::Path,
+    input: &mut dyn Read,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> CliExitCode {
     match cli.command {
         RootCommand::Eval { command } => compresso_eval::cli::execute(command, output, errors),
         RootCommand::Account { command } => execute_account(command, account, output, errors),
+        command if command.is_engine() => execute_engine(command, store, input, output, errors),
         command if command.is_retrieval() => execute_retrieval(command, store, cwd, output, errors),
         command => {
             let json = command.json();
@@ -228,6 +269,36 @@ pub fn execute_with_store(
                 "command wiring belongs to a later E4/E5/E6 ticket",
                 json,
             );
+            CliExitCode::Failure
+        }
+    }
+}
+
+fn execute_engine(
+    command: RootCommand,
+    store: &Store,
+    input: &mut dyn Read,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> CliExitCode {
+    let json = command.json();
+    match engine::execute(command, store, input) {
+        Ok(rendered) => {
+            let result = if json {
+                serde_json::to_writer(&mut *output, &rendered.json)
+                    .map_err(std::io::Error::other)
+                    .and_then(|()| writeln!(output))
+            } else {
+                output.write_all(rendered.human.as_bytes())
+            };
+            if result.is_ok() {
+                CliExitCode::Success
+            } else {
+                CliExitCode::Failure
+            }
+        }
+        Err(error) => {
+            let _ = write_error(errors, error.code, &error.message, json);
             CliExitCode::Failure
         }
     }
@@ -333,6 +404,10 @@ fn write_error(
 }
 
 impl RootCommand {
+    fn is_engine(&self) -> bool {
+        matches!(self, Self::Compress(_) | Self::Explain(_) | Self::Stats(_))
+    }
+
     fn is_retrieval(&self) -> bool {
         matches!(
             self,
@@ -349,11 +424,7 @@ impl RootCommand {
     fn json(&self) -> bool {
         match self {
             Self::Init(arguments) => arguments.output.json,
-            Self::Doctor(arguments)
-            | Self::Index(arguments)
-            | Self::Compress(arguments)
-            | Self::Explain(arguments)
-            | Self::Stats(arguments) => arguments.output.json,
+            Self::Doctor(arguments) | Self::Index(arguments) => arguments.output.json,
             Self::Map(arguments) => arguments.output.json,
             Self::Search(arguments) => arguments.output.json,
             Self::Read(arguments) => arguments.output.json,
@@ -361,6 +432,9 @@ impl RootCommand {
             Self::Unfold(arguments) => arguments.output.json,
             Self::Context(arguments) => arguments.output.json,
             Self::Impact(arguments) => arguments.output.json,
+            Self::Compress(arguments) => arguments.output.json,
+            Self::Explain(arguments) => arguments.output.json,
+            Self::Stats(arguments) => arguments.output.json,
             Self::Config { command } => match command {
                 ConfigCommand::Explain(arguments) => arguments.output.json,
             },

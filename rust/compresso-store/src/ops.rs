@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use compresso_core::Mode;
 use jsonschema::{Draft, Validator};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{OptionalExtension, Row, params};
 use serde_json::Value;
 
 use crate::files::{sqlite_integer_from_u64, sqlite_integer_from_usize, validate_nonempty};
@@ -120,6 +120,20 @@ struct PreparedStrategyResult<'a> {
     duration_ms: f64,
 }
 
+type RawOperation = (
+    String,
+    Option<String>,
+    String,
+    String,
+    i64,
+    i64,
+    i64,
+    i64,
+    Option<i64>,
+    Option<String>,
+    i64,
+);
+
 impl Store {
     /// Starts a validated client session with a locally generated ULID-compatible id.
     pub fn start_session(&self, client: &str, transport: &str) -> Result<SessionId, StoreError> {
@@ -231,6 +245,33 @@ impl Store {
         Ok(())
     }
 
+    /// Loads one validated operation ledger row by its stable identifier.
+    pub fn operation_by_id(&self, id: &str) -> Result<Option<OperationRecord>, StoreError> {
+        validate_nonempty("operation id", id)?;
+        let connection = self.connection()?;
+        let raw = connection
+            .query_row(
+                "SELECT id, session_id, tool, mode, observed_tokens, applied_tokens, compression_overhead, fallback_used, tokens_served, trace_json, created_at FROM operations WHERE id = ?1",
+                [id],
+                raw_operation_from_row,
+            )
+            .optional()?;
+        raw.map(decode_operation).transpose()
+    }
+
+    /// Loads the newest validated local or MCP compression operation.
+    pub fn latest_compression_operation(&self) -> Result<Option<OperationRecord>, StoreError> {
+        let connection = self.connection()?;
+        let raw = connection
+            .query_row(
+                "SELECT id, session_id, tool, mode, observed_tokens, applied_tokens, compression_overhead, fallback_used, tokens_served, trace_json, created_at FROM operations WHERE tool IN ('engine_compress', 'compresso_compress') ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                [],
+                raw_operation_from_row,
+            )
+            .optional()?;
+        raw.map(decode_operation).transpose()
+    }
+
     /// Aggregates retained operation rows, optionally starting at a Unix timestamp.
     pub fn stats(&self, since: Option<i64>) -> Result<StatsSummary, StoreError> {
         let connection = self.connection()?;
@@ -292,6 +333,67 @@ impl Store {
             fallback_rate,
         })
     }
+}
+
+fn raw_operation_from_row(row: &Row<'_>) -> rusqlite::Result<RawOperation> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+        row.get(8)?,
+        row.get(9)?,
+        row.get(10)?,
+    ))
+}
+
+fn decode_operation(raw: RawOperation) -> Result<OperationRecord, StoreError> {
+    let (
+        id,
+        session_id,
+        tool,
+        mode,
+        observed_tokens,
+        applied_tokens,
+        compression_overhead,
+        fallback_used,
+        tokens_served,
+        trace_json,
+        created_at,
+    ) = raw;
+    validate_nonempty("stored operation id", &id)?;
+    validate_nonempty("stored operation tool", &tool)?;
+    let session_id = session_id
+        .map(|session_id| {
+            validate_nonempty("stored operation session id", &session_id)?;
+            Ok::<SessionId, StoreError>(SessionId(session_id))
+        })
+        .transpose()?;
+    let record = OperationRecord {
+        id,
+        session_id,
+        tool,
+        mode: decode_mode(&mode)?,
+        observed_tokens: decode_usize("operations.observed_tokens", observed_tokens)?,
+        applied_tokens: decode_usize("operations.applied_tokens", applied_tokens)?,
+        compression_overhead: decode_usize(
+            "operations.compression_overhead",
+            compression_overhead,
+        )?,
+        fallback_used: decode_stored_bool("operations.fallback_used", fallback_used)?,
+        tokens_served: tokens_served
+            .map(|value| decode_usize("operations.tokens_served", value))
+            .transpose()?,
+        trace_json,
+        created_at,
+    };
+    let kind = classify_stored_tool(&record.tool)?;
+    let _validated_trace = validate_operation_shape(&record, kind)?;
+    Ok(record)
 }
 
 fn classify_tool(tool: &str) -> Result<OperationKind, StoreError> {
@@ -525,6 +627,19 @@ fn mode_name(mode: Mode) -> &'static str {
     }
 }
 
+fn decode_mode(value: &str) -> Result<Mode, StoreError> {
+    match value {
+        "safe" => Ok(Mode::Safe),
+        "balanced" => Ok(Mode::Balanced),
+        "aggressive" => Ok(Mode::Aggressive),
+        "passthrough" => Ok(Mode::Passthrough),
+        _ => Err(StoreError::InvalidStoredValue {
+            field: "operations.mode",
+            value: value.to_owned(),
+        }),
+    }
+}
+
 fn generate_session_identity() -> Result<(SessionId, i64), StoreError> {
     let elapsed = SystemTime::now().duration_since(UNIX_EPOCH)?;
     let timestamp_ms = u64::try_from(elapsed.as_millis())
@@ -559,6 +674,14 @@ fn decode_nonnegative(field: &'static str, value: i64) -> Result<u64, StoreError
     u64::try_from(value).map_err(|_| StoreError::InvalidStoredValue {
         field,
         value: value.to_string(),
+    })
+}
+
+fn decode_usize(field: &'static str, value: i64) -> Result<usize, StoreError> {
+    let value = decode_nonnegative(field, value)?;
+    usize::try_from(value).map_err(|_| StoreError::NumericOutOfRange {
+        field,
+        value: u128::from(value),
     })
 }
 
@@ -877,6 +1000,80 @@ mod tests {
         assert!(matches!(
             store.record_operation(&invalid),
             Err(StoreError::UnexpectedTokensServed { .. })
+        ));
+    }
+
+    #[test]
+    fn test_operation_lookup_by_id_and_latest_compression() {
+        let (_directory, store) = setup();
+        let first = operation(
+            "lookup-first",
+            "engine_compress",
+            (20, 10),
+            false,
+            None,
+            Some(valid_trace("lookup-first", 20, 10, vec![])),
+            100,
+        );
+        let retrieval = operation(
+            "lookup-retrieval",
+            "compresso_stats",
+            (4, 4),
+            false,
+            Some(4),
+            None,
+            300,
+        );
+        let second = operation(
+            "lookup-second",
+            "compresso_compress",
+            (30, 12),
+            false,
+            None,
+            Some(valid_trace("lookup-second", 30, 12, vec![])),
+            100,
+        );
+        for record in [&first, &retrieval, &second] {
+            store
+                .record_operation(record)
+                .expect("fixture operation should record");
+        }
+
+        assert_eq!(
+            store
+                .operation_by_id("lookup-first")
+                .expect("operation lookup should succeed"),
+            Some(first)
+        );
+        assert_eq!(
+            store
+                .operation_by_id("missing")
+                .expect("missing lookup should succeed"),
+            None
+        );
+        assert_eq!(
+            store
+                .latest_compression_operation()
+                .expect("latest compression lookup should succeed"),
+            Some(second)
+        );
+    }
+
+    #[test]
+    fn test_operation_lookup_revalidates_persisted_trace() {
+        let (_directory, store) = setup();
+        store
+            .connection()
+            .expect("connection should lock")
+            .execute(
+                "INSERT INTO operations (id, tool, mode, observed_tokens, applied_tokens, compression_overhead, fallback_used, trace_json, created_at) VALUES (?1, 'engine_compress', 'safe', 10, 8, 0, 0, ?2, 100)",
+                rusqlite::params!["corrupt-trace", r#"{"schema_version":1}"#],
+            )
+            .expect("corrupt fixture row should insert");
+
+        assert!(matches!(
+            store.operation_by_id("corrupt-trace"),
+            Err(StoreError::InvalidTrace { .. })
         ));
     }
 
