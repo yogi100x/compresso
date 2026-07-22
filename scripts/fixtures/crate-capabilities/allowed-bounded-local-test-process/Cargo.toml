@@ -1,0 +1,10 @@
+[package]
+name = "compresso-cli"
+version = "0.0.0"
+edition = "2024"
+
+[workspace]
+
+[[test]]
+name = "process_harness"
+path = "tests/e2e.rs"

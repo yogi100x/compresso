@@ -3,7 +3,15 @@
 import { execFile } from "node:child_process";
 import type { Dirent } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
@@ -560,6 +568,48 @@ async function rustSourceFiles(crateRoot: string) {
   return files.sort();
 }
 
+function isPathWithin(parent: string, candidate: string) {
+  const relativePath = relative(parent, candidate);
+  return (
+    relativePath !== "" &&
+    relativePath !== ".." &&
+    !relativePath.startsWith(`..${sep}`) &&
+    !isAbsolute(relativePath)
+  );
+}
+
+function boundedLocalTestProcessSources(
+  pkg: CargoPackage,
+  className: CapabilityClassName,
+  crateRoot: string,
+) {
+  const sources = new Set<string>();
+  if (className !== "bounded-local") {
+    return sources;
+  }
+
+  const testsRoot = resolve(crateRoot, "tests");
+  const isIntegrationTest = (target: CargoTarget) =>
+    target.kind.length === 1 && target.kind[0] === "test";
+  const nonTestTargetSources = new Set(
+    pkg.targets
+      .filter((target) => !isIntegrationTest(target))
+      .map((target) => resolve(target.src_path)),
+  );
+
+  for (const target of pkg.targets.filter(isIntegrationTest)) {
+    const sourcePath = resolve(target.src_path);
+    if (
+      isPathWithin(testsRoot, sourcePath) &&
+      !nonTestTargetSources.has(sourcePath)
+    ) {
+      sources.add(sourcePath);
+    }
+  }
+
+  return sources;
+}
+
 function featureReaches(
   features: Record<string, string[]>,
   start: string,
@@ -766,14 +816,21 @@ export async function checkWorkspace(
       }
     }
 
-    for (const sourcePath of await rustSourceFiles(
-      dirname(pkg.manifest_path),
-    )) {
+    const crateRoot = dirname(pkg.manifest_path);
+    const testProcessSources = boundedLocalTestProcessSources(
+      pkg,
+      className,
+      crateRoot,
+    );
+    for (const sourcePath of await rustSourceFiles(crateRoot)) {
       const source = stripRustCommentsAndStrings(
         await readFile(sourcePath, "utf8"),
       );
       for (const use of sourceCapabilityUses(source)) {
-        if (!capabilities[use.capability]) {
+        const allowedTestProcess =
+          use.capability === "process" &&
+          testProcessSources.has(resolve(sourcePath));
+        if (!capabilities[use.capability] && !allowedTestProcess) {
           violations.add(
             `${pkg.name} (${className}): ${use.capability} API ${use.label} is forbidden in ${sourcePath}`,
           );
