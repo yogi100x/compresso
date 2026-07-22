@@ -4,13 +4,13 @@ use compresso_atlas::{
 };
 use compresso_core::{TokenCounter, operation_identity};
 use compresso_store::{Store, SymbolKind, SymbolSelector};
-use rmcp::model::{CallToolResult, JsonObject};
+use rmcp::model::JsonObject;
 use serde_json::{Value, json};
 
 use super::common::{
     PathState, ToolFailure, ToolResult, cap_values, checked_arguments, language_name,
     map_atlas_error, navigation_counter, optional_string, optional_u32, required_string,
-    resolve_repository, success, symbol_kind_name, symbol_value, token_budget, validate_repo_path,
+    resolve_repository, symbol_kind_name, symbol_value, token_budget, validate_repo_path,
 };
 
 const MAP_DEFAULT_TOKENS: usize = 2_000;
@@ -25,16 +25,12 @@ pub(crate) fn handles(name: &str) -> bool {
     )
 }
 
-pub(crate) fn dispatch(store: &Store, name: &str, arguments: Option<JsonObject>) -> CallToolResult {
-    let result = match name {
+pub(crate) fn dispatch(store: &Store, name: &str, arguments: Option<JsonObject>) -> ToolResult {
+    match name {
         "compresso_repo_map" => repo_map_tool(store, arguments),
         "compresso_outline" => outline_tool(store, arguments),
         "compresso_unfold" => unfold_tool(store, arguments),
         _ => Err(ToolFailure::internal()),
-    };
-    match result {
-        Ok(payload) => success(payload),
-        Err(error) => error.into_result(),
     }
 }
 

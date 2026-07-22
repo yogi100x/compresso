@@ -574,7 +574,7 @@ Test cases:
 - test_compress_records_root_valid_trace: after a compress call, its `operations` row's `trace_json` validates against the compression-trace v1 root schema.
 - test_retrieval_records_tokens_served: after `compresso_impact`, its `operations` row has `trace_json` NULL and `tokens_served` equal to the returned payload's token count (D47).
 
-### [ ] E5-05: Sessions and operation ledger
+### [x] E5-05: Sessions and operation ledger
 Owner: R2 · Estimate: 1.5d · Depends: E5-01, E3-03
 Files: rust/compresso-mcp/src/session.rs, tests in rust/compresso-mcp/tests/session_ledger.rs
 Description: On MCP connect, call `Store::start_session(client, "stdio")` (client name from initialize clientInfo, `"unknown"` fallback); thread the `SessionId` through `McpDeps` so every tool handler records an `OperationRecord` with the tool name, mode, observed/applied token counts, and — per D47 — `trace_json` for `compresso_compress` only, while retrieval tools record `tokens_served` with `trace_json = NULL`; close the session (set `ended_at`) on disconnect. Bounded concurrency: tool calls execute serially per session (rmcp default) and the ledger write failure never fails the tool response (log + continue, fail-open).
