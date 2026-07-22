@@ -1,0 +1,24 @@
+rust/compresso-integrations/src/receipt.rs
+  s_87261b37472da1::t_07b6751c3ddec5 10,381-384,386,691-698,700-708,710-731,735,799-816,821,827-842,844-887
+  s_87261b37472da1::t_a32895917c0b6d 699,843
+  s_87261b37472da1::t_9a046dd5ee582c 709
+rust/compresso-integrations/src/plan.rs
+  s_87261b37472da1::t_07b6751c3ddec5 1424,1441-1444,1447,1451-1455
+  s_87261b37472da1::t_9a046dd5ee582c 1446
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "56726c285e94e04d8dee99a9c8b526c10628022a",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
