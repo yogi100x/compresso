@@ -689,7 +689,7 @@ Test cases:
 - test_eligibility_rule_violation_rejected: temp fixture with `eligible = true` and `mode = "passthrough"` → load error citing the §4 eligibility rules.
 - test_fixture_graph_validates: every loaded fixture's graph `validate().is_ok()`.
 
-### [ ] E7-02: Eval runner CLI
+### [x] E7-02: Eval runner CLI
 Owner: R1 · Estimate: 2d · Depends: E7-01, E2-09
 Files: rust/compresso-eval/src/runner.rs, rust/compresso-eval/src/main.rs, tests in rust/compresso-eval/tests/runner.rs
 Description: Implement `EvalRunner`: for each fixture, run `Engine::compress` in the fixture's declared mode, verify `expected` assertions (required/forbidden substrings, reduction bounds, protected-node byte-equality, output JSON validity where input was JSON), collect per-fixture and aggregate metrics (median reduction on eligible fixtures, P95 latency, protected-mutation count, malformed-JSON count, fallback rate per build-doc §25.3), and emit a JSON report. Binary interface: `cargo run -p compresso-eval -- run fixtures/ --gates docs/plan/gates.toml` per `01-stack` §4.

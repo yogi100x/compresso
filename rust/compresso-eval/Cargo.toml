@@ -8,7 +8,9 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
+compresso-atlas.workspace = true
 compresso-core.workspace = true
+compresso-store.workspace = true
 jsonschema.workspace = true
 serde.workspace = true
 serde_json.workspace = true
