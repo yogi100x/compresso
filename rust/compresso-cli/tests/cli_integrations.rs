@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::Parser;
@@ -8,6 +9,7 @@ use compresso_cli::{
     Cli, CliExitCode, IntegrationEnvironment, RootCommand, UnavailableAccountClient,
     execute_integrations, execute_with_store_and_input,
 };
+#[cfg(unix)]
 use compresso_integrations::{
     CodexIntegration, FileReceiptStore, InstallCtx, InstallReceipt, Integration, PlanApproval,
     PlanManager, ReceiptError, ReceiptStore, Scope,
@@ -493,11 +495,13 @@ fn test_codex_recovery_rejects_config_directory_replaced_by_symlink() {
     );
 }
 
+#[cfg(unix)]
 struct FailOnceReceiptStore {
     inner: FileReceiptStore,
     fail_next_save: AtomicBool,
 }
 
+#[cfg(unix)]
 impl FailOnceReceiptStore {
     fn new(path: impl Into<PathBuf>) -> Self {
         Self {
@@ -507,6 +511,7 @@ impl FailOnceReceiptStore {
     }
 }
 
+#[cfg(unix)]
 impl ReceiptStore for FailOnceReceiptStore {
     fn by_plan_hash(&self, plan_hash: &str) -> Result<Option<InstallReceipt>, ReceiptError> {
         self.inner.by_plan_hash(plan_hash)
