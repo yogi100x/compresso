@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use compresso_core::{TokenProvider, counter_for};
+use compresso_core::{NodeKind, TokenProvider, counter_for};
 use compresso_eval::FixtureSet;
 use serde::Deserialize;
 use tempfile::TempDir;
@@ -321,6 +321,35 @@ fn test_canonical_quality_fixture_shapes() {
         .find(|fixture| fixture.name == "long-session-prune")
         .expect("long-session-prune must be committed");
     assert_eq!(long_session.graph.nodes.len(), 42);
+    for index in 1..20 {
+        let id = format!("user-{index}");
+        let node = long_session
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == id)
+            .unwrap_or_else(|| panic!("{id} must exist"));
+        assert_eq!(node.kind, NodeKind::Summary, "{id} must be archived");
+        assert!(!node.protected, "{id} must remain eligible for pruning");
+    }
+    let current_user = long_session
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == "user-20")
+        .expect("the current user request must exist");
+    assert_eq!(current_user.kind, NodeKind::UserInstruction);
+    assert!(current_user.protected);
+    assert_eq!(
+        long_session
+            .graph
+            .edges
+            .iter()
+            .filter(|edge| edge.kind == compresso_core::EdgeKind::RespondsTo)
+            .count(),
+        20,
+        "all historical and current request/response pairs must stay atomic",
+    );
     let tokens = long_session
         .graph
         .nodes

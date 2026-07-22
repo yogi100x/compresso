@@ -1,6 +1,6 @@
 name = "long-session-prune"
 category = "conversations"
-description = "A forty-turn coding transcript whose active request, latest result, and in-flight tool request outrank stale history."
+description = "A forty-turn coding transcript whose archived request summaries can yield to the active request, latest result, and in-flight tool request."
 eligible = true
 mode = "safe"
 
