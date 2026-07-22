@@ -587,7 +587,7 @@ Test cases:
 - test_operation_per_tool_call: 3 tool calls (search, read, compress) → 3 operations rows sharing the session_id; the search and read rows have `trace_json` NULL with `tokens_served` set, the compress row carries a root-schema-valid trace (D47).
 - test_ledger_failure_fail_open: make DB read-only, call `compresso_search` → valid MCP result returned, stderr contains a ledger warning.
 
-### [ ] E5-06: MCP startup and eager tokenizer lifecycle
+### [x] E5-06: MCP startup and eager tokenizer lifecycle
 Owner: R2 · Estimate: 1.5d · Depends: E5-01, E2-02
 Files: rust/compresso-mcp/src/server.rs, rust/compresso-core/src/tokens.rs, benches/startup.rs
 Description: Initialize configured tokenizers before accepting tools; separate cold startup from warm calls.

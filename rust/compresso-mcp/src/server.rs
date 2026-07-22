@@ -2,7 +2,10 @@ use std::borrow::Cow;
 use std::io;
 use std::sync::Arc;
 
-use compresso_core::{Config, Engine};
+use compresso_core::{
+    Config, Engine, Mode, TokenProvider, TokenizerInitialization, counter_for,
+    initialize_tokenizers,
+};
 use compresso_store::Store;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, Content, Implementation, ListToolsResult,
@@ -44,10 +47,12 @@ struct CompressoServer {
     tools: Vec<Tool>,
 }
 
+struct PreparedMcpDeps(McpDeps);
+
 impl CompressoServer {
-    fn new(deps: McpDeps) -> Self {
+    fn new(deps: PreparedMcpDeps) -> Self {
         Self {
-            deps,
+            deps: deps.0,
             tools: tool_declarations(),
         }
     }
@@ -124,6 +129,33 @@ where
     R: AsyncRead + Send + Unpin + 'static,
     W: AsyncWrite + Send + Unpin + 'static,
 {
+    serve_io_with_tokenizer_startup(deps, reader, writer, || {
+        initialize_tokenizers(&[
+            TokenProvider::OpenAiO200k,
+            TokenProvider::AnthropicCalibrated,
+        ])
+    })
+    .await
+}
+
+/// Starts the MCP server with an injected eager-tokenizer initializer.
+///
+/// This is primarily a deterministic failure seam for lifecycle tests. Normal
+/// callers should use [`serve_io`]. The initializer always runs before the
+/// server handler is constructed.
+#[doc(hidden)]
+pub async fn serve_io_with_tokenizer_startup<R, W, F>(
+    deps: McpDeps,
+    reader: R,
+    writer: W,
+    initialize: F,
+) -> anyhow::Result<()>
+where
+    R: AsyncRead + Send + Unpin + 'static,
+    W: AsyncWrite + Send + Unpin + 'static,
+    F: FnOnce() -> TokenizerInitialization + Send + 'static,
+{
+    let deps = prepare_dependencies(deps, initialize());
     let transport = ResilientJsonLineTransport::new(reader, writer);
     let service = match CompressoServer::new(deps).serve(transport).await {
         Ok(service) => service,
@@ -132,6 +164,17 @@ where
     };
     service.waiting().await?;
     Ok(())
+}
+
+fn prepare_dependencies(mut deps: McpDeps, startup: TokenizerInitialization) -> PreparedMcpDeps {
+    if !startup.all_ready() {
+        eprintln!(
+            "compresso MCP tokenizer initialization failed for {:?}; continuing in passthrough mode with heuristic token accounting",
+            startup.fallback
+        );
+        deps.engine = Engine::new(Mode::Passthrough, counter_for(TokenProvider::Heuristic));
+    }
+    PreparedMcpDeps(deps)
 }
 
 /// Returns the exact neutral instructions sent during MCP initialization.
@@ -354,5 +397,34 @@ where
 
     async fn close(&mut self) -> Result<(), Self::Error> {
         self.writer.lock().await.shutdown().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_failed_tokenizer_startup_forces_passthrough_engine() {
+        let temp = tempfile::tempdir().expect("temporary directory should be created");
+        let config = Config::default();
+        let deps = McpDeps {
+            store: Store::open(&temp.path().join("compresso.db")).expect("store should open"),
+            engine: Engine::new(
+                config.compression.mode,
+                counter_for(TokenProvider::Heuristic),
+            ),
+            config,
+        };
+
+        let prepared = prepare_dependencies(
+            deps,
+            TokenizerInitialization {
+                initialized: Vec::new(),
+                fallback: vec![TokenProvider::OpenAiO200k],
+            },
+        );
+
+        assert_eq!(prepared.0.engine.mode(), Mode::Passthrough);
     }
 }

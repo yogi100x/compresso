@@ -21,6 +21,24 @@ pub enum TokenProvider {
     Heuristic,
 }
 
+/// Result of eagerly resolving the tokenizer providers needed by a process.
+///
+/// A provider appears in `fallback` when initialization failed and
+/// [`counter_for`] returned the heuristic counter instead. Both collections
+/// preserve first-request order and omit duplicate providers.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct TokenizerInitialization {
+    pub initialized: Vec<TokenProvider>,
+    pub fallback: Vec<TokenProvider>,
+}
+
+impl TokenizerInitialization {
+    /// Returns true when every requested provider initialized exactly.
+    pub fn all_ready(&self) -> bool {
+        self.fallback.is_empty()
+    }
+}
+
 pub trait TokenCounter: Send + Sync {
     fn provider(&self) -> TokenProvider;
     fn count(&self, text: &str) -> usize;
@@ -132,6 +150,36 @@ pub fn counter_for(provider: TokenProvider) -> &'static dyn TokenCounter {
             }
         }
         TokenProvider::Heuristic => &HEURISTIC_COUNTER,
+    }
+}
+
+/// Eagerly initializes each requested process-wide tokenizer singleton.
+///
+/// Initialization is idempotent. Failures are represented in the returned
+/// report and remain fail-open through the honestly tagged heuristic counter.
+pub fn initialize_tokenizers(providers: &[TokenProvider]) -> TokenizerInitialization {
+    initialization_report(providers, |provider| counter_for(provider).provider())
+}
+
+fn initialization_report(
+    providers: &[TokenProvider],
+    mut resolve: impl FnMut(TokenProvider) -> TokenProvider,
+) -> TokenizerInitialization {
+    let mut initialized = Vec::new();
+    let mut fallback = Vec::new();
+    for &provider in providers {
+        if initialized.contains(&provider) || fallback.contains(&provider) {
+            continue;
+        }
+        if resolve(provider) == provider {
+            initialized.push(provider);
+        } else {
+            fallback.push(provider);
+        }
+    }
+    TokenizerInitialization {
+        initialized,
+        fallback,
     }
 }
 
@@ -258,6 +306,44 @@ mod tests {
         ] {
             assert!(std::ptr::eq(counter_for(provider), counter_for(provider)));
         }
+    }
+
+    #[test]
+    fn test_eager_initialization_reports_exact_providers_once() {
+        let report = initialize_tokenizers(&[
+            TokenProvider::OpenAiO200k,
+            TokenProvider::AnthropicCalibrated,
+            TokenProvider::OpenAiO200k,
+        ]);
+
+        assert!(report.all_ready());
+        assert_eq!(
+            report.initialized,
+            vec![
+                TokenProvider::OpenAiO200k,
+                TokenProvider::AnthropicCalibrated
+            ]
+        );
+        assert!(report.fallback.is_empty());
+    }
+
+    #[test]
+    fn test_eager_initialization_reports_honest_fallback() {
+        let report = initialization_report(
+            &[
+                TokenProvider::OpenAiO200k,
+                TokenProvider::Heuristic,
+                TokenProvider::OpenAiO200k,
+            ],
+            |provider| match provider {
+                TokenProvider::OpenAiO200k => TokenProvider::Heuristic,
+                provider => provider,
+            },
+        );
+
+        assert!(!report.all_ready());
+        assert_eq!(report.initialized, vec![TokenProvider::Heuristic]);
+        assert_eq!(report.fallback, vec![TokenProvider::OpenAiO200k]);
     }
 
     #[test]
