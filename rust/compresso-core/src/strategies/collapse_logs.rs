@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use crate::graph::{ContextGraph, NodeKind};
 use crate::safety::duplicate_group_node_ids;
 use crate::segment::repeated_trace_spans;
@@ -94,9 +96,11 @@ fn estimate_for_plan(plan: &CollapsePlan) -> Estimate {
 fn execute_plan(input: &ContextGraph, plan: CollapsePlan) -> StrategyOutput {
     let mut graph = input.clone();
     let mut removals = Vec::new();
+    let mut changed_node_ids = BTreeSet::new();
 
     for change in plan.changes {
         let node = &mut graph.nodes[change.index];
+        changed_node_ids.insert(node.id.clone());
         node.content = change.content;
         node.token_count = change.token_count;
         // A collapsed multiline trace is now the sole root-cause representative.
@@ -107,6 +111,7 @@ fn execute_plan(input: &ContextGraph, plan: CollapsePlan) -> StrategyOutput {
 
     StrategyOutput {
         graph,
+        changed_node_ids,
         notes: plan.notes,
         removals,
     }
@@ -553,6 +558,10 @@ mod tests {
         );
         assert_eq!(output.graph.edges, original_edges);
         assert_eq!(output.graph.validate(), Ok(()));
+        assert_eq!(
+            output.changed_node_ids,
+            BTreeSet::from(["log-1".to_owned()])
+        );
 
         assert_eq!(output.removals.len(), 1);
         let record = &output.removals[0];

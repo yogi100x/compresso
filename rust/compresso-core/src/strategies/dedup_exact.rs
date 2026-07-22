@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::graph::{ContextEdge, ContextGraph, EdgeKind};
 use crate::safety::{duplicate_group_node_ids, duplicate_references_well_formed, duplicate_stub};
@@ -55,6 +55,7 @@ impl CompressionStrategy for DedupExact {
         if duplicates.is_empty() {
             return Ok(StrategyOutput {
                 graph: input.clone(),
+                changed_node_ids: BTreeSet::new(),
                 notes: vec!["no profitable exact duplicates found".to_owned()],
                 removals: Vec::new(),
             });
@@ -64,6 +65,7 @@ impl CompressionStrategy for DedupExact {
         let mut notes = Vec::with_capacity(duplicates.len());
         let mut removals = Vec::with_capacity(duplicates.len());
         let mut duplicate_edges = Vec::with_capacity(duplicates.len());
+        let mut changed_node_ids = BTreeSet::new();
 
         for duplicate in duplicates {
             let node = &mut graph.nodes[duplicate.index];
@@ -71,6 +73,7 @@ impl CompressionStrategy for DedupExact {
             let before_tokens = node.token_count;
             let stub = duplicate.stub;
             let after_tokens = duplicate.after_tokens;
+            changed_node_ids.insert(node.id.clone());
 
             node.content = stub.clone();
             node.token_count = after_tokens;
@@ -101,6 +104,7 @@ impl CompressionStrategy for DedupExact {
 
         Ok(StrategyOutput {
             graph,
+            changed_node_ids,
             notes,
             removals,
         })
@@ -245,6 +249,10 @@ mod tests {
         );
         assert!(output.graph.total_tokens() < graph.total_tokens());
         assert_eq!(output.graph.validate(), Ok(()));
+        assert_eq!(
+            output.changed_node_ids,
+            BTreeSet::from(["n2".to_owned(), "n3".to_owned()])
+        );
 
         assert_eq!(output.notes.len(), 2);
         assert!(

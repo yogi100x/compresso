@@ -1,0 +1,20 @@
+{
+  "generator": "node fixtures/benchmarks/mib-rebuild-stream/generate.mjs",
+  "variants": [
+    {
+      "name": "input-1mib.log",
+      "bytes": 1048576,
+      "sha256": "960122b09478811c7d835ff5ca61a0a010cd4fbe791c5dc38cc848fe4fdedd7f"
+    },
+    {
+      "name": "input-4mib.log",
+      "bytes": 4194304,
+      "sha256": "1e33ae19004fb4327d6b310eb7ffe70367ff600d6281f89c9d8a88f30bef1f31"
+    },
+    {
+      "name": "input-8mib.log",
+      "bytes": 8388608,
+      "sha256": "4c54825cd666333c8ae6cd8368b759f82cde7db287c89035fac4b2e06e48fed5"
+    }
+  ]
+}

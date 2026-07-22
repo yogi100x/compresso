@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::graph::{ContextGraph, EdgeKind, GraphError, NodeKind};
 use crate::safety::duplicate_references_well_formed;
@@ -42,6 +42,7 @@ impl CompressionStrategy for PackBudget {
         if !packable_structure(input) {
             return Ok(StrategyOutput {
                 graph: input.clone(),
+                changed_node_ids: BTreeSet::new(),
                 notes: vec!["skipped_reason: invalid graph structure".to_owned()],
                 removals: Vec::new(),
             });
@@ -49,6 +50,7 @@ impl CompressionStrategy for PackBudget {
         if input.total_tokens() <= budget.max_tokens {
             return Ok(StrategyOutput {
                 graph: input.clone(),
+                changed_node_ids: BTreeSet::new(),
                 notes: vec!["skipped_reason: graph already satisfies budget".to_owned()],
                 removals: Vec::new(),
             });
@@ -78,6 +80,10 @@ impl CompressionStrategy for PackBudget {
             .iter()
             .map(|index| input.nodes[*index].id.as_str())
             .collect::<HashSet<_>>();
+        let changed_node_ids = dropped_indices
+            .iter()
+            .map(|index| input.nodes[*index].id.clone())
+            .collect::<BTreeSet<_>>();
 
         let mut notes = Vec::new();
         if unsatisfiable {
@@ -126,6 +132,7 @@ impl CompressionStrategy for PackBudget {
 
         Ok(StrategyOutput {
             graph,
+            changed_node_ids,
             notes,
             removals,
         })
@@ -365,6 +372,7 @@ mod tests {
         assert_eq!(ids(&output), ["A", "C"]);
         assert_eq!(output.graph.total_tokens(), 200);
         assert!(output.notes.iter().any(|note| note == "removed node:B"));
+        assert_eq!(output.changed_node_ids, BTreeSet::from(["B".to_owned()]));
     }
 
     #[test]

@@ -97,6 +97,35 @@ pub(crate) fn run_preflight_after_recount(
     )
 }
 
+/// Runs the canonical ledger after the engine has verified every strategy's
+/// exact changed-node proof and independently recounted those nodes.
+///
+/// Unlike the public compatibility entry points, this proof-carrying path
+/// does not tokenize the full candidate graph again.
+pub(crate) fn run_after_differential_recount(
+    original: &ContextGraph,
+    candidate: &ContextGraph,
+    budget: &CompressionBudget,
+    elapsed_ms: u64,
+    removals: &[RemovalRecord],
+    provider_validator: &dyn ProviderConversationValidator,
+) -> Vec<SafetyCheck> {
+    run_all_with_token_check(
+        original,
+        candidate,
+        budget,
+        elapsed_ms,
+        removals,
+        safety_check(
+            "token_counts_valid",
+            true,
+            "candidate token counts verified by exact changed-node recount",
+            "unreachable: differential recount proof is invalid",
+        ),
+        provider_conversation_valid(original, candidate, provider_validator),
+    )
+}
+
 fn run_all_with_token_check(
     original: &ContextGraph,
     candidate: &ContextGraph,

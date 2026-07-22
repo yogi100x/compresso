@@ -1,11 +1,11 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fmt;
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
-use crate::tokens::{TokenCounter, TokenProvider};
+use crate::tokens::{TokenCounter, TokenProvider, counter_for};
 
 pub const CONTEXT_GRAPH_SCHEMA_VERSION: u32 = 1;
 
@@ -175,6 +175,12 @@ pub enum GraphError {
     },
     #[error("node {node_id} of kind {kind:?} must be protected")]
     ProtectionViolation { node_id: String, kind: NodeKind },
+    #[error("node {node_id} has stale token count: stored {stored}, recounted {recounted}")]
+    StaleTokenCount {
+        node_id: String,
+        stored: usize,
+        recounted: usize,
+    },
 }
 
 impl ContextGraph {
@@ -236,6 +242,48 @@ impl ContextGraph {
             .fold(0, |total, node| total.saturating_add(node.token_count))
     }
 
+    /// Recounts only nodes named by a strategy's exact change proof.
+    ///
+    /// Removed node ids are intentionally ignored because they have no
+    /// candidate content to tokenize. The caller reconciles their stored
+    /// ingress counts through aggregate delta accounting.
+    pub fn recount_changed(&mut self, changed: &BTreeSet<String>, counter: &dyn TokenCounter) {
+        for node in &mut self.nodes {
+            if changed.contains(&node.id) {
+                let node_counter = if node.token_provider == counter.provider() {
+                    counter
+                } else {
+                    counter_for(node.token_provider)
+                };
+                node.token_count = node_counter.count(&node.content);
+            }
+        }
+    }
+
+    /// Independently verifies every stored node count.
+    ///
+    /// This full-graph helper is intended for ingress validation and tests.
+    /// The engine's post-ingress strategy path uses [`Self::recount_changed`]
+    /// instead.
+    pub fn validate_token_counts(&self, counter: &dyn TokenCounter) -> Result<(), GraphError> {
+        for node in &self.nodes {
+            let node_counter = if node.token_provider == counter.provider() {
+                counter
+            } else {
+                counter_for(node.token_provider)
+            };
+            let recounted = node_counter.count(&node.content);
+            if recounted != node.token_count {
+                return Err(GraphError::StaleTokenCount {
+                    node_id: node.id.clone(),
+                    stored: node.token_count,
+                    recounted,
+                });
+            }
+        }
+        Ok(())
+    }
+
     pub fn from_text(content: &str, kind: NodeKind, counter: &dyn TokenCounter) -> Self {
         Self {
             schema_version: CONTEXT_GRAPH_SCHEMA_VERSION,
@@ -259,7 +307,25 @@ impl ContextGraph {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
+
+    struct CountingCounter {
+        calls: AtomicUsize,
+    }
+
+    impl TokenCounter for CountingCounter {
+        fn provider(&self) -> TokenProvider {
+            TokenProvider::Heuristic
+        }
+
+        fn count(&self, text: &str) -> usize {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            text.len()
+        }
+    }
 
     fn node(id: &str, kind: NodeKind, protected: bool) -> ContextNode {
         ContextNode {
@@ -292,6 +358,57 @@ mod tests {
             graph.validate(),
             Err(GraphError::DuplicateId("n1".to_owned()))
         );
+    }
+
+    #[test]
+    fn test_recount_changed_only_visits_declared_nodes() {
+        let mut unchanged = node("unchanged", NodeKind::Summary, false);
+        unchanged.content = "unchanged content".to_owned();
+        unchanged.token_provider = TokenProvider::Heuristic;
+        unchanged.token_count = 17;
+        let mut changed = node("changed", NodeKind::Summary, false);
+        changed.content = "new".to_owned();
+        changed.token_provider = TokenProvider::Heuristic;
+        changed.token_count = 999;
+        let mut graph = ContextGraph {
+            schema_version: 1,
+            nodes: vec![unchanged, changed],
+            edges: vec![],
+        };
+        let counter = CountingCounter {
+            calls: AtomicUsize::new(0),
+        };
+
+        graph.recount_changed(&BTreeSet::from(["changed".to_owned()]), &counter);
+
+        assert_eq!(counter.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(graph.nodes[0].token_count, 17);
+        assert_eq!(graph.nodes[1].token_count, 3);
+    }
+
+    #[test]
+    fn test_validate_token_counts_reports_exact_stale_node() {
+        let mut graph = ContextGraph {
+            schema_version: 1,
+            nodes: vec![node("stale", NodeKind::Summary, false)],
+            edges: vec![],
+        };
+        graph.nodes[0].content = "four".to_owned();
+        graph.nodes[0].token_provider = TokenProvider::Heuristic;
+        graph.nodes[0].token_count = 99;
+        let counter = CountingCounter {
+            calls: AtomicUsize::new(0),
+        };
+
+        assert_eq!(
+            graph.validate_token_counts(&counter),
+            Err(GraphError::StaleTokenCount {
+                node_id: "stale".to_owned(),
+                stored: 99,
+                recounted: 4,
+            })
+        );
+        assert_eq!(counter.calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

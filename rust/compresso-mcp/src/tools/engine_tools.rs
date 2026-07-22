@@ -3,8 +3,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use chrono::{DateTime, SecondsFormat, Utc};
 use compresso_atlas::{ImpactOptions, impact_with_options, repository_stale};
 use compresso_core::{
-    CompressionBudget, Config, ContextGraph, Engine, Lossiness, Mode, NodeKind, TokenCounter,
-    TokenProvider, counter_for, operation_identity,
+    CompressionBudget, Config, ContextGraph, Engine, Lossiness, MAX_COMPRESSION_INPUT_BYTES, Mode,
+    NodeKind, TokenCounter, TokenProvider, anthropic_calibrated_count, counter_for,
+    operation_identity,
 };
 use compresso_store::{EdgeKind, OperationRecord, SessionId, StatsFilter, Store};
 use rmcp::model::JsonObject;
@@ -16,7 +17,6 @@ use super::common::{
     optional_usize, required_string, resolve_repository, validate_repo_path,
 };
 
-const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
 const DEFAULT_MAX_LATENCY_MS: usize = 200;
 
 pub(crate) fn handles(name: &str) -> bool {
@@ -74,7 +74,7 @@ fn compress_tool(
         protected_kinds: Vec::new(),
     };
     let started = Instant::now();
-    let mut result = if text.len() > MAX_BODY_BYTES {
+    let mut result = if text.len() > MAX_COMPRESSION_INPUT_BYTES {
         engine.fail_open(graph, "input_too_large")
     } else if effective_mode == Mode::Safe
         && std::env::var("COMPRESSO_TEST_FAIL_STRATEGY").as_deref() == Ok("collapse_logs")
@@ -89,10 +89,10 @@ fn compress_tool(
         .iter()
         .map(|node| node.content.as_str())
         .collect::<String>();
-    let before_o200k = o200k.count(&text);
-    let before_anthropic = anthropic.count(&text);
-    let after_o200k = o200k.count(&compressed);
-    let after_anthropic = anthropic.count(&compressed);
+    let before_o200k = result.before_tokens;
+    let before_anthropic = anthropic_calibrated_count(before_o200k);
+    let after_o200k = result.after_tokens;
+    let after_anthropic = anthropic_calibrated_count(after_o200k);
     result.before_tokens = before_o200k;
     result.after_tokens = after_o200k;
     result.trace.mode = effective_mode;
