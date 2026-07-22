@@ -12,7 +12,7 @@ use crate::provider_conversation::{
 use crate::safety::{
     SafetyCheck, identity_checks, run_all_with_provider_validator, run_preflight_after_recount,
 };
-use crate::segment::segment_graph;
+use crate::segment::{is_generic_text_graph, segment_graph};
 use crate::strategy::{
     CompressionBudget, Mode, RemovalKind, RemovalRecord, StrategyExecution, StrategyRegistry,
 };
@@ -105,6 +105,7 @@ impl Engine {
             );
         }
 
+        let generic_text_ingress = is_generic_text_graph(&original);
         let segmented_ingress = match segment_graph(&original) {
             Ok(graph) => graph,
             Err(error) => {
@@ -125,7 +126,6 @@ impl Engine {
                 );
             }
         };
-        let segmentation_applied = segmented_ingress != original;
         let mut ingress = segmented_ingress;
         recount_graph(&mut ingress);
         force_protection(&mut ingress, budget);
@@ -406,7 +406,7 @@ impl Engine {
         let elapsed = elapsed_ms(started.elapsed());
         let safety_checks =
             self.run_safety_checks(&ingress, &current, budget, elapsed, &safety_ledger);
-        if segmentation_applied && current.total_tokens() > budget.max_tokens {
+        if generic_text_ingress && current.total_tokens() > budget.max_tokens {
             return self.fallback(
                 original,
                 before_tokens,
@@ -1244,6 +1244,28 @@ mod tests {
     fn test_impossible_segment_anchor_budget_falls_back_byte_identical() {
         let content = format!("{}\n\nFINAL", "required source prelude ".repeat(20));
         let input = graph(vec![node("text", NodeKind::SourceFile, &content, false)]);
+        let bytes = serde_json::to_vec(&input).unwrap();
+        let mut impossible = budget();
+        impossible.max_tokens = 1;
+
+        let result = Engine::new(Mode::Safe, counter()).compress(input, &impossible);
+
+        assert!(result.fallback_used);
+        assert_eq!(
+            result.fallback_reason.as_deref(),
+            Some("unsatisfiable_budget")
+        );
+        assert_eq!(serde_json::to_vec(&result.output).unwrap(), bytes);
+    }
+
+    #[test]
+    fn test_impossible_unsplit_instruction_budget_falls_back_byte_identical() {
+        let input = graph(vec![node(
+            "instruction",
+            NodeKind::UserInstruction,
+            "one indivisible current instruction",
+            true,
+        )]);
         let bytes = serde_json::to_vec(&input).unwrap();
         let mut impossible = budget();
         impossible.max_tokens = 1;

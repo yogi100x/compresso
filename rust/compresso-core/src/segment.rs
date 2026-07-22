@@ -36,10 +36,7 @@ struct Line<'a> {
 /// engine directly and reconstruct successful text by concatenating node content
 /// in graph order; fallback continues to return the caller-owned graph unchanged.
 pub fn segment_graph(input: &ContextGraph) -> Result<ContextGraph, SegmentError> {
-    if input.nodes.len() != 1
-        || !input.edges.is_empty()
-        || input.nodes.iter().any(|node| node.provider_turn.is_some())
-    {
+    if !is_generic_text_graph(input) {
         return Ok(input.clone());
     }
 
@@ -62,6 +59,10 @@ pub fn segment_graph(input: &ContextGraph) -> Result<ContextGraph, SegmentError>
         nodes,
         edges: Vec::new(),
     })
+}
+
+pub(crate) fn is_generic_text_graph(input: &ContextGraph) -> bool {
+    input.nodes.len() == 1 && input.edges.is_empty() && input.nodes[0].provider_turn.is_none()
 }
 
 fn segment_node(node: &ContextNode) -> Result<Vec<ContextNode>, SegmentError> {
@@ -116,11 +117,8 @@ fn structural_spans(content: &str) -> Result<Vec<Span>, ()> {
         return paragraph_and_fence_spans(content, &lines);
     }
 
-    if serde_json::from_str::<serde_json::Value>(content.trim()).is_ok() {
-        return Ok(vec![Span {
-            start: 0,
-            end: content.len(),
-        }]);
+    if let Some(spans) = json_value_spans(content) {
+        return Ok(spans);
     }
 
     if let Some(spans) = log_spans(content, &lines) {
@@ -128,6 +126,32 @@ fn structural_spans(content: &str) -> Result<Vec<Span>, ()> {
     }
 
     paragraph_and_fence_spans(content, &lines)
+}
+
+fn json_value_spans(content: &str) -> Option<Vec<Span>> {
+    let mut stream = serde_json::Deserializer::from_str(content).into_iter::<serde_json::Value>();
+    let mut start = 0_usize;
+    let mut spans = Vec::new();
+
+    while let Some(value) = stream.next() {
+        value.ok()?;
+        let mut end = stream.byte_offset();
+        while content
+            .as_bytes()
+            .get(end)
+            .is_some_and(u8::is_ascii_whitespace)
+        {
+            end += 1;
+        }
+        spans.push(Span { start, end });
+        start = end;
+    }
+
+    if spans.is_empty() || start != content.len() {
+        None
+    } else {
+        Some(spans)
+    }
 }
 
 fn paragraph_and_fence_spans(content: &str, lines: &[Line<'_>]) -> Result<Vec<Span>, ()> {
@@ -449,6 +473,18 @@ mod tests {
         assert!(!output.nodes[1].protected);
         assert!(!output.nodes[2].protected);
         assert!(output.nodes[3].protected);
+    }
+
+    #[test]
+    fn test_adjacent_json_values_are_independent_lossless_segments() {
+        let content = "{\"first\":1}\n[2,3]\ntrue\n";
+        let output = segment_graph(&graph(content, NodeKind::Summary)).unwrap();
+
+        assert_eq!(joined(&output), content);
+        assert_eq!(output.nodes.len(), 3);
+        assert_eq!(output.nodes[0].content, "{\"first\":1}\n");
+        assert_eq!(output.nodes[1].content, "[2,3]\n");
+        assert_eq!(output.nodes[2].content, "true\n");
     }
 
     #[test]
