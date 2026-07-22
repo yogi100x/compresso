@@ -14,6 +14,7 @@ use compresso_store::{EdgeKind, ResolvedEdgeRecord, Store};
 use serde::{Deserialize, Serialize};
 
 use crate::fixtures::{AtlasExpectations, Fixture, FixtureInput, FixtureSet};
+use crate::recall::{EvalRunError, RecallReport, evaluate_corpus, validate_passthrough};
 
 static TEMPORARY_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -27,6 +28,7 @@ pub struct EvalReport {
     pub schema_version: u32,
     pub fixtures: Vec<FixtureOutcome>,
     pub aggregate: AggregateMetrics,
+    pub recall: RecallReport,
 }
 
 /// Whether a fixture exercises compression or repository indexing.
@@ -145,8 +147,30 @@ pub struct AggregateMetrics {
 }
 
 impl EvalRunner {
-    /// Evaluates every fixture independently and always returns one row per fixture.
+    /// Evaluates every fixture through the E7-02 compatibility path.
+    ///
+    /// This does not validate passthrough probes; canonical recall runs use [`Self::try_run`].
     pub fn run(&self, set: &FixtureSet) -> EvalReport {
+        self.evaluate(set)
+    }
+
+    /// Evaluates every fixture after rejecting broken passthrough probes.
+    pub fn try_run(&self, set: &FixtureSet) -> Result<EvalReport, EvalRunError> {
+        for fixture in &set.fixtures {
+            if matches!(
+                fixture.input,
+                FixtureInput::Graph { .. } | FixtureInput::Assembled
+            ) {
+                let provider = token_provider(fixture);
+                let budget = compression_budget(fixture);
+                validate_passthrough(fixture, &budget, provider)?;
+            }
+        }
+
+        Ok(self.evaluate(set))
+    }
+
+    fn evaluate(&self, set: &FixtureSet) -> EvalReport {
         let fixtures = set
             .fixtures
             .iter()
@@ -156,10 +180,12 @@ impl EvalRunner {
             })
             .collect::<Vec<_>>();
         let aggregate = aggregate_metrics(&fixtures);
+        let recall = evaluate_corpus(&set.fixtures, &fixtures);
         EvalReport {
             schema_version: 1,
             fixtures,
             aggregate,
+            recall,
         }
     }
 }
@@ -172,18 +198,9 @@ fn evaluate_fixture(fixture: &Fixture) -> FixtureOutcome {
 }
 
 fn evaluate_compression(fixture: &Fixture) -> FixtureOutcome {
-    let provider = fixture
-        .graph
-        .nodes
-        .first()
-        .map_or(TokenProvider::OpenAiO200k, |node| node.token_provider);
+    let provider = token_provider(fixture);
     let engine = Engine::new(fixture.mode, counter_for(provider));
-    let budget = CompressionBudget {
-        max_tokens: fixture.budget.max_tokens,
-        max_latency_ms: fixture.budget.max_latency_ms,
-        allowed_lossiness: Lossiness::Structural,
-        protected_kinds: Vec::new(),
-    };
+    let budget = compression_budget(fixture);
 
     let started = Instant::now();
     let first = engine.compress(fixture.graph.clone(), &budget);
@@ -270,6 +287,23 @@ fn evaluate_compression(fixture: &Fixture) -> FixtureOutcome {
         failures,
         atlas: None,
         output: Some(first.output),
+    }
+}
+
+fn token_provider(fixture: &Fixture) -> TokenProvider {
+    fixture
+        .graph
+        .nodes
+        .first()
+        .map_or(TokenProvider::OpenAiO200k, |node| node.token_provider)
+}
+
+fn compression_budget(fixture: &Fixture) -> CompressionBudget {
+    CompressionBudget {
+        max_tokens: fixture.budget.max_tokens,
+        max_latency_ms: fixture.budget.max_latency_ms,
+        allowed_lossiness: Lossiness::Structural,
+        protected_kinds: Vec::new(),
     }
 }
 

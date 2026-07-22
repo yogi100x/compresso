@@ -729,7 +729,7 @@ Test cases:
 - test_ci_eval_wiring: actionlint passes; ci.yml contains the eval invocation string with `--gates docs/plan/gates.toml`.
 - test_gate_regression_fails_ci: scratch-branch verification recorded in the PR description with the failing run link.
 
-### [ ] E7-05: Recall-probe evaluation and passthrough baseline
+### [x] E7-05: Recall-probe evaluation and passthrough baseline
 Owner: PQ · Estimate: 2d · Depends: E7-01, E7-02
 Files: rust/compresso-eval/src/recall.rs, rust/compresso-eval/src/runner.rs (probe wiring), tests in rust/compresso-eval/tests/recall.rs
 Description: Implement the D40 task-success proxy per `06-fixtures.md` §4.9. After each compression fixture run, search every `[[recall_probes]]` entry's `answer_substring` byte-exact over the concatenated output node contents; aggregate corpus-wide into `protected_probe_recall` (probes with `protected = true`) and `overall_probe_recall` (all probes). Additionally run every compression fixture that carries at least one probe in `passthrough` mode as a baseline: a probe failing on passthrough output means the probe itself is broken, and the run errors (broken-probe detection, distinct exit from a gate failure) instead of counting the probe. The eval report gains a `recall` block with per-fixture probe outcomes and the two aggregates.
