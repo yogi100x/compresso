@@ -9,7 +9,7 @@ mod symbols;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use thiserror::Error;
@@ -27,6 +27,8 @@ pub use symbols::{
 };
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const WAL_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(1);
+const WAL_RETRY_MAX_DELAY: Duration = Duration::from_millis(25);
 const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 
 /// Default retention window for operation metadata.
@@ -288,16 +290,44 @@ fn create_parent_directory(path: &Path) -> Result<(), StoreError> {
 }
 
 fn configure_connection(connection: &Connection) -> Result<(), StoreError> {
-    connection.busy_timeout(BUSY_TIMEOUT)?;
     connection.pragma_update(None, "foreign_keys", "ON")?;
-    connection.pragma_update(None, "journal_mode", "WAL")?;
-    let journal_mode = connection.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
+    let journal_mode = enable_wal_journal_mode(connection)?;
     if journal_mode != "wal" {
         return Err(StoreError::JournalModeMismatch {
             actual: journal_mode,
         });
     }
     Ok(())
+}
+
+fn enable_wal_journal_mode(connection: &Connection) -> Result<String, StoreError> {
+    // Changing journal mode upgrades a read lock to a write lock. SQLite may
+    // bypass the busy handler and return SQLITE_BUSY immediately to break a
+    // simultaneous first-open deadlock, so retry the complete idempotent
+    // PRAGMA under one bounded deadline and restore the normal timeout after.
+    let deadline = Instant::now() + BUSY_TIMEOUT;
+    let mut retry_delay = WAL_RETRY_INITIAL_DELAY;
+
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        connection.busy_timeout(remaining.min(WAL_RETRY_MAX_DELAY))?;
+
+        match connection.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get(0)) {
+            Ok(journal_mode) => {
+                connection.busy_timeout(BUSY_TIMEOUT)?;
+                return Ok(journal_mode);
+            }
+            Err(error) if error.sqlite_error_code() == Some(rusqlite::ErrorCode::DatabaseBusy) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(error.into());
+                }
+                std::thread::sleep(retry_delay.min(remaining));
+                retry_delay = retry_delay.saturating_mul(2).min(WAL_RETRY_MAX_DELAY);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 fn migrate(connection: &mut Connection, migrations: &[Migration]) -> Result<(), StoreError> {
@@ -494,24 +524,45 @@ mod tests {
 
     #[test]
     fn test_simultaneous_first_open_applies_migration_once() {
+        const OPENERS: usize = 8;
+
         let (_directory, path) = test_database_path();
-        let barrier = Arc::new(Barrier::new(2));
+        let barrier = Arc::new(Barrier::new(OPENERS));
         let mut handles = Vec::new();
 
-        for _ in 0..2 {
+        for _ in 0..OPENERS {
             let path = path.clone();
             let barrier = Arc::clone(&barrier);
             handles.push(thread::spawn(move || {
                 barrier.wait();
-                Store::open(&path).map(drop)
+                Store::open(&path)
             }));
         }
 
-        for handle in handles {
-            handle
-                .join()
-                .expect("store opener should not panic")
-                .expect("simultaneous first open should succeed");
+        let stores = handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .expect("store opener should not panic")
+                    .expect("simultaneous first open should succeed")
+            })
+            .collect::<Vec<_>>();
+
+        for store in &stores {
+            let connection = store.connection().expect("connection lock should succeed");
+            let journal_mode: String = connection
+                .pragma_query_value(None, "journal_mode", |row| row.get(0))
+                .expect("journal mode should be readable");
+            let foreign_keys: i64 = connection
+                .pragma_query_value(None, "foreign_keys", |row| row.get(0))
+                .expect("foreign key setting should be readable");
+            let busy_timeout: i64 = connection
+                .pragma_query_value(None, "busy_timeout", |row| row.get(0))
+                .expect("busy timeout should be readable");
+            assert_eq!(journal_mode, "wal");
+            assert_eq!(foreign_keys, 1);
+            assert_eq!(busy_timeout, 5_000);
         }
 
         let connection = Connection::open(path).expect("database should be inspectable");
