@@ -621,7 +621,7 @@ Acceptance criteria:
 Test cases:
 - outside-diff rewrite; forged/expired; crash; unknown keys.
 
-### [ ] E6-02: Claude Code adapter
+### [x] E6-02: Claude Code adapter
 Owner: D1 · Estimate: 2d · Depends: E6-01, E5-01
 Files: rust/compresso-integrations/src/claude_code.rs, tests in same file
 Description: Adapter with `client_id() == "claude-code"` implementing detection (CLI on PATH, config file per `04-mcp-and-integrations.md` §2 — user scope `~/.claude.json`, project scope `.mcp.json`), plan/install writing only the Compresso-owned key `mcpServers.compresso` = stdio server entry `{command: <compresso_bin>, args: ["mcp","serve"]}`, verify (config parses and the command path resolves to an existing executable), and uninstall (remove only the owned key; restore untouched siblings). JSON edits preserve unrelated keys and their order-insensitive content exactly. No Claude Desktop paths anywhere (D5).
