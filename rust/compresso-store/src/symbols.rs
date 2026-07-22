@@ -63,6 +63,13 @@ pub struct ResolvedEdgeRecord {
     pub kind: EdgeKind,
 }
 
+/// Counts unresolved and ambiguous dependency edges for completeness reporting.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EdgeResolutionCounts {
+    pub unresolved: usize,
+    pub ambiguous: usize,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SymbolHit {
     pub file: FileRecord,
@@ -314,6 +321,29 @@ impl Store {
             .query_map([repo], |row| row.get(0))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
+    }
+
+    /// Returns separate unresolved and ambiguous edge counts for one repository.
+    pub fn edge_resolution_counts(&self, repo: RepoId) -> Result<EdgeResolutionCounts, StoreError> {
+        let connection = self.connection()?;
+        ensure_repo_exists(&connection, repo)?;
+        let (unresolved, ambiguous) = connection.query_row(
+            "SELECT COALESCE(SUM(CASE WHEN resolution_status = 'unresolved' THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN resolution_status = 'ambiguous' THEN 1 ELSE 0 END), 0) FROM edges WHERE repo_id = ?1",
+            [repo],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        )?;
+        Ok(EdgeResolutionCounts {
+            unresolved: usize::try_from(unresolved).map_err(|_| {
+                StoreError::InvalidStoredValue {
+                    field: "edges unresolved count",
+                    value: unresolved.to_string(),
+                }
+            })?,
+            ambiguous: usize::try_from(ambiguous).map_err(|_| StoreError::InvalidStoredValue {
+                field: "edges ambiguous count",
+                value: ambiguous.to_string(),
+            })?,
+        })
     }
 
     /// Returns every symbol matching an explicit identity selector, never an arbitrary first row.
@@ -995,6 +1025,7 @@ mod tests {
             .expect("edges should be queryable")
             .collect::<Result<_, _>>()
             .expect("edges should decode");
+        drop(connection);
         assert_eq!(
             rows[0],
             (
@@ -1021,6 +1052,16 @@ mod tests {
                 "unresolved".to_owned(),
                 Some("not found".to_owned())
             )
+        );
+
+        assert_eq!(
+            store
+                .edge_resolution_counts(repo)
+                .expect("resolution counts should load"),
+            crate::EdgeResolutionCounts {
+                unresolved: 1,
+                ambiguous: 1,
+            }
         );
     }
 

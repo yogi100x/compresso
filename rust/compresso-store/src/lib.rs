@@ -22,8 +22,8 @@ pub use ops::{
 pub use receipts::{ReceiptId, ReceiptRecord};
 pub use repos::{FileId, IndexVersionRecord, RepoId, RepoRecord};
 pub use symbols::{
-    EdgeKind, EdgeRecord, EdgeResolution, ResolvedEdgeRecord, SymbolHit, SymbolKind, SymbolRecord,
-    SymbolSelector,
+    EdgeKind, EdgeRecord, EdgeResolution, EdgeResolutionCounts, ResolvedEdgeRecord, SymbolHit,
+    SymbolKind, SymbolRecord, SymbolSelector,
 };
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);

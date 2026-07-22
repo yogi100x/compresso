@@ -625,6 +625,7 @@ fn map_query_error(error: QueryError) -> RetrievalError {
     match error {
         QueryError::NotFound { .. } => RetrievalError::not_found(),
         invalid @ (QueryError::InvalidFocus { .. }
+        | QueryError::InvalidImpactOptions { .. }
         | QueryError::InvalidRange { .. }
         | QueryError::InvalidSymbolRange { .. }) => RetrievalError::invalid(&invalid.to_string()),
         QueryError::NotAFile { .. } => {
