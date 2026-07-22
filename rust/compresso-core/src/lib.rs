@@ -1,5 +1,6 @@
 //! Deterministic context graph, token accounting, compression, and safety primitives.
 
+pub mod config;
 pub mod engine;
 pub mod graph;
 pub mod provider_conversation;
@@ -10,6 +11,10 @@ pub mod strategy;
 pub mod tokens;
 pub mod trace;
 
+pub use config::{
+    CompressionCfg, Config, ConfigError, ConfigExplanation, ConfigOverrides, ConfigSource,
+    EffectiveValue, IndexCfg, McpCfg, PrivacyCfg, ProxyCfg, RuntimeCfg, RuntimePaths,
+};
 pub use engine::{CompressionResult, Engine};
 pub use graph::{
     ContextEdge, ContextGraph, ContextNode, EdgeKind, GraphError, NodeKind, ProviderId,

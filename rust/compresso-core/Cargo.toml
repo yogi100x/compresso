@@ -9,16 +9,18 @@ repository.workspace = true
 
 [dependencies]
 blake3.workspace = true
+dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tiktoken-rs.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
 jsonschema.workspace = true
 proptest.workspace = true
-toml.workspace = true
+tempfile.workspace = true
 
 [[bench]]
 name = "compress_latency"
