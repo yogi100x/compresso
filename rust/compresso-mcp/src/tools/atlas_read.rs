@@ -3,6 +3,7 @@ use compresso_core::{TokenCounter, operation_identity};
 use compresso_store::{Store, SymbolRecord};
 use rmcp::model::JsonObject;
 use serde_json::{Value, json};
+use std::path::Path;
 
 use super::common::{
     MAX_TOKENS, MIN_TOKENS, REINDEX_HINT, ToolFailure, ToolResult, cap_values, checked_arguments,
@@ -23,16 +24,25 @@ pub(crate) fn handles(name: &str) -> bool {
     )
 }
 
-pub(crate) fn dispatch(store: &Store, name: &str, arguments: Option<JsonObject>) -> ToolResult {
+pub(crate) fn dispatch(
+    store: &Store,
+    repository_root: Option<&Path>,
+    name: &str,
+    arguments: Option<JsonObject>,
+) -> ToolResult {
     match name {
-        "compresso_search" => search_tool(store, arguments),
-        "compresso_read" => read_tool(store, arguments),
-        "compresso_context" => context_tool(store, arguments),
+        "compresso_search" => search_tool(store, repository_root, arguments),
+        "compresso_read" => read_tool(store, repository_root, arguments),
+        "compresso_context" => context_tool(store, repository_root, arguments),
         _ => Err(ToolFailure::internal()),
     }
 }
 
-fn search_tool(store: &Store, arguments: Option<JsonObject>) -> ToolResult {
+fn search_tool(
+    store: &Store,
+    repository_root: Option<&Path>,
+    arguments: Option<JsonObject>,
+) -> ToolResult {
     let mut arguments = checked_arguments(arguments, &["root", "query", "limit", "max_tokens"])?;
     let root = optional_string(&mut arguments, "root", false)?;
     let query = required_string(&mut arguments, "query")?;
@@ -43,7 +53,7 @@ fn search_tool(store: &Store, arguments: Option<JsonObject>) -> ToolResult {
     }
     let limit = optional_usize(&mut arguments, "limit", 1, 100)?.unwrap_or(SEARCH_DEFAULT_LIMIT);
     let max_tokens = token_budget(&mut arguments, SEARCH_DEFAULT_TOKENS)?;
-    let repository = resolve_repository(store, root.as_deref())?;
+    let repository = resolve_repository(store, repository_root, root.as_deref())?;
     let hits = search(store, repository.id, &query, limit).map_err(map_atlas_error)?;
     let hits_total = hits.len();
     let counter = navigation_counter();
@@ -74,7 +84,11 @@ fn search_tool(store: &Store, arguments: Option<JsonObject>) -> ToolResult {
     }))
 }
 
-fn read_tool(store: &Store, arguments: Option<JsonObject>) -> ToolResult {
+fn read_tool(
+    store: &Store,
+    repository_root: Option<&Path>,
+    arguments: Option<JsonObject>,
+) -> ToolResult {
     let mut arguments = checked_arguments(
         arguments,
         &[
@@ -105,7 +119,7 @@ fn read_tool(store: &Store, arguments: Option<JsonObject>) -> ToolResult {
         ));
     }
 
-    let repository = resolve_repository(store, root.as_deref())?;
+    let repository = resolve_repository(store, repository_root, root.as_deref())?;
     validate_repo_path(&repository.root, &path)?;
     let counter = navigation_counter();
     let range = read_range(&repository.root, &path, start_line, end_line, counter)?;
@@ -239,7 +253,11 @@ fn read_gate(
     }))
 }
 
-fn context_tool(store: &Store, arguments: Option<JsonObject>) -> ToolResult {
+fn context_tool(
+    store: &Store,
+    repository_root: Option<&Path>,
+    arguments: Option<JsonObject>,
+) -> ToolResult {
     let mut arguments = checked_arguments(arguments, &["root", "task", "max_tokens"])?;
     let root = optional_string(&mut arguments, "root", false)?;
     let task = required_string(&mut arguments, "task")?;
@@ -249,7 +267,7 @@ fn context_tool(store: &Store, arguments: Option<JsonObject>) -> ToolResult {
         ));
     }
     let max_tokens = token_budget(&mut arguments, CONTEXT_DEFAULT_TOKENS)?;
-    let repository = resolve_repository(store, root.as_deref())?;
+    let repository = resolve_repository(store, repository_root, root.as_deref())?;
     let plan = plan_context(store, repository.id, &task, max_tokens).map_err(map_atlas_error)?;
     let stale = repository_stale(store, repository.id).map_err(map_atlas_error)?;
     let map_excerpt = plan

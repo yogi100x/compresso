@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use compresso_atlas::{Indexer, outline};
 use compresso_core::{Config, Engine, TokenProvider, counter_for};
-use compresso_mcp::{McpDeps, serve_io};
+use compresso_mcp::{McpDeps, serve_io, serve_io_for_root};
 use compresso_store::Store;
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
@@ -24,6 +24,24 @@ struct Harness {
 
 impl Harness {
     async fn start(store: Store) -> Self {
+        let repositories = store
+            .approved_repositories()
+            .expect("approved repositories should load");
+        let [repository] = repositories.as_slice() else {
+            panic!("navigation harness requires exactly one repository");
+        };
+        Self::start_for_root(store, repository.root.clone()).await
+    }
+
+    async fn start_for_root(store: Store, root: PathBuf) -> Self {
+        Self::start_scoped(store, Some(root)).await
+    }
+
+    async fn start_without_root(store: Store) -> Self {
+        Self::start_scoped(store, None).await
+    }
+
+    async fn start_scoped(store: Store, root: Option<PathBuf>) -> Self {
         let config = Config::default();
         let deps = McpDeps {
             store,
@@ -35,7 +53,12 @@ impl Harness {
         };
         let (client, server) = tokio::io::duplex(256 * 1024);
         let (server_read, server_write) = tokio::io::split(server);
-        let server = tokio::spawn(serve_io(deps, server_read, server_write));
+        let server = tokio::spawn(async move {
+            match root {
+                Some(root) => serve_io_for_root(deps, root, server_read, server_write).await,
+                None => serve_io(deps, server_read, server_write).await,
+            }
+        });
         let (client_read, client_write) = tokio::io::split(client);
         let mut harness = Self {
             input: client_write,
@@ -476,7 +499,7 @@ async fn test_unfold_schema_bounds() {
             }),
         )
         .await;
-    assert_tool_error(&response, "not_indexed");
+    assert_tool_error(&response, "outside_root");
     harness.close().await;
 }
 
@@ -504,6 +527,97 @@ async fn test_unfold_symlink_escape() {
             .contains(outside.to_string_lossy().as_ref()),
         "outside-root errors must not leak the resolved path"
     );
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_session_bound_to_repo_a_cannot_access_approved_repo_b() {
+    let temp = tempfile::tempdir().expect("temporary directory should be created");
+    let root_a = temp.path().join("repo-a");
+    let root_b = temp.path().join("repo-b");
+    write_file(&root_a, "src/lib.rs", "pub fn visible_from_a() {}\n");
+    write_file(
+        &root_b,
+        "src/lib.rs",
+        "pub fn secret_from_b_canary_9182() {}\n",
+    );
+    let store = Store::open(&temp.path().join("compresso.db")).expect("store should open");
+    let indexer = Indexer::new(&store, counter_for(TokenProvider::OpenAiO200k));
+    indexer.index(&root_a, |_| {}).expect("repo A should index");
+    indexer.index(&root_b, |_| {}).expect("repo B should index");
+    let root_a = fs::canonicalize(root_a).expect("repo A should canonicalize");
+    let root_b = fs::canonicalize(root_b).expect("repo B should canonicalize");
+    let mut harness = Harness::start_for_root(store, root_a.clone()).await;
+
+    let selected = successful_json(harness.call("compresso_repo_map", json!({})).await);
+    assert_eq!(selected["root"], root_a.to_string_lossy().as_ref());
+
+    let response = harness
+        .call(
+            "compresso_repo_map",
+            json!({ "root": root_b.to_string_lossy() }),
+        )
+        .await;
+    assert_tool_error(&response, "outside_root");
+    let response_text = response.to_string();
+    assert!(!response_text.contains(root_b.to_string_lossy().as_ref()));
+    assert!(!response_text.contains("secret_from_b_canary_9182"));
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_omitted_root_does_not_select_sole_approved_repository() {
+    let temp = tempfile::tempdir().expect("temporary directory should be created");
+    let root_b = temp.path().join("repo-b");
+    write_file(
+        &root_b,
+        "src/lib.rs",
+        "pub fn sole_repo_secret_canary_2714() {}\n",
+    );
+    let store = Store::open(&temp.path().join("compresso.db")).expect("store should open");
+    Indexer::new(&store, counter_for(TokenProvider::OpenAiO200k))
+        .index(&root_b, |_| {})
+        .expect("repo B should index");
+    let root_b = fs::canonicalize(root_b).expect("repo B should canonicalize");
+    let mut harness = Harness::start_without_root(store).await;
+
+    let omitted = harness.call("compresso_repo_map", json!({})).await;
+    assert_tool_error(&omitted, "not_indexed");
+    assert!(
+        !omitted
+            .to_string()
+            .contains(root_b.to_string_lossy().as_ref())
+    );
+
+    let supplied = harness
+        .call(
+            "compresso_repo_map",
+            json!({ "root": root_b.to_string_lossy() }),
+        )
+        .await;
+    assert_tool_error(&supplied, "outside_root");
+    assert!(
+        !supplied
+            .to_string()
+            .contains(root_b.to_string_lossy().as_ref())
+    );
+
+    let compressed = successful_json(
+        harness
+            .call("compresso_compress", json!({ "text": "alpha beta gamma" }))
+            .await,
+    );
+    let operation_id = compressed["operation_id"]
+        .as_str()
+        .expect("compression should return an operation id");
+    let stats = successful_json(harness.call("compresso_stats", json!({})).await);
+    assert!(stats["operations"].as_u64().is_some_and(|count| count >= 1));
+    let explained = successful_json(
+        harness
+            .call("compresso_explain", json!({ "operation_id": operation_id }))
+            .await,
+    );
+    assert_eq!(explained["explained_operation_id"], operation_id);
     harness.close().await;
 }
 

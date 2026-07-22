@@ -2,7 +2,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use compresso_atlas::{
-    AtlasError, Indexer, QueryError, UnfoldResult, outline, read_bounded, search, unfold,
+    AtlasError, Indexer, QueryError, UnfoldResult, outline, plan_context, read_bounded, search,
+    unfold,
 };
 use compresso_core::{TokenCounter, TokenProvider, counter_for};
 use compresso_store::{Store, SymbolKind, SymbolSelector};
@@ -321,6 +322,7 @@ fn test_read_bounded_inclusive_range() {
     let directory = tempfile::tempdir().expect("temporary directory should be created");
     let root = directory.path().join("repo");
     fs::create_dir(&root).expect("root should be created");
+    let root = fs::canonicalize(root).expect("root should canonicalize");
     fs::write(root.join("sample.txt"), "one\ntwo\nthree\nfour\n")
         .expect("sample should be written");
     let counter = counter();
@@ -346,6 +348,7 @@ fn test_read_bounded_token_truncation() {
     let directory = tempfile::tempdir().expect("temporary directory should be created");
     let root = directory.path().join("repo");
     fs::create_dir(&root).expect("root should be created");
+    let root = fs::canonicalize(root).expect("root should canonicalize");
     let source = "0123456789 abcdefghijklmnopqrstuvwxyz\n".repeat(20);
     fs::write(root.join("large.txt"), &source).expect("large sample should be written");
     let counter = counter();
@@ -372,6 +375,7 @@ fn test_read_bounded_missing_path_is_typed() {
     let directory = tempfile::tempdir().expect("temporary directory should be created");
     let root = directory.path().join("repo");
     fs::create_dir(&root).expect("root should be created");
+    let root = fs::canonicalize(root).expect("root should canonicalize");
 
     assert!(matches!(
         read_bounded(&root, "missing.txt", None, 100, counter()),
@@ -384,6 +388,7 @@ fn test_read_bounded_rejects_invalid_ranges() {
     let directory = tempfile::tempdir().expect("temporary directory should be created");
     let root = directory.path().join("repo");
     fs::create_dir(&root).expect("root should be created");
+    let root = fs::canonicalize(root).expect("root should canonicalize");
     fs::write(root.join("sample.txt"), "one\ntwo\n").expect("sample should be written");
 
     for range in [(0, 1), (2, 1), (3, 3)] {
@@ -399,6 +404,7 @@ fn test_read_bounded_rejects_dotdot_and_absolute_escapes() {
     let directory = tempfile::tempdir().expect("temporary directory should be created");
     let root = directory.path().join("repo");
     fs::create_dir(&root).expect("root should be created");
+    let root = fs::canonicalize(root).expect("root should canonicalize");
     let outside = directory.path().join("outside.txt");
     fs::write(&outside, "outside\n").expect("outside file should be written");
 
@@ -421,6 +427,7 @@ fn test_read_bounded_symlink_escape_and_internal_symlink() {
     let directory = tempfile::tempdir().expect("temporary directory should be created");
     let root = directory.path().join("repo");
     fs::create_dir_all(root.join("real")).expect("root should be created");
+    let root = fs::canonicalize(root).expect("root should canonicalize");
     let outside = directory.path().join("outside.txt");
     fs::write(&outside, "outside\n").expect("outside file should be written");
     fs::write(root.join("real/inside.txt"), "inside\n").expect("inside file should be written");
@@ -435,6 +442,55 @@ fn test_read_bounded_symlink_escape_and_internal_symlink() {
     let internal = read_bounded(&root, "inside-link.txt", None, 100, counter())
         .expect("internal symlink should be readable");
     assert_eq!(internal.content, "inside\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_stored_root_retarget_is_rejected_by_context_unfold_and_read() {
+    use std::os::unix::fs::symlink;
+
+    let directory = tempfile::tempdir().expect("temporary directory should be created");
+    let root_a = directory.path().join("repo-a");
+    let root_b = directory.path().join("repo-b");
+    fs::create_dir_all(root_a.join("src")).expect("repo A should be created");
+    fs::create_dir_all(root_b.join("src")).expect("repo B should be created");
+    fs::write(
+        root_a.join("src/lib.rs"),
+        "pub fn session_target() -> &'static str { \"repository a\" }\n",
+    )
+    .expect("repo A source should be written");
+    fs::write(
+        root_b.join("src/lib.rs"),
+        "pub fn session_target() -> &'static str { \"repo_b_private_canary_7319\" }\n",
+    )
+    .expect("repo B source should be written");
+    let store = Store::open(&directory.path().join("compresso.db")).expect("store should open");
+    let indexer = Indexer::new(&store, counter());
+    indexer.index(&root_a, |_| {}).expect("repo A should index");
+    indexer.index(&root_b, |_| {}).expect("repo B should index");
+    let root_a = fs::canonicalize(root_a).expect("repo A should canonicalize");
+    let root_b = fs::canonicalize(root_b).expect("repo B should canonicalize");
+    let repo_a = store
+        .repo_by_root(&root_a)
+        .expect("repo A lookup should succeed")
+        .expect("repo A should be approved")
+        .id;
+    let parked_a = root_a.with_file_name("repo-a-before-retarget");
+    fs::rename(&root_a, &parked_a).expect("repo A should move away from its stored root");
+    symlink(&root_b, &root_a).expect("stored root should retarget to repo B");
+
+    assert!(matches!(
+        plan_context(&store, repo_a, "session_target", 800),
+        Err(AtlasError::OutsideRoot { .. })
+    ));
+    assert!(matches!(
+        unfold(&store, repo_a, &selector("src/lib.rs", "session_target")),
+        Err(AtlasError::OutsideRoot { .. })
+    ));
+    assert!(matches!(
+        read_bounded(&root_a, "src/lib.rs", None, 800, counter()),
+        Err(AtlasError::OutsideRoot { .. })
+    ));
 }
 
 struct IndexedFixture {

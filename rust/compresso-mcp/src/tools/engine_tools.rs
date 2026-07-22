@@ -10,6 +10,7 @@ use compresso_core::{
 use compresso_store::{EdgeKind, OperationRecord, SessionId, StatsFilter, Store};
 use rmcp::model::JsonObject;
 use serde_json::{Value, json};
+use std::path::Path;
 
 use super::ToolSuccess;
 use super::common::{
@@ -30,12 +31,13 @@ pub(crate) fn dispatch(
     store: &Store,
     engine: &Engine,
     config: &Config,
+    repository_root: Option<&Path>,
     name: &str,
     arguments: Option<JsonObject>,
 ) -> Result<ToolSuccess, ToolFailure> {
     match name {
         "compresso_compress" => compress_tool(engine, config, arguments),
-        "compresso_impact" => impact_tool(store, engine.mode(), arguments),
+        "compresso_impact" => impact_tool(store, engine.mode(), repository_root, arguments),
         "compresso_stats" => stats_tool(store, engine.mode(), arguments),
         "compresso_explain" => explain_tool(store, engine.mode(), arguments),
         _ => Err(ToolFailure::internal()),
@@ -158,6 +160,7 @@ fn compress_tool(
 fn impact_tool(
     store: &Store,
     mode: Mode,
+    repository_root: Option<&Path>,
     arguments: Option<JsonObject>,
 ) -> Result<ToolSuccess, ToolFailure> {
     let mut arguments =
@@ -166,7 +169,7 @@ fn impact_tool(
     let path = required_string(&mut arguments, "path")?;
     let max_depth = optional_u32(&mut arguments, "max_depth", 1, 2)?.unwrap_or(2);
     let max_results = optional_usize(&mut arguments, "max_results", 1, 500)?.unwrap_or(100);
-    let repository = resolve_repository(store, root.as_deref())?;
+    let repository = resolve_repository(store, repository_root, root.as_deref())?;
     validate_repo_path(&repository.root, &path)?;
     let report = impact_with_options(
         store,

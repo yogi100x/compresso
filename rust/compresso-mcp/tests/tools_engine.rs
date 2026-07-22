@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use compresso_core::{Config, Engine, TokenProvider, counter_for};
-use compresso_mcp::{McpDeps, serve_io};
+use compresso_mcp::{McpDeps, serve_io, serve_io_for_root};
 use compresso_store::{EdgeKind, EdgeRecord, EdgeResolution, FileLanguage, FileRecord, Store};
 use jsonschema::{Draft, Validator};
 use serde_json::{Value, json};
@@ -27,6 +27,14 @@ struct Harness {
 
 impl Harness {
     async fn start(store: Store) -> Self {
+        Self::start_with_root(store, None).await
+    }
+
+    async fn start_for_root(store: Store, root: PathBuf) -> Self {
+        Self::start_with_root(store, Some(root)).await
+    }
+
+    async fn start_with_root(store: Store, root: Option<PathBuf>) -> Self {
         let config = Config::default();
         let deps = McpDeps {
             store,
@@ -38,7 +46,12 @@ impl Harness {
         };
         let (client, server) = tokio::io::duplex(512 * 1024);
         let (server_read, server_write) = tokio::io::split(server);
-        let server = tokio::spawn(serve_io(deps, server_read, server_write));
+        let server = tokio::spawn(async move {
+            match root {
+                Some(root) => serve_io_for_root(deps, root, server_read, server_write).await,
+                None => serve_io(deps, server_read, server_write).await,
+            }
+        });
         let (client_read, client_write) = tokio::io::split(client);
         let mut harness = Self {
             input: client_write,
@@ -233,7 +246,7 @@ async fn test_compress_tool_fail_open() {
 #[tokio::test]
 async fn test_impact_tool_depth_two() {
     let fixture = ImpactFixture::new();
-    let mut harness = Harness::start(fixture.store.clone()).await;
+    let mut harness = Harness::start_for_root(fixture.store.clone(), fixture.root.clone()).await;
 
     let result = successful_json(
         harness
@@ -456,7 +469,7 @@ async fn test_engine_tools_reject_invalid_arguments() {
 #[tokio::test]
 async fn test_retrieval_records_tokens_served() {
     let fixture = ImpactFixture::new();
-    let mut harness = Harness::start(fixture.store.clone()).await;
+    let mut harness = Harness::start_for_root(fixture.store.clone(), fixture.root.clone()).await;
 
     let (result, rendered) = successful_json_and_text(
         harness

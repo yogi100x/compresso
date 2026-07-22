@@ -158,6 +158,50 @@ fn test_file_and_symbol_token_estimates_use_counter() {
 }
 
 #[test]
+fn test_secret_files_never_reach_store_or_fts() {
+    let temp = tempfile::tempdir().expect("temporary directory should be created");
+    let root = temp.path().join("repo");
+    fs::create_dir_all(root.join("src")).expect("source directory should be created");
+    fs::write(
+        root.join("src/visible.rs"),
+        "pub fn visible_symbol() -> bool { true }\n",
+    )
+    .expect("visible source should be written");
+    for relative in [".ENV.secret_canary.rs", "ID_RSA_secret_canary.rs"] {
+        fs::write(
+            root.join(relative),
+            "pub fn secret_canary_must_never_be_indexed() -> bool { true }\n",
+        )
+        .expect("secret source should be written");
+    }
+    let store = Store::open(&temp.path().join("compresso.db")).expect("store should open");
+
+    let report = Indexer::new(&store, counter_for(TokenProvider::Heuristic))
+        .index(&root, |_| {})
+        .expect("repository should index");
+    let canonical_root = fs::canonicalize(&root).expect("root should canonicalize");
+    let repo = store
+        .repo_by_root(&canonical_root)
+        .expect("repository lookup should succeed")
+        .expect("repository should exist")
+        .id;
+    let files = store.file_hashes(repo).expect("file hashes should load");
+
+    assert_eq!(report.files_indexed, 1);
+    assert_eq!(report.files_skipped, 2);
+    assert_eq!(
+        files.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["src/visible.rs"]
+    );
+    assert!(
+        store
+            .search_symbols(repo, "secret_canary_must_never_be_indexed", 20)
+            .expect("secret FTS lookup should succeed")
+            .is_empty()
+    );
+}
+
+#[test]
 fn test_repository_local_imports_resolve_against_scanned_paths() {
     let temp = tempfile::tempdir().expect("temporary directory should be created");
     let root = temp.path().join("repo");

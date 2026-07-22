@@ -6,6 +6,7 @@ use compresso_core::{TokenCounter, operation_identity};
 use compresso_store::{Store, SymbolKind, SymbolSelector};
 use rmcp::model::JsonObject;
 use serde_json::{Value, json};
+use std::path::Path;
 
 use super::common::{
     PathState, ToolFailure, ToolResult, cap_values, checked_arguments, language_name,
@@ -25,21 +26,30 @@ pub(crate) fn handles(name: &str) -> bool {
     )
 }
 
-pub(crate) fn dispatch(store: &Store, name: &str, arguments: Option<JsonObject>) -> ToolResult {
+pub(crate) fn dispatch(
+    store: &Store,
+    repository_root: Option<&Path>,
+    name: &str,
+    arguments: Option<JsonObject>,
+) -> ToolResult {
     match name {
-        "compresso_repo_map" => repo_map_tool(store, arguments),
-        "compresso_outline" => outline_tool(store, arguments),
-        "compresso_unfold" => unfold_tool(store, arguments),
+        "compresso_repo_map" => repo_map_tool(store, repository_root, arguments),
+        "compresso_outline" => outline_tool(store, repository_root, arguments),
+        "compresso_unfold" => unfold_tool(store, repository_root, arguments),
         _ => Err(ToolFailure::internal()),
     }
 }
 
-fn repo_map_tool(store: &Store, arguments: Option<JsonObject>) -> ToolResult {
+fn repo_map_tool(
+    store: &Store,
+    repository_root: Option<&Path>,
+    arguments: Option<JsonObject>,
+) -> ToolResult {
     let mut arguments = checked_arguments(arguments, &["root", "focus", "max_tokens"])?;
     let root = optional_string(&mut arguments, "root", false)?;
     let focus = optional_string(&mut arguments, "focus", true)?;
     let max_tokens = token_budget(&mut arguments, MAP_DEFAULT_TOKENS)?;
-    let repository = resolve_repository(store, root.as_deref())?;
+    let repository = resolve_repository(store, repository_root, root.as_deref())?;
 
     let map = repo_map_focused(store, repository.id, focus.as_deref(), max_tokens)
         .map_err(map_atlas_error)?;
@@ -60,12 +70,16 @@ fn repo_map_tool(store: &Store, arguments: Option<JsonObject>) -> ToolResult {
     }))
 }
 
-fn outline_tool(store: &Store, arguments: Option<JsonObject>) -> ToolResult {
+fn outline_tool(
+    store: &Store,
+    repository_root: Option<&Path>,
+    arguments: Option<JsonObject>,
+) -> ToolResult {
     let mut arguments = checked_arguments(arguments, &["root", "path", "max_tokens"])?;
     let root = optional_string(&mut arguments, "root", false)?;
     let path = required_string(&mut arguments, "path")?;
     let max_tokens = token_budget(&mut arguments, OUTLINE_DEFAULT_TOKENS)?;
-    let repository = resolve_repository(store, root.as_deref())?;
+    let repository = resolve_repository(store, repository_root, root.as_deref())?;
     let path_state = validate_repo_path(&repository.root, &path)?;
     let current = match outline_current(store, repository.id, &path) {
         Ok(current) => current,
@@ -120,7 +134,11 @@ fn outline_tool(store: &Store, arguments: Option<JsonObject>) -> ToolResult {
     }))
 }
 
-fn unfold_tool(store: &Store, arguments: Option<JsonObject>) -> ToolResult {
+fn unfold_tool(
+    store: &Store,
+    repository_root: Option<&Path>,
+    arguments: Option<JsonObject>,
+) -> ToolResult {
     let mut arguments = checked_arguments(
         arguments,
         &[
@@ -152,7 +170,7 @@ fn unfold_tool(store: &Store, arguments: Option<JsonObject>) -> ToolResult {
     }
     let start_line_hint = optional_u32(&mut arguments, "start_line_hint", 1, u32::MAX)?;
     let max_tokens = token_budget(&mut arguments, UNFOLD_DEFAULT_TOKENS)?;
-    let repository = resolve_repository(store, root.as_deref())?;
+    let repository = resolve_repository(store, repository_root, root.as_deref())?;
     validate_repo_path(&repository.root, &path)?;
     let selector = SymbolSelector {
         path,
