@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "nodes": [
+    {
+      "id": "openai-owner",
+      "kind": "assistant_response",
+      "content": "I will call the requested tools.",
+      "source": {
+        "type": "client"
+      },
+      "token_count": 8,
+      "token_provider": "heuristic",
+      "priority": 0.9,
+      "protected": false,
+      "recency": null,
+      "metadata": {},
+      "provider_turn": {
+        "provider": "openai-chat",
+        "turn_id": "openai-turn-1",
+        "tool_call_id": "openai-call-1",
+        "opaque_state_hash": null
+      }
+    },
+    {
+      "id": "openai-reasoning",
+      "kind": "assistant_reasoning",
+      "content": "Protected reasoning placeholder.",
+      "source": {
+        "type": "client"
+      },
+      "token_count": 8,
+      "token_provider": "heuristic",
+      "priority": 1,
+      "protected": true,
+      "recency": null,
+      "metadata": {},
+      "provider_turn": {
+        "provider": "openai-chat",
+        "turn_id": "openai-turn-1",
+        "tool_call_id": "openai-call-1",
+        "opaque_state_hash": null
+      }
+    },
+    {
+      "id": "openai-request-1",
+      "kind": "tool_request",
+      "content": "read first input",
+      "source": {
+        "type": "client"
+      },
+      "token_count": 4,
+      "token_provider": "heuristic",
+      "priority": 1,
+      "protected": true,
+      "recency": null,
+      "metadata": {},
+      "provider_turn": {
+        "provider": "openai-chat",
+        "turn_id": "openai-turn-1",
+        "tool_call_id": "openai-call-1",
+        "opaque_state_hash": null
+      }
+    },
+    {
+      "id": "openai-result-1",
+      "kind": "tool_response",
+      "content": "first result",
+      "source": {
+        "type": "tool",
+        "name": "fixture_tool"
+      },
+      "token_count": 3,
+      "token_provider": "heuristic",
+      "priority": 0.8,
+      "protected": false,
+      "recency": null,
+      "metadata": {},
+      "provider_turn": {
+        "provider": "openai-chat",
+        "turn_id": "openai-turn-1",
+        "tool_call_id": "openai-call-1",
+        "opaque_state_hash": null
+      }
+    },
+    {
+      "id": "openai-request-2",
+      "kind": "tool_request",
+      "content": "read second input",
+      "source": {
+        "type": "client"
+      },
+      "token_count": 5,
+      "token_provider": "heuristic",
+      "priority": 1,
+      "protected": true,
+      "recency": null,
+      "metadata": {},
+      "provider_turn": {
+        "provider": "openai-chat",
+        "turn_id": "openai-turn-1",
+        "tool_call_id": "openai-call-2",
+        "opaque_state_hash": null
+      }
+    },
+    {
+      "id": "openai-result-2",
+      "kind": "tool_response",
+      "content": "second result",
+      "source": {
+        "type": "tool",
+        "name": "fixture_tool"
+      },
+      "token_count": 4,
+      "token_provider": "heuristic",
+      "priority": 0.8,
+      "protected": false,
+      "recency": null,
+      "metadata": {},
+      "provider_turn": {
+        "provider": "openai-chat",
+        "turn_id": "openai-turn-1",
+        "tool_call_id": "openai-call-2",
+        "opaque_state_hash": null
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "openai-result-1",
+      "to": "openai-request-1",
+      "kind": "responds_to",
+      "weight": 1
+    },
+    {
+      "from": "openai-result-2",
+      "to": "openai-request-2",
+      "kind": "responds_to",
+      "weight": 1
+    }
+  ]
+}

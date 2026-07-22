@@ -2,7 +2,8 @@ use std::fs;
 use std::path::Path;
 
 use compresso_core::graph::{
-    ContextEdge, ContextGraph, ContextNode, EdgeKind, GraphError, NodeKind, ProviderTurn, Source,
+    ContextEdge, ContextGraph, ContextNode, EdgeKind, GraphError, NodeKind, ProviderId,
+    ProviderTurn, ProviderTurnId, Source, ToolCallId,
 };
 use compresso_core::tokens::{TokenCounter, TokenProvider};
 use jsonschema::{Draft, Validator};
@@ -185,9 +186,9 @@ fn test_provider_turn_json_rust_json_roundtrip() {
     assert_eq!(
         graph.nodes[0].provider_turn,
         Some(ProviderTurn {
-            provider: "fixture-provider".to_owned(),
-            turn_id: "turn-1".to_owned(),
-            tool_call_id: "call-1".to_owned(),
+            provider: ProviderId::new("fixture-provider").unwrap(),
+            turn_id: ProviderTurnId::new("turn-1").unwrap(),
+            tool_call_id: ToolCallId::new("call-1").unwrap(),
             opaque_state_hash: Some("blake3:abc".to_owned()),
         })
     );

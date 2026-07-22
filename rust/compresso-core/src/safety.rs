@@ -1,9 +1,13 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::graph::{ContextGraph, ContextNode, EdgeKind, NodeKind};
+use crate::graph::{ContextGraph, ContextNode, EdgeKind};
+use crate::provider_conversation::{
+    DefaultProviderConversationValidator, ProviderConversationValidator, validate_post_compression,
+    validate_pre_compression,
+};
 use crate::strategy::{CompressionBudget, RemovalKind, RemovalRecord};
 use crate::tokens::counter_for;
 
@@ -36,6 +40,24 @@ pub fn run_all_with_removals(
     elapsed_ms: u64,
     removals: &[RemovalRecord],
 ) -> Vec<SafetyCheck> {
+    run_all_with_provider_validator(
+        original,
+        candidate,
+        budget,
+        elapsed_ms,
+        removals,
+        &DefaultProviderConversationValidator,
+    )
+}
+
+pub(crate) fn run_all_with_provider_validator(
+    original: &ContextGraph,
+    candidate: &ContextGraph,
+    budget: &CompressionBudget,
+    elapsed_ms: u64,
+    removals: &[RemovalRecord],
+    provider_validator: &dyn ProviderConversationValidator,
+) -> Vec<SafetyCheck> {
     run_all_with_token_check(
         original,
         candidate,
@@ -43,6 +65,7 @@ pub fn run_all_with_removals(
         elapsed_ms,
         removals,
         token_counts_valid(candidate),
+        provider_conversation_valid(original, candidate, provider_validator),
     )
 }
 
@@ -56,6 +79,7 @@ pub(crate) fn run_preflight_after_recount(
     ingress: &ContextGraph,
     budget: &CompressionBudget,
     elapsed_ms: u64,
+    provider_validator: &dyn ProviderConversationValidator,
 ) -> Vec<SafetyCheck> {
     run_all_with_token_check(
         ingress,
@@ -69,6 +93,7 @@ pub(crate) fn run_preflight_after_recount(
             "ingress token counts verified by immediate provider recount",
             "unreachable: ingress recount proof is invalid",
         ),
+        provider_conversation_preflight_valid(ingress, provider_validator),
     )
 }
 
@@ -79,6 +104,7 @@ fn run_all_with_token_check(
     elapsed_ms: u64,
     removals: &[RemovalRecord],
     token_count_check: SafetyCheck,
+    provider_conversation_check: SafetyCheck,
 ) -> Vec<SafetyCheck> {
     vec![
         protected_unchanged(original, candidate, budget),
@@ -86,7 +112,7 @@ fn run_all_with_token_check(
         json_still_valid(original, candidate),
         fences_balanced(original, candidate),
         refs_valid(original, candidate, removals),
-        provider_conversation_valid(original, candidate),
+        provider_conversation_check,
         minimum_output(original, candidate),
         token_count_check,
         latency_ok(budget, elapsed_ms),
@@ -312,92 +338,13 @@ fn refs_valid(
     )
 }
 
-fn provider_conversation_valid(original: &ContextGraph, candidate: &ContextGraph) -> SafetyCheck {
-    let original_nodes = node_map(original);
-    let candidate_nodes = node_map(candidate);
-
-    let reasoning_immutable = original
-        .nodes
-        .iter()
-        .filter(|node| node.kind == NodeKind::AssistantReasoning)
-        .all(|node| {
-            candidate_nodes
-                .get(node.id.as_str())
-                .is_some_and(|value| *value == node)
-        })
-        && candidate
-            .nodes
-            .iter()
-            .filter(|node| node.kind == NodeKind::AssistantReasoning)
-            .all(|node| original_nodes.contains_key(node.id.as_str()));
-
-    let provider_nodes_valid = candidate.nodes.iter().all(|node| {
-        let Some(turn) = &node.provider_turn else {
-            return true;
-        };
-        !turn.provider.is_empty()
-            && !turn.turn_id.is_empty()
-            && !turn.tool_call_id.is_empty()
-            && turn
-                .opaque_state_hash
-                .as_ref()
-                .is_none_or(|hash| !hash.is_empty())
-            && matches!(
-                node.kind,
-                NodeKind::AssistantResponse
-                    | NodeKind::AssistantReasoning
-                    | NodeKind::ToolRequest
-                    | NodeKind::ToolResponse
-            )
-            && original_nodes
-                .get(node.id.as_str())
-                .is_some_and(|original| original.provider_turn == node.provider_turn)
-    });
-
-    let mut original_turns = BTreeMap::<(String, String), Vec<&ContextNode>>::new();
-    for node in &original.nodes {
-        if let Some(turn) = &node.provider_turn {
-            original_turns
-                .entry((turn.provider.clone(), turn.turn_id.clone()))
-                .or_default()
-                .push(node);
-        }
-    }
-    let turns_atomic = original_turns.values().all(|nodes| {
-        let retained = nodes
-            .iter()
-            .filter(|node| candidate_nodes.contains_key(node.id.as_str()))
-            .count();
-        let all_or_none = retained == 0 || retained == nodes.len();
-        let opaque_immutable = retained == 0
-            || !nodes.iter().any(|node| {
-                node.provider_turn
-                    .as_ref()
-                    .is_some_and(|turn| turn.opaque_state_hash.is_some())
-            })
-            || nodes.iter().all(|node| {
-                candidate_nodes
-                    .get(node.id.as_str())
-                    .is_some_and(|value| *value == *node)
-            });
-        all_or_none && opaque_immutable
-    });
-
-    let candidate_pairs_valid = provider_pairs_valid(candidate);
-    let dependencies_valid = original.edges.iter().all(|edge| {
-        if edge.kind != EdgeKind::DependsOn || !candidate_nodes.contains_key(edge.from.as_str()) {
-            return true;
-        }
-        original_nodes.get(edge.to.as_str()).is_none_or(|target| {
-            target.provider_turn.is_none() || candidate_nodes.contains_key(edge.to.as_str())
-        })
-    });
-
-    let passed = reasoning_immutable
-        && provider_nodes_valid
-        && turns_atomic
-        && candidate_pairs_valid
-        && dependencies_valid;
+fn provider_conversation_valid(
+    original: &ContextGraph,
+    candidate: &ContextGraph,
+    profile: &dyn ProviderConversationValidator,
+) -> SafetyCheck {
+    let passed = validate_pre_compression(original, profile).is_ok()
+        && validate_post_compression(original, candidate, profile).is_ok();
     safety_check(
         "provider_conversation_valid",
         passed,
@@ -406,76 +353,17 @@ fn provider_conversation_valid(original: &ContextGraph, candidate: &ContextGraph
     )
 }
 
-fn provider_pairs_valid(graph: &ContextGraph) -> bool {
-    let provider_shaped = graph.nodes.iter().any(|node| node.provider_turn.is_some());
-    if !provider_shaped {
-        return true;
-    }
-
-    let mut owners = BTreeMap::<(String, String), Vec<&str>>::new();
-    let mut requests = BTreeMap::<(String, String, String), Vec<&str>>::new();
-    let mut responses = BTreeMap::<(String, String, String), Vec<&str>>::new();
-    for node in &graph.nodes {
-        let Some(turn) = &node.provider_turn else {
-            continue;
-        };
-        let turn_key = (turn.provider.clone(), turn.turn_id.clone());
-        let call_key = (
-            turn.provider.clone(),
-            turn.turn_id.clone(),
-            turn.tool_call_id.clone(),
-        );
-        match node.kind {
-            NodeKind::AssistantResponse => owners.entry(turn_key).or_default().push(&node.id),
-            NodeKind::ToolRequest => requests.entry(call_key).or_default().push(&node.id),
-            NodeKind::ToolResponse => responses.entry(call_key).or_default().push(&node.id),
-            NodeKind::AssistantReasoning => {}
-            _ => return false,
-        }
-    }
-
-    let turns = graph
-        .nodes
-        .iter()
-        .filter_map(|node| node.provider_turn.as_ref())
-        .map(|turn| (turn.provider.clone(), turn.turn_id.clone()))
-        .collect::<BTreeSet<_>>();
-    if !turns
-        .iter()
-        .all(|turn| owners.get(turn).is_some_and(|values| values.len() == 1))
-    {
-        return false;
-    }
-
-    let calls = requests
-        .keys()
-        .chain(responses.keys())
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let mut expected_edges = Vec::with_capacity(calls.len());
-    for call in calls {
-        let Some(request) = requests.get(&call).filter(|values| values.len() == 1) else {
-            return false;
-        };
-        let Some(response) = responses.get(&call).filter(|values| values.len() == 1) else {
-            return false;
-        };
-        expected_edges.push((response[0], request[0]));
-    }
-
-    let actual_edges = graph
-        .edges
-        .iter()
-        .filter(|edge| edge.kind == EdgeKind::RespondsTo)
-        .collect::<Vec<_>>();
-    actual_edges.len() == expected_edges.len()
-        && expected_edges.iter().all(|(response, request)| {
-            actual_edges
-                .iter()
-                .filter(|edge| edge.from == *response && edge.to == *request)
-                .count()
-                == 1
-        })
+fn provider_conversation_preflight_valid(
+    ingress: &ContextGraph,
+    profile: &dyn ProviderConversationValidator,
+) -> SafetyCheck {
+    let passed = validate_pre_compression(ingress, profile).is_ok();
+    safety_check(
+        "provider_conversation_valid",
+        passed,
+        "provider turns, tool pairs, and reasoning are valid",
+        "provider turn atomicity, tool pairing, or reasoning immutability failed",
+    )
 }
 
 fn minimum_output(original: &ContextGraph, candidate: &ContextGraph) -> SafetyCheck {
@@ -520,9 +408,9 @@ fn schema_valid(candidate: &ContextGraph) -> SafetyCheck {
             && node.priority.is_finite()
             && (0.0..=1.0).contains(&node.priority)
             && node.provider_turn.as_ref().is_none_or(|turn| {
-                !turn.provider.is_empty()
-                    && !turn.turn_id.is_empty()
-                    && !turn.tool_call_id.is_empty()
+                turn.opaque_state_hash
+                    .as_ref()
+                    .is_none_or(|hash| !hash.is_empty())
             })
     });
     let edges_valid = candidate
@@ -969,7 +857,10 @@ mod tests {
     use serde_json::{Map, json};
 
     use super::*;
-    use crate::graph::{ContextEdge, ContextNode, EdgeKind, NodeKind, ProviderTurn, Source};
+    use crate::graph::{
+        ContextEdge, ContextNode, EdgeKind, NodeKind, ProviderId, ProviderTurn, ProviderTurnId,
+        Source, ToolCallId,
+    };
     use crate::strategies::{CollapseLogs, CompactJson, DedupExact, PackBudget};
     use crate::strategy::CompressionStrategy;
     use crate::strategy::{Lossiness, RemovalKind};
@@ -1170,9 +1061,9 @@ mod tests {
     fn test_provider_conversation_valid_fails_on_orphan_response() {
         let mut response = node("response", NodeKind::ToolResponse, "result", false);
         response.provider_turn = Some(ProviderTurn {
-            provider: "fixture".to_owned(),
-            turn_id: "turn-1".to_owned(),
-            tool_call_id: "call-1".to_owned(),
+            provider: ProviderId::new("fixture").unwrap(),
+            turn_id: ProviderTurnId::new("turn-1").unwrap(),
+            tool_call_id: ToolCallId::new("call-1").unwrap(),
             opaque_state_hash: None,
         });
         let candidate = graph(vec![response]);
@@ -1189,9 +1080,9 @@ mod tests {
     #[test]
     fn test_complete_provider_tool_turn_passes() {
         let turn = ProviderTurn {
-            provider: "fixture".to_owned(),
-            turn_id: "turn-1".to_owned(),
-            tool_call_id: "call-1".to_owned(),
+            provider: ProviderId::new("fixture").unwrap(),
+            turn_id: ProviderTurnId::new("turn-1").unwrap(),
+            tool_call_id: ToolCallId::new("call-1").unwrap(),
             opaque_state_hash: None,
         };
         let mut owner = node("owner", NodeKind::AssistantResponse, "calling tool", false);
@@ -1218,9 +1109,9 @@ mod tests {
     #[test]
     fn test_provider_turn_rejects_wrong_or_extra_responds_to_edges() {
         let turn = ProviderTurn {
-            provider: "fixture".to_owned(),
-            turn_id: "turn-1".to_owned(),
-            tool_call_id: "call-1".to_owned(),
+            provider: ProviderId::new("fixture").unwrap(),
+            turn_id: ProviderTurnId::new("turn-1").unwrap(),
+            tool_call_id: ToolCallId::new("call-1").unwrap(),
             opaque_state_hash: None,
         };
         let mut owner = node("owner", NodeKind::AssistantResponse, "owner", false);

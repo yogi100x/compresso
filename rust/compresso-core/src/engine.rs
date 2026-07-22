@@ -1,12 +1,16 @@
 use std::collections::BTreeSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
 use crate::graph::ContextGraph;
+use crate::provider_conversation::{
+    DefaultProviderConversationValidator, ProviderConversationValidator,
+};
 use crate::safety::{
-    SafetyCheck, identity_checks, run_all, run_all_with_removals, run_preflight_after_recount,
+    SafetyCheck, identity_checks, run_all_with_provider_validator, run_preflight_after_recount,
 };
 use crate::strategy::{
     CompressionBudget, Mode, RemovalKind, RemovalRecord, StrategyExecution, StrategyRegistry,
@@ -14,6 +18,8 @@ use crate::strategy::{
 use crate::tokens::{TokenCounter, TokenProvider, counter_for};
 use crate::trace::{StrategyResult, Trace};
 
+#[cfg(test)]
+use crate::safety::run_all;
 #[cfg(test)]
 use crate::strategy::CompressionStrategy;
 
@@ -33,6 +39,7 @@ pub struct Engine {
     mode: Mode,
     counter: &'static dyn TokenCounter,
     registry: StrategyRegistry,
+    provider_validator: Arc<dyn ProviderConversationValidator>,
 }
 
 impl Engine {
@@ -41,7 +48,16 @@ impl Engine {
             mode,
             counter,
             registry: StrategyRegistry::safe_default(mode),
+            provider_validator: Arc::new(DefaultProviderConversationValidator),
         }
+    }
+
+    pub fn with_provider_validator(
+        mut self,
+        validator: Arc<dyn ProviderConversationValidator>,
+    ) -> Self {
+        self.provider_validator = validator;
+        self
     }
 
     /// Compresses `input` without exposing a fallible API.
@@ -55,7 +71,7 @@ impl Engine {
         }))
         .unwrap_or_else(|_| {
             let before_tokens = recounted_total(&original);
-            let safety_checks = run_all(&original, &original, budget, 0);
+            let safety_checks = self.run_safety_checks(&original, &original, budget, 0, &[]);
             self.fallback(
                 original,
                 before_tokens,
@@ -93,8 +109,12 @@ impl Engine {
         force_protection(&mut ingress, budget);
         let before_tokens = ingress.total_tokens();
         let ingress_validation = ingress.validate();
-        let preflight_checks =
-            run_preflight_after_recount(&ingress, budget, elapsed_ms(started.elapsed()));
+        let preflight_checks = run_preflight_after_recount(
+            &ingress,
+            budget,
+            elapsed_ms(started.elapsed()),
+            self.provider_validator.as_ref(),
+        );
 
         if budget.max_tokens == 0 || budget.max_latency_ms == 0 {
             return self.fallback(
@@ -142,7 +162,7 @@ impl Engine {
 
         for strategy in self.registry.permitted(budget.allowed_lossiness) {
             if elapsed_ms(started.elapsed()) > budget.max_latency_ms {
-                let safety_checks = run_all_with_removals(
+                let safety_checks = self.run_safety_checks(
                     &ingress,
                     &current,
                     budget,
@@ -161,7 +181,7 @@ impl Engine {
             let strategy_id = match catch_unwind(AssertUnwindSafe(|| strategy.id())) {
                 Ok(strategy_id) => strategy_id,
                 Err(_) => {
-                    let safety_checks = run_all_with_removals(
+                    let safety_checks = self.run_safety_checks(
                         &ingress,
                         &current,
                         budget,
@@ -192,7 +212,7 @@ impl Engine {
                         None,
                         "strategy panicked",
                     ));
-                    let safety_checks = run_all_with_removals(
+                    let safety_checks = self.run_safety_checks(
                         &ingress,
                         &current,
                         budget,
@@ -221,7 +241,7 @@ impl Engine {
                                     None,
                                     "strategy panicked",
                                 ));
-                                let safety_checks = run_all_with_removals(
+                                let safety_checks = self.run_safety_checks(
                                     &ingress,
                                     &current,
                                     budget,
@@ -257,7 +277,7 @@ impl Engine {
                                     None,
                                     "strategy panicked",
                                 ));
-                                let safety_checks = run_all_with_removals(
+                                let safety_checks = self.run_safety_checks(
                                     &ingress,
                                     &current,
                                     budget,
@@ -286,7 +306,7 @@ impl Engine {
                                     Some(estimate.confidence),
                                     "strategy panicked",
                                 ));
-                                let safety_checks = run_all_with_removals(
+                                let safety_checks = self.run_safety_checks(
                                     &ingress,
                                     &current,
                                     budget,
@@ -325,7 +345,7 @@ impl Engine {
                         Some(estimate.confidence),
                         "strategy returned an error",
                     ));
-                    let safety_checks = run_all_with_removals(
+                    let safety_checks = self.run_safety_checks(
                         &ingress,
                         &current,
                         budget,
@@ -363,7 +383,7 @@ impl Engine {
 
         let elapsed = elapsed_ms(started.elapsed());
         let safety_checks =
-            run_all_with_removals(&ingress, &current, budget, elapsed, &safety_ledger);
+            self.run_safety_checks(&ingress, &current, budget, elapsed, &safety_ledger);
         if let Some(failed) = first_failed_check(&safety_checks) {
             let reason = format!("safety_check_failed:{failed}");
             return self.fallback(
@@ -464,6 +484,24 @@ impl Engine {
         )
     }
 
+    fn run_safety_checks(
+        &self,
+        original: &ContextGraph,
+        candidate: &ContextGraph,
+        budget: &CompressionBudget,
+        elapsed_ms: u64,
+        removals: &[RemovalRecord],
+    ) -> Vec<SafetyCheck> {
+        run_all_with_provider_validator(
+            original,
+            candidate,
+            budget,
+            elapsed_ms,
+            removals,
+            self.provider_validator.as_ref(),
+        )
+    }
+
     #[cfg(test)]
     fn with_strategies(
         mode: Mode,
@@ -474,6 +512,7 @@ impl Engine {
             mode,
             counter,
             registry: StrategyRegistry::from_strategies(strategies),
+            provider_validator: Arc::new(DefaultProviderConversationValidator),
         }
     }
 }
@@ -696,7 +735,11 @@ mod tests {
     use serde_json::{Map, Value};
 
     use super::*;
-    use crate::graph::{ContextNode, NodeKind, Source};
+    use crate::graph::{
+        ContextEdge, ContextNode, EdgeKind, NodeKind, ProviderId, ProviderTurn, ProviderTurnId,
+        Source, ToolCallId,
+    };
+    use crate::provider_conversation::ProviderConversationError;
     use crate::strategy::{Estimate, Lossiness, StrategyError, StrategyOutput};
 
     const LOG_FIXTURE: &str = include_str!("../../../fixtures/logs/repeated-npm-install/input.txt");
@@ -726,6 +769,62 @@ mod tests {
             schema_version: 1,
             nodes,
             edges: Vec::new(),
+        }
+    }
+
+    fn provider_turn(provider: &str, turn: &str, call: &str) -> ProviderTurn {
+        ProviderTurn {
+            provider: ProviderId::new(provider).unwrap(),
+            turn_id: ProviderTurnId::new(turn).unwrap(),
+            tool_call_id: ToolCallId::new(call).unwrap(),
+            opaque_state_hash: None,
+        }
+    }
+
+    fn provider_graph() -> ContextGraph {
+        let first = provider_turn("profile-a", "turn-1", "call-1");
+        let second = provider_turn("profile-a", "turn-1", "call-2");
+        let mut owner = node("owner", NodeKind::AssistantResponse, "owner", false);
+        owner.provider_turn = Some(first.clone());
+        let mut reasoning = node(
+            "reasoning",
+            NodeKind::AssistantReasoning,
+            "protected reasoning",
+            true,
+        );
+        reasoning.provider_turn = Some(first.clone());
+        let mut request_one = node("request-1", NodeKind::ToolRequest, "request one", true);
+        request_one.provider_turn = Some(first.clone());
+        let mut response_one = node("response-1", NodeKind::ToolResponse, "result one", false);
+        response_one.provider_turn = Some(first);
+        let mut request_two = node("request-2", NodeKind::ToolRequest, "request two", true);
+        request_two.provider_turn = Some(second.clone());
+        let mut response_two = node("response-2", NodeKind::ToolResponse, "result two", false);
+        response_two.provider_turn = Some(second);
+        ContextGraph {
+            schema_version: 1,
+            nodes: vec![
+                owner,
+                reasoning,
+                request_one,
+                response_one,
+                request_two,
+                response_two,
+            ],
+            edges: vec![
+                ContextEdge {
+                    from: "response-1".to_owned(),
+                    to: "request-1".to_owned(),
+                    kind: EdgeKind::RespondsTo,
+                    weight: 1.0,
+                },
+                ContextEdge {
+                    from: "response-2".to_owned(),
+                    to: "request-2".to_owned(),
+                    kind: EdgeKind::RespondsTo,
+                    weight: 1.0,
+                },
+            ],
         }
     }
 
@@ -874,6 +973,106 @@ mod tests {
         }
     }
 
+    enum ProviderMutation {
+        RemoveOwner,
+        ChangeReasoning,
+        ReplayAcrossProvider,
+    }
+
+    struct ProviderMutationStrategy(ProviderMutation);
+
+    impl CompressionStrategy for ProviderMutationStrategy {
+        fn id(&self) -> &'static str {
+            "provider_mutation"
+        }
+
+        fn supports(&self, _input: &ContextGraph) -> bool {
+            true
+        }
+
+        fn estimate(&self, input: &ContextGraph) -> Estimate {
+            Estimate {
+                tokens_saved: input.total_tokens(),
+                confidence: 1.0,
+            }
+        }
+
+        fn execute(
+            &self,
+            input: &ContextGraph,
+            _budget: &CompressionBudget,
+        ) -> Result<StrategyOutput, StrategyError> {
+            let mut graph = input.clone();
+            match self.0 {
+                ProviderMutation::RemoveOwner => {
+                    graph.nodes.retain(|node| node.id != "owner");
+                }
+                ProviderMutation::ChangeReasoning => {
+                    let reasoning = graph
+                        .nodes
+                        .iter_mut()
+                        .find(|node| node.id == "reasoning")
+                        .unwrap();
+                    reasoning.content.push_str(" changed");
+                    reasoning.token_count = counter().count(&reasoning.content);
+                }
+                ProviderMutation::ReplayAcrossProvider => {
+                    for node in &mut graph.nodes {
+                        if let Some(turn) = &mut node.provider_turn {
+                            turn.provider = ProviderId::new("profile-b").unwrap();
+                        }
+                    }
+                }
+            }
+            Ok(StrategyOutput {
+                graph,
+                notes: Vec::new(),
+                removals: Vec::new(),
+            })
+        }
+    }
+
+    struct KnownOpaqueState;
+
+    impl ProviderConversationValidator for KnownOpaqueState {
+        fn validate_pre_compression(
+            &self,
+            graph: &ContextGraph,
+        ) -> Result<(), ProviderConversationError> {
+            known_opaque_state(graph)
+        }
+
+        fn validate_post_compression(
+            &self,
+            _original: &ContextGraph,
+            candidate: &ContextGraph,
+        ) -> Result<(), ProviderConversationError> {
+            known_opaque_state(candidate)
+        }
+    }
+
+    fn known_opaque_state(graph: &ContextGraph) -> Result<(), ProviderConversationError> {
+        graph
+            .nodes
+            .iter()
+            .filter_map(|node| node.provider_turn.as_ref())
+            .all(|turn| turn.opaque_state_hash.as_deref() == Some("known-state"))
+            .then_some(())
+            .ok_or(ProviderConversationError::UnknownOpaqueState)
+    }
+
+    struct RejectPostCompression;
+
+    impl ProviderConversationValidator for RejectPostCompression {
+        fn validate_post_compression(
+            &self,
+            _original: &ContextGraph,
+            _candidate: &ContextGraph,
+        ) -> Result<(), ProviderConversationError> {
+            Err(ProviderConversationError::UnknownOpaqueState)
+        }
+    }
+
     #[test]
     fn test_engine_uses_combined_execution_hook_without_legacy_calls() {
         let input = graph(vec![node("n1", NodeKind::Summary, "keep this", false)]);
@@ -890,6 +1089,97 @@ mod tests {
         assert_eq!(
             result.strategy_results[0].skipped_reason.as_deref(),
             Some("no_change")
+        );
+    }
+
+    #[test]
+    fn test_orphan_provider_request_and_result_fail_open_byte_identical() {
+        for missing in ["request-1", "response-1"] {
+            let mut input = provider_graph();
+            input.nodes.retain(|node| node.id != missing);
+            input
+                .edges
+                .retain(|edge| edge.from != missing && edge.to != missing);
+            let bytes = serde_json::to_vec(&input).unwrap();
+
+            let result = Engine::new(Mode::Safe, counter()).compress(input, &budget());
+
+            assert!(result.fallback_used, "missing {missing}");
+            assert_eq!(serde_json::to_vec(&result.output).unwrap(), bytes);
+            assert!(
+                result
+                    .safety_checks
+                    .iter()
+                    .any(|check| { check.name == "provider_conversation_valid" && !check.passed })
+            );
+        }
+    }
+
+    #[test]
+    fn test_provider_owner_reasoning_and_cross_provider_mutations_fail_open() {
+        for mutation in [
+            ProviderMutation::RemoveOwner,
+            ProviderMutation::ChangeReasoning,
+            ProviderMutation::ReplayAcrossProvider,
+        ] {
+            let input = provider_graph();
+            let bytes = serde_json::to_vec(&input).unwrap();
+            let engine = Engine::with_strategies(
+                Mode::Safe,
+                counter(),
+                vec![Box::new(ProviderMutationStrategy(mutation))],
+            );
+
+            let result = engine.compress(input, &budget());
+
+            assert!(result.fallback_used);
+            assert_eq!(serde_json::to_vec(&result.output).unwrap(), bytes);
+            assert!(
+                result
+                    .safety_checks
+                    .iter()
+                    .any(|check| { check.name == "provider_conversation_valid" && !check.passed })
+            );
+        }
+    }
+
+    #[test]
+    fn test_unknown_opaque_state_requires_profile_pre_and_post_validation() {
+        let mut input = provider_graph();
+        for node in &mut input.nodes {
+            if let Some(turn) = &mut node.provider_turn {
+                turn.opaque_state_hash = Some("known-state".to_owned());
+            }
+        }
+        let bytes = serde_json::to_vec(&input).unwrap();
+
+        let rejected = Engine::new(Mode::Safe, counter()).compress(input.clone(), &budget());
+        assert!(rejected.fallback_used);
+        assert_eq!(serde_json::to_vec(&rejected.output).unwrap(), bytes);
+
+        let accepted = Engine::new(Mode::Safe, counter())
+            .with_provider_validator(Arc::new(KnownOpaqueState))
+            .compress(input, &budget());
+        assert!(!accepted.fallback_used, "{:?}", accepted.fallback_reason);
+        assert!(accepted.safety_checks.iter().all(|check| check.passed));
+    }
+
+    #[test]
+    fn test_profile_post_validation_failure_is_byte_identical_fallback() {
+        let input = provider_graph();
+        let bytes = serde_json::to_vec(&input).unwrap();
+
+        let result = Engine::new(Mode::Safe, counter())
+            .with_provider_validator(Arc::new(RejectPostCompression))
+            .compress(input, &budget());
+
+        assert!(result.fallback_used);
+        assert_eq!(serde_json::to_vec(&result.output).unwrap(), bytes);
+        assert!(
+            result
+                .safety_checks
+                .iter()
+                .any(|check| { check.name == "provider_conversation_valid" && !check.passed })
         );
     }
 

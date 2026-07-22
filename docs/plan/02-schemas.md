@@ -43,9 +43,9 @@ All schemas versioned by integer `schema_version`. Breaking change → new versi
       "additionalProperties": false,
       "required": ["provider", "turn_id", "tool_call_id"],
       "properties": {
-        "provider": { "type": "string", "minLength": 1 },
-        "turn_id": { "type": "string", "minLength": 1 },
-        "tool_call_id": { "type": "string", "minLength": 1 },
+        "provider": { "type": "string", "minLength": 1, "description": "typed provider profile identifier" },
+        "turn_id": { "type": "string", "minLength": 1, "description": "typed provider turn identifier" },
+        "tool_call_id": { "type": "string", "minLength": 1, "description": "typed provider tool-call identifier" },
         "opaque_state_hash": { "type": ["string", "null"] }
       }
     },

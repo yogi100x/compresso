@@ -290,7 +290,10 @@ mod tests {
     use serde_json::Map;
 
     use super::*;
-    use crate::graph::{ContextEdge, ContextNode, EdgeKind, NodeKind, ProviderTurn, Source};
+    use crate::graph::{
+        ContextEdge, ContextNode, EdgeKind, NodeKind, ProviderId, ProviderTurn, ProviderTurnId,
+        Source, ToolCallId,
+    };
     use crate::strategy::{Lossiness, Mode, RemovalKind, StrategyRegistry};
     use crate::tokens::TokenProvider;
 
@@ -581,25 +584,65 @@ mod tests {
     }
 
     #[test]
-    fn test_provider_turn_is_retained_as_an_atomic_group_with_protected_request() {
-        let turn = ProviderTurn {
-            provider: "fixture".to_owned(),
-            turn_id: "turn-1".to_owned(),
-            tool_call_id: "call-1".to_owned(),
+    fn test_parallel_provider_turn_is_retained_as_one_atomic_group() {
+        let first = ProviderTurn {
+            provider: ProviderId::new("fixture").unwrap(),
+            turn_id: ProviderTurnId::new("turn-1").unwrap(),
+            tool_call_id: ToolCallId::new("call-1").unwrap(),
             opaque_state_hash: None,
         };
-        let mut request = node("request", NodeKind::ToolRequest, 50, 0.0, false);
-        request.provider_turn = Some(turn.clone());
-        let mut response = node("response", NodeKind::ToolResponse, 100, 0.0, false);
-        response.provider_turn = Some(turn);
-        let input = graph(vec![
-            request,
-            response,
+        let second = ProviderTurn {
+            tool_call_id: ToolCallId::new("call-2").unwrap(),
+            ..first.clone()
+        };
+        let mut owner = node("owner", NodeKind::AssistantResponse, 25, 0.0, false);
+        owner.provider_turn = Some(first.clone());
+        let mut reasoning = node("reasoning", NodeKind::AssistantReasoning, 25, 0.0, true);
+        reasoning.provider_turn = Some(first.clone());
+        let mut request_one = node("request-1", NodeKind::ToolRequest, 50, 0.0, false);
+        request_one.provider_turn = Some(first.clone());
+        let mut response_one = node("response-1", NodeKind::ToolResponse, 100, 0.0, false);
+        response_one.provider_turn = Some(first);
+        let mut request_two = node("request-2", NodeKind::ToolRequest, 50, 0.0, false);
+        request_two.provider_turn = Some(second.clone());
+        let mut response_two = node("response-2", NodeKind::ToolResponse, 100, 0.0, false);
+        response_two.provider_turn = Some(second);
+        let mut input = graph(vec![
+            owner,
+            reasoning,
+            request_one,
+            response_one,
+            request_two,
+            response_two,
             node("drop", NodeKind::Summary, 20, 1.0, false),
         ]);
+        input.edges = vec![
+            ContextEdge {
+                from: "response-1".to_owned(),
+                to: "request-1".to_owned(),
+                kind: EdgeKind::RespondsTo,
+                weight: 1.0,
+            },
+            ContextEdge {
+                from: "response-2".to_owned(),
+                to: "request-2".to_owned(),
+                kind: EdgeKind::RespondsTo,
+                weight: 1.0,
+            },
+        ];
         let output = execute(&input, 0);
 
-        assert_eq!(ids(&output), ["request", "response"]);
+        assert_eq!(
+            ids(&output),
+            [
+                "owner",
+                "reasoning",
+                "request-1",
+                "response-1",
+                "request-2",
+                "response-2"
+            ]
+        );
         assert_eq!(output.removals.len(), 1);
         assert_eq!(output.removals[0].node_id, "drop");
     }

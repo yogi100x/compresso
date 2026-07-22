@@ -1,6 +1,7 @@
 use std::collections::HashSet;
+use std::fmt;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 
@@ -37,12 +38,61 @@ pub struct ContextNode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderTurn {
-    pub provider: String,
-    pub turn_id: String,
-    pub tool_call_id: String,
+    pub provider: ProviderId,
+    pub turn_id: ProviderTurnId,
+    pub tool_call_id: ToolCallId,
     #[serde(default)]
     pub opaque_state_hash: Option<String>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("{kind} must not be empty")]
+pub struct ProviderIdentifierError {
+    kind: &'static str,
+}
+
+macro_rules! provider_identifier {
+    ($name:ident, $kind:literal) => {
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+        #[serde(transparent)]
+        pub struct $name(String);
+
+        impl $name {
+            pub fn new(value: impl Into<String>) -> Result<Self, ProviderIdentifierError> {
+                let value = value.into();
+                if value.is_empty() {
+                    Err(ProviderIdentifierError { kind: $kind })
+                } else {
+                    Ok(Self(value))
+                }
+            }
+
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(self.as_str())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                let value = String::deserialize(deserializer)?;
+                Self::new(value).map_err(serde::de::Error::custom)
+            }
+        }
+    };
+}
+
+provider_identifier!(ProviderId, "provider id");
+provider_identifier!(ProviderTurnId, "provider turn id");
+provider_identifier!(ToolCallId, "tool call id");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
