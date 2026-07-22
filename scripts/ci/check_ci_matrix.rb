@@ -18,6 +18,34 @@ workflow = YAML.safe_load(
   aliases: true
 )
 jobs = workflow.fetch("jobs")
+
+forbidden_warning_suppression = ["--no-deprecation", "--no-warnings", "NODE_NO_WARNINGS"].freeze
+forbidden_warning_suppression.each do |value|
+  next unless File.read(workflow_path).include?(value)
+
+  warn "CI must not broadly suppress Node.js warnings with #{value}"
+  exit 1
+end
+
+targeted_warning_suppression = {
+  "Swatinem/rust-cache@v2" => "--disable-warning=DEP0040",
+  "actions/download-artifact@v8" => "--disable-warning=DEP0005"
+}.freeze
+workflow_steps = jobs.values.flat_map { |job| job.fetch("steps", []) }
+targeted_warning_suppression.each do |action, expected_node_options|
+  matching_steps = workflow_steps.select { |step| step["uses"] == action }
+  invalid_steps = matching_steps.reject do |step|
+    step.dig("env", "NODE_OPTIONS") == expected_node_options
+  end
+  next unless matching_steps.empty? || invalid_steps.any?
+
+  invalid_names = invalid_steps.map { |step| step.fetch("name", action) }
+  warn "CI #{action} steps must use only #{expected_node_options}: #{invalid_names.join(", ")}"
+  exit 1
+end
+
+puts "CI applies only code-specific Node.js warning suppression to affected actions"
+
 rust_job = jobs.fetch("rust")
 actual = rust_job.fetch("strategy").fetch("matrix").fetch("os")
 
