@@ -4,8 +4,7 @@
 //! filesystem-only: callers inject the bounded `PATH` directories and version
 //! evidence they obtained from their trusted host boundary.
 
-use std::fs::{self, File, Metadata};
-use std::io::Read;
+use std::fs::{self, Metadata};
 use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -22,8 +21,6 @@ const CLIENT_ID: &str = "codex";
 const OWNED_PATH: &str = "mcp_servers.compresso";
 const CONFIG_RELATIVE_PATH: &str = ".codex/config.toml";
 const MAX_SEARCH_DIRECTORIES: usize = 128;
-const MAX_VERSION_PATH_COMPONENTS: usize = 8;
-const MAX_PACKAGE_METADATA_BYTES: u64 = 64 * 1024;
 
 /// Platform family used by Codex detection.
 ///
@@ -266,7 +263,7 @@ impl CodexAdapter {
                 Some(evidence.version.clone())
             }
             Some(_) => None,
-            None => infer_version_from_package_metadata(executable),
+            None => None,
         }
     }
 
@@ -872,77 +869,6 @@ fn is_semver_number(value: &str) -> bool {
         && (value == "0" || !value.starts_with('0'))
 }
 
-fn infer_version_from_package_metadata(executable: &Path) -> Option<String> {
-    let (package_root, expected_name) = recognized_package_root(executable)?;
-    package_version(&package_root.join("package.json"), expected_name)
-}
-
-fn recognized_package_root(executable: &Path) -> Option<(PathBuf, &'static str)> {
-    let canonical_executable = fs::canonicalize(executable).ok()?;
-    canonical_executable
-        .parent()?
-        .ancestors()
-        .take(MAX_VERSION_PATH_COMPONENTS)
-        .find_map(|candidate| {
-            let package_name = candidate.file_name()?.to_str()?;
-            let parent = candidate.parent()?;
-            let expected_name = if package_name == "codex"
-                && parent.file_name().and_then(|name| name.to_str()) == Some("node_modules")
-            {
-                "codex"
-            } else if package_name == "codex"
-                && parent.file_name().and_then(|name| name.to_str()) == Some("@openai")
-                && parent
-                    .parent()
-                    .and_then(Path::file_name)
-                    .and_then(|name| name.to_str())
-                    == Some("node_modules")
-            {
-                "@openai/codex"
-            } else {
-                return None;
-            };
-            let relative = canonical_executable.strip_prefix(candidate).ok()?;
-            if relative
-                .components()
-                .next()
-                .and_then(|component| match component {
-                    Component::Normal(value) => value.to_str(),
-                    _ => None,
-                })
-                != Some("bin")
-            {
-                return None;
-            }
-            Some((candidate.to_path_buf(), expected_name))
-        })
-}
-
-fn package_version(path: &Path, expected_name: &str) -> Option<String> {
-    let metadata = fs::symlink_metadata(path).ok()?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return None;
-    }
-    let mut bytes = Vec::new();
-    File::open(path)
-        .ok()?
-        .take(MAX_PACKAGE_METADATA_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    if bytes.len() as u64 > MAX_PACKAGE_METADATA_BYTES {
-        return None;
-    }
-    let package: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    if package.get("name").and_then(serde_json::Value::as_str) != Some(expected_name) {
-        return None;
-    }
-    package
-        .get("version")
-        .and_then(serde_json::Value::as_str)
-        .filter(|version| is_semver(version))
-        .map(str::to_owned)
-}
-
 fn invalid(reason: impl Into<String>) -> IntegrationError {
     IntegrationError::InvalidRequest {
         reason: reason.into(),
@@ -1521,7 +1447,7 @@ mod tests {
     }
 
     #[test]
-    fn test_detection_infers_strict_version_from_bounded_package_metadata() {
+    fn test_detection_requires_version_output_even_with_package_metadata() {
         let home = tempdir().expect("temporary home");
         let package = home.path().join("node_modules/@openai/codex");
         let bin = package.join("bin");
@@ -1539,13 +1465,10 @@ mod tests {
             CodexPlatform::Linux,
         )
         .expect("package-bound adapter");
-        assert_eq!(
+        assert!(matches!(
             adapter.detect(&Scope::User),
-            Detection::Installed {
-                version: "3.2.1-beta.1".to_owned(),
-                config_path: adapter.config_path(),
-            }
-        );
+            Detection::Unsupported { .. }
+        ));
     }
 
     #[test]
