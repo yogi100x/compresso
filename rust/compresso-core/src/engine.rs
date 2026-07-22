@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::graph::ContextGraph;
-use crate::safety::{SafetyCheck, run_all, run_all_with_removals};
+use crate::safety::{SafetyCheck, identity_checks, run_all, run_all_with_removals};
 use crate::strategy::{CompressionBudget, Mode, RemovalKind, RemovalRecord, StrategyRegistry};
 use crate::tokens::{TokenCounter, TokenProvider, counter_for};
 use crate::trace::{StrategyResult, Trace};
@@ -70,23 +70,17 @@ impl Engine {
         let started = Instant::now();
 
         if self.mode == Mode::Passthrough {
-            let before_tokens = recounted_total(&original);
-            let safety_checks =
-                run_all(&original, &original, budget, elapsed_ms(started.elapsed()));
-            if let Some(failed) = first_failed_check(&safety_checks) {
-                let reason = format!("safety_check_failed:{failed}");
-                return self.fallback(original, before_tokens, Vec::new(), safety_checks, reason);
-            }
+            let before_tokens = original.total_tokens();
             return self.complete(
-                original.clone(),
+                original,
                 before_tokens,
                 before_tokens,
                 Vec::new(),
-                safety_checks,
+                identity_checks(),
                 false,
                 None,
                 "Passthrough mode.".to_owned(),
-                &original,
+                None,
             );
         }
 
@@ -343,7 +337,7 @@ impl Engine {
             false,
             None,
             "Compression done.".to_owned(),
-            &ingress,
+            Some(&ingress),
         )
     }
 
@@ -358,14 +352,26 @@ impl Engine {
         fallback_used: bool,
         fallback_reason: Option<String>,
         explanation: String,
-        trace_source: &ContextGraph,
+        trace_source: Option<&ContextGraph>,
     ) -> CompressionResult {
-        let trace_strategy_results = sanitize_strategy_results(&strategy_results, trace_source);
-        let trace_safety_checks = sanitize_safety_checks(&safety_checks, trace_source);
-        let trace_fallback_reason = fallback_reason
-            .as_deref()
-            .map(|reason| sanitize_trace_text(reason, trace_source));
-        let trace_explanation = sanitize_trace_text(&explanation, trace_source);
+        let (trace_strategy_results, trace_safety_checks, trace_fallback_reason, trace_explanation) =
+            if let Some(trace_source) = trace_source {
+                (
+                    sanitize_strategy_results(&strategy_results, trace_source),
+                    sanitize_safety_checks(&safety_checks, trace_source),
+                    fallback_reason
+                        .as_deref()
+                        .map(|reason| sanitize_trace_text(reason, trace_source)),
+                    sanitize_trace_text(&explanation, trace_source),
+                )
+            } else {
+                (
+                    strategy_results.clone(),
+                    safety_checks.clone(),
+                    fallback_reason.clone(),
+                    explanation,
+                )
+            };
         let trace = Trace::new(
             self.mode,
             before_tokens,
@@ -406,7 +412,7 @@ impl Engine {
             true,
             Some(reason),
             "Original returned.".to_owned(),
-            &original,
+            Some(&original),
         )
     }
 
@@ -827,18 +833,58 @@ mod tests {
 
     #[test]
     fn test_passthrough_identity() {
-        let input = graph(vec![node(
+        let mut input = graph(vec![node(
             "summary",
             NodeKind::Summary,
             "caller bytes remain untouched",
             false,
         )]);
+        // Passthrough deliberately trusts stored accounting. Safe mode would
+        // reject this stale count during preflight, but identity needs neither
+        // a recount nor a content scan.
+        input.nodes[0].token_count = usize::MAX;
+        let serialized_input = serde_json::to_vec(&input).expect("input serializes");
+        assert!(
+            run_all(&input, &input, &budget(), 0)
+                .iter()
+                .any(|check| check.name == "token_counts_valid" && !check.passed)
+        );
+
         let result = Engine::new(Mode::Passthrough, counter()).compress(input.clone(), &budget());
 
         assert_eq!(result.output, input);
-        assert_eq!(result.before_tokens, result.after_tokens);
+        assert_eq!(
+            serde_json::to_vec(&result.output).expect("output serializes"),
+            serialized_input
+        );
+        assert_eq!(result.before_tokens, usize::MAX);
+        assert_eq!(result.after_tokens, usize::MAX);
         assert!(result.strategy_results.is_empty());
         assert!(!result.fallback_used);
+        assert!(result.fallback_reason.is_none());
+        let expected_names = [
+            "protected_unchanged",
+            "no_inflation",
+            "json_still_valid",
+            "fences_balanced",
+            "refs_valid",
+            "provider_conversation_valid",
+            "minimum_output",
+            "token_counts_valid",
+            "latency_ok",
+            "schema_valid",
+            "removals_enumerated",
+        ];
+        assert_eq!(
+            result
+                .safety_checks
+                .iter()
+                .map(|check| check.name.as_str())
+                .collect::<Vec<_>>(),
+            expected_names
+        );
+        assert!(result.safety_checks.iter().all(|check| check.passed));
+        assert_eq!(result.trace.safety_checks, result.safety_checks);
         assert_eq!(result.trace.mode, Mode::Passthrough);
     }
 

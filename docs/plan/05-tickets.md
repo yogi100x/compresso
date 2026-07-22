@@ -253,7 +253,7 @@ Test cases:
 - prop_output_always_validates: `result.output.validate().is_ok()` for every case.
 - prop_fallback_implies_identity: whenever `fallback_used`, output serializes byte-equal to input.
 
-### [ ] E2-11: Criterion latency benchmarks with P95 gate
+### [x] E2-11: Criterion latency benchmarks with P95 gate
 Owner: R1 · Estimate: 1.5d · Depends: E2-09, E1-05
 Files: rust/compresso-core/benches/compress_latency.rs, docs/plan/gates.toml (latency section stub consumed fully in E7-03)
 Description: Criterion benchmarks running `Engine::compress` in Safe mode over the committed fixtures (500-line log, 2000-element JSON tool response, 40-node mixed conversation graph, 200 KB source-file graph), reporting P50/P95. Adds a plain `#[test]` (release-profile CI leg) asserting P95 < 200 ms per D37 so regressions fail CI even where criterion output isn't parsed.
