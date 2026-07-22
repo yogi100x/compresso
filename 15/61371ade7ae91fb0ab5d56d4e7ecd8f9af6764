@@ -1,0 +1,20 @@
+rust/compresso-core/tests/schema_meta.rs
+  s_87261b37472da1::t_65b2d8acb54559 36-40,71-76,78
+  s_87261b37472da1::t_87453d3b36569b 77,79
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "1561371ade7ae91fb0ab5d56d4e7ecd8f9af6764",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
