@@ -1,0 +1,60 @@
+rust/compresso-eval/src/main.rs
+  s_87261b37472da1::t_d0378d4f4404ca 7-8
+  s_87261b37472da1::t_9cafe1a2162dfc 1-2,4,9
+  s_87261b37472da1::t_8893a365cfe0a3 6
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_b683966ec7d8af 456
+Cargo.toml
+  s_87261b37472da1::t_6136fdca162b06 29
+rust/compresso-cli/src/lib.rs
+  s_87261b37472da1::t_9774182f8d3412 2-8
+rust/compresso-cli/src/commands.rs
+  s_87261b37472da1::t_59da2ce534e62c 85,90,95,103,215-216,233-234
+  s_87261b37472da1::t_d0378d4f4404ca 9-13,76-80,186,208,266-268
+  s_87261b37472da1::t_1dfbdd0078302c 74-75
+  s_87261b37472da1::t_9774182f8d3412 1-8,14-73,81-84,86-89,91-94,96-102,104-185,187-207,209-214,217-232,235-265,269-273
+rust/compresso-eval/src/cli.rs
+  s_87261b37472da1::t_31f76bac72dc5a 3,60,170
+  s_87261b37472da1::t_7b65e10b8658df 7,52,62-63,137-139,171,179-181,226,285,297-302,315
+  s_87261b37472da1::t_d0378d4f4404ca 109-112,131-136,146
+  s_87261b37472da1::t_59da2ce534e62c 5,272-273
+  s_87261b37472da1::t_816a92f7458ef5 178
+  s_87261b37472da1::t_db558f02b6d8b8 314,316-321
+  s_87261b37472da1::t_9cafe1a2162dfc 1-2,4,6,8-45,51,53-59,61,64-108,113-130,140-145,147-169,172-177,182-188,209-223,225,227-271,274-284,286-293,303-306,312-313,322-323
+  s_87261b37472da1::t_f8bbb4b35de957 46-50,224,294-296,308-309
+  s_87261b37472da1::t_9db2975e935334 307,310-311
+  s_87261b37472da1::t_1dfbdd0078302c 189-208
+rust/compresso-eval/src/lib.rs
+  s_87261b37472da1::t_9cafe1a2162dfc 3
+rust/compresso-cli/Cargo.toml
+  s_87261b37472da1::t_145237ceda70ae 11,14,18-19
+rust/compresso-cli/src/main.rs
+  s_87261b37472da1::t_9774182f8d3412 1-18
+rust/compresso-eval/Cargo.toml
+  s_87261b37472da1::t_145237ceda70ae 11
+rust/compresso-cli/tests/cli_app.rs
+  s_87261b37472da1::t_59da2ce534e62c 1,149,207,220
+  s_87261b37472da1::t_1489f30cf56b26 172-173
+  s_87261b37472da1::t_d0378d4f4404ca 73
+  s_87261b37472da1::t_145237ceda70ae 2-5,7-72,74-101,136-148,150-155,197-206,208-219,221-223
+  s_87261b37472da1::t_db558f02b6d8b8 6,102-135
+  s_87261b37472da1::t_05f5329f624f41 156-171,174-196
+Cargo.lock
+  s_87261b37472da1::t_144ae5e7a0e272 34-48,55-83,250,252,255,260,262,264,267-279,288-293,319,322,326-327,349,895-900,1113-1118,1538-1543,1771-1776
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "8d2e1221498c112ef1752cad004f04911a801423",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
