@@ -204,7 +204,11 @@ async fn test_compress_tool_log_fixture() {
         harness
             .call(
                 "compresso_compress",
-                json!({ "text": LOG_FIXTURE, "max_tokens": 100_000 }),
+                json!({
+                    "text": LOG_FIXTURE,
+                    "max_tokens": 100_000,
+                    "max_latency_ms": 10_000
+                }),
             )
             .await,
     );
