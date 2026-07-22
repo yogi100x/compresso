@@ -8,6 +8,13 @@ publish.workspace = true
 repository.workspace = true
 
 [dependencies]
+anyhow.workspace = true
 compresso-atlas.workspace = true
 compresso-core.workspace = true
 compresso-store.workspace = true
+rmcp.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["io-util", "sync", "time"] }
+
+[dev-dependencies]
+tempfile.workspace = true

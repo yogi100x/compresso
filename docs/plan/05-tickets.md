@@ -517,7 +517,7 @@ Test cases:
 
 ## E5 — MCP server
 
-### [ ] E5-01: rmcp server bootstrap and initialize handshake
+### [x] E5-01: rmcp server bootstrap and initialize handshake
 Owner: R2 · Estimate: 1.5d · Depends: E2-09, E3-03, E4-01
 Files: rust/compresso-mcp/src/lib.rs, rust/compresso-mcp/src/server.rs, rust/compresso-cli/src/commands/mcp.rs, tests in rust/compresso-mcp/tests/handshake.rs
 Description: Implement `serve_stdio(deps: McpDeps)` per `03-interfaces.md` §5 using rmcp's ServerHandler over stdio, wire `compresso mcp serve` to it, and register all ten tool declarations from D7 / `04-mcp-and-integrations.md` §1 (`compresso_repo_map`, `compresso_search`, `compresso_read`, `compresso_outline`, `compresso_unfold`, `compresso_context`, `compresso_impact`, `compresso_compress`, `compresso_stats`, `compresso_explain`) with versioned JSON input schemas; handlers stubbed until E5-02..04. Server instructions string ≤200 words, factual, lists tools, never instructs the client to prefer Compresso over its own policy (build-doc §13.4).

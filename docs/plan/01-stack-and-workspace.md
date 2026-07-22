@@ -12,7 +12,7 @@ Versions are floors, pinned by `Cargo.lock` at first build.
 | anyhow | 1.0 | binaries only | Error context at edges |
 | clap (derive) | 4.5 | cli | CLI parsing |
 | tokio (rt-multi-thread, macros, io-std) | 1.45 | mcp, agent | Async runtime (rmcp requirement) |
-| rmcp (server, transport-io) | 0.3 | mcp | Official MCP SDK, stdio transport |
+| rmcp (server, transport-io; default features off) | =1.4.0 | mcp | Official MCP SDK, stdio transport; minimum patched line for RUSTSEC-2026-0189 |
 | rusqlite (bundled) | 0.32 | store | SQLite + FTS5 |
 | tiktoken-rs | 0.6 | core | o200k_base / cl100k_base exact counts |
 | tree-sitter | 0.25 | atlas | Parsing runtime |
