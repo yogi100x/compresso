@@ -1,0 +1,19 @@
+.gitattributes
+  s_87261b37472da1::t_f2a3f02025035c 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "22d786f8626e30ab9102c56f28a62f9585a69425",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
