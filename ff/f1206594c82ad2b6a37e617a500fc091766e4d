@@ -1,0 +1,21 @@
+rust/compresso-mcp/tests/tools_nav.rs
+  s_87261b37472da1::t_f480b0fb33dd46 562-566,588-591,600-603,677-679,686-687
+  s_87261b37472da1::t_6d0762f6da2c7e 680-685
+  s_87261b37472da1::t_3ab88650d10458 688-689
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "fff1206594c82ad2b6a37e617a500fc091766e4d",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
