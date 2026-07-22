@@ -559,9 +559,11 @@ async fn test_session_bound_to_repo_a_cannot_access_approved_repo_b() {
         )
         .await;
     assert_tool_error(&response, "outside_root");
-    let response_text = response.to_string();
-    assert!(!response_text.contains(root_b.to_string_lossy().as_ref()));
-    assert!(!response_text.contains("secret_from_b_canary_9182"));
+    assert!(!value_contains_text(
+        &response,
+        root_b.to_string_lossy().as_ref()
+    ));
+    assert!(!value_contains_text(&response, "secret_from_b_canary_9182"));
     harness.close().await;
 }
 
@@ -583,11 +585,10 @@ async fn test_omitted_root_does_not_select_sole_approved_repository() {
 
     let omitted = harness.call("compresso_repo_map", json!({})).await;
     assert_tool_error(&omitted, "not_indexed");
-    assert!(
-        !omitted
-            .to_string()
-            .contains(root_b.to_string_lossy().as_ref())
-    );
+    assert!(!value_contains_text(
+        &omitted,
+        root_b.to_string_lossy().as_ref()
+    ));
 
     let supplied = harness
         .call(
@@ -596,11 +597,10 @@ async fn test_omitted_root_does_not_select_sole_approved_repository() {
         )
         .await;
     assert_tool_error(&supplied, "outside_root");
-    assert!(
-        !supplied
-            .to_string()
-            .contains(root_b.to_string_lossy().as_ref())
-    );
+    assert!(!value_contains_text(
+        &supplied,
+        root_b.to_string_lossy().as_ref()
+    ));
 
     let compressed = successful_json(
         harness
@@ -672,6 +672,19 @@ fn assert_tool_error(response: &Value, code: &str) {
             .is_some_and(|text| text.starts_with(&format!("[{code}]"))),
         "unexpected tool error: {response}"
     );
+}
+
+fn value_contains_text(value: &Value, needle: &str) -> bool {
+    match value {
+        Value::String(text) => text.contains(needle),
+        Value::Array(values) => values
+            .iter()
+            .any(|value| value_contains_text(value, needle)),
+        Value::Object(values) => values
+            .iter()
+            .any(|(key, value)| key.contains(needle) || value_contains_text(value, needle)),
+        Value::Null | Value::Bool(_) | Value::Number(_) => false,
+    }
 }
 
 fn write_file(root: &Path, path: &str, source: &str) {
