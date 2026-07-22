@@ -5,7 +5,7 @@ eligible = true
 mode = "safe"
 
 [budget]
-max_tokens = 1200
+max_tokens = 200
 max_latency_ms = 200
 
 [[input.files]]

@@ -40,15 +40,15 @@ sha256 = "bef23ca34ea6141ecb782d628a0d35a5357a556f90d4eb96e7d7ee1e213acca3"
 path = "conversations/long-session-prune"
 eligible = true
 file_count = 2
-size_bytes = 88537
-sha256 = "b22be0188745a95d5f2fd810e9e13b7727ba3289754bc34b91c4939051671834"
+size_bytes = 88407
+sha256 = "3ada9fa850b7d38094a0994da6a7d692a072b6ca20e98f803438406aab422dfc"
 
 [[quality]]
 path = "conversations/superseded-decisions"
 eligible = true
 file_count = 2
-size_bytes = 3049
-sha256 = "8427ac67ec8a0205dfddfd9a0ae4adabdc163a948eadaa6d6f699c525f81016d"
+size_bytes = 3048
+sha256 = "310e67b03c88565ec0d12505d3810bbabe2c042ba898c307a8222d4d579cfee7"
 
 [[quality]]
 path = "conversations/tool-output-dupes"
@@ -62,14 +62,14 @@ path = "debugging/compiler-output-rust"
 eligible = true
 file_count = 2
 size_bytes = 7481
-sha256 = "a8e693a882db8661bbe90377a1d311568be4d9097902d9e492cd9c9c449e6b6d"
+sha256 = "d6632f8396ed4f2423df263e14f4092dbfbdb6007a2748a99b3e372830eb7a00"
 
 [[quality]]
 path = "debugging/test-failure-context"
 eligible = true
 file_count = 2
-size_bytes = 1897
-sha256 = "60a9e39877bf6ca9a5f7a0ab49a916b332fbdb81d2e41f40d60fc39bbec32293"
+size_bytes = 1896
+sha256 = "a9fe592436cd913c412627fbfe5894e860c68f98e4312e4c33e77b03928fa0c8"
 
 [[quality]]
 path = "logs/cargo-build-noise"

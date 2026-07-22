@@ -15,14 +15,14 @@
     },
     {
       "id": "user-1",
-      "kind": "user_instruction",
+      "kind": "summary",
       "content": "Historical request 1: investigate subsystem 1 and summarize the relevant implementation constraints. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. ",
       "source": {
         "type": "synthetic"
       },
       "token_count": 0,
       "priority": 0.26,
-      "protected": true,
+      "protected": false,
       "recency": 1784630120
     },
     {
@@ -39,14 +39,14 @@
     },
     {
       "id": "user-2",
-      "kind": "user_instruction",
+      "kind": "summary",
       "content": "Historical request 2: investigate subsystem 2 and summarize the relevant implementation constraints. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. ",
       "source": {
         "type": "synthetic"
       },
       "token_count": 0,
       "priority": 0.27,
-      "protected": true,
+      "protected": false,
       "recency": 1784630240
     },
     {
@@ -63,14 +63,14 @@
     },
     {
       "id": "user-3",
-      "kind": "user_instruction",
+      "kind": "summary",
       "content": "Historical request 3: investigate subsystem 3 and summarize the relevant implementation constraints. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. ",
       "source": {
         "type": "synthetic"
       },
       "token_count": 0,
       "priority": 0.28,
-      "protected": true,
+      "protected": false,
       "recency": 1784630360
     },
     {
@@ -87,14 +87,14 @@
     },
     {
       "id": "user-4",
-      "kind": "user_instruction",
+      "kind": "summary",
       "content": "Historical request 4: investigate subsystem 4 and summarize the relevant implementation constraints. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. ",
       "source": {
         "type": "synthetic"
       },
       "token_count": 0,
       "priority": 0.29,
-      "protected": true,
+      "protected": false,
       "recency": 1784630480
     },
     {
@@ -111,14 +111,14 @@
     },
     {
       "id": "user-5",
-      "kind": "user_instruction",
+      "kind": "summary",
       "content": "Historical request 5: investigate subsystem 5 and summarize the relevant implementation constraints. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. ",
       "source": {
         "type": "synthetic"
       },
       "token_count": 0,
       "priority": 0.3,
-      "protected": true,
+      "protected": false,
       "recency": 1784630600
     },
     {
@@ -135,14 +135,14 @@
     },
     {
       "id": "user-6",
-      "kind": "user_instruction",
+      "kind": "summary",
       "content": "Historical request 6: investigate subsystem 6 and summarize the relevant implementation constraints. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. ",
       "source": {
         "type": "synthetic"
       },
       "token_count": 0,
       "priority": 0.31,
-      "protected": true,
+      "protected": false,
       "recency": 1784630720
     },
     {
@@ -159,14 +159,14 @@
     },
     {
       "id": "user-7",
-      "kind": "user_instruction",
+      "kind": "summary",
       "content": "Historical request 7: investigate subsystem 7 and summarize the relevant implementation constraints. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. ",
       "source": {
         "type": "synthetic"
       },
       "token_count": 0,
       "priority": 0.32,
-      "protected": true,
+      "protected": false,
       "recency": 1784630840
     },
     {
@@ -183,14 +183,14 @@
     },
     {
       "id": "user-8",
-      "kind": "user_instruction",
+      "kind": "summary",
       "content": "Historical request 8: investigate subsystem 8 and summarize the relevant implementation constraints. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. ",
       "source": {
         "type": "synthetic"
       },
       "token_count": 0,
       "priority": 0.33,
-      "protected": true,
+      "protected": false,
       "recency": 1784630960
     },
     {
@@ -207,14 +207,14 @@
     },
     {
       "id": "user-9",
-      "kind": "user_instruction",
+      "kind": "summary",
       "content": "Historical request 9: investigate subsystem 9 and summarize the relevant implementation constraints. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. ",
       "source": {
         "type": "synthetic"
       },
       "token_count": 0,
       "priority": 0.33999999999999997,
-      "protected": true,
+      "protected": false,
       "recency": 1784631080
     },
     {
@@ -231,14 +231,14 @@
     },
     {
       "id": "user-10",
-      "kind": "user_instruction",
+      "kind": "summary",
       "content": "Historical request 10: investigate subsystem 10 and summarize the relevant implementation constraints. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. ",
       "source": {
         "type": "synthetic"
       },
       "token_count": 0,
       "priority": 0.35,
-      "protected": true,
+      "protected": false,
       "recency": 1784631200
     },
     {
@@ -255,14 +255,14 @@
     },
     {
       "id": "user-11",
-      "kind": "user_instruction",
+      "kind": "summary",
       "content": "Historical request 11: investigate subsystem 11 and summarize the relevant implementation constraints. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. ",
       "source": {
         "type": "synthetic"
       },
       "token_count": 0,
       "priority": 0.36,
-      "protected": true,
+      "protected": false,
       "recency": 1784631320
     },
     {
@@ -279,14 +279,14 @@
     },
     {
       "id": "user-12",
-      "kind": "user_instruction",
+      "kind": "summary",
       "content": "Historical request 12: investigate subsystem 12 and summarize the relevant implementation constraints. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. ",
       "source": {
         "type": "synthetic"
       },
       "token_count": 0,
       "priority": 0.37,
-      "protected": true,
+      "protected": false,
       "recency": 1784631440
     },
     {
@@ -303,14 +303,14 @@
     },
     {
       "id": "user-13",
-      "kind": "user_instruction",
+      "kind": "summary",
       "content": "Historical request 13: investigate subsystem 13 and summarize the relevant implementation constraints. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. ",
       "source": {
         "type": "synthetic"
       },
       "token_count": 0,
       "priority": 0.38,
-      "protected": true,
+      "protected": false,
       "recency": 1784631560
     },
     {
@@ -327,14 +327,14 @@
     },
     {
       "id": "user-14",
-      "kind": "user_instruction",
+      "kind": "summary",
       "content": "Historical request 14: investigate subsystem 14 and summarize the relevant implementation constraints. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. ",
       "source": {
         "type": "synthetic"
       },
       "token_count": 0,
       "priority": 0.39,
-      "protected": true,
+      "protected": false,
       "recency": 1784631680
     },
     {
@@ -351,14 +351,14 @@
     },
     {
       "id": "user-15",
-      "kind": "user_instruction",
+      "kind": "summary",
       "content": "Historical request 15: investigate subsystem 15 and summarize the relevant implementation constraints. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. ",
       "source": {
         "type": "synthetic"
       },
       "token_count": 0,
       "priority": 0.4,
-      "protected": true,
+      "protected": false,
       "recency": 1784631800
     },
     {
@@ -375,14 +375,14 @@
     },
     {
       "id": "user-16",
-      "kind": "user_instruction",
+      "kind": "summary",
       "content": "Historical request 16: investigate subsystem 16 and summarize the relevant implementation constraints. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. ",
       "source": {
         "type": "synthetic"
       },
       "token_count": 0,
       "priority": 0.41000000000000003,
-      "protected": true,
+      "protected": false,
       "recency": 1784631920
     },
     {
@@ -399,14 +399,14 @@
     },
     {
       "id": "user-17",
-      "kind": "user_instruction",
+      "kind": "summary",
       "content": "Historical request 17: investigate subsystem 17 and summarize the relevant implementation constraints. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. ",
       "source": {
         "type": "synthetic"
       },
       "token_count": 0,
       "priority": 0.42000000000000004,
-      "protected": true,
+      "protected": false,
       "recency": 1784632040
     },
     {
@@ -423,14 +423,14 @@
     },
     {
       "id": "user-18",
-      "kind": "user_instruction",
+      "kind": "summary",
       "content": "Historical request 18: investigate subsystem 18 and summarize the relevant implementation constraints. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. ",
       "source": {
         "type": "synthetic"
       },
       "token_count": 0,
       "priority": 0.43,
-      "protected": true,
+      "protected": false,
       "recency": 1784632160
     },
     {
@@ -447,14 +447,14 @@
     },
     {
       "id": "user-19",
-      "kind": "user_instruction",
+      "kind": "summary",
       "content": "Historical request 19: investigate subsystem 19 and summarize the relevant implementation constraints. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. The repository contains deterministic Rust services, TypeScript clients, and Python maintenance scripts. Review evidence carefully, keep exact error locations, avoid speculative edits, and report each validation command. ",
       "source": {
         "type": "synthetic"
       },
       "token_count": 0,
       "priority": 0.44,
-      "protected": true,
+      "protected": false,
       "recency": 1784632280
     },
     {
