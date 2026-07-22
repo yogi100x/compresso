@@ -1,0 +1,51 @@
+rust/compresso-mcp/src/tools/atlas_read.rs
+  s_87261b37472da1::t_0a123eda9c0566 4,10,26-27
+rust/compresso-mcp/src/tools/mod.rs
+  s_87261b37472da1::t_9de8c7ffb4a51d 6-8,35,37,40,42-45,47-55,58-61,64,66,69-102
+  s_87261b37472da1::t_26d4989e752b32 12-13,28,32-34,46,56-57,63
+  s_87261b37472da1::t_f4baeb36d1cda7 103
+rust/compresso-mcp/src/session.rs
+  s_87261b37472da1::t_f50ac8843324de 271-272
+  s_87261b37472da1::t_e9c0cbc065a07b 4,71,109,155-157,191-192,337-340,352-358,363-377
+  s_87261b37472da1::t_48a00e0132fc3d 95,299-302,341-345,347-351,395,409,416
+  s_87261b37472da1::t_a46c9fbd3ed0be 378-381
+  s_87261b37472da1::t_d64640e7a830db 359-362
+  s_87261b37472da1::t_1478d9764c9cf7 276-282
+  s_87261b37472da1::t_32c557b4b6001e 42,50,60,123-126
+  s_87261b37472da1::t_fe93a9cdd88442 1-3,5-41,43-49,51-59,61-70,72-94,96-108,110-122,127-154,158-190,193-270,273-275,283-298,303-336,346,382-394,396-408,410-415,417-427
+rust/compresso-mcp/src/lib.rs
+  s_87261b37472da1::t_0095111fa7c485 8-9
+  s_87261b37472da1::t_3a54e2bb4f7a40 4
+rust/compresso-mcp/src/server.rs
+  s_87261b37472da1::t_da7cf5765c769a 133
+  s_87261b37472da1::t_d4f41e84fea0c8 572-581,586-613
+  s_87261b37472da1::t_e9c0cbc065a07b 161-165,582-585
+  s_87261b37472da1::t_0095111fa7c485 9,24,48-91,238-269,276-283
+  s_87261b37472da1::t_741dd72a691639 285,287-288,290-297,300,303-307
+  s_87261b37472da1::t_4099036fe713cc 11-13,141-144
+  s_87261b37472da1::t_3a54e2bb4f7a40 25,94,101,104,128-132,134-140,145-149,158,168,174,286,299,301-302
+rust/compresso-mcp/src/tools/atlas_nav.rs
+  s_87261b37472da1::t_0a123eda9c0566 7,13,28-29
+rust/compresso-mcp/tests/session_ledger.rs
+  s_87261b37472da1::t_339e3263ab13d9 201-205,351-355,360-364
+  s_87261b37472da1::t_4ddfd006538ae1 1-200,206-350,356-359,365-367,378-414
+  s_87261b37472da1::t_22e0443af63684 368-377
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_3c0c20cb76cd9d 577
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "ad405ce2235a19434ce686f521c458ecb2642bb2",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
