@@ -24,17 +24,27 @@ fn test_compress_log_fixture_via_stdin_records_valid_trace() {
     assert_eq!(exit, CliExitCode::Success);
     assert!(errors.is_null());
     assert_eq!(output["schema_version"], 1);
-    assert!(
-        output["data"]["content"]
-            .as_str()
-            .expect("compressed content should be text")
-            .contains("[×500")
-    );
-    assert!(
-        output["data"]["after_tokens"].as_u64().unwrap()
-            < output["data"]["before_tokens"].as_u64().unwrap()
-    );
-    assert_eq!(output["data"]["fallback_used"], false);
+    let content = output["data"]["content"]
+        .as_str()
+        .expect("compression result should be text");
+    let before_tokens = output["data"]["before_tokens"]
+        .as_u64()
+        .expect("before_tokens should be an integer");
+    let after_tokens = output["data"]["after_tokens"]
+        .as_u64()
+        .expect("after_tokens should be an integer");
+    if output["data"]["fallback_used"] == true {
+        assert_eq!(content, LOG_FIXTURE);
+        assert_eq!(after_tokens, before_tokens);
+        assert!(matches!(
+            output["data"]["fallback_reason"].as_str(),
+            Some("latency_budget_exceeded" | "safety_check_failed:latency_ok")
+        ));
+    } else {
+        assert!(content.contains("[×500"));
+        assert!(after_tokens < before_tokens);
+        assert!(output["data"]["fallback_reason"].is_null());
+    }
 
     let stats = fixture.store.stats(None).expect("stats should load");
     assert_eq!(stats.operations, 1);

@@ -1145,6 +1145,36 @@ mod tests {
         }
     }
 
+    struct SlowNoopStrategy;
+
+    impl CompressionStrategy for SlowNoopStrategy {
+        fn id(&self) -> &'static str {
+            "slow_noop_test_strategy"
+        }
+
+        fn supports(&self, _input: &ContextGraph) -> bool {
+            true
+        }
+
+        fn estimate(&self, _input: &ContextGraph) -> Estimate {
+            Estimate::default()
+        }
+
+        fn execute(
+            &self,
+            input: &ContextGraph,
+            _budget: &CompressionBudget,
+        ) -> Result<StrategyOutput, StrategyError> {
+            std::thread::sleep(Duration::from_millis(25));
+            Ok(StrategyOutput {
+                graph: input.clone(),
+                changed_node_ids: BTreeSet::new(),
+                notes: Vec::new(),
+                removals: Vec::new(),
+            })
+        }
+    }
+
     struct ProtectedMutation;
 
     impl CompressionStrategy for ProtectedMutation {
@@ -1875,6 +1905,35 @@ mod tests {
                 .fallback_reason
                 .as_deref()
                 .is_some_and(|reason| reason.contains("removals_enumerated"))
+        );
+    }
+
+    #[test]
+    fn test_latency_deadline_overrun_fails_open_byte_identical() {
+        let input = graph(vec![node(
+            "summary",
+            NodeKind::Summary,
+            "the original must survive a deadline overrun",
+            false,
+        )]);
+        let engine =
+            Engine::with_strategies(Mode::Safe, counter(), vec![Box::new(SlowNoopStrategy)]);
+        let mut deadline = budget();
+        deadline.max_latency_ms = 5;
+
+        let result = engine.compress(input.clone(), &deadline);
+
+        assert_eq!(result.output, input);
+        assert!(result.fallback_used);
+        assert!(matches!(
+            result.fallback_reason.as_deref(),
+            Some("latency_budget_exceeded" | "safety_check_failed:latency_ok")
+        ));
+        assert!(
+            result
+                .safety_checks
+                .iter()
+                .any(|check| check.name == "latency_ok" && !check.passed)
         );
     }
 
