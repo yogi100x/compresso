@@ -155,7 +155,7 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Run tests
-        run: cargo test --workspace
+        run: cargo test --workspace --no-fail-fast
       - name: Build release CLI
         run: cargo build --release -p compresso-cli
       - name: Upload release binary
