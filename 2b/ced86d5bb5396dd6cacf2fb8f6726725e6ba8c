@@ -1,0 +1,44 @@
+rust/compresso-mcp/src/lib.rs
+  s_87261b37472da1::t_d57438896c17a6 6-8
+rust/compresso-core/src/tokens.rs
+  s_87261b37472da1::t_6ea17020091ff4 24-41,156-185,311-347
+  s_87261b37472da1::t_697f2193062cc1 348
+rust/compresso-mcp/Cargo.toml
+  s_87261b37472da1::t_cb1533c012bf35 20,22-25
+rust/compresso-mcp/tests/tokenizer_cold_start.rs
+  s_87261b37472da1::t_cb1533c012bf35 1-18,23-27
+  s_87261b37472da1::t_7e1859d300a206 19-22
+rust/compresso-mcp/src/server.rs
+  s_87261b37472da1::t_7e1859d300a206 175
+  s_87261b37472da1::t_fa93084868bf69 402-428
+  s_87261b37472da1::t_d57438896c17a6 5-8,50-51,53,55,132-158,169-174,176-178,429-430
+  s_87261b37472da1::t_ac71a3bb3ae4e3 179
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_f7c6acd6b71010 590
+rust/compresso-core/src/lib.rs
+  s_87261b37472da1::t_6ea17020091ff4 33-36
+rust/compresso-mcp/tests/tokenizer_startup.rs
+  s_87261b37472da1::t_7e1859d300a206 114
+  s_87261b37472da1::t_b5e15fe637e4c9 1-113,115-122
+rust/compresso-mcp/benches/startup.rs
+  s_87261b37472da1::t_cb1533c012bf35 1-15,22-32
+  s_87261b37472da1::t_4095faf062e773 16-21
+Cargo.lock
+  s_87261b37472da1::t_974ca6d91cf00e 417
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "2bced86d5bb5396dd6cacf2fb8f6726725e6ba8c",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
