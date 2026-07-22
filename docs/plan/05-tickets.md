@@ -658,7 +658,7 @@ Test cases:
 - test_cursor_uninstall_restores: uninstall → deep-equal to original JSON.
 - test_cursor_project_scope_isolated: `Scope::Project` install → project file has entry, user file byte-unchanged.
 
-### [ ] E6-05: Integration parity and restoration suite
+### [x] E6-05: Integration parity and restoration suite
 Owner: D1+PQ · Estimate: 2d · Depends: E6-02, E6-03, E6-04
 Files: rust/compresso-integrations/tests/parity.rs, fixtures/integrations/
 Description: Run one contract over Claude Code, Codex, Cursor.

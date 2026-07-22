@@ -13,6 +13,7 @@ use thiserror::Error;
 
 const CONTEXT_GRAPH_SCHEMA: &str = include_str!("../../../schemas/context-graph/v1.json");
 const BENCHMARK_DIRECTORY: &str = "benchmarks";
+const INTEGRATION_DIRECTORY: &str = "integrations";
 const CATEGORIES: [&str; 6] = [
     "adversarial",
     "code",
@@ -342,7 +343,10 @@ fn fixture_manifest_paths(root: &Path) -> Result<Vec<PathBuf>, EvalError> {
 
         let category_path = category_entry.path();
         let category_name = utf8_file_name(&category_path, root)?;
-        if category_name == BENCHMARK_DIRECTORY {
+        if matches!(
+            category_name.as_str(),
+            BENCHMARK_DIRECTORY | INTEGRATION_DIRECTORY
+        ) {
             continue;
         }
         if !CATEGORIES.contains(&category_name.as_str()) {
@@ -965,6 +969,32 @@ node_id = "file-node"
                 FixtureCategory::ProviderPayloads,
             ])
         );
+    }
+
+    #[test]
+    fn test_only_named_non_quality_directories_are_skipped() {
+        let temporary = TempDir::new().expect("temporary directory should be created");
+        fs::create_dir(temporary.path().join(INTEGRATION_DIRECTORY))
+            .expect("integration fixture directory should be created");
+        fs::write(
+            temporary
+                .path()
+                .join(INTEGRATION_DIRECTORY)
+                .join("client.json"),
+            "{}\n",
+        )
+        .expect("integration test data should be written");
+
+        let set = FixtureSet::load(temporary.path())
+            .expect("named non-quality integration data should be skipped");
+        assert!(set.fixtures.is_empty());
+
+        let unknown = temporary.path().join("unregistered-data");
+        fs::create_dir(&unknown).expect("unknown directory should be created");
+        let error = FixtureSet::load(temporary.path())
+            .expect_err("unregistered top-level directories must still fail");
+        assert!(error.to_string().contains("unknown fixture category"));
+        assert!(error.to_string().contains(&unknown.display().to_string()));
     }
 
     #[test]

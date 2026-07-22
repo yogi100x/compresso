@@ -307,6 +307,16 @@ impl FileReceiptStore {
         }
     }
 
+    /// Returns an authenticated snapshot of every canonical receipt.
+    ///
+    /// The returned records are ordered by installation time and plan hash.
+    /// SQLite projections must reconcile from this snapshot, never authorize
+    /// restoration in its place.
+    pub fn all(&self) -> Result<Vec<InstallReceipt>, ReceiptError> {
+        let _guard = self.lock.lock().map_err(|_| ReceiptError::LockPoisoned)?;
+        self.load_unlocked()
+    }
+
     pub(crate) fn load_unlocked(&self) -> Result<Vec<InstallReceipt>, ReceiptError> {
         let entries = match fs::read_dir(&self.records_path) {
             Ok(entries) => entries,
@@ -721,10 +731,7 @@ mod tests {
         let mut value = receipt(directory.path().join("config.toml"));
         store.save(&value).expect("receipt saves");
         store.save(&value).expect("repeat save is idempotent");
-        assert_eq!(
-            store.load_unlocked().expect("receipts load"),
-            [value.clone()]
-        );
+        assert_eq!(store.all().expect("receipts load"), [value.clone()]);
 
         value.uninstalled_at = Some(200);
         store.save(&value).expect("receipt updates atomically");

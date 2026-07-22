@@ -90,6 +90,11 @@ impl ClaudeCodeIntegration {
         self
     }
 
+    /// Resolves and validates the selected Claude Code MCP configuration path.
+    pub fn config_path(&self, scope: &Scope) -> Result<PathBuf, IntegrationError> {
+        self.mutation_config_path(scope)
+    }
+
     fn mutation_config_path(&self, scope: &Scope) -> Result<PathBuf, IntegrationError> {
         match scope {
             Scope::User => checked_user_config_path(&self.user_home),
