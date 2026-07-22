@@ -1,0 +1,21 @@
+rust/compresso-core/src/config.rs
+  s_87261b37472da1::t_8a419f34068cd4 716
+  s_87261b37472da1::t_036480ca699dda 701-715
+  s_87261b37472da1::t_87518305cc8446 159,538
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "34269de22326da062e2a195d28d3f61a431ab1c8",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
