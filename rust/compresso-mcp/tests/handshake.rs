@@ -23,13 +23,10 @@ const TOOL_NAMES: [&str; 10] = [
     "compresso_stats",
     "compresso_unfold",
 ];
-const STUB_TOOL_NAMES: [&str; 7] = [
+const STUB_TOOL_NAMES: [&str; 4] = [
     "compresso_compress",
-    "compresso_context",
     "compresso_explain",
     "compresso_impact",
-    "compresso_read",
-    "compresso_search",
     "compresso_stats",
 ];
 

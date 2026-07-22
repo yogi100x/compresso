@@ -542,7 +542,7 @@ Acceptance criteria:
 Test cases:
 - `test_repo_map_budget`, `test_outline_matches_atlas`, `test_unfold_unique`, `test_unfold_ambiguous_candidates`, `test_unfold_signature_disambiguates`, `test_unfold_stale_current`, `test_unfold_deleted_not_found`, `test_unfold_schema_bounds`.
 
-### [ ] E5-03: Tool handlers — compresso_search, compresso_read (gate mode), compresso_context
+### [x] E5-03: Tool handlers — compresso_search, compresso_read (gate mode), compresso_context
 Owner: R2 · Estimate: 1.5d · Depends: E5-01, E3-11, E3-12
 Files: rust/compresso-mcp/src/tools/atlas_read.rs, tests in rust/compresso-mcp/tests/tools_read.rs
 Description: Implement `compresso_search` (→ `search`), `compresso_read` (→ `read_bounded`, plus a `gate: true` argument implementing the Tetris `tetris_context_gate` semantics per D7: return size/token estimate and a worth-reading verdict without file content), and `compresso_context` (→ `plan_context`). All path arguments flow through the E3-11 canonicalization boundary; `OutsideRoot` maps to a stable MCP error code and never echoes the resolved path outside the root.
