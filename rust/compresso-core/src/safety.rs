@@ -194,13 +194,17 @@ fn no_inflation(original: &ContextGraph, candidate: &ContextGraph) -> SafetyChec
 
 fn json_still_valid(original: &ContextGraph, candidate: &ContextGraph) -> SafetyCheck {
     let candidate_nodes = node_map(candidate);
+    let duplicate_refs_valid = duplicate_references_valid(original, candidate);
     let passed = original.nodes.iter().all(|node| {
         if serde_json::from_str::<Value>(&node.content).is_err() {
             return true;
         }
         candidate_nodes
             .get(node.id.as_str())
-            .is_none_or(|candidate| serde_json::from_str::<Value>(&candidate.content).is_ok())
+            .is_none_or(|candidate| {
+                serde_json::from_str::<Value>(&candidate.content).is_ok()
+                    || (duplicate_refs_valid && duplicate_stub_target(&candidate.content).is_some())
+            })
     });
 
     safety_check(
@@ -282,26 +286,7 @@ fn refs_valid(
             && candidate_nodes.contains_key(edge.to.as_str())
     });
 
-    let mut duplicate_edges = HashMap::<&str, Vec<&str>>::new();
-    let duplicate_edges_valid = candidate
-        .edges
-        .iter()
-        .filter(|edge| edge.kind == EdgeKind::DuplicateOf)
-        .all(|edge| {
-            duplicate_edges
-                .entry(edge.from.as_str())
-                .or_default()
-                .push(edge.to.as_str());
-            edge.from != edge.to
-                && original_nodes
-                    .get(edge.to.as_str())
-                    .is_some_and(|original_target| {
-                        candidate_nodes
-                            .get(edge.to.as_str())
-                            .is_some_and(|target| target.content == original_target.content)
-                    })
-        });
-    let duplicate_edge_counts_valid = duplicate_edges.values().all(|targets| targets.len() == 1);
+    let duplicate_edges = duplicate_edges_by_source(candidate);
 
     let duplicate_records_valid = removals
         .iter()
@@ -320,15 +305,18 @@ fn refs_valid(
                         .get(target_id)
                         .is_some_and(|target| target.content == original_target.content)
                 });
+            let source_was_duplicate = original_nodes
+                .get(record.node_id.as_str())
+                .zip(original_nodes.get(target_id))
+                .is_some_and(|(source, target)| source.content == target.content);
             let edge_agrees = duplicate_edges
                 .get(record.node_id.as_str())
-                .is_none_or(|targets| targets.as_slice() == [target_id]);
-            target_id != record.node_id && target_preserved && edge_agrees
+                .is_some_and(|targets| targets.as_slice() == [target_id]);
+            target_id != record.node_id && target_preserved && source_was_duplicate && edge_agrees
         });
 
     let passed = endpoints_valid
-        && duplicate_edges_valid
-        && duplicate_edge_counts_valid
+        && duplicate_references_valid(original, candidate)
         && duplicate_records_valid;
     safety_check(
         "refs_valid",
@@ -336,6 +324,105 @@ fn refs_valid(
         "graph and dedup references resolve",
         "one or more graph or dedup references are invalid",
     )
+}
+
+const DUPLICATE_STUB_PREFIX: &str = "[duplicate of node ";
+
+pub(crate) fn duplicate_stub(target_id: &str) -> String {
+    format!("{DUPLICATE_STUB_PREFIX}{target_id}]")
+}
+
+fn duplicate_stub_target(content: &str) -> Option<&str> {
+    let target = content
+        .strip_prefix(DUPLICATE_STUB_PREFIX)?
+        .strip_suffix(']')?;
+    (!target.is_empty()).then_some(target)
+}
+
+fn duplicate_edges_by_source(graph: &ContextGraph) -> HashMap<&str, Vec<&str>> {
+    let mut edges = HashMap::<&str, Vec<&str>>::new();
+    for edge in graph
+        .edges
+        .iter()
+        .filter(|edge| edge.kind == EdgeKind::DuplicateOf)
+    {
+        edges
+            .entry(edge.from.as_str())
+            .or_default()
+            .push(edge.to.as_str());
+    }
+    edges
+}
+
+pub(crate) fn duplicate_references_well_formed(graph: &ContextGraph) -> bool {
+    let nodes = node_map(graph);
+    let edges = duplicate_edges_by_source(graph);
+
+    if edges.iter().any(|(source, targets)| {
+        targets.len() != 1
+            || targets[0] == *source
+            || !nodes.contains_key(*source)
+            || !nodes.contains_key(targets[0])
+    }) {
+        return false;
+    }
+
+    for node in &graph.nodes {
+        match duplicate_stub_target(&node.content) {
+            Some(target) => {
+                if edges
+                    .get(node.id.as_str())
+                    .is_none_or(|targets| targets.as_slice() != [target])
+                {
+                    return false;
+                }
+            }
+            None => {
+                if edges.contains_key(node.id.as_str()) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    // A referent cannot itself be a stub. This rejects chains and cycles while
+    // still allowing any number of independent stubs to share one referent.
+    edges.values().all(|targets| {
+        nodes
+            .get(targets[0])
+            .is_some_and(|target| duplicate_stub_target(&target.content).is_none())
+    })
+}
+
+pub(crate) fn duplicate_group_node_ids(graph: &ContextGraph) -> HashSet<&str> {
+    graph
+        .edges
+        .iter()
+        .filter(|edge| edge.kind == EdgeKind::DuplicateOf)
+        .flat_map(|edge| [edge.from.as_str(), edge.to.as_str()])
+        .collect()
+}
+
+fn duplicate_references_valid(original: &ContextGraph, candidate: &ContextGraph) -> bool {
+    if !duplicate_references_well_formed(candidate) {
+        return false;
+    }
+
+    let original_nodes = node_map(original);
+    let candidate_nodes = node_map(candidate);
+    candidate
+        .edges
+        .iter()
+        .filter(|edge| edge.kind == EdgeKind::DuplicateOf)
+        .all(|edge| {
+            original_nodes
+                .get(edge.to.as_str())
+                .is_some_and(|original_target| {
+                    candidate_nodes
+                        .get(edge.to.as_str())
+                        .is_some_and(|target| target.content == original_target.content)
+                })
+        })
 }
 
 fn provider_conversation_valid(
@@ -1565,7 +1652,7 @@ mod tests {
     }
 
     #[test]
-    fn test_optional_duplicate_edges_must_match_typed_locator_exactly() {
+    fn test_duplicate_edges_are_required_and_must_match_typed_locator_exactly() {
         let duplicate_content = "duplicate payload with enough repeated material ".repeat(8);
         let original = graph(vec![
             node("kept", NodeKind::ToolResponse, &duplicate_content, false),
@@ -1586,6 +1673,18 @@ mod tests {
             .passed
         );
 
+        let mut missing = output.graph.clone();
+        missing
+            .edges
+            .retain(|edge| edge.kind != EdgeKind::DuplicateOf);
+        assert!(
+            !check(
+                &run_all_with_removals(&original, &missing, &budget(), 1, &output.removals),
+                "refs_valid"
+            )
+            .passed
+        );
+
         let mut wrong = output.graph.clone();
         wrong.edges.push(ContextEdge {
             from: "duplicate".to_owned(),
@@ -1596,6 +1695,28 @@ mod tests {
         assert!(
             !check(
                 &run_all_with_removals(&original, &wrong, &budget(), 1, &output.removals),
+                "refs_valid"
+            )
+            .passed
+        );
+
+        let mut changed_referent = output.graph.clone();
+        let kept = changed_referent
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == "kept")
+            .unwrap();
+        kept.content.push_str("changed");
+        kept.token_count = counter_for(kept.token_provider).count(&kept.content);
+        assert!(
+            !check(
+                &run_all_with_removals(
+                    &original,
+                    &changed_referent,
+                    &budget(),
+                    1,
+                    &output.removals
+                ),
                 "refs_valid"
             )
             .passed
@@ -1620,6 +1741,33 @@ mod tests {
             !check(
                 &run_all_with_removals(&original, &extra, &budget(), 1, &output.removals),
                 "refs_valid"
+            )
+            .passed
+        );
+    }
+
+    #[test]
+    fn test_json_duplicate_stub_is_valid_only_with_typed_referent() {
+        let json = format!(r#"{{"items":[{}1]}}"#, "1,".repeat(80));
+        let original = graph(vec![
+            node("kept", NodeKind::ToolResponse, &json, false),
+            node("duplicate", NodeKind::ToolResponse, &json, false),
+        ]);
+        let output = DedupExact.execute(&original, &budget()).unwrap();
+        let checks =
+            run_all_with_removals(&original, &output.graph, &budget(), 1, &output.removals);
+
+        assert!(check(&checks, "json_still_valid").passed);
+        assert!(check(&checks, "refs_valid").passed);
+
+        let mut orphan = output.graph;
+        orphan
+            .edges
+            .retain(|edge| edge.kind != EdgeKind::DuplicateOf);
+        assert!(
+            !check(
+                &run_all_with_removals(&original, &orphan, &budget(), 1, &output.removals),
+                "json_still_valid"
             )
             .passed
         );

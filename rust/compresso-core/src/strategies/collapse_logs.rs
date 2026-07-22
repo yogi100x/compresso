@@ -1,4 +1,5 @@
 use crate::graph::{ContextGraph, NodeKind};
+use crate::safety::duplicate_group_node_ids;
 use crate::strategy::{
     CompressionBudget, CompressionStrategy, Estimate, RemovalKind, RemovalRecord, StrategyError,
     StrategyExecution, StrategyOutput,
@@ -105,10 +106,18 @@ fn collapse_plan(input: &ContextGraph) -> CollapsePlan {
     let mut changes = Vec::new();
     let mut notes = Vec::new();
     let mut tokens_saved = 0_usize;
+    let duplicate_group_nodes = duplicate_group_node_ids(input);
 
     for (index, node) in input.nodes.iter().enumerate() {
         if node.protected || node.kind.requires_protection() {
             notes.push(format!("skipped node: {} is protected", node.id));
+            continue;
+        }
+        if duplicate_group_nodes.contains(node.id.as_str()) {
+            notes.push(format!(
+                "skipped node: {} belongs to a duplicate referent group",
+                node.id
+            ));
             continue;
         }
         if matches!(node.kind, NodeKind::SourceFile | NodeKind::CodeSymbol) {

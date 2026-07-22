@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::graph::{ContextGraph, EdgeKind, GraphError, NodeKind};
+use crate::safety::duplicate_references_well_formed;
 use crate::strategy::{
     CompressionBudget, CompressionStrategy, Estimate, RemovalKind, RemovalRecord, StrategyError,
     StrategyOutput,
@@ -158,10 +159,11 @@ fn compare_value_density(left: &AtomicGroup, right: &AtomicGroup) -> Ordering {
 }
 
 fn packable_structure(input: &ContextGraph) -> bool {
-    matches!(
-        input.validate(),
-        Ok(()) | Err(GraphError::ProtectionViolation { .. })
-    )
+    duplicate_references_well_formed(input)
+        && matches!(
+            input.validate(),
+            Ok(()) | Err(GraphError::ProtectionViolation { .. })
+        )
 }
 
 // The estimate contract has no budget parameter, so this is the deterministic
@@ -559,9 +561,11 @@ mod tests {
 
     #[test]
     fn test_dedup_referent_and_stubs_are_an_atomic_group() {
+        let mut stub = node("stub", NodeKind::ToolResponse, 20, 0.1, false);
+        stub.content = "[duplicate of node referent]".to_owned();
         let mut input = graph(vec![
             node("referent", NodeKind::ToolResponse, 100, 0.4, false),
-            node("stub", NodeKind::ToolResponse, 20, 0.1, false),
+            stub,
             node("protected", NodeKind::Summary, 100, 1.0, true),
         ]);
         input.edges.push(ContextEdge {
@@ -581,6 +585,56 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["referent", "stub"]
         );
+    }
+
+    #[test]
+    fn test_dedup_referent_and_stub_are_retained_together() {
+        let mut stub = node("stub", NodeKind::ToolResponse, 20, 0.1, false);
+        stub.content = "[duplicate of node referent]".to_owned();
+        let mut input = graph(vec![
+            node("referent", NodeKind::ToolResponse, 100, 0.9, false),
+            stub,
+            node("drop", NodeKind::Summary, 100, 0.1, false),
+        ]);
+        input.edges.push(ContextEdge {
+            from: "stub".to_owned(),
+            to: "referent".to_owned(),
+            kind: EdgeKind::DuplicateOf,
+            weight: 1.0,
+        });
+
+        let output = execute(&input, 120);
+
+        assert_eq!(ids(&output), ["referent", "stub"]);
+        assert_eq!(output.graph.edges, input.edges);
+        assert_eq!(output.removals.len(), 1);
+        assert_eq!(output.removals[0].node_id, "drop");
+    }
+
+    #[test]
+    fn test_malformed_duplicate_cycle_is_not_packable() {
+        let mut first = node("first", NodeKind::ToolResponse, 20, 0.1, false);
+        first.content = "[duplicate of node second]".to_owned();
+        let mut second = node("second", NodeKind::ToolResponse, 20, 0.1, false);
+        second.content = "[duplicate of node first]".to_owned();
+        let mut input = graph(vec![first, second]);
+        input.edges = vec![
+            ContextEdge {
+                from: "first".to_owned(),
+                to: "second".to_owned(),
+                kind: EdgeKind::DuplicateOf,
+                weight: 1.0,
+            },
+            ContextEdge {
+                from: "second".to_owned(),
+                to: "first".to_owned(),
+                kind: EdgeKind::DuplicateOf,
+                weight: 1.0,
+            },
+        ];
+
+        assert!(!PackBudget.supports(&input));
+        assert_eq!(execute(&input, 0).graph, input);
     }
 
     #[test]
