@@ -568,6 +568,7 @@ impl ReceiptStore for FileReceiptStore {
 }
 
 fn ensure_private_state_dir(path: &Path) -> Result<(), ReceiptError> {
+    #[cfg(unix)]
     let existed = path.exists();
     fs::create_dir_all(path).map_err(|source| ReceiptError::Io {
         path: path.to_path_buf(),
