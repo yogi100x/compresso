@@ -1,0 +1,27 @@
+rust/compresso-store/src/ops.rs
+  s_87261b37472da1::t_87790c8606804a 985-991,993,1461-1538,1540-1584,1586-1590
+  s_87261b37472da1::t_46f1020a4e36db 852,967-970,976-983,992
+  s_87261b37472da1::t_c7fb90bc0abb5b 363,374-380,444,795,1539,1585
+  s_87261b37472da1::t_6581c8d05e68c8 561-575,792-794
+  s_87261b37472da1::t_b669878e397dab 1,39-49,64-73,131-152,213-245,354-362,366-373,381,390,404-413,425,437-443,445-448,796
+  s_87261b37472da1::t_0a8aa6b025ffd2 971-975
+  s_87261b37472da1::t_708948351dd1a2 797,1591
+rust/compresso-store/src/lib.rs
+  s_87261b37472da1::t_6897681ba55508 18-21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "94e5c30947e140e1333ac40750166e3bec809093",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
