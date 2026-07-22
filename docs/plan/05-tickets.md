@@ -759,6 +759,156 @@ Test cases:
 
 ---
 
+## PB — Public package-manager beta
+
+Authorized by D67 and ADR-0025 as a bounded lane after the E1-E7 slice. PB
+pulls only the named beta release-hardening/signing subsets from E12/E14; it
+does not authorize E8-E16, licensing, cloud, desktop, updater, Homebrew, or
+stable publication. The private engine repository remains private. The public
+distribution repository contains auditable packaging code and verified signed
+native artifacts only. Epic estimate: 16.5d.
+
+### [x] PB-01: Public beta distribution decision and contracts
+Owner: PQ+I1 · Estimate: 0.5d · Depends: none
+Files: AGENTS.md, decisions.md, docs/adr/0021-crown-jewel-local-boundary.md, docs/adr/0025-public-package-manager-beta.md, docs/plan/04-mcp-and-integrations.md, docs/plan/05-tickets.md, docs/plan/08-ip-and-secure-deployment.md
+Description: Lock the public package-manager beta boundary and its real release blockers. A session root is the immutable canonical approved repository bound when an MCP server starts, never launcher scratch space. The launcher creates no mutable or temporary state. Define honest channel trust, binary recoverability, the exact E12/E14 subsets pulled forward, and explicit exclusions. D36 remains open and the stable npm tag remains blocked.
+Acceptance criteria:
+- ADR-0025, D67, AGENTS.md, and the MCP contract agree that a session root comes only from explicit `--root` or approved cwd, has no sole-approved-repository fallback, and cannot be changed by a tool call.
+- The decision names repository-bound MCP behavior, truthful provider disclosure, secret exclusions, repository management, `compresso setup CLIENT ROOT`, and the stable `COMPRESSO_LAUNCHER_PATH` upgrade contract as beta blockers owned by PB-02/PB-03.
+- Trust text states that signatures authenticate private-to-public import and enable independent verification, launcher SHA-256 is tamper/corruption detection rather than an unpatchable trust anchor, and full npm/package compromise can replace launcher, binary, and checks.
+- D46, ADR-0021, and 08 §2 retain the same honest recoverability language; D36 remains OPEN.
+- PB-02..PB-08 are dependency ordered, total 16.5d, and every beta acceptance gate has an owner.
+Test cases:
+- `test_pb01_cross_references_resolve`.
+- `test_pb01_session_root_and_launcher_state_contracts_do_not_conflate`.
+- `test_pb01_trust_claims_include_full_npm_compromise`.
+- `test_pb01_scope_scan_and_d36_remains_open`.
+
+### [ ] PB-02: Repository-bound MCP and secret-safe disclosure
+Owner: R2+PQ · Estimate: 3d · Depends: PB-01, E6-05
+Files: rust/compresso-cli/src/commands/mcp.rs, rust/compresso-mcp/src/server.rs, rust/compresso-atlas/src/scanner.rs, rust/compresso-store/src/, docs/plan/03-interfaces.md, docs/plan/04-mcp-and-integrations.md
+Description: Make one canonical approved repository the immutable boundary for each MCP process. Bind at startup from explicit `mcp serve --root ROOT` or the canonical cwd's longest approved ancestor; never fall back merely because one repository is approved. Tool roots may only confirm the bound root. Keep provider disclosure truthful and exclude documented secret classes before read, hash, tokenization, parsing, persistence, traces, search, or MCP output.
+Acceptance criteria:
+- Explicit root must be an exact approved canonical repository; cwd binding uses the longest approved ancestor. With neither, repository-independent compression/stats/explain remain available while repository tools fail with an actionable content-free error; a tool call cannot bind the session.
+- A tool cannot select a different repository, including another approved repository, and symlink/path aliases cannot escape the bound root.
+- Server instructions state that Compresso makes no independent network request while the coding client may send returned MCP content to its configured provider.
+- At minimum `.env*`, `*.pem`, and `id_rsa*` are excluded before file contents are opened or indexed and cannot appear in files, symbols, FTS, traces, or MCP results.
+Test cases:
+- `test_mcp_root_explicit_or_approved_cwd_only_without_sole_repo_fallback`.
+- `test_mcp_tool_root_cannot_switch_to_other_approved_repo`.
+- `test_mcp_provider_disclosure_names_client_provider_path`.
+- `test_secret_exclusions_happen_before_read_and_never_reach_store_or_mcp`.
+
+### [ ] PB-03: Repository lifecycle and one-command client setup
+Owner: D1+R2 · Estimate: 2.5d · Depends: PB-02, E6-05
+Files: rust/compresso-cli/src/commands/, rust/compresso-store/src/, rust/compresso-integrations/src/, docs/plan/03-interfaces.md, docs/plan/04-mcp-and-integrations.md
+Description: Add deterministic `compresso repos list`, safe `compresso repos remove ROOT`, and `compresso setup CLIENT ROOT`. Setup canonicalizes and indexes the repository, then installs client-appropriate MCP configuration. A global Codex entry omits `--root` so each Codex session binds from its cwd's longest approved ancestor; project-scoped Claude Code/Cursor entries may pass `mcp serve --root CANONICAL_ROOT`. Public launchers export a validated stable `COMPRESSO_LAUNCHER_PATH`; integrations record that normalized absolute lexical package-manager shim, not a resolved/versioned engine path, so upgrades require no client rewrite.
+Acceptance criteria:
+- Repositories list deterministically in text and JSON; remove previews or explicitly confirms removal of Compresso approval/index metadata and never deletes repository files.
+- Setup dry-run mutates nothing and shows index/approval plus exact client-config changes; real setup preserves backup, receipt, idempotence, and reversible uninstall behavior.
+- Global Codex configuration contains no fixed `--root` and is tested from two approved cwd sessions; each binds its own longest approved ancestor. Project-scoped Claude Code/Cursor configuration may include the exact canonical root, and no tool can switch the resulting session.
+- `COMPRESSO_LAUNCHER_PATH` is normalized to an absolute lexical path without resolving away the final shim symlink; its resolved target must be an existing executable regular file. Relative, missing, non-regular, or non-executable targets fail closed, while expected npm/pnpm symlinks remain valid. Direct engine use retains a documented safe fallback.
+- Upgrading package contents beneath the same launcher leaves installed client configuration byte-identical and still invokes the new engine.
+Test cases:
+- `test_repos_list_and_remove_are_deterministic_and_never_delete_source`.
+- `test_setup_dry_run_real_install_receipt_and_uninstall_roundtrip`.
+- `test_setup_codex_global_entry_binds_each_session_from_approved_cwd`.
+- `test_setup_project_scoped_clients_may_pin_exact_canonical_root`.
+- `test_launcher_path_preserves_absolute_lexical_shim_and_validates_target`.
+- `test_package_upgrade_preserves_client_config_and_uses_new_engine`.
+
+### [ ] PB-04: Private signed beta artifact pipeline
+Owner: I1+PQ · Estimate: 3d · Depends: PB-03, E7-04
+Files: Cargo.toml, .github/workflows/package-beta.yml, scripts/release/beta/, schemas/release-manifest/beta-v1.json
+Description: Build the final E1-E7 plus PB-02/PB-03 engine for `aarch64-apple-darwin`, `x86_64-apple-darwin`, and `x86_64-unknown-linux-gnu`. Pull forward only the required E12/E14 subsets: hardened dist build with private split symbols, exact artifact allowlist and secret scan, immutable artifacts, signed versioned manifest, SBOM, and private-workflow provenance. Private symbols, source, signing material, prompts, fixtures, and corpora never enter the public payload.
+Acceptance criteria:
+- Exactly three immutable artifacts are emitted; the signed manifest binds version, target, SHA-256, size, immutable identity, and provenance identity.
+- Public verification material accepts authentic artifacts and rejects mutation, wrong target/version/provenance, extra files, and an untrusted signer.
+- Release blocks on E1-E7/PB tests, E7 gates, payload allowlist, secret scan, signing, manifest validation, SBOM, or provenance failure.
+- Native macOS artifacts receive required OS signing; Linux retains independently verifiable signatures without claiming automatic OS enforcement.
+Test cases:
+- `test_beta_matrix_exact_three_targets`.
+- `test_beta_manifest_signature_digest_and_provenance_reject_tamper`.
+- `test_beta_artifact_allowlist_rejects_each_private_class`.
+- `test_beta_symbols_private_and_native_signing_policy`.
+
+### [ ] PB-05: Single package assembly and stateless launcher
+Owner: D1+I1 · Estimate: 2d · Depends: PB-03, PB-04
+Files: separate public distribution repository bin/compresso, package.json, package payload allowlist, launcher and npm pack tests
+Description: Assemble one `@compresso/cli` beta package with a readable POSIX launcher and the three verified native engines. The launcher self-locates through npm/pnpm layouts, selects one exact target, checks bundled SHA-256 for corruption/tampering, exports its normalized absolute lexical shim as `COMPRESSO_LAUNCHER_PATH` without resolving away the final package-manager symlink, and directly execs the engine. It creates no files, temporary directories, cleanup traps, or session state. The package has no lifecycle script, runtime dependency, or runtime Node.js requirement.
+Acceptance criteria:
+- Launcher behavior is identical from arbitrary cwd, project install, npm global symlink, and pnpm symlink layouts; unsupported OS/architecture executes nothing and reports exact supported targets.
+- A filesystem trace proves the launcher performs no write/mkdir/delete operation and direct exec preserves cwd, argv, streams, signals, and exit status so cwd-derived repository binding remains intact.
+- `npm pack --dry-run` contains exactly the launcher, three artifacts, signed manifest/evidence, public trust material, SBOM/provenance references, notices, and docs; private or unlisted material is absent.
+- Package metadata has no install/preinstall/postinstall/prepare equivalent or runtime dependency; installed execution works without Node/npm/pnpm on PATH.
+Test cases:
+- `test_launcher_self_location_exact_target_and_unsupported_refusal`.
+- `test_launcher_is_stateless_and_exec_transparent`.
+- `test_launcher_sha256_detects_corruption_without_claiming_signature_enforcement`.
+- `test_npm_pack_allowlist_no_lifecycle_and_node_free_runtime`.
+
+### [ ] PB-06: Public import and independent npm publication trust
+Owner: I1+PQ · Estimate: 2d · Depends: PB-04, PB-05
+Files: separate public distribution repository import and publish workflows, verification scripts, trust tests, docs/runbooks/public-beta-import.md
+Description: Import the immutable private release into a separate packaging-only public repository only after independent signature, digest, platform/version, and provenance verification. Prepare a protected publication pipeline with staged approval, native OS signing evidence, npm trusted publishing through OIDC, and npm provenance; use no long-lived npm token. Preserve signatures for external/manual verification while stating clearly that full npm/package compromise can replace launcher, engine, and bundled checks, especially on Linux. PB-08 alone authorizes the registry write.
+Acceptance criteria:
+- Mutable, unsigned, wrong-signer, digest/platform/version/provenance-mismatched, or extra-file imports cannot reach assembly or publication.
+- Protected review is recorded for import, launcher, trust-root, and workflow changes; trust-root changes cannot hide inside artifact import.
+- Public checkout records immutable source reference, manifest/artifact digests, signer identity, provenance, reviewer, SBOM, and exact package composition without private material.
+- The publication workflow uses OIDC/provenance and staged approval with no long-lived token; native OS signing is verified where available, and pipeline validation performs no registry mutation.
+- Verification docs distinguish independent import/manual/OS signatures from launcher SHA-256 and acknowledge that neither prevents a fully compromised package channel from replacing its own checks.
+Test cases:
+- `test_public_import_accepts_only_pinned_signed_release`.
+- `test_public_repo_private_material_scan_and_protected_review`.
+- `test_publish_uses_oidc_provenance_staged_approval_and_native_signing`.
+- `test_trust_claims_cover_full_registry_package_compromise`.
+
+### [ ] PB-07: Truthful beta, provider, platform, and IP disclosure
+Owner: PQ+D1 · Estimate: 1d · Depends: PB-02, PB-03, PB-05, PB-06
+Files: separate public distribution repository README.md, package metadata, docs/beta/, CLI/help snapshot fixtures
+Description: Align package, README, CLI/help, doctor, setup, verification, and uninstall disclosures. Name the proprietary recoverable engine, exact targets, immutable repository session-root behavior, stable launcher upgrade path, persistent data, secret exclusions, provider data path, channel trust and limitations, and beta exclusions. Do not turn accounting labels into live-provider claims.
+Acceptance criteria:
+- All surfaces state that Compresso makes no independent provider request but MCP results may be sent by the configured coding client to its provider under client policy.
+- Docs explain explicit-root/approved-cwd binding, no sole-repository fallback or tool root switching, stateless launcher behavior, and repository list/remove/setup recovery paths.
+- Trust disclosure states native OS signing, npm OIDC/provenance, staged approval, independent verification, launcher SHA-256 limitations, and full package-channel compromise risk.
+- No surface claims stable, Windows, source-open engine, secrecy, unpatchability, losslessness, cloud, licensing, desktop, telemetry, or resolved trademark clearance.
+Test cases:
+- `test_beta_disclosure_snapshots_agree_across_surfaces`.
+- `test_provider_and_session_root_disclosure_is_truthful`.
+- `test_disclosure_names_proprietary_recoverable_engine_and_channel_limits`.
+- `test_forbidden_beta_claim_scan_is_empty`.
+
+### [ ] PB-08: Public beta publication and clean-host acceptance
+Owner: I1+PQ+D1 · Estimate: 2.5d · Depends: PB-06, PB-07
+Files: separate public distribution repository publish workflow, docs/runbooks/public-beta-release.md, beta evidence records
+Description: Publish only `@compresso/cli@beta` after every PB gate passes. Test the packed and published bytes on clean macOS arm64, macOS x86_64, and Linux x86_64 hosts. Exercise repository-bound setup, upgrade stability, Node-free/offline runtime, stateless launcher behavior, secret exclusion, independent verification, recovery, and uninstall. Record immutable evidence and yank/revocation procedure; never change latest/stable or publish Windows.
+Acceptance criteria:
+- Clean hosts run `compresso doctor`, `compresso setup codex ROOT --dry-run`, and `compresso setup codex ROOT`; Codex launched from ROOT completes MCP initialize/tool-list and repository tools bound to ROOT, while another approved root is rejected.
+- Package upgrade preserves client configuration while invoking the upgraded engine; repo list/remove and reversible integration uninstall behave as documented.
+- Network-denied runtime works without Node/npm; install executes no lifecycle/download; launcher creates no mutable state; secret fixtures never reach store or MCP.
+- Release evidence links import review, signatures, OS signing, SBOM, private and npm provenance, clean-host results, package digest, and yank/revocation drill.
+- Only the npm beta tag changes; D36 remains OPEN and Windows, stable, licensing, cloud, desktop, updater, Homebrew, and general E8-E16 stay excluded.
+Test cases:
+- `test_published_beta_clean_host_setup_mcp_and_root_isolation`.
+- `test_published_beta_upgrade_preserves_config_and_node_free_runtime`.
+- `test_published_beta_stateless_launcher_secret_exclusion_and_recovery`.
+- `test_beta_tag_only_d36_open_and_no_windows_artifact`.
+
+### PB beta acceptance gates
+
+| Gate | Requirement | Owner |
+|---|---|---|
+| PB-G1 | MCP binds one immutable canonical approved repository from explicit root or approved cwd only; tools cannot switch roots; provider disclosure and secret exclusions are truthful and tested | PB-02, PB-08 |
+| PB-G2 | Repository list/remove, one-command setup, dry-run/backup/receipt/uninstall, client-appropriate cwd/explicit root binding, and lexical shim-path upgrades work without deleting repository files | PB-03, PB-08 |
+| PB-G3 | Every private artifact verifies against immutable manifest, signature, digest, target, version, and provenance; public payloads exclude private material | PB-04, PB-06 |
+| PB-G4 | The single allowlisted package has no lifecycle/runtime dependency; its launcher self-locates, selects exactly, creates no mutable state, preserves cwd for immutable repository-session binding, directly execs, and detects corruption | PB-05, PB-08 |
+| PB-G5 | Public import, native OS signing, npm OIDC/provenance, and staged approval are auditable; disclosure acknowledges full package-channel compromise and the limits of launcher SHA-256 | PB-06, PB-07, PB-08 |
+| PB-G6 | Package, README, CLI/help, setup, and verification surfaces agree on proprietary recoverability, platforms, provider path, session-root rules, trust limits, and exclusions | PB-07 |
+| PB-G7 | Clean supported hosts complete doctor, setup dry-run/install, repository-bound offline MCP, upgrade, recovery, and uninstall with Node absent at runtime | PB-08 |
+| PB-G8 | Only the npm `beta` tag is changed; D36 remains OPEN; stable/latest, Windows, licensing, cloud, desktop, updater, Homebrew, and general E8-E16 remain out of scope | PB-01, PB-08 |
+
+---
+
 ## E8 — Supervisor & local API
 
 Per `03-interfaces.md` §7 and build-doc Phase 4. All endpoints are authenticated and localhost-only; every payload carries `schema_version` and is validated against `schemas/local-api/v1.json`; unknown versions fail open, never crash. Epic estimate: ~4 wk.
@@ -2516,6 +2666,8 @@ Test cases:
 
 Slice: E1-01, E1-02, E1-03, E1-04, E1-05, E1-06, E2-01, E2-02, E2-02a, E3-01, E2-03, E3-02, E3-03, E2-04, E2-05, E2-06, E2-07, E2-08, E2-12, E2-13, E2-14, E3-04, E3-05, E3-06, E3-07, E3-08, E2-09, E7-01, E7-07, E2-10, E2-11, E3-09, E7-02, E3-10, E3-11, E3-12, E4-01, E4-02, E4-03, E4-04, E4-05, E5-01, E5-02, E5-03, E5-04, E5-05, E5-06, E2-15, E7-03, E7-04, E7-05, E7-06, E5-07, E6-01, E6-02, E6-03, E6-04, E6-05.
 
+Authorized public beta lane: PB-01, PB-02, PB-03, PB-04, PB-05, PB-06, PB-07, PB-08. PB-04 also waits for E7-04 evidence. This lane consumes only the ADR-0025 beta subsets of E12/E14 and does not open the post-slice waves.
+
 Post-slice, wave 1 — local platform: E8-01, E8-02, E8-03, E8-08, E8-04, E8-05, E8-06, E8-07, E14-01, E14-02, E14-03, E14-04.
 Wave 2 — desktop: E9-01, E14-05, E9-02, E9-03, E9-04, E9-05, E9-06, E9-07, E9-08.
 Wave 3 — cloud + local entitlements: E10-01, E10-02, E10-09, E10-03, E10-04, E10-05, E10-06, E10-07, E10-15, E10-08, E10-10, E10-11, E10-12, E10-13, E10-14.
@@ -2528,6 +2680,7 @@ Wave 9 — deferred sandbox actions: E14-19, E14-20, E15-04, E15-31, E15-32.
 
 Parallelism notes:
 - Slice: E2 (R1) and E3 (R2) run concurrently after E1; E7-01/E7-02 (PQ/R1) overlap E2's tail; E4 (D1) starts once E2-09 and E3-12 land; E5 (R2) follows E3; E6 (D1) follows E5-01 and overlaps E5-02..07; E1-06 and E4-05 (I1) slot in any time after E1-02/E4-04. E2-02a is a maintainer task (needs an Anthropic API key) and can land any time after E2-02 without blocking anything — until it lands, the interim 1.15 factor applies.
+- Public beta: PB-02 closes repository isolation, provider disclosure, and secret-exclusion blockers before PB-03 installs repository-bound client configurations. PB-04 signs the resulting engine; PB-05 assembles the stateless launcher/package; PB-06 verifies public import and prepares the protected publication pipeline; PB-07 aligns disclosure; PB-08 alone performs the registry write and clean-host publication and cannot change stable/latest.
 - Post-slice: wave 1 (R2) and wave 3 (F1 owns cloud; R1/R2 own the E10-06..08 local entitlement tickets) run concurrently; wave 2 (D1) follows E8-04. Wave 5 (R1/R2/PQ) is independent of E8–E12 through its first three phases and should start alongside wave 1 to smooth R1/R2 utilization. E11 (R1) needs only E2/E3 and can overlap wave 3. E14-01..04 land early in wave 1 so release hardening inputs (dist profile, IPC suite) are ready when E12-01 starts; E14-05 rides with E9-01.
 - Hard cross-epic edges: existing edges remain; E15 high-impact work needs E14-17; browser/terminal need E14-18 and E15-30.
 - Solo mode: all roles collapse to the owner; the flat lists above remain the execution order.
@@ -2544,6 +2697,7 @@ Parallelism notes:
 | E6 Integrations | 5 | 9.5 | ~2 wk | installed-binary path resolution (D42) |
 | E7 Eval & fixtures | 7 | 13.5 | ~2.5 wk (overlaps E2/E3) | +recall gate tickets (D40) |
 | **Slice total** | **58** | **96 gross** | **~19.2 solo engineer-wk; 2 engineers ≈ 9–10 calendar wk** | Derived directly from ticket bodies |
+| PB Public package beta | 8 | 16.5 | ~3.5 wk | bounded E12/E14 subsets; no stable release |
 | E8 Supervisor & local API | 8 | 20 | ~4 wk | |
 | E9 Desktop (Tauri) | 8 | 25 | ~5 wk | |
 | E10 Cloud + local entitlements | 15 | 43 | ~8.5 wk (F1, with R1/R2 local tickets in parallel) | |
@@ -2553,5 +2707,5 @@ Parallelism notes:
 | E14 IP & secure deployment | 17 | 39 | ~8 wk | +E15 threat/sandbox gates |
 | E15 WOZ-inspired capabilities | 34 | 121.5 | ~24.5 engineer-wk | A-F incremental; G deferred |
 | E16 Full-product completion | 16 | 59 | ~12 engineer-wk, dependency-phased | |
-| **Post-slice total** | **146** | **445.5 gross** | heavily parallel across roles | Derived directly from ticket bodies |
-| **Grand total** | **204** | **541.5 gross** | **~108.3 engineer-wk** | |
+| **Post-slice + PB total** | **154** | **462 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
+| **Grand total** | **212** | **558 gross** | **~111.6 engineer-wk** | |

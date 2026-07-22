@@ -3,9 +3,12 @@
 ## Scope
 
 Compresso is a local-first context intelligence layer for AI coding tools. The
-current delivery target is the offline vertical slice defined by E1-E7. Do not
-start E8-E16 or licensing infrastructure unless the user explicitly changes
-the scope.
+current delivery target is the offline vertical slice defined by E1-E7 plus
+the separately authorized PB-01..PB-08 public package-manager beta lane. Do
+not start E8-E16, licensing, cloud, or desktop work unless the user explicitly
+changes the scope. PB tickets may pull only the release-hardening and signing
+subsets of E12/E14 named in ADR-0025; that exception does not authorize either
+epic generally.
 
 ## Sources of Truth
 
@@ -28,6 +31,10 @@ inventing a new contract.
 - After E1, E2 and E3 may proceed in parallel.
 - Expose the product in order: E4, then E5, then E6.
 - Begin E7 alongside the tail of E2 and E3.
+- After the E1-E7 slice, execute PB-01 through PB-08 in their documented
+  dependency order. PB work publishes signed native artifacts and auditable
+  packaging only; the private engine source never moves into the public
+  distribution repository.
 - Keep every change within the active ticket's scope.
 
 ## Development Workflow
@@ -55,6 +62,29 @@ inventing a new contract.
 - Validate versioned schemas at every process or persistence boundary.
 - Any assistant configuration mutation needs dry-run preview, backup, receipt,
   and reversible uninstall behavior.
+- The public beta package is `@compresso/cli` with one POSIX launcher and only
+  the documented macOS arm64/x64 and Linux x64 native artifacts. It has no
+  install scripts, no runtime Node.js dependency, and no Windows claim.
+- The launcher directly execs the selected engine, creates no mutable or
+  temporary state, and exposes its normalized absolute lexical shim path
+  through `COMPRESSO_LAUNCHER_PATH` so package-manager symlinks remain stable
+  and integration upgrades do not rewrite client configuration.
+- Bind repository access in each MCP process to one immutable canonical
+  approved repository selected only by explicit `--root` or an approved
+  current working directory. A process with neither remains unbound: text
+  compression, stats, and explain stay available, while repository tools fail
+  actionably. Never use a sole-approved-repository fallback or allow a tool
+  call to bind or switch roots.
+- Provider disclosure must distinguish Compresso's lack of independent network
+  I/O from the configured coding client's ability to send MCP results to its
+  model provider.
+- Preserve native OS signing, npm OIDC provenance, staged public-repository
+  approval, and the independently signed private-to-public import. Bundled
+  SHA-256 checks detect corruption or tampering but are not an unpatchable trust
+  anchor; a full npm compromise can replace the launcher, engine, and checks.
+- Treat every shipped native binary as recoverable by its owner. Obfuscation is
+  optional deterrence only and must never be described as secrecy or
+  authorization.
 
 ## Repository Hygiene
 
