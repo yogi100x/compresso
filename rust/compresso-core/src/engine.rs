@@ -61,6 +61,42 @@ impl Engine {
         self
     }
 
+    /// Returns the engine's configured default compression mode.
+    pub const fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// Compresses one request in an explicit mode without mutating this engine.
+    pub fn compress_in_mode(
+        &self,
+        mode: Mode,
+        input: ContextGraph,
+        budget: &CompressionBudget,
+    ) -> CompressionResult {
+        if mode == self.mode {
+            return self.compress(input, budget);
+        }
+        Self {
+            mode,
+            counter: self.counter,
+            registry: StrategyRegistry::safe_default(mode),
+            provider_validator: Arc::clone(&self.provider_validator),
+        }
+        .compress(input, budget)
+    }
+
+    /// Returns the caller's graph byte-identically with a valid fallback trace.
+    pub fn fail_open(&self, input: ContextGraph, reason: impl Into<String>) -> CompressionResult {
+        let before_tokens = recounted_total(&input);
+        self.fallback(
+            input,
+            before_tokens,
+            Vec::new(),
+            identity_checks(),
+            reason.into(),
+        )
+    }
+
     /// Compresses `input` without exposing a fallible API.
     ///
     /// Every rejected candidate, strategy failure, and caught panic restores
