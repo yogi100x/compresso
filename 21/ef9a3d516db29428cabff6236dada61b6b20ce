@@ -1,0 +1,111 @@
+rust/compresso-core/src/tokens.rs
+  s_87261b37472da1::t_95d90e55b7f32e 227,256,263
+  s_87261b37472da1::t_3013c857579651 76
+  s_87261b37472da1::t_847bbdf3a41132 230,325-360,362-364,366-367
+  s_87261b37472da1::t_5ecd42d139edac 58-66,71-75,77-89,301-324,368-376
+  s_87261b37472da1::t_e8b41814c60e25 255,257-262,264-268
+  s_87261b37472da1::t_60c234ebec354a 90,103,107-115,400
+  s_87261b37472da1::t_dc9b427ef521b2 361,365
+  s_87261b37472da1::t_4591d2cefa4775 91
+  s_87261b37472da1::t_b4249bac7418a2 377
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_d9cc1c6d676bef 2188
+rust/compresso-core/src/graph.rs
+  s_87261b37472da1::t_9e8e9f0fc90df9 250
+  s_87261b37472da1::t_34f3fac85f6591 1,8,178-183,245-249,251-284
+  s_87261b37472da1::t_d3a98cb3abdff3 310-312,315-329,363-386,389
+  s_87261b37472da1::t_624c7183f9eb32 285,387,390-413
+  s_87261b37472da1::t_3148bee4450fe0 286,388
+rust/compresso-core/tests/large_payload_latency.rs
+  s_87261b37472da1::t_2ca164de9d1097 1-4,7-14,16-21,25-34,36-37,44-59,61-66,69-80
+  s_87261b37472da1::t_b28a6cd3c3265c 15
+  s_87261b37472da1::t_9e8e9f0fc90df9 38-43
+  s_87261b37472da1::t_9a53001032c235 5-6,35
+  s_87261b37472da1::t_94cdbb6b8f03e9 22-24
+  s_87261b37472da1::t_5dd5a5e2ecea8f 60,67-68
+fixtures/benchmarks/mib-rebuild-stream/generate.mjs
+  s_87261b37472da1::t_686ae48d134361 1-7,12-38
+  s_87261b37472da1::t_b28a6cd3c3265c 8
+  s_87261b37472da1::t_82208b9969f50a 9-11
+rust/compresso-core/src/engine.rs
+  s_87261b37472da1::t_3013c857579651 1,22,955-961,963,967-981
+  s_87261b37472da1::t_9a53001032c235 25-27
+  s_87261b37472da1::t_d8c6fa126ac5b7 622,1030,1356,1606,1609-1621
+  s_87261b37472da1::t_8285236fb6ce6a 1176,1210,1252,1388,1392,1402,1410,1415
+  s_87261b37472da1::t_cabfc362b1f703 2
+  s_87261b37472da1::t_624c7183f9eb32 999-1000,1017-1029,1355,1572-1605,1608
+  s_87261b37472da1::t_8e924ba4c3aea8 1552-1556
+  s_87261b37472da1::t_9e8e9f0fc90df9 19-20,430-456,478,717-720,723-724,749-758,776-778
+  s_87261b37472da1::t_4b4e4fa892ebfa 14-15,249,280,309,345,374,413,606-614
+  s_87261b37472da1::t_bbab73e3433c3c 1260-1354,1482-1551,1557-1571
+  s_87261b37472da1::t_b30186d37a6ab4 230
+  s_87261b37472da1::t_e46782caeb43ce 224,266,403,473,479,499,674-716,721-722,725-748,759-775,779-797,982
+  s_87261b37472da1::t_4b051e112ce887 615-621,623,798,983,1031,1357,1607
+rust/compresso-core/src/strategies/collapse_logs.rs
+  s_87261b37472da1::t_34f3fac85f6591 99,103,114
+  s_87261b37472da1::t_c6a568ee25e1f0 1-2
+  s_87261b37472da1::t_9e8e9f0fc90df9 561-564
+rust/compresso-eval/benches/large_payload_latency.rs
+  s_87261b37472da1::t_5dd5a5e2ecea8f 22,45,70,72-73,86-87,110,112-117
+  s_87261b37472da1::t_d8c6fa126ac5b7 5-6,18,56,92
+  s_87261b37472da1::t_2ca164de9d1097 1-4,7-17,19-21,23-27,32-37,39-44,46-55,57-69,81-85,88-91,93-109,111,118-134
+  s_87261b37472da1::t_94cdbb6b8f03e9 28-31,71,74-80
+  s_87261b37472da1::t_9a53001032c235 38
+rust/compresso-core/src/safety.rs
+  s_87261b37472da1::t_4b4e4fa892ebfa 100-128
+rust/compresso-core/src/strategies/compact_json.rs
+  s_87261b37472da1::t_34f3fac85f6591 1,92,96,104
+  s_87261b37472da1::t_8e924ba4c3aea8 590
+.github/workflows/ci.yml
+  s_87261b37472da1::t_5dd5a5e2ecea8f 186-188
+rust/compresso-eval/tests/corpus_integrity.rs
+  s_87261b37472da1::t_0d6e8c9ed39618 30,343-347
+  s_87261b37472da1::t_046ce603aae7f1 61-75,247,287-291,321-342,348-354
+  s_87261b37472da1::t_0f8252bf463812 355
+rust/compresso-mcp/src/tools/engine_tools.rs
+  s_87261b37472da1::t_60c234ebec354a 7-8,92-95
+  s_87261b37472da1::t_4df1051529bf79 6
+  s_87261b37472da1::t_9a53001032c235 77
+rust/compresso-core/src/strategies/dedup_exact.rs
+  s_87261b37472da1::t_34f3fac85f6591 1,58,68,76,107
+  s_87261b37472da1::t_8e924ba4c3aea8 252-255
+rust/compresso-core/src/strategies/pack_budget.rs
+  s_87261b37472da1::t_34f3fac85f6591 2,45,53,83-86,135
+  s_87261b37472da1::t_8e924ba4c3aea8 375
+rust/compresso-core/src/lib.rs
+  s_87261b37472da1::t_0d6e8c9ed39618 34-35
+  s_87261b37472da1::t_9a53001032c235 18
+rust/compresso-eval/Cargo.toml
+  s_87261b37472da1::t_2ca164de9d1097 22,24-27
+rust/compresso-core/src/strategy.rs
+  s_87261b37472da1::t_34f3fac85f6591 1-2,65-67,182
+fixtures/benchmarks/mib-rebuild-stream/manifest.json
+  s_87261b37472da1::t_141dd47d8964c3 7,12,17
+  s_87261b37472da1::t_72c40c3ad5572c 1-6,8-11,13-16,18-20
+scripts/ci/check_ci_matrix.rb
+  s_87261b37472da1::t_5dd5a5e2ecea8f 65-74
+Cargo.lock
+  s_87261b37472da1::t_481b3776e25b09 397
+fixtures/benchmarks/mib-rebuild-stream/input-1mib.log
+  s_87261b37472da1::t_6c816c1f7a2c6f 1-8192
+fixtures/benchmarks/mib-rebuild-stream/input-4mib.log
+  s_87261b37472da1::t_c3a57df589e637 1-32768
+fixtures/benchmarks/mib-rebuild-stream/input-8mib.log
+  s_87261b37472da1::t_fc19c9d7a0701e 1-65536
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "21ef9a3d516db29428cabff6236dada61b6b20ce",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
