@@ -557,7 +557,7 @@ Test cases:
 - test_search_tool_hits: `{"query":"SessionManager"}` → first hit qualified_name `SessionManager` with path and line.
 - test_context_tool_budget: `{"task":"session retry logic","max_tokens":800}` → ≤800 tokens.
 
-### [ ] E5-04: Tool handlers — compresso_compress, compresso_impact, compresso_stats, compresso_explain
+### [x] E5-04: Tool handlers — compresso_compress, compresso_impact, compresso_stats, compresso_explain
 Owner: R2 · Estimate: 1.5d · Depends: E5-01, E2-09, E3-03, E3-12
 Files: rust/compresso-mcp/src/tools/engine_tools.rs, tests in rust/compresso-mcp/tests/tools_engine.rs
 Description: `compresso_compress` builds a graph from the `text` argument (D7: compatible with `tetris_compress_text`), runs `Engine::compress` in the configured mode, returns compressed text plus real-tokenizer before/after counts; `compresso_impact` → `impact`; `compresso_stats` → `Store::stats` in the §3 vocabulary; `compresso_explain` returns the stored trace for an `operation_id`. Operation recording follows D47 (02-schemas §4, 04 §1.1): `compresso_compress` records a compression operation whose `trace_json` is the compression-trace v1 document validated against the **root** schema; the retrieval handlers (`compresso_impact`, `compresso_stats`, `compresso_explain`, plus the E5-02/E5-03 navigation and read tools) record `trace_json = NULL` with `tokens_served` set to the tokens returned to the client (E5-05 supplies the session id plumbing).
