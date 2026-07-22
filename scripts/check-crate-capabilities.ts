@@ -131,13 +131,213 @@ const sourceCapabilityPaths: Array<{
   { capability: "network", root: "tokio", member: "net" },
   { capability: "network", root: "async_std", member: "net" },
   { capability: "network", root: "smol", member: "net" },
-  { capability: "process", root: "std", member: "process" },
   { capability: "process", root: "tokio", member: "process" },
   { capability: "process", root: "async_process", member: "Command" },
 ];
 
+const inertStdProcessMembers = new Set(["ExitCode", "id"]);
+
 function regexEscape(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+type ProcessPrefix = {
+  path: string;
+  origin: string | null;
+};
+
+function parseGroupedUseEntries(body: string) {
+  const entries: Array<{ name: string; alias: string | null }> = [];
+  for (const item of body.split(",")) {
+    const parsed = item
+      .trim()
+      .match(
+        /^(self|[A-Za-z_][A-Za-z0-9_]*)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*|_))?/u,
+      );
+    if (parsed) {
+      entries.push({
+        name: parsed[1],
+        alias: parsed[2] && parsed[2] !== "_" ? parsed[2] : null,
+      });
+    }
+  }
+  return entries;
+}
+
+function groupedUseEntries(source: string, prefix: string) {
+  const entries: Array<{ name: string; alias: string | null }> = [];
+  const pattern = new RegExp(
+    `\\buse\\s+${regexEscape(prefix)}\\s*::\\s*\\{([^}]*)\\}`,
+    "gu",
+  );
+  for (const match of source.matchAll(pattern)) {
+    entries.push(...parseGroupedUseEntries(match[1]));
+  }
+  return entries;
+}
+
+function stdProcessCapabilityUses(source: string) {
+  const uses: Array<{ capability: Capability; label: string }> = [];
+  const rootPrefixes = new Map<string, ProcessPrefix>([
+    ["std", { path: "std", origin: null }],
+  ]);
+
+  for (const match of source.matchAll(
+    /\b(?:use\s+std|extern\s+crate\s+std)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)/gu,
+  )) {
+    rootPrefixes.set(match[1], { path: match[1], origin: "std" });
+  }
+  for (const entry of groupedUseEntries(source, "std")) {
+    if (entry.name === "self" && entry.alias) {
+      rootPrefixes.set(entry.alias, { path: entry.alias, origin: "std" });
+    }
+  }
+
+  for (const root of rootPrefixes.values()) {
+    const nestedUse = new RegExp(
+      `\\buse\\s+${regexEscape(root.path)}\\s*::\\s*\\{([^;]*)\\}\\s*;`,
+      "gu",
+    );
+    for (const statement of source.matchAll(nestedUse)) {
+      const body = statement[1];
+      if (/\bprocess\s*::\s*\*/u.test(body)) {
+        const alias = root.origin ? " (alias of std)" : "";
+        uses.push({
+          capability: "process",
+          label: `${root.path}::{process::*}${alias}`,
+        });
+      }
+      for (const match of body.matchAll(
+        /\bprocess\s*::\s*([A-Za-z_][A-Za-z0-9_]*)/gu,
+      )) {
+        if (!inertStdProcessMembers.has(match[1])) {
+          const alias = root.origin ? " (alias of std)" : "";
+          uses.push({
+            capability: "process",
+            label: `${root.path}::{process::${match[1]}}${alias}`,
+          });
+        }
+      }
+      for (const match of body.matchAll(
+        /\bprocess\s*::\s*\{([^}]*)\}/gu,
+      )) {
+        if (/(?:^|,)\s*\*(?:\s*,|$)/u.test(match[1])) {
+          const alias = root.origin ? " (alias of std)" : "";
+          uses.push({
+            capability: "process",
+            label: `${root.path}::{process::{*}}${alias}`,
+          });
+        }
+        for (const entry of parseGroupedUseEntries(match[1])) {
+          if (!inertStdProcessMembers.has(entry.name)) {
+            const alias = root.origin ? " (alias of std)" : "";
+            uses.push({
+              capability: "process",
+              label: `${root.path}::{process::{${entry.name}}}${alias}`,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  const processPrefixes = new Map<string, ProcessPrefix>();
+  for (const root of rootPrefixes.values()) {
+    const path = `${root.path}::process`;
+    processPrefixes.set(path, {
+      path,
+      origin: root.origin ? "std::process" : null,
+    });
+    for (const entry of groupedUseEntries(source, root.path)) {
+      if (entry.name === "process") {
+        const alias = entry.alias ?? "process";
+        processPrefixes.set(alias, {
+          path: alias,
+          origin: "std::process",
+        });
+      }
+    }
+  }
+
+  let prefixCount = -1;
+  while (prefixCount !== processPrefixes.size) {
+    prefixCount = processPrefixes.size;
+    for (const prefix of [...processPrefixes.values()]) {
+      const directAlias = new RegExp(
+        `\\buse\\s+${regexEscape(prefix.path)}\\s+as\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*;`,
+        "gu",
+      );
+      for (const match of source.matchAll(directAlias)) {
+        processPrefixes.set(match[1], {
+          path: match[1],
+          origin: "std::process",
+        });
+      }
+      const directImport = new RegExp(
+        `\\buse\\s+${regexEscape(prefix.path)}\\s*;`,
+        "u",
+      );
+      if (directImport.test(source)) {
+        const localName = prefix.path.split("::").at(-1) ?? "process";
+        processPrefixes.set(localName, {
+          path: localName,
+          origin: "std::process",
+        });
+      }
+      for (const entry of groupedUseEntries(source, prefix.path)) {
+        if (entry.name === "self") {
+          const alias = entry.alias ?? "process";
+          processPrefixes.set(alias, {
+            path: alias,
+            origin: "std::process",
+          });
+        }
+      }
+    }
+  }
+
+  for (const prefix of processPrefixes.values()) {
+    const wildcardPattern = new RegExp(
+      `\\b${regexEscape(prefix.path)}\\s*::\\s*\\*`,
+      "u",
+    );
+    if (wildcardPattern.test(source)) {
+      const alias = prefix.origin ? ` (alias of ${prefix.origin})` : "";
+      uses.push({
+        capability: "process",
+        label: `${prefix.path}::*${alias}`,
+      });
+    }
+    const memberPattern = new RegExp(
+      `\\b${regexEscape(prefix.path)}\\s*::\\s*([A-Za-z_][A-Za-z0-9_]*)`,
+      "gu",
+    );
+    for (const match of source.matchAll(memberPattern)) {
+      const member = match[1];
+      if (!inertStdProcessMembers.has(member)) {
+        const alias = prefix.origin ? ` (alias of ${prefix.origin})` : "";
+        uses.push({
+          capability: "process",
+          label: `${prefix.path}::${member}${alias}`,
+        });
+      }
+    }
+
+    for (const entry of groupedUseEntries(source, prefix.path)) {
+      if (
+        entry.name !== "self" &&
+        !inertStdProcessMembers.has(entry.name)
+      ) {
+        const alias = prefix.origin ? ` (alias of ${prefix.origin})` : "";
+        uses.push({
+          capability: "process",
+          label: `${prefix.path}::${entry.name}${alias}`,
+        });
+      }
+    }
+  }
+
+  return uses;
 }
 
 async function cargoMetadata(manifestPath: string, resolved: boolean) {
@@ -260,7 +460,7 @@ function stripRustCommentsAndStrings(source: string) {
 }
 
 function sourceCapabilityUses(source: string) {
-  const uses: Array<{ capability: Capability; label: string }> = [];
+  const uses = stdProcessCapabilityUses(source);
 
   for (const path of sourceCapabilityPaths) {
     const root = regexEscape(path.root);

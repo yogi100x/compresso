@@ -40,6 +40,52 @@ test("test_direct_spawn_in_terminal_fails", async () => {
   );
 });
 
+test("test_inert_std_process_apis_pass", async () => {
+  const result = await checkWorkspace(fixture("allowed-core-inert-process"));
+
+  assert.deepEqual(result, { ok: true, checkedCrates: 1, violations: [] });
+});
+
+test("test_process_control_apis_fail", async () => {
+  const result = await checkWorkspace(fixture("denied-core-process-control"));
+  const violations = result.violations.join("\n");
+
+  assert.equal(result.ok, false);
+  assert.match(violations, /compresso-core.*std::process::Command.*process/u);
+  assert.match(violations, /compresso-core.*std::process::exit.*process/u);
+  assert.match(violations, /compresso-core.*std::process::abort.*process/u);
+});
+
+test("test_std_process_wildcard_import_fails", async () => {
+  const result = await checkWorkspace(
+    fixture("denied-core-process-wildcard"),
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(
+    result.violations.join("\n"),
+    /compresso-core.*process API std::process::\*.*process/u,
+  );
+});
+
+test("test_nested_process_imports_fail", async () => {
+  const result = await checkWorkspace(fixture("denied-core-process-nested"));
+  const violations = result.violations.join("\n");
+
+  assert.equal(result.ok, false);
+  assert.match(violations, /process API .*Command.*direct\.rs/u);
+  assert.match(violations, /process API .*Command.*nested\.rs/u);
+  assert.match(violations, /process API .*Command.*root_alias\.rs/u);
+});
+
+test("test_nested_inert_process_imports_pass", async () => {
+  const result = await checkWorkspace(
+    fixture("allowed-core-nested-inert-process"),
+  );
+
+  assert.deepEqual(result, { ok: true, checkedCrates: 1, violations: [] });
+});
+
 test("test_sanctioned_agent_network_and_process_pass", async () => {
   const result = await checkWorkspace(fixture("allowed-agent-process"));
 
@@ -97,7 +143,7 @@ test("test_aliased_std_process_fails", async () => {
   assert.equal(result.ok, false);
   assert.match(
     result.violations.join("\n"),
-    /compresso-terminal.*process API platform::process \(alias of std\)/u,
+    /compresso-terminal.*process API platform::process::Command \(alias of std::process\)/u,
   );
 });
 
@@ -107,7 +153,7 @@ test("test_grouped_std_process_import_fails", async () => {
   assert.equal(result.ok, false);
   assert.match(
     result.violations.join("\n"),
-    /compresso-terminal.*process API std::\{process\}/u,
+    /compresso-terminal.*process API proc::Command \(alias of std::process\)/u,
   );
 });
 
@@ -120,6 +166,18 @@ test("test_transitive_reqwest_in_core_fails", async () => {
   assert.match(
     result.violations.join("\n"),
     /compresso-core.*compresso-core -> capability-helper -> reqwest.*network/u,
+  );
+});
+
+test("test_transitive_process_dependency_in_core_fails", async () => {
+  const result = await checkWorkspace(
+    fixture("denied-core-transitive-process"),
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(
+    result.violations.join("\n"),
+    /compresso-core.*compresso-core -> capability-helper -> duct.*process/u,
   );
 });
 
