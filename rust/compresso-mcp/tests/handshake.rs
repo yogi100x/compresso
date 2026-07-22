@@ -23,6 +23,15 @@ const TOOL_NAMES: [&str; 10] = [
     "compresso_stats",
     "compresso_unfold",
 ];
+const STUB_TOOL_NAMES: [&str; 7] = [
+    "compresso_compress",
+    "compresso_context",
+    "compresso_explain",
+    "compresso_impact",
+    "compresso_read",
+    "compresso_search",
+    "compresso_stats",
+];
 
 struct Harness {
     _temp: TempDir,
@@ -206,11 +215,11 @@ async fn test_malformed_frame_survives() {
 }
 
 #[tokio::test]
-async fn test_registered_tools_have_stub_handlers() {
+async fn test_unimplemented_tools_have_stub_handlers() {
     let mut harness = Harness::start().await;
     let _ = harness.initialize().await;
 
-    for (offset, name) in TOOL_NAMES.into_iter().enumerate() {
+    for (offset, name) in STUB_TOOL_NAMES.into_iter().enumerate() {
         harness
             .send(&json!({
                 "jsonrpc": "2.0",
