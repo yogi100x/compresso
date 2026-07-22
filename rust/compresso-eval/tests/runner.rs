@@ -101,6 +101,38 @@ fn test_log_fixture_expectations() {
 }
 
 #[test]
+fn test_eval_measurement_is_not_censored_by_the_engine_deadline() {
+    let mut fixture = committed_fixtures()
+        .fixtures
+        .iter()
+        .find(|fixture| fixture.name == "repeated-npm-install")
+        .expect("repeated log fixture should exist")
+        .clone();
+    // Zero would be an invalid production deadline. After fixture loading it
+    // is a deterministic sentinel proving the measurement runner replaces
+    // only the engine's wall-clock cutoff with its external P95 gate.
+    fixture.budget.max_latency_ms = 0;
+    let report = {
+        let _guard = RUNNER_LOCK
+            .lock()
+            .expect("runner lock should not be poisoned");
+        EvalRunner.run(&FixtureSet {
+            fixtures: vec![fixture],
+        })
+    };
+    let row = &report.fixtures[0];
+
+    assert!(!row.fallback_used, "fallback={:?}", row.fallback_reason);
+    assert!(row.after_tokens < row.before_tokens);
+    assert!(row.output.as_ref().is_some_and(|output| {
+        output
+            .nodes
+            .iter()
+            .any(|node| node.content.contains("[×500"))
+    }));
+}
+
+#[test]
 fn test_stack_trace_fixture_meets_floor_without_fallback() {
     let row = committed_report()
         .fixtures

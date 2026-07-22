@@ -200,10 +200,11 @@ fn evaluate_fixture(fixture: &Fixture) -> FixtureOutcome {
 fn evaluate_compression(fixture: &Fixture) -> FixtureOutcome {
     let provider = token_provider(fixture);
     let engine = Engine::new(fixture.mode, counter_for(provider));
-    let budget = compression_budget(fixture);
+    let budget = measurement_budget(fixture);
 
+    let first_input = fixture.graph.clone();
     let started = Instant::now();
-    let first = engine.compress(fixture.graph.clone(), &budget);
+    let first = engine.compress(first_input, &budget);
     let duration_ms = milliseconds(started.elapsed().as_millis());
     let second = engine.compress(fixture.graph.clone(), &budget);
     let reduction_pct = reduction_percent(first.before_tokens, first.after_tokens);
@@ -304,6 +305,16 @@ fn compression_budget(fixture: &Fixture) -> CompressionBudget {
         max_latency_ms: fixture.budget.max_latency_ms,
         allowed_lossiness: Lossiness::Structural,
         protected_kinds: Vec::new(),
+    }
+}
+
+fn measurement_budget(fixture: &Fixture) -> CompressionBudget {
+    CompressionBudget {
+        // Eval owns the wall-clock measurement and release gate. Let the
+        // algorithm finish so a slow sample is measured instead of being
+        // censored into a timing-dependent fail-open result.
+        max_latency_ms: u64::MAX,
+        ..compression_budget(fixture)
     }
 }
 

@@ -87,7 +87,7 @@ Field semantics:
 | `eligible` | yes | Whether this fixture is in the population for the safe-mode median-reduction gate (§4). |
 | `mode` | yes | Engine mode the fixture runs in. Gate-eligible fixtures must use `safe`. |
 | `budget.max_tokens` | yes | Passed to the engine; also the bound checked by `pack_budget`. |
-| `budget.max_latency_ms` | yes | Per-fixture latency budget; the P95 latency gate is computed over all fixtures. |
+| `budget.max_latency_ms` | yes | Declared product latency budget. Eval measures the complete run without the engine's internal clock cutoff, then enforces the P95 latency gate over all fixtures. |
 | `input.*` | yes | Exactly one input form: `graph`, `files`+`nodes`, or `repo`. |
 | `expectations.min_reduction_pct` | yes | Floor for this fixture's own pass/fail. Distinct from the corpus-median gate. |
 | `expectations.must_preserve` | no | Byte-exact substring search over concatenated output node contents. |
@@ -166,7 +166,7 @@ Loader behavior:
 - `graph = "graph.json"`: parse, validate against `schemas/context-graph/v1.json`, recompute token counts.
 - `[[input.files]]` / `[[input.nodes]]`: build one `ContextNode` per entry in declaration order; ids default to paths; `ContextGraph::validate()` must pass (unique ids, protection invariants per 02-schemas §1).
 - `repo = "repo/"`: copy the tree to a temp dir, run the Atlas indexer against it, evaluate `[expectations.atlas]` only.
-- Compression fixtures run through `Engine::compress` exactly as production does (fail-open, D38): an engine fallback on a fixture with `expect_fallback = false` is an expectation failure, never a crash.
+- Compression fixtures run through the production `Engine::compress` pipeline with one measurement-only exception: the runner removes the internal wall-clock cutoff so a slow sample is measured rather than censored into a timing-dependent fallback. The report's P95 gate enforces latency; every non-latency fail-open path remains active, and a fallback on a fixture with `expect_fallback = false` is an expectation failure, never a crash.
 - Determinism: every compression fixture is run twice; byte-different outputs fail the corpus-wide determinism check (build-doc §25.1).
 
 CLI: `compresso eval run [--fixtures <dir>] [--json]`, `compresso eval gates [--json]` (exit non-zero on gate failure; wired into CI), `compresso eval diff-gates <baseline.json>`.
