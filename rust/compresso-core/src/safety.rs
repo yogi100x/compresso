@@ -368,8 +368,8 @@ fn provider_conversation_preflight_valid(
 
 fn minimum_output(original: &ContextGraph, candidate: &ContextGraph) -> SafetyCheck {
     let nodes_present = original.nodes.is_empty() || !candidate.nodes.is_empty();
-    let meaningful_content = !original.nodes.iter().any(|node| !node.content.is_empty())
-        || candidate.nodes.iter().any(|node| !node.content.is_empty());
+    let meaningful_content =
+        original.nodes.is_empty() || candidate.nodes.iter().any(|node| !node.content.is_empty());
     let passed = nodes_present && meaningful_content;
     safety_check(
         "minimum_output",
@@ -1177,6 +1177,19 @@ mod tests {
                     1,
                     &original.nodes.iter().map(drop_record).collect::<Vec<_>>()
                 ),
+                "minimum_output"
+            )
+            .passed
+        );
+    }
+
+    #[test]
+    fn test_minimum_output_fails_when_nonempty_graph_has_only_empty_text() {
+        let original = graph(vec![node("empty", NodeKind::Summary, "", false)]);
+
+        assert!(
+            !check(
+                &run_all(&original, &original, &budget(), 1),
                 "minimum_output"
             )
             .passed

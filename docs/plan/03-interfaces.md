@@ -58,6 +58,10 @@ impl ContextGraph {
     pub fn recount_changed(&mut self, changed: &BTreeSet<String>, counter: &dyn TokenCounter);
     pub fn validate_token_counts(&self, counter: &dyn TokenCounter) -> Result<(), GraphError>;
 }
+
+// E2-13 generic-text boundary. Only a single-node, edge-free, non-provider
+// graph is segmented; existing conversation/repository graphs remain intact.
+pub fn segment_graph(input: &ContextGraph) -> Result<ContextGraph, SegmentError>;
 ```
 
 ### 2.2 `tokens` module

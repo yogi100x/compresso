@@ -2173,7 +2173,7 @@ Files: rust/compresso-core/src/{graph,provider_conversation}.rs, schemas/context
 Description: Implement protected reasoning nodes, typed provider turn/tool identifiers, atomic assistant/tool groups, and profile-extensible pre/post-compression validation from D53.
 Acceptance/tests: Anthropic/OpenAI single and parallel tool loops remain serializable; orphan request/result, removed owner turn, changed reasoning, unknown opaque state, and cross-provider state replay all force byte-identical fallback.
 
-### [ ] E2-13: Generic-text segmentation and minimum-output invariant
+### [x] E2-13: Generic-text segmentation and minimum-output invariant
 Owner: R1 · Estimate: 2d · Depends: E2-08
 Files: rust/compresso-core/src/segment.rs, rust/compresso-mcp/src/tools/compress.rs, fixtures/conversations/single-oversize-text/
 Description: Segment plain text into deterministic structural units before packing and enforce non-empty output for non-empty input.

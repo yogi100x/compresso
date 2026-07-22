@@ -1,0 +1,14 @@
+Historical paragraph one can be dropped after deterministic segmentation.
+
+Historical paragraph two can also be dropped without crossing its boundary.
+
+```json
+{"inside_fence":"this block stays structurally whole"}
+```
+
+{"standalone_json":"this value stays structurally whole"}
+
+2026-07-22T08:00:00Z ERROR historical failure group
+    at fixture::old_path:10
+
+FINAL ANCHOR: retain this current non-empty instruction.

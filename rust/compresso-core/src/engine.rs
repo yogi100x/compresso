@@ -12,6 +12,7 @@ use crate::provider_conversation::{
 use crate::safety::{
     SafetyCheck, identity_checks, run_all_with_provider_validator, run_preflight_after_recount,
 };
+use crate::segment::segment_graph;
 use crate::strategy::{
     CompressionBudget, Mode, RemovalKind, RemovalRecord, StrategyExecution, StrategyRegistry,
 };
@@ -104,7 +105,28 @@ impl Engine {
             );
         }
 
-        let mut ingress = original.clone();
+        let segmented_ingress = match segment_graph(&original) {
+            Ok(graph) => graph,
+            Err(error) => {
+                let before_tokens = recounted_total(&original);
+                let safety_checks = self.run_safety_checks(
+                    &original,
+                    &original,
+                    budget,
+                    elapsed_ms(started.elapsed()),
+                    &[],
+                );
+                return self.fallback(
+                    original,
+                    before_tokens,
+                    Vec::new(),
+                    safety_checks,
+                    format!("segmentation:{error}"),
+                );
+            }
+        };
+        let segmentation_applied = segmented_ingress != original;
+        let mut ingress = segmented_ingress;
         recount_graph(&mut ingress);
         force_protection(&mut ingress, budget);
         let before_tokens = ingress.total_tokens();
@@ -384,6 +406,15 @@ impl Engine {
         let elapsed = elapsed_ms(started.elapsed());
         let safety_checks =
             self.run_safety_checks(&ingress, &current, budget, elapsed, &safety_ledger);
+        if segmentation_applied && current.total_tokens() > budget.max_tokens {
+            return self.fallback(
+                original,
+                before_tokens,
+                strategy_results,
+                safety_checks,
+                "unsatisfiable_budget".to_owned(),
+            );
+        }
         if let Some(failed) = first_failed_check(&safety_checks) {
             let reason = format!("safety_check_failed:{failed}");
             return self.fallback(
@@ -1181,6 +1212,87 @@ mod tests {
                 .iter()
                 .any(|check| { check.name == "provider_conversation_valid" && !check.passed })
         );
+    }
+
+    #[test]
+    fn test_segmented_final_anchor_survives_budget_packing() {
+        let content =
+            "discard this historical paragraph\n\ndiscard this second paragraph\n\nFINAL ANCHOR";
+        let input = graph(vec![node("text", NodeKind::Summary, content, false)]);
+        let segmented = segment_graph(&input).unwrap();
+        let mut small_budget = budget();
+        small_budget.max_tokens = segmented
+            .nodes
+            .iter()
+            .filter(|node| node.protected)
+            .map(|node| node.token_count)
+            .sum();
+
+        let result = Engine::new(Mode::Safe, counter()).compress(input, &small_budget);
+
+        assert!(!result.fallback_used, "{:?}", result.fallback_reason);
+        assert_eq!(result.output.nodes.len(), 2);
+        assert_eq!(
+            result.output.nodes[0].content,
+            "discard this historical paragraph\n\n"
+        );
+        assert_eq!(result.output.nodes[1].content, "FINAL ANCHOR");
+        assert!(result.output.nodes.iter().all(|node| node.protected));
+    }
+
+    #[test]
+    fn test_impossible_segment_anchor_budget_falls_back_byte_identical() {
+        let content = format!("{}\n\nFINAL", "required source prelude ".repeat(20));
+        let input = graph(vec![node("text", NodeKind::SourceFile, &content, false)]);
+        let bytes = serde_json::to_vec(&input).unwrap();
+        let mut impossible = budget();
+        impossible.max_tokens = 1;
+
+        let result = Engine::new(Mode::Safe, counter()).compress(input, &impossible);
+
+        assert!(result.fallback_used);
+        assert_eq!(
+            result.fallback_reason.as_deref(),
+            Some("unsatisfiable_budget")
+        );
+        assert_eq!(serde_json::to_vec(&result.output).unwrap(), bytes);
+    }
+
+    #[test]
+    fn test_unbalanced_generic_text_fence_falls_back_byte_identical() {
+        let input = graph(vec![node(
+            "text",
+            NodeKind::Summary,
+            "before\n\n```rust\nfn main() {}\n",
+            false,
+        )]);
+        let bytes = serde_json::to_vec(&input).unwrap();
+
+        let result = Engine::new(Mode::Safe, counter()).compress(input, &budget());
+
+        assert!(result.fallback_used);
+        assert!(
+            result
+                .fallback_reason
+                .as_deref()
+                .is_some_and(|reason| reason.starts_with("segmentation:"))
+        );
+        assert_eq!(serde_json::to_vec(&result.output).unwrap(), bytes);
+    }
+
+    #[test]
+    fn test_nonempty_graph_with_empty_text_cannot_succeed() {
+        let input = graph(vec![node("text", NodeKind::Summary, "", false)]);
+        let bytes = serde_json::to_vec(&input).unwrap();
+
+        let result = Engine::new(Mode::Safe, counter()).compress(input, &budget());
+
+        assert!(result.fallback_used);
+        assert_eq!(
+            result.fallback_reason.as_deref(),
+            Some("safety_check_failed:minimum_output")
+        );
+        assert_eq!(serde_json::to_vec(&result.output).unwrap(), bytes);
     }
 
     #[test]
