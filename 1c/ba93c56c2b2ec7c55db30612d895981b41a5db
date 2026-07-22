@@ -1,0 +1,27 @@
+docs/runbooks/install-local.md
+  s_87261b37472da1::t_666e4cd43dac97 1-91
+installers/tests/install_local_test.sh
+  s_87261b37472da1::t_2d913277993ae4 1-87,101-140,163-211,213-216,218-219,221-223
+  s_87261b37472da1::t_673d8e7b1100f2 88-100,141-162,212,217,220
+installers/install-local.sh
+  s_87261b37472da1::t_4264238f1c5e76 1-93,95-115,120-180,183-185
+  s_87261b37472da1::t_673d8e7b1100f2 94,116-119,181-182
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_94178d99b2d816 502
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "1cba93c56c2b2ec7c55db30612d895981b41a5db",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
