@@ -172,7 +172,7 @@ impl Store {
             })
             .optional()?
             .ok_or(StoreError::FileNotFound(file))?;
-        replace_symbols_in_transaction(&transaction, file, repo, symbols, edges)?;
+        replace_symbols_in_transaction(&transaction, file, repo, symbols, edges, false)?;
         transaction.commit()?;
         Ok(())
     }
@@ -207,7 +207,11 @@ impl Store {
             ],
             |row| row.get(0),
         )?;
-        replace_symbols_in_transaction(&transaction, file, repo, symbols, edges)?;
+        replace_symbols_in_transaction(&transaction, file, repo, symbols, edges, true)?;
+        transaction.execute(
+            "UPDATE edges SET to_file_id = ?3, resolution_status = 'resolved', resolution_detail = NULL WHERE repo_id = ?1 AND to_path = ?2 AND to_file_id IS NULL AND (resolution_status = 'resolved' OR (resolution_status = 'unresolved' AND resolution_detail = 'target_deleted'))",
+            params![repo, &record.path, file],
+        )?;
         transaction.commit()?;
         Ok(file)
     }
@@ -299,6 +303,19 @@ impl Store {
             .collect()
     }
 
+    /// Lists files whose outgoing edges may become resolvable when repository paths expand.
+    pub fn unresolved_edge_sources(&self, repo: RepoId) -> Result<Vec<String>, StoreError> {
+        let connection = self.connection()?;
+        ensure_repo_exists(&connection, repo)?;
+        let mut statement = connection.prepare(
+            "SELECT DISTINCT source.path FROM edges AS e JOIN files AS source ON source.id = e.from_file_id WHERE e.repo_id = ?1 AND (e.resolution_status != 'resolved' OR e.to_file_id IS NULL) ORDER BY source.path ASC",
+        )?;
+        statement
+            .query_map([repo], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
     /// Returns every symbol matching an explicit identity selector, never an arbitrary first row.
     pub fn symbols_by_identity(
         &self,
@@ -372,13 +389,14 @@ fn replace_symbols_in_transaction(
     repo: RepoId,
     symbols: &[SymbolRecord],
     edges: &[EdgeRecord],
+    allow_pending_resolved: bool,
 ) -> Result<(), StoreError> {
     for edge in edges {
         validate_nonempty("edge to_path", &edge.to_path)?;
     }
     let prepared_edges = edges
         .iter()
-        .map(|edge| prepare_edge(transaction, repo, edge))
+        .map(|edge| prepare_edge(transaction, repo, edge, allow_pending_resolved))
         .collect::<Result<Vec<_>, _>>()?;
     transaction.execute("DELETE FROM edges WHERE from_file_id = ?1", [file])?;
     transaction.execute("DELETE FROM symbols WHERE file_id = ?1", [file])?;
@@ -448,6 +466,7 @@ fn prepare_edge(
     connection: &rusqlite::Connection,
     repo: RepoId,
     edge: &EdgeRecord,
+    allow_pending_resolved: bool,
 ) -> Result<PreparedEdge, StoreError> {
     let (to_file_id, resolution_status, resolution_detail) = match &edge.resolution {
         EdgeResolution::Resolved => {
@@ -458,12 +477,19 @@ fn prepare_edge(
                     params![repo, &edge.to_path],
                     |row| row.get(0),
                 )
-                .optional()?
-                .ok_or_else(|| StoreError::ResolvedEdgeTargetNotFound {
-                    repo,
-                    path: edge.to_path.clone(),
-                })?;
-            (Some(target), "resolved", None)
+                .optional()?;
+            match target {
+                Some(target) => (Some(target), "resolved", None),
+                None if allow_pending_resolved => {
+                    (None, "resolved", Some("pending_target".to_owned()))
+                }
+                None => {
+                    return Err(StoreError::ResolvedEdgeTargetNotFound {
+                        repo,
+                        path: edge.to_path.clone(),
+                    });
+                }
+            }
         }
         EdgeResolution::Ambiguous(candidates) => {
             let mut candidates = candidates.clone();
@@ -717,6 +743,103 @@ mod tests {
     }
 
     #[test]
+    fn test_replace_indexed_file_links_pending_target_order_independently() {
+        let (_directory, store, repo) = setup();
+        store
+            .replace_indexed_file(
+                repo,
+                &file("src/a.rs"),
+                &[],
+                &[EdgeRecord {
+                    to_path: "src/b.rs".to_owned(),
+                    kind: EdgeKind::Imports,
+                    resolution: EdgeResolution::Resolved,
+                }],
+            )
+            .expect("pending source should insert");
+        assert!(
+            store
+                .resolved_edges(repo)
+                .expect("resolved edges should load")
+                .is_empty(),
+            "pending edges must remain invisible until their target exists"
+        );
+
+        store
+            .replace_indexed_file(
+                repo,
+                &file("src/b.rs"),
+                &[],
+                &[EdgeRecord {
+                    to_path: "src/a.rs".to_owned(),
+                    kind: EdgeKind::Imports,
+                    resolution: EdgeResolution::Resolved,
+                }],
+            )
+            .expect("cycle target should insert and relink");
+
+        let edges = store
+            .resolved_edges(repo)
+            .expect("resolved cycle should load");
+        assert_eq!(
+            edges
+                .iter()
+                .map(|edge| (edge.from_path.as_str(), edge.to_path.as_str()))
+                .collect::<Vec<_>>(),
+            [("src/a.rs", "src/b.rs"), ("src/b.rs", "src/a.rs")]
+        );
+    }
+
+    #[test]
+    fn test_pending_edge_relink_rolls_back_with_invalid_target_file() {
+        let (_directory, store, repo) = setup();
+        store
+            .replace_indexed_file(
+                repo,
+                &file("src/source.rs"),
+                &[],
+                &[EdgeRecord {
+                    to_path: "src/target.rs".to_owned(),
+                    kind: EdgeKind::Imports,
+                    resolution: EdgeResolution::Resolved,
+                }],
+            )
+            .expect("pending source should insert");
+        let invalid = SymbolRecord {
+            start_line: 8,
+            end_line: 7,
+            ..symbol("invalid", "invalid", 8)
+        };
+
+        store
+            .replace_indexed_file(repo, &file("src/target.rs"), &[invalid], &[])
+            .expect_err("invalid target should roll back its insert and incoming relink");
+
+        assert!(
+            store
+                .indexed_file(repo, "src/target.rs")
+                .expect("target lookup should succeed")
+                .is_none()
+        );
+        assert!(
+            store
+                .resolved_edges(repo)
+                .expect("resolved edges should load")
+                .is_empty()
+        );
+        store
+            .replace_indexed_file(repo, &file("src/target.rs"), &[], &[])
+            .expect("valid target should insert");
+        assert_eq!(
+            store
+                .resolved_edges(repo)
+                .expect("resolved edge should load")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
     fn test_search_symbols_trigram() {
         let (_directory, store, repo) = setup();
         for path in ["src/b.rs", "src/a.rs"] {
@@ -961,6 +1084,12 @@ mod tests {
                     kind: EdgeKind::References,
                 },
             ]
+        );
+        assert_eq!(
+            store
+                .unresolved_edge_sources(repo)
+                .expect("unresolved sources should load"),
+            ["src/b.rs"]
         );
     }
 

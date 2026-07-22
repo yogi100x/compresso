@@ -193,6 +193,7 @@ impl Store {
     pub fn search_symbols(&self, repo: RepoId, query: &str, limit: usize) -> Result<Vec<SymbolHit>>; // FTS5, bm25-ranked
     pub fn symbols_in_file(&self, repo: RepoId, path: &str) -> Result<Vec<SymbolRecord>>;
     pub fn resolved_edges(&self, repo: RepoId) -> Result<Vec<ResolvedEdgeRecord>>; // deterministic, resolved rows only
+    pub fn unresolved_edge_sources(&self, repo: RepoId) -> Result<Vec<String>>; // deterministic sources to reconsider when paths expand
     pub fn symbols_by_identity(&self, repo: RepoId, selector: &SymbolSelector) -> Result<Vec<(FileRecord, SymbolRecord)>>; // never arbitrary first
     pub fn latest_index_version(&self, repo: RepoId) -> Result<Option<IndexVersionRecord>>;
     pub fn stamp_index_version(&self, repo: RepoId, parser_version: &str, schema_version: u32) -> Result<()>;

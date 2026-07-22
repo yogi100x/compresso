@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use compresso_atlas::{IndexProgress, Indexer};
 use compresso_core::{TokenProvider, counter_for};
-use compresso_store::Store;
+use compresso_store::{EdgeKind, Store};
 use tempfile::TempDir;
 
 const SOURCE_PATHS: [&str; 8] = [
@@ -30,8 +30,8 @@ fn test_full_then_noop_index() {
     assert_eq!(first.files_removed, 0);
     assert_eq!(first.files_skipped, 0);
     assert!(first.symbols >= 8);
-    assert_eq!(first.imports_resolved, 0);
-    assert!(first.imports_unresolved > 0);
+    assert_eq!(first.imports_resolved, 1);
+    assert_eq!(first.imports_unresolved, 0);
     assert!(first.duration_ms > 0);
     assert!(!first.stale);
     assert_eq!(parsing_paths(&first_progress), SOURCE_PATHS);
@@ -155,6 +155,181 @@ fn test_file_and_symbol_token_estimates_use_counter() {
         .expect("indexed symbol should be searchable");
     assert_eq!(hits[0].file.token_estimate, expected);
     assert!(hits[0].symbol.token_estimate > 0);
+}
+
+#[test]
+fn test_repository_local_imports_resolve_against_scanned_paths() {
+    let temp = tempfile::tempdir().expect("temporary directory should be created");
+    let root = temp.path().join("repo");
+    copy_dir(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/code/mini-monorepo/repo"),
+        &root,
+    );
+    fs::create_dir_all(root.join("python/pkg")).expect("Python package should be created");
+    fs::write(
+        root.join("python/pkg/main.py"),
+        "from .helper import local_value\n\nprint(local_value())\n",
+    )
+    .expect("Python importer should be written");
+    fs::write(
+        root.join("python/pkg/helper.py"),
+        "def local_value() -> int:\n    return 7\n",
+    )
+    .expect("Python target should be written");
+    let store = Store::open(&temp.path().join("compresso.db")).expect("store should open");
+    Indexer::new(&store, counter_for(TokenProvider::Heuristic))
+        .index(&root, |_| {})
+        .expect("mini monorepo should index");
+    let canonical_root = fs::canonicalize(&root).expect("root should canonicalize");
+    let repo = store
+        .repo_by_root(&canonical_root)
+        .expect("repository lookup should succeed")
+        .expect("repository should exist")
+        .id;
+
+    let edges = store
+        .resolved_edges(repo)
+        .expect("resolved edges should load");
+    let actual = edges
+        .iter()
+        .map(|edge| (edge.from_path.as_str(), edge.to_path.as_str(), edge.kind))
+        .collect::<Vec<_>>();
+
+    assert!(actual.contains(&("rust/src/main.rs", "rust/src/session.rs", EdgeKind::Imports,)));
+    assert!(actual.contains(&("web/src/index.ts", "web/src/api.ts", EdgeKind::Imports,)));
+    assert!(actual.contains(&(
+        "python/pkg/main.py",
+        "python/pkg/helper.py",
+        EdgeKind::Imports,
+    )));
+}
+
+#[test]
+fn test_adding_missing_local_target_resolves_without_ordinary_reparse() {
+    let temp = tempfile::tempdir().expect("temporary directory should be created");
+    let root = temp.path().join("repo");
+    fs::create_dir_all(root.join("src")).expect("source directory should be created");
+    fs::write(
+        root.join("src/importer.ts"),
+        "import { target } from \"./target\";\nexport const value = target;\n",
+    )
+    .expect("importer should be written");
+    fs::write(
+        root.join("src/unrelated.ts"),
+        "export const unrelated = 1;\n",
+    )
+    .expect("unrelated file should be written");
+    let store = Store::open(&temp.path().join("compresso.db")).expect("store should open");
+    let indexer = Indexer::new(&store, counter_for(TokenProvider::Heuristic));
+    let first = indexer
+        .index(&root, |_| {})
+        .expect("missing-target index should succeed");
+    assert_eq!(first.imports_unresolved, 1);
+    fs::write(root.join("src/target.ts"), "export const target = 7;\n")
+        .expect("target should be added");
+
+    let mut added_progress = Vec::new();
+    indexer
+        .index(&root, |event| added_progress.push(event))
+        .expect("target addition should resolve import");
+    let canonical_root = fs::canonicalize(&root).expect("root should canonicalize");
+    let repo = store
+        .repo_by_root(&canonical_root)
+        .expect("repository lookup should succeed")
+        .expect("repository should exist")
+        .id;
+    assert_eq!(
+        parsing_paths(&added_progress),
+        ["src/importer.ts", "src/target.ts"]
+    );
+    assert_eq!(
+        store
+            .resolved_edges(repo)
+            .expect("resolved edges should load")
+            .iter()
+            .map(|edge| (edge.from_path.as_str(), edge.to_path.as_str()))
+            .collect::<Vec<_>>(),
+        [("src/importer.ts", "src/target.ts")]
+    );
+
+    fs::write(
+        root.join("src/unrelated.ts"),
+        "export const unrelated = 2;\n",
+    )
+    .expect("unrelated file should change");
+    let mut touch_progress = Vec::new();
+    indexer
+        .index(&root, |event| touch_progress.push(event))
+        .expect("ordinary touch should index");
+    assert_eq!(parsing_paths(&touch_progress), ["src/unrelated.ts"]);
+
+    let mut noop_progress = Vec::new();
+    indexer
+        .index(&root, |event| noop_progress.push(event))
+        .expect("no-op should succeed");
+    assert!(parsing_paths(&noop_progress).is_empty());
+}
+
+#[test]
+fn test_removing_targets_reconsiders_only_affected_importers() {
+    let temp = tempfile::tempdir().expect("temporary directory should be created");
+    let root = temp.path().join("repo");
+    fs::create_dir_all(root.join("src")).expect("source directory should be created");
+    for (path, source) in [
+        (
+            "src/ambiguous.ts",
+            "import { choice } from \"./choice\";\nexport const selected = choice;\n",
+        ),
+        (
+            "src/resolved.ts",
+            "import { gone } from \"./gone\";\nexport const selected = gone;\n",
+        ),
+        ("src/choice.js", "export const choice = 1;\n"),
+        ("src/choice.ts", "export const choice = 2;\n"),
+        ("src/gone.ts", "export const gone = 3;\n"),
+        ("src/unrelated.ts", "export const unrelated = 4;\n"),
+    ] {
+        fs::write(root.join(path), source).expect("fixture source should be written");
+    }
+    let store = Store::open(&temp.path().join("compresso.db")).expect("store should open");
+    let indexer = Indexer::new(&store, counter_for(TokenProvider::Heuristic));
+    indexer
+        .index(&root, |_| {})
+        .expect("initial repository should index");
+    fs::remove_file(root.join("src/choice.js")).expect("ambiguous target should be removed");
+    fs::remove_file(root.join("src/gone.ts")).expect("resolved target should be removed");
+
+    let mut progress = Vec::new();
+    indexer
+        .index(&root, |event| progress.push(event))
+        .expect("target removal should reconsider importers");
+    let canonical_root = fs::canonicalize(&root).expect("root should canonicalize");
+    let repo = store
+        .repo_by_root(&canonical_root)
+        .expect("repository lookup should succeed")
+        .expect("repository should exist")
+        .id;
+
+    assert_eq!(
+        parsing_paths(&progress),
+        ["src/ambiguous.ts", "src/resolved.ts"]
+    );
+    assert_eq!(removed_paths(&progress), ["src/choice.js", "src/gone.ts"]);
+    assert_eq!(
+        store
+            .resolved_edges(repo)
+            .expect("resolved edges should load")
+            .iter()
+            .map(|edge| (edge.from_path.as_str(), edge.to_path.as_str()))
+            .collect::<Vec<_>>(),
+        [("src/ambiguous.ts", "src/choice.ts")]
+    );
+    assert_eq!(
+        store
+            .unresolved_edge_sources(repo)
+            .expect("unresolved sources should load"),
+        ["src/resolved.ts"]
+    );
 }
 
 struct Fixture {
