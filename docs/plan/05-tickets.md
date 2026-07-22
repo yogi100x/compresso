@@ -531,7 +531,7 @@ Test cases:
 - test_instructions_word_budget: instructions split_whitespace count ≤ 200; denylist phrases absent.
 - test_malformed_frame_survives: send `{"jsonrpc":"2.0",` then a valid request → valid request still answered.
 
-### [ ] E5-02: Navigation handlers - repo map, outline, selector-based unfold
+### [x] E5-02: Navigation handlers - repo map, outline, selector-based unfold
 Owner: R2 · Estimate: 1.5d · Depends: E5-01, E3-10, E3-11
 Files: rust/compresso-mcp/src/tools/atlas_nav.rs, tests in rust/compresso-mcp/tests/tools_nav.rs
 Description: Implement the three navigation handlers against the exact JSON schemas in 04 §1. Root naming, defaults, bounds, SymbolSelector, ambiguity, and errors must match those schemas.

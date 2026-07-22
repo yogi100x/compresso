@@ -40,14 +40,14 @@ pub struct McpDeps {
 }
 
 struct CompressoServer {
-    _deps: McpDeps,
+    deps: McpDeps,
     tools: Vec<Tool>,
 }
 
 impl CompressoServer {
     fn new(deps: McpDeps) -> Self {
         Self {
-            _deps: deps,
+            deps,
             tools: tool_declarations(),
         }
     }
@@ -77,17 +77,35 @@ impl ServerHandler for CompressoServer {
         _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
         let registered = self.tools.iter().any(|tool| tool.name == request.name);
-        std::future::ready(if registered {
-            Ok(CallToolResult::error(vec![Content::text(format!(
-                "[internal] Tool handler '{}' is not implemented in E5-01.",
-                request.name
-            ))]))
-        } else {
-            Err(McpError::invalid_params(
-                format!("unknown Compresso tool '{}'", request.name),
-                None,
-            ))
-        })
+        let navigation = crate::tools::atlas_nav::handles(&request.name);
+        let store = self.deps.store.clone();
+        async move {
+            if navigation {
+                let name = request.name.into_owned();
+                let arguments = request.arguments;
+                return match tokio::task::spawn_blocking(move || {
+                    crate::tools::atlas_nav::dispatch(&store, &name, arguments)
+                })
+                .await
+                {
+                    Ok(result) => Ok(result),
+                    Err(_) => Ok(CallToolResult::error(vec![Content::text(
+                        "[internal] Compresso could not complete the request because of an internal error.",
+                    )])),
+                };
+            }
+            if registered {
+                Ok(CallToolResult::error(vec![Content::text(format!(
+                    "[internal] Tool handler '{}' is not implemented in E5-01.",
+                    request.name
+                ))]))
+            } else {
+                Err(McpError::invalid_params(
+                    format!("unknown Compresso tool '{}'", request.name),
+                    None,
+                ))
+            }
+        }
     }
 }
 
