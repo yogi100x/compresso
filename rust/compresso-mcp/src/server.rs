@@ -43,7 +43,7 @@ pub struct McpDeps {
 }
 
 struct CompressoServer {
-    deps: McpDeps,
+    deps: Arc<McpDeps>,
     tools: Vec<Tool>,
 }
 
@@ -52,7 +52,7 @@ struct PreparedMcpDeps(McpDeps);
 impl CompressoServer {
     fn new(deps: PreparedMcpDeps) -> Self {
         Self {
-            deps: deps.0,
+            deps: Arc::new(deps.0),
             tools: tool_declarations(),
         }
     }
@@ -82,14 +82,20 @@ impl ServerHandler for CompressoServer {
         _context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
         let registered = self.tools.iter().any(|tool| tool.name == request.name);
-        let atlas_tool = crate::tools::handles(&request.name);
-        let store = self.deps.store.clone();
+        let handled = crate::tools::handles(&request.name);
+        let deps = Arc::clone(&self.deps);
         async move {
-            if atlas_tool {
+            if handled {
                 let name = request.name.into_owned();
                 let arguments = request.arguments;
                 return match tokio::task::spawn_blocking(move || {
-                    crate::tools::dispatch(&store, &name, arguments)
+                    crate::tools::dispatch(
+                        &deps.store,
+                        &deps.engine,
+                        &deps.config,
+                        &name,
+                        arguments,
+                    )
                 })
                 .await
                 {

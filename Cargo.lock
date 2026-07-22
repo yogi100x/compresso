@@ -411,10 +411,12 @@ name = "compresso-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "compresso-atlas",
  "compresso-core",
  "compresso-store",
  "criterion",
+ "jsonschema",
  "rmcp",
  "serde_json",
  "tempfile",

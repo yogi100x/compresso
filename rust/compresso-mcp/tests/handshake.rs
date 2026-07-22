@@ -23,12 +23,6 @@ const TOOL_NAMES: [&str; 10] = [
     "compresso_stats",
     "compresso_unfold",
 ];
-const STUB_TOOL_NAMES: [&str; 4] = [
-    "compresso_compress",
-    "compresso_explain",
-    "compresso_impact",
-    "compresso_stats",
-];
 
 struct Harness {
     _temp: TempDir,
@@ -208,33 +202,6 @@ async fn test_malformed_frame_survives() {
 
     let response = harness.initialize().await;
     assert_eq!(response["result"]["serverInfo"]["name"], "compresso");
-    harness.close().await;
-}
-
-#[tokio::test]
-async fn test_unimplemented_tools_have_stub_handlers() {
-    let mut harness = Harness::start().await;
-    let _ = harness.initialize().await;
-
-    for (offset, name) in STUB_TOOL_NAMES.into_iter().enumerate() {
-        harness
-            .send(&json!({
-                "jsonrpc": "2.0",
-                "id": 10 + offset,
-                "method": "tools/call",
-                "params": { "name": name, "arguments": {} }
-            }))
-            .await;
-        let response = harness.receive().await;
-        assert_eq!(response["result"]["isError"], true, "tool {name}");
-        assert!(
-            response["result"]["content"][0]["text"]
-                .as_str()
-                .is_some_and(|text| text.starts_with("[internal]")),
-            "tool {name} should return the stable stub error"
-        );
-    }
-
     harness.close().await;
 }
 
