@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use crate::graph::ContextGraph;
+use crate::graph::{ContextEdge, ContextGraph, EdgeKind};
+use crate::safety::{duplicate_group_node_ids, duplicate_references_well_formed, duplicate_stub};
 use crate::strategy::{
     CompressionBudget, CompressionStrategy, Estimate, RemovalKind, RemovalRecord, StrategyError,
     StrategyOutput,
@@ -62,6 +63,7 @@ impl CompressionStrategy for DedupExact {
         let mut graph = input.clone();
         let mut notes = Vec::with_capacity(duplicates.len());
         let mut removals = Vec::with_capacity(duplicates.len());
+        let mut duplicate_edges = Vec::with_capacity(duplicates.len());
 
         for duplicate in duplicates {
             let node = &mut graph.nodes[duplicate.index];
@@ -88,7 +90,14 @@ impl CompressionStrategy for DedupExact {
                 after_tokens,
                 units_removed: Some(1),
             });
+            duplicate_edges.push(ContextEdge {
+                from: node.id.clone(),
+                to: duplicate.survivor_id.to_owned(),
+                kind: EdgeKind::DuplicateOf,
+                weight: 1.0,
+            });
         }
+        graph.edges.extend(duplicate_edges);
 
         Ok(StrategyOutput {
             graph,
@@ -99,11 +108,19 @@ impl CompressionStrategy for DedupExact {
 }
 
 fn duplicate_plan(input: &ContextGraph) -> Vec<Duplicate<'_>> {
+    if !duplicate_references_well_formed(input) {
+        return Vec::new();
+    }
+
     let mut survivors = HashMap::<&str, &str>::new();
     let mut duplicates = Vec::new();
+    let existing_duplicate_group = duplicate_group_node_ids(input);
 
     for (index, node) in input.nodes.iter().enumerate() {
-        if node.protected || node.kind.requires_protection() {
+        if node.protected
+            || node.kind.requires_protection()
+            || existing_duplicate_group.contains(node.id.as_str())
+        {
             continue;
         }
 
@@ -124,10 +141,6 @@ fn duplicate_plan(input: &ContextGraph) -> Vec<Duplicate<'_>> {
     }
 
     duplicates
-}
-
-fn duplicate_stub(survivor_id: &str) -> String {
-    format!("[duplicate of node {survivor_id}]")
 }
 
 fn content_hash(content: &str) -> String {
@@ -212,7 +225,24 @@ mod tests {
                 counter_for(duplicate.token_provider).count(expected_stub)
             );
         }
-        assert_eq!(output.graph.edges, original_edges);
+        assert_eq!(&output.graph.edges[..original_edges.len()], original_edges);
+        assert_eq!(
+            &output.graph.edges[original_edges.len()..],
+            [
+                ContextEdge {
+                    from: "n2".to_owned(),
+                    to: "n1".to_owned(),
+                    kind: EdgeKind::DuplicateOf,
+                    weight: 1.0,
+                },
+                ContextEdge {
+                    from: "n3".to_owned(),
+                    to: "n1".to_owned(),
+                    kind: EdgeKind::DuplicateOf,
+                    weight: 1.0,
+                },
+            ]
+        );
         assert!(output.graph.total_tokens() < graph.total_tokens());
         assert_eq!(output.graph.validate(), Ok(()));
 
@@ -377,6 +407,36 @@ mod tests {
         assert_eq!(output.graph, graph);
         assert!(output.removals.is_empty());
         assert_eq!(output.notes, ["no profitable exact duplicates found"]);
+    }
+
+    #[test]
+    fn test_existing_duplicate_group_is_not_rededuplicated_into_a_chain() {
+        let referent_content = "a sufficiently long existing duplicate referent payload ".repeat(8);
+        let mut graph = ContextGraph {
+            schema_version: 1,
+            nodes: vec![
+                node("earlier", NodeKind::ToolResponse, &referent_content, false),
+                node("referent", NodeKind::ToolResponse, &referent_content, false),
+                node(
+                    "stub",
+                    NodeKind::ToolResponse,
+                    "[duplicate of node referent]",
+                    false,
+                ),
+            ],
+            edges: Vec::new(),
+        };
+        graph.edges.push(ContextEdge {
+            from: "stub".to_owned(),
+            to: "referent".to_owned(),
+            kind: EdgeKind::DuplicateOf,
+            weight: 1.0,
+        });
+
+        assert!(!DedupExact.supports(&graph));
+        let output = DedupExact.execute(&graph, &budget()).unwrap();
+        assert_eq!(output.graph, graph);
+        assert!(output.removals.is_empty());
     }
 
     #[test]

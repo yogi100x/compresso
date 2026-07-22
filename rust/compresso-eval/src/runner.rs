@@ -7,8 +7,8 @@ use std::time::Instant;
 
 use compresso_atlas::{IndexReport, Indexer};
 use compresso_core::{
-    CompressionBudget, CompressionResult, ContextGraph, Engine, Lossiness, Mode, TokenProvider,
-    counter_for,
+    CompressionBudget, CompressionResult, ContextGraph, EdgeKind as ContextEdgeKind, Engine,
+    Lossiness, Mode, TokenProvider, counter_for,
 };
 use compresso_store::{EdgeKind, ResolvedEdgeRecord, Store};
 use serde::{Deserialize, Serialize};
@@ -459,10 +459,40 @@ fn malformed_json_nodes(original: &ContextGraph, output: &ContextGraph) -> Vec<S
                 .find(|candidate| candidate.id == node.id)
                 .filter(|candidate| {
                     serde_json::from_str::<serde_json::Value>(&candidate.content).is_err()
+                        && !valid_json_duplicate_stub(original, output, node, candidate)
                 })
                 .map(|_| node.id.clone())
         })
         .collect()
+}
+
+fn valid_json_duplicate_stub(
+    original: &ContextGraph,
+    output: &ContextGraph,
+    original_stub: &compresso_core::ContextNode,
+    candidate_stub: &compresso_core::ContextNode,
+) -> bool {
+    let mut references = output
+        .edges
+        .iter()
+        .filter(|edge| edge.kind == ContextEdgeKind::DuplicateOf && edge.from == candidate_stub.id);
+    let Some(reference) = references.next() else {
+        return false;
+    };
+    if references.next().is_some()
+        || candidate_stub.content != format!("[duplicate of node {}]", reference.to)
+    {
+        return false;
+    }
+
+    let original_referent = original.nodes.iter().find(|node| node.id == reference.to);
+    let output_referent = output.nodes.iter().find(|node| node.id == reference.to);
+    original_referent
+        .zip(output_referent)
+        .is_some_and(|(original_referent, output_referent)| {
+            original_stub.content == original_referent.content
+                && output_referent.content == original_referent.content
+        })
 }
 
 fn stable_result(mut result: CompressionResult) -> CompressionResult {
@@ -633,7 +663,121 @@ fn copy_tree(source: &Path, destination: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use compresso_core::{ContextEdge, ContextNode, NodeKind, Source};
+    use serde_json::Map;
+
     use super::*;
+
+    fn json_node(id: &str, content: &str) -> ContextNode {
+        let counter = counter_for(TokenProvider::Heuristic);
+        ContextNode {
+            id: id.to_owned(),
+            kind: NodeKind::ToolResponse,
+            content: content.to_owned(),
+            source: Source::Synthetic,
+            token_count: counter.count(content),
+            token_provider: counter.provider(),
+            priority: 0.5,
+            protected: false,
+            recency: None,
+            metadata: Map::new(),
+            provider_turn: None,
+        }
+    }
+
+    fn graph(nodes: Vec<ContextNode>, edges: Vec<ContextEdge>) -> ContextGraph {
+        ContextGraph {
+            schema_version: 1,
+            nodes,
+            edges,
+        }
+    }
+
+    fn duplicate_edge(from: &str, to: &str) -> ContextEdge {
+        ContextEdge {
+            from: from.to_owned(),
+            to: to.to_owned(),
+            kind: ContextEdgeKind::DuplicateOf,
+            weight: 1.0,
+        }
+    }
+
+    #[test]
+    fn test_malformed_json_detector_accepts_only_resolved_byte_preserved_duplicate_stub() {
+        let json = r#"{"value":"original"}"#;
+        let original = graph(
+            vec![json_node("referent", json), json_node("stub", json)],
+            Vec::new(),
+        );
+        let output = graph(
+            vec![
+                json_node("referent", json),
+                json_node("stub", "[duplicate of node referent]"),
+            ],
+            vec![duplicate_edge("stub", "referent")],
+        );
+
+        assert!(malformed_json_nodes(&original, &output).is_empty());
+    }
+
+    #[test]
+    fn test_malformed_json_detector_rejects_orphan_duplicate_stub() {
+        let json = r#"{"value":"original"}"#;
+        let original = graph(
+            vec![json_node("referent", json), json_node("stub", json)],
+            Vec::new(),
+        );
+        let output = graph(
+            vec![
+                json_node("referent", json),
+                json_node("stub", "[duplicate of node referent]"),
+            ],
+            Vec::new(),
+        );
+
+        assert_eq!(malformed_json_nodes(&original, &output), ["stub"]);
+    }
+
+    #[test]
+    fn test_malformed_json_detector_rejects_marker_edge_mismatch() {
+        let json = r#"{"value":"original"}"#;
+        let original = graph(
+            vec![
+                json_node("referent", json),
+                json_node("other", json),
+                json_node("stub", json),
+            ],
+            Vec::new(),
+        );
+        let output = graph(
+            vec![
+                json_node("referent", json),
+                json_node("other", json),
+                json_node("stub", "[duplicate of node referent]"),
+            ],
+            vec![duplicate_edge("stub", "other")],
+        );
+
+        assert_eq!(malformed_json_nodes(&original, &output), ["stub"]);
+    }
+
+    #[test]
+    fn test_malformed_json_detector_rejects_changed_referent() {
+        let json = r#"{"value":"original"}"#;
+        let original = graph(
+            vec![json_node("referent", json), json_node("stub", json)],
+            Vec::new(),
+        );
+        let output = graph(
+            vec![
+                json_node("referent", r#"{"value":"changed"}"#),
+                json_node("stub", "[duplicate of node referent]"),
+            ],
+            vec![duplicate_edge("stub", "referent")],
+        );
+
+        assert_eq!(malformed_json_nodes(&original, &output), ["stub"]);
+    }
 
     #[test]
     fn test_median_is_ratio_and_handles_even_populations() {

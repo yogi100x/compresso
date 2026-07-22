@@ -2179,7 +2179,7 @@ Files: rust/compresso-core/src/segment.rs, rust/compresso-mcp/src/tools/compress
 Description: Segment plain text into deterministic structural units before packing and enforce non-empty output for non-empty input.
 Acceptance/tests: paragraphs/fences/JSON/log groups retain boundaries; final anchor survives; impossible budgets return original bytes with fallback; no successful result contains zero nodes or empty text.
 
-### [ ] E2-14: Dedup referential integrity and atomic packing
+### [x] E2-14: Dedup referential integrity and atomic packing
 Owner: R1 · Estimate: 1.5d · Depends: E2-04, E2-07, E2-08
 Files: rust/compresso-core/src/strategies/{dedup_exact,pack_budget}.rs, rust/compresso-core/src/safety.rs
 Description: Add `duplicate_of` edges and treat referent/stubs as one retention group.
