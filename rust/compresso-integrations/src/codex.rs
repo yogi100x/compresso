@@ -700,8 +700,10 @@ fn resolved_compresso_command(
     path: &Path,
     platform: &CodexPlatform,
 ) -> Result<String, IntegrationError> {
-    if !path.is_absolute() {
-        return Err(invalid("Compresso command path must be absolute"));
+    if !is_normalized_absolute_path(path) {
+        return Err(invalid(
+            "Compresso command path must be normalized and absolute",
+        ));
     }
     let resolved = fs::canonicalize(path).map_err(|source| IntegrationError::Io {
         path: path.to_path_buf(),
@@ -712,10 +714,17 @@ fn resolved_compresso_command(
             "Compresso command path must resolve to an executable file",
         ));
     }
-    resolved
-        .to_str()
+    path.to_str()
         .map(str::to_owned)
         .ok_or_else(|| invalid("Compresso command path must be UTF-8"))
+}
+
+fn is_normalized_absolute_path(path: &Path) -> bool {
+    path.is_absolute()
+        && !path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+        && path.components().collect::<PathBuf>().as_os_str() == path.as_os_str()
 }
 
 fn is_exact_server_entry(item: &Item) -> bool {
@@ -899,6 +908,26 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    fn write_posix_engine(path: &Path, engine: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::write(path, format!("#!/bin/sh\nprintf '%s\\n' '{engine}'\n"))
+            .expect("POSIX launcher written");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .expect("POSIX launcher executable mode");
+    }
+
+    #[cfg(unix)]
+    fn run_stable_launcher(path: &Path) -> String {
+        let output = std::process::Command::new(path)
+            .output()
+            .expect("POSIX launcher executes");
+        assert!(output.status.success());
+        assert!(output.stderr.is_empty());
+        String::from_utf8(output.stdout).expect("launcher output UTF-8")
+    }
+
     fn fixture(platform: CodexPlatform) -> (TempDir, CodexAdapter, PathBuf, PathBuf) {
         let home = tempdir().expect("temporary home");
         let bin_dir = home.path().join("bin");
@@ -982,9 +1011,7 @@ mod tests {
         assert_eq!(receipt.keys_owned, [OWNED_PATH]);
         assert_eq!(
             server.get("command").and_then(Item::as_str),
-            fs::canonicalize(&binary)
-                .expect("canonical binary")
-                .to_str()
+            binary.to_str()
         );
         let config_bytes = fs::read(&config).expect("config evidence bytes");
         let evidence = CodexVerificationEvidence::mcp_list(&binary, &config_bytes, true)
@@ -1498,34 +1525,85 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn test_install_writes_canonical_resolved_executable_path() {
+    fn test_install_preserves_stable_launcher_symlink_across_upgrade() {
         use std::os::unix::fs::symlink;
 
-        let (_home, adapter, binary, _config) = fixture(CodexPlatform::Linux);
-        let link = binary.with_file_name("compresso-link");
-        symlink(&binary, &link).expect("binary symlink");
-        let manager = PlanManager::new("codex-canonical-command").expect("manager");
+        let (_home, adapter, binary, config) = fixture(CodexPlatform::Linux);
+        let first = binary.with_file_name("compresso-0.1.0");
+        let second = binary.with_file_name("compresso-0.2.0");
+        write_posix_engine(&first, "engine-v1");
+        write_posix_engine(&second, "engine-v2");
+        let stable = binary.with_file_name("compresso-stable");
+        symlink(&first, &stable).expect("stable launcher created");
+        assert_eq!(run_stable_launcher(&stable), "engine-v1\n");
+        let manager = PlanManager::new("codex-stable-launcher").expect("manager");
+        let receipts = MemoryReceiptStore::default();
         let plan = adapter
             .plan_install(
                 &manager,
                 &InstallCtx {
-                    compresso_bin: link,
+                    compresso_bin: stable.clone(),
                     scope: Scope::User,
                 },
             )
             .expect("install plan");
-        let document = plan
-            .target_contents
+        adapter
+            .install(&manager, &PlanApproval::from(&plan), &receipts)
+            .expect("install applies");
+        let document = fs::read_to_string(&config)
+            .expect("installed config")
             .parse::<DocumentMut>()
-            .expect("valid target TOML");
+            .expect("valid installed TOML");
         assert_eq!(
             owned_table(&document)
                 .and_then(|server| server.get("command"))
                 .and_then(Item::as_str),
-            fs::canonicalize(binary)
-                .expect("canonical executable")
-                .to_str()
+            stable.to_str()
         );
+
+        fs::remove_file(&stable).expect("old stable launcher removed");
+        symlink(&second, &stable).expect("stable launcher upgraded");
+        assert_eq!(run_stable_launcher(&stable), "engine-v2\n");
+        let unchanged = fs::read(&config).expect("unchanged config bytes");
+        assert_eq!(unchanged, plan.target_contents.as_bytes());
+        let evidence = CodexVerificationEvidence::mcp_list(&stable, &unchanged, true)
+            .expect("upgraded verification evidence");
+        assert!(
+            adapter
+                .with_verification_evidence(evidence)
+                .verify(&Scope::User)
+                .verified
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_install_rejects_non_normalized_absolute_launcher_paths() {
+        let (_home, adapter, binary, config) = fixture(CodexPlatform::Linux);
+        let parent = binary.parent().expect("bin directory");
+        let parent_text = parent.to_str().expect("UTF-8 bin directory");
+        let nested = parent.join("nested");
+        fs::create_dir(&nested).expect("nested directory created");
+        let cases = [
+            PathBuf::from(format!("{parent_text}/./compresso")),
+            PathBuf::from(format!("{parent_text}//compresso")),
+            nested.join("../compresso"),
+        ];
+        let manager = PlanManager::new("codex-non-normalized-launcher").expect("manager");
+
+        for path in cases {
+            let error = adapter
+                .plan_install(
+                    &manager,
+                    &InstallCtx {
+                        compresso_bin: path,
+                        scope: Scope::User,
+                    },
+                )
+                .expect_err("non-normalized launcher path rejected");
+            assert!(matches!(error, IntegrationError::InvalidRequest { .. }));
+        }
+        assert!(!config.exists());
     }
 
     #[test]

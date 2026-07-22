@@ -21,6 +21,7 @@ fn test_canonical_command_snapshot() {
             "init",
             "doctor",
             "index",
+            "setup",
             "map",
             "search",
             "read",
@@ -34,6 +35,7 @@ fn test_canonical_command_snapshot() {
             "config",
             "mcp",
             "integrations",
+            "repos",
             "account",
             "eval",
         ]
@@ -56,6 +58,7 @@ fn test_canonical_command_snapshot() {
         subcommands(&root, "integrations"),
         ["install", "status", "verify", "uninstall"]
     );
+    assert_eq!(subcommands(&root, "repos"), ["list", "remove"]);
 }
 
 #[test]

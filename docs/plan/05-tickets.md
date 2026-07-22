@@ -799,7 +799,7 @@ Test cases:
 - `test_mcp_provider_disclosure_names_client_provider_path`.
 - `test_secret_exclusions_happen_before_read_and_never_reach_store_or_mcp`.
 
-### [ ] PB-03: Repository lifecycle and one-command client setup
+### [x] PB-03: Repository lifecycle and one-command client setup
 Owner: D1+R2 · Estimate: 2.5d · Depends: PB-02, E6-05
 Files: rust/compresso-cli/src/commands/, rust/compresso-store/src/, rust/compresso-integrations/src/, docs/plan/03-interfaces.md, docs/plan/04-mcp-and-integrations.md
 Description: Add deterministic `compresso repos list`, safe `compresso repos remove ROOT`, and `compresso setup CLIENT ROOT`. Setup canonicalizes and indexes the repository, then installs client-appropriate MCP configuration. A global Codex entry omits `--root` so each Codex session binds from its cwd's longest approved ancestor; project-scoped Claude Code/Cursor entries may pass `mcp serve --root CANONICAL_ROOT`. Public launchers export a validated stable `COMPRESSO_LAUNCHER_PATH`; integrations record that normalized absolute lexical package-manager shim, not a resolved/versioned engine path, so upgrades require no client rewrite.

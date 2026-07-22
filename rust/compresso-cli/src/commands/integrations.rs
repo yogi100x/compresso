@@ -1,14 +1,16 @@
 use std::env;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use compresso_core::RuntimePaths;
 use compresso_integrations::{
     ClaudeCodeDiscovery, ClaudeCodeIntegration, CodexIntegration, CursorApplicationEvidence,
-    CursorCliEvidence, CursorDiscovery, CursorIntegration, Detection, FileReceiptStore, InstallCtx,
-    InstallReceipt, Integration, IntegrationError, MutationPlan, PlanApproval, PlanManager,
-    ReceiptStore, Scope, VerificationCheck, VerificationReport,
+    CursorCliEvidence, CursorDiscovery, CursorIntegration, DeferredInstallAuthorization, Detection,
+    FileReceiptStore, InstallCtx, InstallReceipt, Integration, IntegrationError, MutationPlan,
+    PlanApproval, PlanClock, PlanManager, ReceiptStore, Scope, VerificationCheck,
+    VerificationReport,
 };
 use compresso_store::{ReceiptRecord, Store};
 
@@ -18,6 +20,7 @@ use super::{
 };
 
 const RECEIPT_STORE_NAME: &str = "integration-receipts.json";
+const PACKAGE_LAUNCHER_ENV: &str = "COMPRESSO_LAUNCHER_PATH";
 
 /// Injectable filesystem and invocation context for integration CLI commands.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -59,13 +62,7 @@ impl IntegrationEnvironment {
 
     pub(crate) fn system_for(cwd: &Path) -> Result<Self, IntegrationCliError> {
         let home_dir = system_home_dir()?;
-        let compresso_bin = env::current_exe()
-            .and_then(std::fs::canonicalize)
-            .map_err(|_| {
-                IntegrationCliError::environment(
-                    "failed to resolve the installed Compresso executable",
-                )
-            })?;
+        let compresso_bin = resolve_compresso_command()?;
         let data_dir = RuntimePaths::system()
             .map_err(|_| {
                 IntegrationCliError::environment("failed to resolve the local data directory")
@@ -99,6 +96,68 @@ impl IntegrationEnvironment {
     fn database_path(&self) -> PathBuf {
         self.data_dir.join("compresso.db")
     }
+}
+
+fn resolve_compresso_command() -> Result<PathBuf, IntegrationCliError> {
+    if let Some(launcher) = env::var_os(PACKAGE_LAUNCHER_ENV) {
+        return validate_stable_launcher(PathBuf::from(launcher));
+    }
+
+    env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .map_err(|_| {
+            IntegrationCliError::environment("failed to resolve the installed Compresso executable")
+        })
+}
+
+fn validate_stable_launcher(launcher: PathBuf) -> Result<PathBuf, IntegrationCliError> {
+    if !launcher.is_absolute()
+        || launcher
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(IntegrationCliError::environment(format!(
+            "{PACKAGE_LAUNCHER_ENV} must name a normalized absolute path"
+        )));
+    }
+
+    // `Path::components` folds redundant separators and `.` components while
+    // retaining a final symlink as a lexical path. Never canonicalize here:
+    // package-manager upgrades deliberately replace the shim's backing file.
+    let mut normalized = PathBuf::new();
+    for component in launcher.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => unreachable!("parent components were rejected above"),
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+        }
+    }
+
+    let metadata = std::fs::metadata(&normalized).map_err(|_| {
+        IntegrationCliError::environment(format!(
+            "{PACKAGE_LAUNCHER_ENV} does not resolve to an installed launcher"
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(IntegrationCliError::environment(format!(
+            "{PACKAGE_LAUNCHER_ENV} must resolve to a file"
+        )));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err(IntegrationCliError::environment(format!(
+                "{PACKAGE_LAUNCHER_ENV} must resolve to an executable file"
+            )));
+        }
+    }
+
+    Ok(normalized)
 }
 
 /// Executes an integration command against an injected, process-free environment.
@@ -164,6 +223,123 @@ impl MutationAction {
     }
 }
 
+/// One exact integration effect retained while setup renews short-lived plan timing.
+pub(crate) struct PreparedSetupInstall {
+    client: IntegrationClientArg,
+    scope: Scope,
+    launcher_path: PathBuf,
+    selected: SelectedIntegration,
+    manager: PlanManager,
+    receipts: FileReceiptStore,
+    plan: MutationPlan,
+}
+
+pub(crate) struct SetupInstallResult {
+    pub(crate) effective_plan_hash: String,
+    pub(crate) effective_diff_hash: String,
+    pub(crate) effective_backup_path: String,
+    pub(crate) receipt_plan_hash: String,
+    pub(crate) receipt_backup_path: String,
+    pub(crate) already_applied: bool,
+    pub(crate) warnings: Vec<String>,
+}
+
+impl PreparedSetupInstall {
+    pub(crate) fn plan(&self) -> &MutationPlan {
+        &self.plan
+    }
+
+    pub(crate) fn authorize(&self) -> Result<DeferredInstallAuthorization, IntegrationCliError> {
+        let approval = PlanApproval::from(&self.plan);
+        self.manager
+            .authorize_deferred_install(&approval)
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn revalidate_target(
+        &self,
+        environment: &IntegrationEnvironment,
+    ) -> Result<(), IntegrationCliError> {
+        let current = SelectedIntegration::new(self.client, environment, &self.scope)?;
+        if current.config_path != self.selected.config_path {
+            return Err(IntegrationCliError::new(
+                "config_drift",
+                "integration config target changed after setup preview",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn apply(
+        self,
+        authorization: DeferredInstallAuthorization,
+        environment: &IntegrationEnvironment,
+    ) -> Result<SetupInstallResult, IntegrationCliError> {
+        let current_launcher = validate_stable_launcher(environment.compresso_bin.clone())?;
+        if current_launcher != self.launcher_path {
+            return Err(IntegrationCliError::new(
+                "config_drift",
+                "Compresso launcher path changed after setup preview",
+            ));
+        }
+        let applied = self
+            .manager
+            .apply_deferred_install(authorization, &self.receipts)?;
+        let receipt = applied.report.receipt.as_ref().ok_or_else(|| {
+            IntegrationCliError::new(
+                "internal",
+                "deferred integration install did not produce a receipt",
+            )
+        })?;
+        let mut warnings = Vec::new();
+        project_canonical_receipts(&self.receipts, environment, &mut warnings);
+        Ok(SetupInstallResult {
+            effective_plan_hash: applied.plan.plan_hash,
+            effective_diff_hash: applied.plan.diff_hash,
+            effective_backup_path: applied.plan.backup_path,
+            receipt_plan_hash: receipt.plan_hash.clone(),
+            receipt_backup_path: receipt.backup_path.clone(),
+            already_applied: applied.report.already_applied,
+            warnings,
+        })
+    }
+}
+
+/// Prepares a setup install without recovery or filesystem mutation.
+///
+/// Holding the manager and plan lets setup display one combined preview. After confirmation,
+/// setup converts the short-lived preview into an opaque one-use authorization. After indexing,
+/// the manager renews timing only and applies the exact approved diff and backup path. Pending
+/// recovery or later drift therefore fails closed.
+pub(crate) fn prepare_setup_install(
+    client: IntegrationClientArg,
+    project: Option<&Path>,
+    environment: &IntegrationEnvironment,
+    clock: Arc<dyn PlanClock>,
+) -> Result<PreparedSetupInstall, IntegrationCliError> {
+    let scope = resolve_scope(project, &environment.cwd)?;
+    let launcher_path = validate_stable_launcher(environment.compresso_bin.clone())?;
+    let selected = SelectedIntegration::new(client, environment, &scope)?;
+    let manager = PlanManager::with_clock(&environment.session_id, clock)?;
+    let receipts = FileReceiptStore::new(environment.receipt_store_path());
+    let plan = selected.adapter.plan_install(
+        &manager,
+        &InstallCtx {
+            compresso_bin: launcher_path.clone(),
+            scope: scope.clone(),
+        },
+    )?;
+    Ok(PreparedSetupInstall {
+        client,
+        scope,
+        launcher_path,
+        selected,
+        manager,
+        receipts,
+        plan,
+    })
+}
+
 fn execute_mutation(
     action: MutationAction,
     arguments: IntegrationMutationArgs,
@@ -176,6 +352,12 @@ fn execute_mutation(
     let selected = SelectedIntegration::new(arguments.client, environment, &scope)?;
     let manager = PlanManager::new(&environment.session_id)?;
     let receipts = FileReceiptStore::new(environment.receipt_store_path());
+    let launcher_path = match action {
+        MutationAction::Install => {
+            Some(validate_stable_launcher(environment.compresso_bin.clone())?)
+        }
+        MutationAction::Uninstall => None,
+    };
 
     // Recovery can mutate config and receipts, so it is intentionally never
     // attempted by dry-run. A pending journal instead makes planning fail.
@@ -187,7 +369,9 @@ fn execute_mutation(
         MutationAction::Install => selected.adapter.plan_install(
             &manager,
             &InstallCtx {
-                compresso_bin: environment.compresso_bin.clone(),
+                compresso_bin: launcher_path
+                    .clone()
+                    .expect("install actions validate a launcher"),
                 scope: scope.clone(),
             },
         )?,
@@ -256,6 +440,16 @@ fn execute_mutation(
                     "interactive confirmation is unavailable; rerun with --yes",
                 ));
             }
+        }
+    }
+
+    if let Some(planned_launcher) = launcher_path {
+        let current_launcher = validate_stable_launcher(environment.compresso_bin.clone())?;
+        if current_launcher != planned_launcher {
+            return Err(IntegrationCliError::new(
+                "config_drift",
+                "Compresso launcher path changed after integration preview",
+            ));
         }
     }
 
@@ -699,6 +893,9 @@ impl From<IntegrationError> for IntegrationCliError {
         let code = match error {
             IntegrationError::Unsupported { .. } => "unsupported",
             IntegrationError::ConfigDrift { .. } => "config_drift",
+            IntegrationError::PendingRecovery { .. } => "pending_recovery",
+            IntegrationError::PlanExpired { .. } => "plan_expired",
+            IntegrationError::BackupCollision { .. } => "backup_collision",
             IntegrationError::UninstallReceiptMissing { .. }
             | IntegrationError::UninstallReceiptMismatch { .. }
             | IntegrationError::UninstallReceiptNotActive { .. }
@@ -724,5 +921,98 @@ impl From<std::io::Error> for IntegrationCliError {
 impl From<serde_json::Error> for IntegrationCliError {
     fn from(error: serde_json::Error) -> Self {
         Self::new("internal", error.to_string())
+    }
+}
+
+#[cfg(test)]
+mod launcher_tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::validate_stable_launcher;
+
+    #[test]
+    fn test_stable_launcher_path_is_not_canonicalized() {
+        let temporary = tempdir().expect("temporary directory should be created");
+        let version_one = temporary.path().join("compresso-v1");
+        let version_two = temporary.path().join("compresso-v2");
+        make_executable(&version_one);
+        make_executable(&version_two);
+        let launcher = temporary.path().join("compresso");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&version_one, &launcher)
+            .expect("first launcher should be linked");
+        #[cfg(windows)]
+        fs::copy(&version_one, &launcher).expect("first launcher should be copied");
+
+        assert_eq!(
+            validate_stable_launcher(launcher.clone()).expect("launcher should be accepted"),
+            launcher
+        );
+
+        fs::remove_file(&launcher).expect("first launcher should be removed");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&version_two, &launcher)
+            .expect("second launcher should be linked");
+        #[cfg(windows)]
+        fs::copy(&version_two, &launcher).expect("second launcher should be copied");
+
+        assert_eq!(
+            validate_stable_launcher(launcher.clone())
+                .expect("upgraded launcher should be accepted"),
+            launcher
+        );
+    }
+
+    #[test]
+    fn test_stable_launcher_rejects_relative_missing_and_directory_paths() {
+        let temporary = tempdir().expect("temporary directory should be created");
+        assert!(validate_stable_launcher("compresso".into()).is_err());
+        assert!(validate_stable_launcher(temporary.path().join("missing-compresso")).is_err());
+        assert!(validate_stable_launcher(temporary.path().to_path_buf()).is_err());
+        assert!(
+            validate_stable_launcher(
+                temporary
+                    .path()
+                    .join("not-allowed")
+                    .join("..")
+                    .join("compresso")
+            )
+            .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_stable_launcher_normalizes_dot_and_duplicate_separators_without_resolving_shim() {
+        let temporary = tempdir().expect("temporary directory should be created");
+        let launcher_directory = temporary.path().join("launchers");
+        fs::create_dir(&launcher_directory).expect("launcher directory should be created");
+        let payload = temporary.path().join("compresso-v1");
+        make_executable(&payload);
+        let launcher = launcher_directory.join("compresso");
+        std::os::unix::fs::symlink(&payload, &launcher).expect("launcher should be linked");
+        let raw = std::path::PathBuf::from(format!(
+            "{}/./launchers//compresso",
+            temporary.path().display()
+        ));
+
+        assert_eq!(
+            validate_stable_launcher(raw).expect("launcher should be accepted"),
+            launcher
+        );
+    }
+
+    fn make_executable(path: &std::path::Path) {
+        fs::write(path, b"compresso launcher fixture").expect("launcher fixture should be written");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+                .expect("launcher fixture should be executable");
+        }
     }
 }

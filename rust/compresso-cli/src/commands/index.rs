@@ -36,15 +36,7 @@ pub(crate) fn execute(
     store: Option<&Store>,
     cwd: &Path,
 ) -> Result<Rendered, IndexCommandError> {
-    let requested = if arguments.path.is_absolute() {
-        arguments.path
-    } else {
-        cwd.join(arguments.path)
-    };
-    let root = fs::canonicalize(requested).map_err(|_| IndexCommandError::invalid_path())?;
-    if !root.is_dir() {
-        return Err(IndexCommandError::not_directory());
-    }
+    let root = resolve_root(&arguments.path, cwd)?;
 
     if arguments.dry_run {
         return Ok(render(root, true, None, Vec::new(), Vec::new()));
@@ -63,6 +55,19 @@ pub(crate) fn execute(
     removed.sort();
 
     Ok(render(root, false, Some(report), parsed, removed))
+}
+
+pub(crate) fn resolve_root(path: &Path, cwd: &Path) -> Result<PathBuf, IndexCommandError> {
+    let requested = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    let root = fs::canonicalize(requested).map_err(|_| IndexCommandError::invalid_path())?;
+    if !root.is_dir() {
+        return Err(IndexCommandError::not_directory());
+    }
+    Ok(root)
 }
 
 fn render(

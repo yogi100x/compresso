@@ -20,7 +20,7 @@ pub use ops::{
     StatsFilter, StatsSummary, ToolStatsSummary,
 };
 pub use receipts::{ReceiptId, ReceiptRecord};
-pub use repos::{FileId, IndexVersionRecord, RepoId, RepoRecord};
+pub use repos::{FileId, IndexVersionRecord, RepoId, RepoRecord, RepoRemovalPreview};
 pub use symbols::{
     EdgeKind, EdgeRecord, EdgeResolution, EdgeResolutionCounts, ResolvedEdgeRecord, SymbolHit,
     SymbolKind, SymbolRecord, SymbolSelector,
@@ -84,6 +84,9 @@ pub enum StoreError {
     /// A repository root resolves to something other than a directory.
     #[error("repository root is not a directory: {path}")]
     RepositoryRootNotDirectory { path: PathBuf },
+    /// Repository removal requires the exact absolute root persisted at approval time.
+    #[error("repository root must be an absolute stored path: {path}")]
+    RepositoryRootNotAbsolute { path: PathBuf },
     /// A filesystem path cannot be represented by SQLite's TEXT storage.
     #[error("path is not valid UTF-8: {path}")]
     NonUtf8Path { path: PathBuf },
@@ -109,6 +112,9 @@ pub enum StoreError {
     /// A requested repository does not exist.
     #[error("repository {0} does not exist")]
     RepositoryNotFound(RepoId),
+    /// A repository approval changed after a destructive removal was previewed.
+    #[error("repository approval changed after removal preview: {path}")]
+    RepositoryApprovalChanged { path: PathBuf },
     /// A requested file does not exist.
     #[error("file {0} does not exist")]
     FileNotFound(FileId),
