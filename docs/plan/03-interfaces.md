@@ -88,6 +88,13 @@ pub trait CompressionStrategy: Send + Sync {
     fn supports(&self, input: &ContextGraph) -> bool;
     fn estimate(&self, input: &ContextGraph) -> Estimate;
     fn execute(&self, input: &ContextGraph, budget: &CompressionBudget) -> Result<StrategyOutput, StrategyError>;
+    fn execute_if_supported(&self, input: &ContextGraph, budget: &CompressionBudget) -> StrategyExecution;
+}
+
+pub enum StrategyExecution {
+    Legacy,                                               // default: engine preserves supports → estimate → execute behavior
+    NotSupported,
+    Executed { estimate: Estimate, output: Result<StrategyOutput, StrategyError> },
 }
 
 pub struct StrategyRegistry { /* ordered Vec<Box<dyn CompressionStrategy>> */ }
@@ -97,7 +104,7 @@ impl StrategyRegistry {
 }
 ```
 
-Slice strategies: `dedup_exact` creates a typed stub plus `DuplicateReference.locator` while preserving the existing edge set; `collapse_logs` and `compact_json` remove only enumerated units; `pack_budget` drops lowest `priority/token` unprotected atomic groups. It never partial-truncates code, provider turns, tool request/response pairs, or dedup referent groups. Every strategy returns changed node ids; the engine recounts those nodes and updates totals by delta. Strategies must not invoke whole-graph tokenization.
+Slice strategies: `dedup_exact` creates a typed stub plus `DuplicateReference.locator` while preserving the existing edge set; `collapse_logs` and `compact_json` remove only enumerated units; `pack_budget` drops lowest `priority/token` unprotected atomic groups. It never partial-truncates code, provider turns, tool request/response pairs, or dedup referent groups. Every strategy returns changed node ids; the engine recounts those nodes and updates totals by delta. Strategies must not invoke whole-graph tokenization. The combined execution hook is backward-compatible: its default `Legacy` result retains the three public calls, while a costly strategy may override it to derive `supports`, the exact estimate, and the exact output from one immutable plan.
 
 **Lossiness taxonomy (D39)** — safe mode is deterministic and rule-based, NOT lossless, and is never described as lossless in user-facing copy. Mapping enforced by `supports()`:
 
