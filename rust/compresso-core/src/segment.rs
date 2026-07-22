@@ -21,6 +21,14 @@ struct Span {
     end: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TraceRepeatSpan {
+    pub(crate) start_line: usize,
+    pub(crate) representative_end_line: usize,
+    pub(crate) end_line: usize,
+    pub(crate) repeats: usize,
+}
+
 #[derive(Clone, Copy)]
 struct Line<'a> {
     start: usize,
@@ -247,6 +255,16 @@ fn nested_fence_close(
 }
 
 fn log_spans(content: &str, lines: &[Line<'_>]) -> Option<Vec<Span>> {
+    // Repeated multiline traces must remain in one unprotected node so
+    // `collapse_logs` can replace whole trace occurrences rather than forcing
+    // `pack_budget` to choose among individually segmented error blocks.
+    if !repeated_trace_spans(content).is_empty() {
+        return Some(vec![Span {
+            start: 0,
+            end: content.len(),
+        }]);
+    }
+
     let starts = lines
         .iter()
         .enumerate()
@@ -292,6 +310,131 @@ fn log_spans(content: &str, lines: &[Line<'_>]) -> Option<Vec<Span>> {
     }
 
     Some(spans)
+}
+
+pub(crate) fn repeated_trace_spans(content: &str) -> Vec<TraceRepeatSpan> {
+    let content_lines = lines(content);
+    let starts = content_lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| is_trace_header(line.text))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    if starts.len() < 3 {
+        return Vec::new();
+    }
+
+    let blocks = starts
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(position, start_line)| {
+            let end_line = starts
+                .get(position + 1)
+                .copied()
+                .unwrap_or(content_lines.len());
+            let signature = trace_signature(&content_lines, start_line, end_line);
+            (start_line, end_line, signature)
+        })
+        .collect::<Vec<_>>();
+
+    let mut spans = Vec::new();
+    let mut run_start = 0_usize;
+    while run_start < blocks.len() {
+        let Some(signature) = blocks[run_start].2.as_ref() else {
+            run_start += 1;
+            continue;
+        };
+        let mut run_end = run_start + 1;
+        while run_end < blocks.len()
+            && blocks[run_end]
+                .2
+                .as_ref()
+                .is_some_and(|next| next == signature)
+        {
+            run_end += 1;
+        }
+
+        let repeats = run_end - run_start;
+        if repeats >= 3 {
+            spans.push(TraceRepeatSpan {
+                start_line: blocks[run_start].0,
+                representative_end_line: blocks[run_start].1,
+                end_line: blocks[run_end - 1].1,
+                repeats,
+            });
+        }
+        run_start = run_end;
+    }
+    spans
+}
+
+fn is_trace_header(line: &str) -> bool {
+    timestamp_prefix(line) && line.contains(" ERROR ")
+}
+
+fn trace_signature(lines: &[Line<'_>], start: usize, end: usize) -> Option<String> {
+    let header = lines.get(start)?.text;
+    if !is_trace_header(header) {
+        return None;
+    }
+
+    let mut signature = normalize_java_worker(&normalize_log_header(header));
+    let mut saw_exception = false;
+    let mut saw_frame = false;
+    for line in lines.get(start + 1..end)? {
+        let value = line.text.trim();
+        if value.is_empty() {
+            continue;
+        }
+
+        let is_frame = line
+            .text
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_whitespace)
+            && value.starts_with("at ");
+        let is_exception = !saw_exception
+            && !saw_frame
+            && (value.contains("Exception:") || value.contains("Error:"));
+        if is_frame {
+            saw_frame = true;
+        } else if is_exception {
+            saw_exception = true;
+        } else {
+            return None;
+        }
+        signature.push('\n');
+        signature.push_str(line.text);
+    }
+
+    saw_frame.then_some(signature)
+}
+
+fn normalize_java_worker(header: &str) -> String {
+    let Some(start) = header.find("[pool-") else {
+        return header.to_owned();
+    };
+    let Some(relative_end) = header[start..].find(']') else {
+        return header.to_owned();
+    };
+    let end = start + relative_end + 1;
+    let worker = &header[start + 1..end - 1];
+    let Some((pool, thread)) = worker
+        .strip_prefix("pool-")
+        .and_then(|value| value.split_once("-thread-"))
+    else {
+        return header.to_owned();
+    };
+    if pool.is_empty()
+        || thread.is_empty()
+        || !pool.bytes().all(|byte| byte.is_ascii_digit())
+        || !thread.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return header.to_owned();
+    }
+
+    format!("{}[<java-worker>]{}", &header[..start], &header[end..])
 }
 
 fn lines(content: &str) -> Vec<Line<'_>> {
@@ -473,6 +616,46 @@ mod tests {
         assert!(!output.nodes[1].protected);
         assert!(!output.nodes[2].protected);
         assert!(output.nodes[3].protected);
+    }
+
+    #[test]
+    fn test_repeated_multiline_traces_remain_one_lossless_collapse_unit() {
+        let content = concat!(
+            "2026-07-21T11:02:14.512Z ERROR FetchError: connection refused\n",
+            "    at Client.open (/srv/client.js:10:3)\n",
+            "    at main (/srv/main.js:4:1)\n",
+            "2026-07-21T11:02:19.518Z ERROR FetchError: connection refused\n",
+            "    at Client.open (/srv/client.js:10:3)\n",
+            "    at main (/srv/main.js:4:1)\n",
+            "2026-07-21T11:02:24.531Z ERROR FetchError: connection refused\n",
+            "    at Client.open (/srv/client.js:10:3)\n",
+            "    at main (/srv/main.js:4:1)\n",
+        );
+
+        let first = segment_graph(&graph(content, NodeKind::ToolResponse)).unwrap();
+        let second = segment_graph(&graph(content, NodeKind::ToolResponse)).unwrap();
+
+        assert_eq!(first, second);
+        assert_eq!(joined(&first), content);
+        assert_eq!(first.nodes.len(), 1);
+        assert!(!first.nodes[0].protected);
+    }
+
+    #[test]
+    fn test_quoted_trace_text_does_not_spoof_a_trace_group() {
+        let content = concat!(
+            "\"2026-07-21T11:02:14.512Z ERROR FetchError: quoted\"\n",
+            "\"    at Client.open (/srv/client.js:10:3)\"\n\n",
+            "\"2026-07-21T11:02:19.518Z ERROR FetchError: quoted\"\n",
+            "\"    at Client.open (/srv/client.js:10:3)\"\n\n",
+            "\"2026-07-21T11:02:24.531Z ERROR FetchError: quoted\"\n",
+            "\"    at Client.open (/srv/client.js:10:3)\"\n",
+        );
+
+        let output = segment_graph(&graph(content, NodeKind::ToolResponse)).unwrap();
+
+        assert_eq!(joined(&output), content);
+        assert!(output.nodes.len() > 1);
     }
 
     #[test]

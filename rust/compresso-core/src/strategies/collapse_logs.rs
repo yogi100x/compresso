@@ -1,5 +1,6 @@
 use crate::graph::{ContextGraph, NodeKind};
 use crate::safety::duplicate_group_node_ids;
+use crate::segment::repeated_trace_spans;
 use crate::strategy::{
     CompressionBudget, CompressionStrategy, Estimate, RemovalKind, RemovalRecord, StrategyError,
     StrategyExecution, StrategyOutput,
@@ -18,13 +19,19 @@ struct NodeChange {
     index: usize,
     content: String,
     token_count: usize,
+    protect_representative: bool,
     removals: Vec<RemovalRecord>,
 }
 
 struct CandidateSpan {
     start_line: usize,
     end_line: usize,
+    locator_start_line: usize,
+    locator_end_line: usize,
     replacement: String,
+    units_removed: usize,
+    net_lines_removed: usize,
+    protect_representative: bool,
 }
 
 struct Line<'a> {
@@ -92,6 +99,9 @@ fn execute_plan(input: &ContextGraph, plan: CollapsePlan) -> StrategyOutput {
         let node = &mut graph.nodes[change.index];
         node.content = change.content;
         node.token_count = change.token_count;
+        // A collapsed multiline trace is now the sole root-cause representative.
+        // Protect it before later strategies (notably budget packing) execute.
+        node.protected |= change.protect_representative;
         removals.extend(change.removals);
     }
 
@@ -139,6 +149,7 @@ fn collapse_plan(input: &ContextGraph) -> CollapsePlan {
         let mut current_tokens = node.token_count;
         let mut removed_prior_lines = 0_usize;
         let mut node_removals = Vec::new();
+        let mut protect_representative = false;
 
         for span in spans {
             let start_line = span.start_line - removed_prior_lines;
@@ -146,8 +157,8 @@ fn collapse_plan(input: &ContextGraph) -> CollapsePlan {
             let lines = split_lines(&content);
             let candidate = replace_lines(&lines, start_line, end_line, &span.replacement);
             let after_tokens = counter.count(&candidate);
-            let original_start = span.start_line + 1;
-            let original_end = span.end_line;
+            let original_start = span.locator_start_line + 1;
+            let original_end = span.locator_end_line;
 
             if after_tokens >= current_tokens {
                 notes.push(format!(
@@ -157,7 +168,6 @@ fn collapse_plan(input: &ContextGraph) -> CollapsePlan {
                 continue;
             }
 
-            let units_removed = span.end_line - span.start_line - 1;
             node_removals.push(RemovalRecord {
                 strategy_id: "collapse_logs".to_owned(),
                 node_id: node.id.clone(),
@@ -167,16 +177,17 @@ fn collapse_plan(input: &ContextGraph) -> CollapsePlan {
                 replacement_hash: Some(content_hash(&candidate)),
                 before_tokens: current_tokens,
                 after_tokens,
-                units_removed: Some(units_removed),
+                units_removed: Some(span.units_removed),
             });
             notes.push(format!(
-                "collapsed node: {} lines {original_start}-{original_end}; removed {units_removed} lines",
-                node.id
+                "collapsed node: {} lines {original_start}-{original_end}; removed {} lines",
+                node.id, span.units_removed
             ));
             tokens_saved = tokens_saved.saturating_add(current_tokens - after_tokens);
             content = candidate;
             current_tokens = after_tokens;
-            removed_prior_lines += units_removed;
+            removed_prior_lines += span.net_lines_removed;
+            protect_representative |= span.protect_representative;
         }
 
         if !node_removals.is_empty() {
@@ -184,6 +195,7 @@ fn collapse_plan(input: &ContextGraph) -> CollapsePlan {
                 index,
                 content,
                 token_count: current_tokens,
+                protect_representative,
                 removals: node_removals,
             });
         }
@@ -198,7 +210,30 @@ fn collapse_plan(input: &ContextGraph) -> CollapsePlan {
 
 fn candidate_spans(content: &str) -> Vec<CandidateSpan> {
     let lines = split_lines(content);
-    let mut spans = Vec::new();
+    let trace_spans = repeated_trace_spans(content);
+    let mut spans = trace_spans
+        .iter()
+        .map(|span| {
+            let mut replacement =
+                render_lines(&lines[span.start_line..span.representative_end_line]);
+            replacement.push_str(&format!(
+                "[×{} repeats]{}",
+                span.repeats,
+                lines[span.end_line - 1].ending
+            ));
+            let units_removed = span.end_line - span.representative_end_line;
+            CandidateSpan {
+                start_line: span.start_line,
+                end_line: span.end_line,
+                locator_start_line: span.representative_end_line,
+                locator_end_line: span.end_line,
+                replacement,
+                units_removed: units_removed - 1,
+                net_lines_removed: units_removed - 1,
+                protect_representative: true,
+            }
+        })
+        .collect::<Vec<_>>();
     let mut run_start = 0_usize;
 
     while run_start < lines.len() {
@@ -209,21 +244,39 @@ fn candidate_spans(content: &str) -> Vec<CandidateSpan> {
         }
 
         let run_length = run_end - run_start;
-        if run_length >= 3 {
+        let overlaps_trace = trace_spans
+            .iter()
+            .any(|span| run_start < span.end_line && run_end > span.start_line);
+        if run_length >= 3 && !overlaps_trace {
             spans.push(CandidateSpan {
                 start_line: run_start,
                 end_line: run_end,
+                locator_start_line: run_start,
+                locator_end_line: run_end,
                 replacement: format!(
                     "{} [×{run_length} repeats]{}",
                     lines[run_start].text,
                     lines[run_end - 1].ending
                 ),
+                units_removed: run_length - 1,
+                net_lines_removed: run_length - 1,
+                protect_representative: false,
             });
         }
         run_start = run_end;
     }
 
+    spans.sort_by_key(|span| span.start_line);
     spans
+}
+
+fn render_lines(lines: &[Line<'_>]) -> String {
+    let mut rendered = String::new();
+    for line in lines {
+        rendered.push_str(line.text);
+        rendered.push_str(line.ending);
+    }
+    rendered
 }
 
 fn split_lines(content: &str) -> Vec<Line<'_>> {
@@ -596,6 +649,105 @@ mod tests {
         assert!(output.graph.nodes[0].content.contains("[×10 repeats]"));
         assert!(!output.graph.nodes[0].content.ends_with('\n'));
         assert_eq!(output.removals[0].units_removed, Some(9));
+    }
+
+    #[test]
+    fn test_multiline_node_and_java_trace_groups_collapse_with_typed_removals() {
+        let node_first = concat!(
+            "2026-07-21T11:02:14.512Z ERROR FetchError: connection refused\n",
+            "    at Client.open (/srv/client.js:10:3)\n",
+            "    at main (/srv/main.js:4:1)\n",
+        );
+        let java_first = concat!(
+            "2026-07-21 11:03:02.117 ERROR [pool-3-thread-7] InvoiceWorker - failed\n",
+            "java.lang.NullPointerException: customer is null\n",
+            "    at com.acme.InvoiceWorker.applyTax(InvoiceWorker.java:214)\n",
+        );
+        let content = format!(
+            "{node_first}{}{}{java_first}{}{}",
+            concat!(
+                "2026-07-21T11:02:19.518Z ERROR FetchError: connection refused\n",
+                "    at Client.open (/srv/client.js:10:3)\n",
+                "    at main (/srv/main.js:4:1)\n",
+            ),
+            concat!(
+                "2026-07-21T11:02:24.531Z ERROR FetchError: connection refused\n",
+                "    at Client.open (/srv/client.js:10:3)\n",
+                "    at main (/srv/main.js:4:1)\n",
+            ),
+            concat!(
+                "2026-07-21 11:03:07.204 ERROR [pool-3-thread-2] InvoiceWorker - failed\n",
+                "java.lang.NullPointerException: customer is null\n",
+                "    at com.acme.InvoiceWorker.applyTax(InvoiceWorker.java:214)\n",
+            ),
+            concat!(
+                "2026-07-21 11:03:12.290 ERROR [pool-3-thread-4] InvoiceWorker - failed\n",
+                "java.lang.NullPointerException: customer is null\n",
+                "    at com.acme.InvoiceWorker.applyTax(InvoiceWorker.java:214)\n",
+            ),
+        );
+        let graph = graph_with(node("log", NodeKind::ToolResponse, &content, false));
+
+        let output = CollapseLogs
+            .execute(&graph, &budget())
+            .expect("multiline traces should collapse");
+        let collapsed = &output.graph.nodes[0].content;
+
+        assert!(output.graph.nodes[0].protected);
+        assert!(collapsed.starts_with(node_first));
+        assert!(collapsed.contains(java_first));
+        assert_eq!(collapsed.matches("[×3 repeats]").count(), 2);
+        assert!(collapsed.contains("FetchError: connection refused"));
+        assert!(collapsed.contains("InvoiceWorker.applyTax(InvoiceWorker.java:214)"));
+        assert_eq!(output.removals.len(), 2);
+        assert_eq!(output.removals[0].kind, RemovalKind::CollapsedLines);
+        assert_eq!(output.removals[0].locator.as_deref(), Some("lines:4-9"));
+        assert_eq!(output.removals[0].units_removed, Some(5));
+        assert_eq!(output.removals[1].locator.as_deref(), Some("lines:13-18"));
+        assert_eq!(output.removals[1].units_removed, Some(5));
+        assert_eq!(
+            output.removals[0].after_tokens,
+            output.removals[1].before_tokens
+        );
+        assert_eq!(
+            output.removals[0].replacement_hash.as_deref(),
+            Some(output.removals[1].original_hash.as_str())
+        );
+        let recorded_delta = output
+            .removals
+            .iter()
+            .map(|record| record.before_tokens - record.after_tokens)
+            .sum::<usize>();
+        assert_eq!(
+            recorded_delta,
+            graph.total_tokens() - output.graph.total_tokens()
+        );
+    }
+
+    #[test]
+    fn test_trace_grouping_does_not_merge_distinct_root_causes_or_quoted_text() {
+        let content = concat!(
+            "2026-07-21T11:02:14.512Z ERROR FetchError: first root\n",
+            "    at Client.open (/srv/client.js:10:3)\n",
+            "2026-07-21T11:02:19.518Z ERROR FetchError: second root\n",
+            "    at Client.open (/srv/client.js:10:3)\n",
+            "2026-07-21T11:02:24.531Z ERROR FetchError: third root\n",
+            "    at Client.open (/srv/client.js:10:3)\n",
+            "\"2026-07-21T11:03:14.512Z ERROR FetchError: quoted\"\n",
+            "\"    at Client.open (/srv/client.js:10:3)\"\n",
+            "\"2026-07-21T11:03:19.518Z ERROR FetchError: quoted\"\n",
+            "\"    at Client.open (/srv/client.js:10:3)\"\n",
+            "\"2026-07-21T11:03:24.531Z ERROR FetchError: quoted\"\n",
+            "\"    at Client.open (/srv/client.js:10:3)\"\n",
+        );
+        let graph = graph_with(node("log", NodeKind::ToolResponse, content, false));
+
+        assert!(!CollapseLogs.supports(&graph));
+        let output = CollapseLogs
+            .execute(&graph, &budget())
+            .expect("distinct and quoted traces should remain unchanged");
+        assert_eq!(output.graph, graph);
+        assert!(output.removals.is_empty());
     }
 
     #[test]

@@ -5,6 +5,22 @@ use compresso_core::{
 
 const OVERSIZE_TEXT: &str = include_str!("fixtures/generic-text/single-oversize-text.txt");
 const FENCE_BOMB: &str = include_str!("../../../fixtures/adversarial/fence-bomb/input.txt");
+const REPEATED_TRACE: &str = concat!(
+    "2026-07-21T11:02:14.512Z ERROR FetchError: connection refused\n",
+    "    at Client.open (/srv/client.js:10:3)\n",
+    "    at main (/srv/main.js:4:1)\n",
+    "2026-07-21T11:02:19.518Z ERROR FetchError: connection refused\n",
+    "    at Client.open (/srv/client.js:10:3)\n",
+    "    at main (/srv/main.js:4:1)\n",
+    "2026-07-21T11:02:24.531Z ERROR FetchError: connection refused\n",
+    "    at Client.open (/srv/client.js:10:3)\n",
+    "    at main (/srv/main.js:4:1)\n",
+);
+const REPRESENTATIVE_TRACE: &str = concat!(
+    "2026-07-21T11:02:14.512Z ERROR FetchError: connection refused\n",
+    "    at Client.open (/srv/client.js:10:3)\n",
+    "    at main (/srv/main.js:4:1)\n",
+);
 
 fn budget(max_tokens: usize) -> CompressionBudget {
     CompressionBudget {
@@ -84,6 +100,48 @@ fn test_single_oversize_text_keeps_anchor_or_falls_back_byte_identical() {
     assert_eq!(
         serde_json::to_vec(&fallback.output).expect("fallback output should serialize"),
         input_bytes
+    );
+}
+
+#[test]
+fn test_tight_trace_budget_fails_open_before_pack_can_lose_representative() {
+    let counter = counter_for(TokenProvider::Heuristic);
+    let input = ContextGraph::from_text(REPEATED_TRACE, NodeKind::ToolResponse, counter);
+
+    let compressed = Engine::new(Mode::Safe, counter).compress(input.clone(), &budget(1_000));
+    assert!(
+        !compressed.fallback_used,
+        "fallback={:?}; checks={:?}",
+        compressed.fallback_reason, compressed.safety_checks
+    );
+    assert_eq!(compressed.output.nodes.len(), 1);
+    assert!(compressed.output.nodes[0].protected);
+    assert!(
+        compressed.output.nodes[0]
+            .content
+            .starts_with(REPRESENTATIVE_TRACE)
+    );
+    assert!(compressed.output.nodes[0].content.contains("[×3 repeats]"));
+
+    let tight = Engine::new(Mode::Safe, counter).compress(input.clone(), &budget(1));
+    let pack = tight
+        .strategy_results
+        .iter()
+        .find(|strategy| strategy.strategy_id == "pack_budget")
+        .expect("tight budget should attempt budget packing after trace collapse");
+
+    assert!(!pack.applied);
+    assert!(pack.after_tokens > 0);
+    assert!(tight.fallback_used);
+    assert_eq!(
+        tight.fallback_reason.as_deref(),
+        Some("unsatisfiable_budget")
+    );
+    assert_eq!(tight.output, input);
+    assert!(
+        tight.output.nodes[0]
+            .content
+            .contains("FetchError: connection refused")
     );
 }
 
