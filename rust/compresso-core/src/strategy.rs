@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -60,6 +62,9 @@ pub struct RemovalRecord {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StrategyOutput {
     pub graph: ContextGraph,
+    /// Exact ids of nodes added, removed, or mutated by this execution.
+    #[serde(default)]
+    pub changed_node_ids: BTreeSet<String>,
     pub notes: Vec<String>,
     pub removals: Vec<RemovalRecord>,
 }
@@ -174,6 +179,7 @@ impl CompressionStrategy for NoopStrategy {
     ) -> Result<StrategyOutput, StrategyError> {
         Ok(StrategyOutput {
             graph: input.clone(),
+            changed_node_ids: BTreeSet::new(),
             notes: Vec::new(),
             removals: Vec::new(),
         })

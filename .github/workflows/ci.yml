@@ -183,6 +183,9 @@ jobs:
           if [[ "${failed_gates}" == "p95_latency_ms" ]]; then
             echo "P95 latency is reported on Ubuntu and enforced on macos-14"
           fi
+      - name: Run large-payload latency gates
+        if: ${{ matrix.enforce_latency }}
+        run: cargo bench -p compresso-eval --bench large_payload_latency -- --noplot
       - name: Upload evaluation report
         if: always()
         uses: actions/upload-artifact@v4

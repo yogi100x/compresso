@@ -27,6 +27,7 @@ const BENCHMARK_PATHS: [&str; 2] = [
     "benchmarks/json-2000-elements/input.json",
     "benchmarks/source-200kb/input.ts",
 ];
+const SCALE_BENCHMARK_NAMES: [&str; 3] = ["input-1mib.log", "input-4mib.log", "input-8mib.log"];
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -54,6 +55,21 @@ struct BenchmarkPin {
     size_bytes: u64,
     tokens_o200k: usize,
     generator: String,
+    sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScaleBenchmarkManifest {
+    generator: String,
+    variants: Vec<ScaleBenchmarkPin>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScaleBenchmarkPin {
+    name: String,
+    bytes: u64,
     sha256: String,
 }
 
@@ -228,6 +244,7 @@ fn test_gate_population_is_exact_and_benchmarks_are_excluded() {
     let pins = load_pins(&root);
     let set = FixtureSet::load(&root).expect("canonical quality fixtures should load");
 
+    assert_eq!(QUALITY_PATHS.len(), 15);
     assert_eq!(set.fixtures.len(), 15);
     assert_eq!(
         set.fixtures
@@ -267,6 +284,11 @@ fn test_benchmark_paths_hashes_sizes_tokens_and_generators() {
         [
             PathBuf::from("generate.mjs"),
             PathBuf::from("json-2000-elements/input.json"),
+            PathBuf::from("mib-rebuild-stream/generate.mjs"),
+            PathBuf::from("mib-rebuild-stream/input-1mib.log"),
+            PathBuf::from("mib-rebuild-stream/input-4mib.log"),
+            PathBuf::from("mib-rebuild-stream/input-8mib.log"),
+            PathBuf::from("mib-rebuild-stream/manifest.json"),
             PathBuf::from("source-200kb/input.ts"),
         ]
     );
@@ -294,6 +316,41 @@ fn test_benchmark_paths_hashes_sizes_tokens_and_generators() {
             .len(),
         200 * 1024
     );
+}
+
+#[test]
+fn test_scale_benchmark_manifest_sizes_and_hashes() {
+    let root = fixtures_root().join("benchmarks/mib-rebuild-stream");
+    let manifest_source =
+        fs::read_to_string(root.join("manifest.json")).expect("scale manifest must be UTF-8");
+    let manifest: ScaleBenchmarkManifest =
+        serde_json::from_str(&manifest_source).expect("scale manifest must parse strictly");
+
+    assert_eq!(
+        manifest.generator,
+        "node fixtures/benchmarks/mib-rebuild-stream/generate.mjs"
+    );
+    assert_eq!(manifest.variants.len(), SCALE_BENCHMARK_NAMES.len());
+    assert_eq!(
+        manifest
+            .variants
+            .iter()
+            .map(|variant| variant.name.as_str())
+            .collect::<Vec<_>>(),
+        SCALE_BENCHMARK_NAMES
+    );
+
+    for (variant, expected_bytes) in
+        manifest
+            .variants
+            .iter()
+            .zip([1_u64 << 20, 4_u64 << 20, 8_u64 << 20])
+    {
+        let bytes = fs::read(root.join(&variant.name)).expect("scale payload must exist");
+        assert_eq!(variant.bytes, expected_bytes);
+        assert_eq!(u64::try_from(bytes.len()).unwrap(), expected_bytes);
+        assert_eq!(sha256_hex(&bytes), variant.sha256);
+    }
 }
 
 #[test]

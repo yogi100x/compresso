@@ -394,6 +394,7 @@ dependencies = [
  "compresso-atlas",
  "compresso-core",
  "compresso-store",
+ "criterion",
  "jsonschema",
  "serde",
  "serde_json",

@@ -55,8 +55,38 @@ impl TokenCounter for TiktokenCounter {
     }
 
     fn count(&self, text: &str) -> usize {
+        if let Some((line, repeats)) = exact_repeated_line(text)
+            && let Some(total) = self
+                .tokenizer
+                .encode_ordinary(line)
+                .len()
+                .checked_mul(repeats)
+        {
+            return total;
+        }
         self.tokenizer.encode_ordinary(text).len()
     }
+}
+
+/// Recognizes a byte-exact repeated nonblank line stream.
+///
+/// Tiktoken's ordinary regex treats a nonblank line ending as a stable piece
+/// boundary, so an identical line has the same encoding at every repetition.
+/// Blank-line runs are excluded because the regex may group adjacent newlines.
+pub(crate) fn exact_repeated_line(text: &str) -> Option<(&str, usize)> {
+    let line_end = text.as_bytes().iter().position(|byte| *byte == b'\n')? + 1;
+    if line_end == text.len() || !text.len().is_multiple_of(line_end) {
+        return None;
+    }
+    let line = &text[..line_end];
+    if line.trim().is_empty() {
+        return None;
+    }
+    let repeats = text.len() / line_end;
+    text.as_bytes()
+        .chunks_exact(line_end)
+        .all(|chunk| chunk == line.as_bytes())
+        .then_some((line, repeats))
 }
 
 struct AnthropicCounter {
@@ -70,8 +100,17 @@ impl TokenCounter for AnthropicCounter {
 
     fn count(&self, text: &str) -> usize {
         let base_count = counter_for(TokenProvider::OpenAiO200k).count(text);
-        ((base_count as f64) * CALIBRATION).ceil() as usize
+        anthropic_calibrated_count(base_count)
     }
+}
+
+/// Derives the calibrated Anthropic estimate from an exact o200k count.
+///
+/// Callers that already counted the same bytes with o200k should use this
+/// helper instead of tokenizing them a second time through
+/// [`TokenProvider::AnthropicCalibrated`].
+pub fn anthropic_calibrated_count(o200k_tokens: usize) -> usize {
+    ((o200k_tokens as f64) * CALIBRATION).ceil() as usize
 }
 
 struct HeuristicCounter {
@@ -185,8 +224,10 @@ fn initialization_report(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::OnceLock as TestOnceLock;
     use std::time::{Duration, Instant};
 
+    use proptest::prelude::*;
     use serde::Deserialize;
 
     use super::*;
@@ -209,6 +250,20 @@ mod tests {
     fn calibration_fixture() -> CalibrationFixture {
         serde_json::from_str(CALIBRATION_FIXTURE)
             .expect("the committed Anthropic calibration fixture should be valid JSON")
+    }
+
+    fn raw_o200k() -> &'static CoreBPE {
+        static RAW: TestOnceLock<CoreBPE> = TestOnceLock::new();
+        RAW.get_or_init(|| {
+            tiktoken_rs::o200k_base().expect("the embedded o200k tokenizer should initialize")
+        })
+    }
+
+    fn raw_cl100k() -> &'static CoreBPE {
+        static RAW: TestOnceLock<CoreBPE> = TestOnceLock::new();
+        RAW.get_or_init(|| {
+            tiktoken_rs::cl100k_base().expect("the embedded cl100k tokenizer should initialize")
+        })
     }
 
     #[test]
@@ -244,6 +299,83 @@ mod tests {
     }
 
     #[test]
+    fn test_repeated_line_fast_path_matches_independent_full_encoding() {
+        let lines = [
+            "2026-07-22 09:15:12 rebuild complete status=ok\n",
+            "  indented unicode ✅ 完了\r\n",
+            "warning: repeated compiler diagnostic E0308\n",
+        ];
+        let providers = [
+            (TokenProvider::OpenAiO200k, tiktoken_rs::o200k_base()),
+            (TokenProvider::OpenAiCl100k, tiktoken_rs::cl100k_base()),
+        ];
+
+        for (provider, raw) in providers {
+            let raw = raw.expect("the embedded tokenizer should initialize");
+            for line in lines {
+                for repeats in [2, 3, 257] {
+                    let input = line.repeat(repeats);
+                    assert_eq!(
+                        counter_for(provider).count(&input),
+                        raw.encode_ordinary(&input).len(),
+                        "provider={provider:?} line={line:?} repeats={repeats}"
+                    );
+                }
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn prop_repeated_line_fast_path_matches_raw_tokenizers(
+            pieces in proptest::collection::vec(
+                prop_oneof![
+                    Just("ascii"),
+                    Just("123"),
+                    Just(" "),
+                    Just("-"),
+                    Just("_"),
+                    Just("✅"),
+                    Just("完了"),
+                    Just("é"),
+                    Just("компрессия"),
+                ],
+                0..16,
+            ),
+            trailing_spaces in 0_usize..5,
+            crlf in any::<bool>(),
+            repeats in 2_usize..33,
+        ) {
+            let ending = if crlf { "\r\n" } else { "\n" };
+            let line = format!(
+                "required{}{}{}",
+                pieces.concat(),
+                " ".repeat(trailing_spaces),
+                ending,
+            );
+            let input = line.repeat(repeats);
+            prop_assert_eq!(
+                counter_for(TokenProvider::OpenAiO200k).count(&input),
+                raw_o200k().encode_ordinary(&input).len()
+            );
+            prop_assert_eq!(
+                counter_for(TokenProvider::OpenAiCl100k).count(&input),
+                raw_cl100k().encode_ordinary(&input).len()
+            );
+        }
+    }
+
+    #[test]
+    fn test_repeated_line_fast_path_rejects_partial_and_blank_runs() {
+        assert_eq!(exact_repeated_line("same\nsame\n"), Some(("same\n", 2)));
+        assert_eq!(exact_repeated_line("same\nsame"), None);
+        assert_eq!(exact_repeated_line("\n\n\n"), None);
+        assert_eq!(exact_repeated_line("single\n"), None);
+    }
+
+    #[test]
     fn test_empty_string_zero() {
         for provider in [
             TokenProvider::OpenAiO200k,
@@ -265,7 +397,7 @@ mod tests {
             assert_eq!(o200k.count(&sample.text), sample.o200k_tokens);
             assert_eq!(
                 calibrated.count(&sample.text),
-                ((sample.o200k_tokens as f64) * CALIBRATION).ceil() as usize
+                anthropic_calibrated_count(sample.o200k_tokens)
             );
         }
     }

@@ -2185,7 +2185,7 @@ Files: rust/compresso-core/src/strategies/{dedup_exact,pack_budget}.rs, rust/com
 Description: Add `duplicate_of` edges and treat referent/stubs as one retention group.
 Acceptance/tests: a retained stub always resolves to one byte-preserved referent; pack cannot orphan, cycle, or multiply-reference a stub; malformed external references force fallback.
 
-### [ ] E2-15: Differential token accounting and large-payload latency
+### [x] E2-15: Differential token accounting and large-payload latency
 Owner: R1+PQ · Estimate: 2.5d · Depends: E2-11, E5-06
 Files: rust/compresso-core/src/{graph,engine,tokens}.rs, rust/compresso-eval/benches/, fixtures/logs/mib-rebuild-stream/
 Description: Recount changed nodes only, enforce count equality, initialize tokenizers at startup, and benchmark 1 MiB/4 MiB/configured-max payloads.

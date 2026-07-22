@@ -15,7 +15,7 @@ pub use config::{
     CompressionCfg, Config, ConfigError, ConfigExplanation, ConfigOverrides, ConfigSource,
     EffectiveValue, IndexCfg, McpCfg, PrivacyCfg, ProxyCfg, RuntimeCfg, RuntimePaths,
 };
-pub use engine::{CompressionResult, Engine};
+pub use engine::{CompressionResult, Engine, MAX_COMPRESSION_INPUT_BYTES};
 pub use graph::{
     ContextEdge, ContextGraph, ContextNode, EdgeKind, GraphError, NodeKind, ProviderId,
     ProviderIdentifierError, ProviderTurn, ProviderTurnId, Source, ToolCallId,
@@ -31,7 +31,7 @@ pub use strategy::{
     StrategyError, StrategyExecution, StrategyOutput, StrategyRegistry,
 };
 pub use tokens::{
-    CALIBRATION, TokenCounter, TokenProvider, TokenizerInitialization, counter_for,
-    initialize_tokenizers,
+    CALIBRATION, TokenCounter, TokenProvider, TokenizerInitialization, anthropic_calibrated_count,
+    counter_for, initialize_tokenizers,
 };
 pub use trace::{OperationIdentity, StrategyResult, Trace, operation_identity};

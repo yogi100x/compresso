@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt;
 
 use serde::de::{DeserializeSeed, Error as _, MapAccess, SeqAccess, Visitor};
@@ -88,9 +89,11 @@ fn estimate_for_plan(plan: &CompactPlan) -> Estimate {
 fn execute_plan(input: &ContextGraph, plan: CompactPlan) -> StrategyOutput {
     let mut graph = input.clone();
     let mut removals = Vec::new();
+    let mut changed_node_ids = BTreeSet::new();
 
     for change in plan.changes {
         let node = &mut graph.nodes[change.index];
+        changed_node_ids.insert(node.id.clone());
         node.content = change.content;
         node.token_count = change.token_count;
         removals.extend(change.removals);
@@ -98,6 +101,7 @@ fn execute_plan(input: &ContextGraph, plan: CompactPlan) -> StrategyOutput {
 
     StrategyOutput {
         graph,
+        changed_node_ids,
         notes: plan.notes,
         removals,
     }
@@ -583,6 +587,7 @@ mod tests {
         assert_eq!(output.graph.nodes[0].content, r#"{"a":1,"b":[1,2,3]}"#);
         assert!(output.graph.total_tokens() < graph.total_tokens());
         assert_eq!(output.graph.validate(), Ok(()));
+        assert_eq!(output.changed_node_ids, BTreeSet::from(["json".to_owned()]));
     }
 
     #[test]

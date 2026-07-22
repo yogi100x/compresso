@@ -62,6 +62,16 @@ unless run_script.include?('ENFORCE_LATENCY') &&
   exit 1
 end
 
+large_payload_gate = eval_steps.find { |step| step["name"] == "Run large-payload latency gates" }
+required_large_payload_invocation =
+  "cargo bench -p compresso-eval --bench large_payload_latency -- --noplot"
+unless large_payload_gate &&
+       large_payload_gate["if"] == "${{ matrix.enforce_latency }}" &&
+       large_payload_gate.fetch("run", "").include?(required_large_payload_invocation)
+  warn "CI eval job must enforce the optimized large-payload benchmark on macos-14"
+  exit 1
+end
+
 upload = eval_steps.find { |step| step["uses"] == "actions/upload-artifact@v4" }
 unless upload && upload["if"] == "always()" &&
        upload.dig("with", "path") == 'eval-report-${{ matrix.os }}.json' &&
