@@ -64,7 +64,7 @@ pub enum GateError {
     Parse {
         path: PathBuf,
         #[source]
-        source: toml::de::Error,
+        source: Box<toml::de::Error>,
     },
     #[error("unsupported gates schema version {actual}; expected {expected}")]
     UnsupportedSchema { expected: u32, actual: u32 },
@@ -138,7 +138,7 @@ impl Gates {
         })?;
         let gates = toml::from_str::<Self>(&source).map_err(|source| GateError::Parse {
             path: path.to_path_buf(),
-            source,
+            source: Box::new(source),
         })?;
         gates.validate()?;
         Ok(gates)
