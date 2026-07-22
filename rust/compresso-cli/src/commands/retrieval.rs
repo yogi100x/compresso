@@ -624,9 +624,9 @@ fn map_atlas_error(error: AtlasError) -> RetrievalError {
 fn map_query_error(error: QueryError) -> RetrievalError {
     match error {
         QueryError::NotFound { .. } => RetrievalError::not_found(),
-        invalid @ (QueryError::InvalidRange { .. } | QueryError::InvalidSymbolRange { .. }) => {
-            RetrievalError::invalid(&invalid.to_string())
-        }
+        invalid @ (QueryError::InvalidFocus { .. }
+        | QueryError::InvalidRange { .. }
+        | QueryError::InvalidSymbolRange { .. }) => RetrievalError::invalid(&invalid.to_string()),
         QueryError::NotAFile { .. } => {
             RetrievalError::invalid("repository path must name a regular file")
         }
