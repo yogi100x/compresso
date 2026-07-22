@@ -1533,17 +1533,14 @@ mod tests {
         assert!(!config.exists());
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_install_rejects_non_executable_without_config_side_effects() {
+        use std::os::unix::fs::PermissionsExt;
+
         let (_home, adapter, binary, config) = fixture(CodexPlatform::Linux);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&binary, fs::Permissions::from_mode(0o600))
-                .expect("remove executable mode");
-        }
-        #[cfg(not(unix))]
-        fs::remove_file(&binary).expect("remove executable");
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o600))
+            .expect("remove executable mode");
         let manager = PlanManager::new("codex-non-executable").expect("manager");
         let error = adapter
             .plan_install(
