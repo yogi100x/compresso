@@ -1110,22 +1110,34 @@ node_id = "file-node"
     #[test]
     fn test_authoritative_fixture_toml_example_is_structurally_valid() {
         let docs = include_str!("../../../docs/plan/06-fixtures.md");
+        let example = authoritative_fixture_toml(docs);
+
+        let manifest: FixtureManifest =
+            toml::from_str(&example).expect("authoritative fixture example should parse strictly");
+        assert!(!manifest.expectations.expect_fallback);
+        assert_eq!(manifest.recall_probes.len(), 1);
+    }
+
+    #[test]
+    fn test_authoritative_fixture_toml_extraction_accepts_crlf() {
+        let docs = "## 2. `fixture.toml` schema\r\n\r\n```toml\r\nname = \"example\"\r\n```\r\n";
+        assert_eq!(authoritative_fixture_toml(docs), "name = \"example\"");
+    }
+
+    fn authoritative_fixture_toml(docs: &str) -> String {
+        let docs = docs.replace("\r\n", "\n");
         let schema_section = docs
             .split_once("## 2. `fixture.toml` schema")
             .expect("fixture docs should contain the schema section")
             .1;
-        let example = schema_section
+        schema_section
             .split_once("```toml\n")
             .expect("fixture schema should contain a TOML block")
             .1
             .split_once("\n```")
             .expect("fixture TOML block should be closed")
-            .0;
-
-        let manifest: FixtureManifest =
-            toml::from_str(example).expect("authoritative fixture example should parse strictly");
-        assert!(!manifest.expectations.expect_fallback);
-        assert_eq!(manifest.recall_probes.len(), 1);
+            .0
+            .to_owned()
     }
 
     #[test]
