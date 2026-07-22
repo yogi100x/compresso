@@ -1,0 +1,32 @@
+rust/compresso-eval/tests/runner.rs
+  s_87261b37472da1::t_58355bed926d14 104-126,133-134
+  s_87261b37472da1::t_1f51cb6ac05b36 127-132
+  s_87261b37472da1::t_9d421258a88dbd 103
+rust/compresso-cli/tests/cli_engine.rs
+  s_87261b37472da1::t_053ca1b91043ea 27-47
+rust/compresso-core/src/engine.rs
+  s_87261b37472da1::t_f5c1e5a3bc0c63 1148-1177,1911-1936,1938
+  s_87261b37472da1::t_0b6a1a688bd018 1937
+  s_87261b37472da1::t_cb4562c5a04346 1939
+docs/plan/06-fixtures.md
+  s_87261b37472da1::t_c466a0fe3837ae 90,169
+rust/compresso-eval/src/runner.rs
+  s_87261b37472da1::t_9f71bf34538ce6 203,205,207,311-317
+  s_87261b37472da1::t_2a91d8c1cb1000 318-320
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "0fd592ac811d19aeda04c8d7512479f2e02b4dbe",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
