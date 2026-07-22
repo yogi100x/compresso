@@ -1,0 +1,72 @@
+rust/compresso-core/tests/provider_conversation.rs
+  s_87261b37472da1::t_af12001114ae5c 101-106,110-114,124-127
+  s_87261b37472da1::t_602d9a7b154816 1-11,13-16,18-21,23-26,28-65,70,75-100,107-109,115-123,128-129
+  s_87261b37472da1::t_527c52e0d6f3b4 66-69,71-74
+  s_87261b37472da1::t_e5fa9679acf1df 12,17,22,27
+rust/compresso-core/tests/fixtures/provider-tool-loop/anthropic-single.json
+  s_87261b37472da1::t_e5fa9679acf1df 1-94
+rust/compresso-core/src/engine.rs
+  s_87261b37472da1::t_b8b49cd1bbc40a 1062,1096-1099,1103-1108,1115-1136,1143-1164,1184-1185
+  s_87261b37472da1::t_a8e85580b4bfc5 1064-1075,1095,1165-1177
+  s_87261b37472da1::t_8a4f0f8acb5d09 165,184,215,244,280,309,348,386
+  s_87261b37472da1::t_ae787dc4889d46 3,9-11,42,51,55-62,74,112-117,487-504,515
+  s_87261b37472da1::t_af12001114ae5c 1100-1102,1109-1114,1137-1142
+  s_87261b37472da1::t_91a8ae974ab1d3 738-742,775-830,976-1061
+  s_87261b37472da1::t_d21c6749acb14e 1178-1183
+  s_87261b37472da1::t_9681fa61e9c0e7 13,21-22
+  s_87261b37472da1::t_d7cf650bf83e0b 1063
+rust/compresso-core/tests/fixtures/provider-tool-loop/openai-single.json
+  s_87261b37472da1::t_e5fa9679acf1df 1-94
+rust/compresso-core/src/provider_conversation.rs
+  s_87261b37472da1::t_d1df5a73b30b4b 1-230,236-257,263-278,284-306
+  s_87261b37472da1::t_1c573403153f21 231-235,258-262,279-283
+rust/compresso-core/src/safety.rs
+  s_87261b37472da1::t_9681fa61e9c0e7 1,6,411-413
+  s_87261b37472da1::t_1c573403153f21 8-9
+  s_87261b37472da1::t_4ea6de64eea680 860-863
+  s_87261b37472da1::t_fbd4969ee05495 341-347
+  s_87261b37472da1::t_d821f0188a596f 7,10,42-59,82,366
+  s_87261b37472da1::t_fe5770f4144ab7 68,96,107,115,356-360
+  s_87261b37472da1::t_629953d5d1f183 1064-1066,1083-1085,1112-1114
+  s_87261b37472da1::t_71677210870723 361-365
+schemas/context-graph/v1.json
+  s_87261b37472da1::t_2da4ed0ffeb9de 75-77
+rust/compresso-core/src/graph.rs
+  s_87261b37472da1::t_3c1c58cfe40ff4 2,4,41-43,48-95
+  s_87261b37472da1::t_d1ef18330f0495 96
+rust/compresso-core/src/lib.rs
+  s_87261b37472da1::t_1c573403153f21 18
+  s_87261b37472da1::t_3c1c58cfe40ff4 5,14-17
+rust/compresso-core/tests/fixtures/provider-tool-loop/openai-parallel.json
+  s_87261b37472da1::t_e5fa9679acf1df 1-141
+rust/compresso-core/tests/fixtures/provider-tool-loop/anthropic-parallel.json
+  s_87261b37472da1::t_e5fa9679acf1df 1-141
+docs/plan/02-schemas.md
+  s_87261b37472da1::t_4f71590b1805a5 46-48
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_1a6ebf154b7550 2170
+rust/compresso-core/src/strategies/pack_budget.rs
+  s_87261b37472da1::t_67937ddf1e9ed5 587-588,594-616,619-632,635-645
+  s_87261b37472da1::t_629953d5d1f183 293-296,589-591
+rust/compresso-core/tests/graph_schema_roundtrip.rs
+  s_87261b37472da1::t_629953d5d1f183 5-6,189-191
+docs/plan/03-interfaces.md
+  s_87261b37472da1::t_2da4ed0ffeb9de 41-43,46-48,133,137-140
+  s_87261b37472da1::t_fa32c90a6fd475 141
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "87f8c82e105cf8018e880937080ad9c95d724d6d",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
