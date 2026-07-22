@@ -58,10 +58,11 @@ jobs:
           printf '%s%s\n' 'COMPRESSO_SECRET_CANARY_' '0123456789ABCDEF' > "${canary_dir}/canary.txt"
           set +e
           docker run --rm \
+            --workdir /scan \
             --volume "${canary_dir}:/scan:ro" \
             --volume "${PWD}/.gitleaks.toml:/gitleaks.toml:ro" \
             ghcr.io/gitleaks/gitleaks:v8.30.1 \
-            dir /scan --config /gitleaks.toml --no-banner
+            dir . --config /gitleaks.toml --no-banner
           scan_status=$?
           set -e
           unlink "${canary_dir}/canary.txt"
@@ -79,14 +80,57 @@ jobs:
               exit "${scan_status}"
               ;;
           esac
+      - name: Verify benchmark allowlist scope
+        shell: bash
+        run: |
+          probe_dir="$(mktemp -d)"
+          probe_leaf="${probe_dir}/fixtures/benchmarks/json-2000-elements"
+          probe_file="${probe_leaf}/input.json"
+          mkdir -p "${probe_leaf}"
+          printf '{"key": "%s%s"}\n' 'fixture-' '0123' > "${probe_file}"
+          docker run --rm \
+            --workdir /scan \
+            --volume "${probe_dir}:/scan:ro" \
+            --volume "${PWD}/.gitleaks.toml:/gitleaks.toml:ro" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            dir . --config /gitleaks.toml --no-banner
+          printf '{"key": "%s%s"}\n' 'Compresso7xK9Q2mV5p' 'R8sT4zY6' > "${probe_file}"
+          set +e
+          docker run --rm \
+            --workdir /scan \
+            --volume "${probe_dir}:/scan:ro" \
+            --volume "${PWD}/.gitleaks.toml:/gitleaks.toml:ro" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            dir . --config /gitleaks.toml --no-banner
+          scan_status=$?
+          set -e
+          unlink "${probe_file}"
+          rmdir "${probe_leaf}"
+          rmdir "${probe_dir}/fixtures/benchmarks"
+          rmdir "${probe_dir}/fixtures"
+          rmdir "${probe_dir}"
+          case "${scan_status}" in
+            0)
+              echo "gitleaks benchmark allowlist suppressed a non-fixture key" >&2
+              exit 1
+              ;;
+            1)
+              echo "gitleaks benchmark allowlist is value- and path-scoped"
+              ;;
+            *)
+              echo "gitleaks allowlist probe failed with status ${scan_status}" >&2
+              exit "${scan_status}"
+              ;;
+          esac
       - name: Scan repository for secrets
         shell: bash
         run: |
           docker run --rm \
+            --workdir /repo \
             --volume "${PWD}:/repo:ro" \
             --volume "${PWD}/.gitleaks.toml:/gitleaks.toml:ro" \
             ghcr.io/gitleaks/gitleaks:v8.30.1 \
-            dir /repo --config /gitleaks.toml --no-banner
+            dir . --config /gitleaks.toml --no-banner
 
   rust:
     name: Rust (${{ matrix.os }})
