@@ -1,0 +1,14 @@
+[package]
+name = "compresso-cli"
+version = "0.0.0"
+edition = "2024"
+autotests = false
+
+[workspace]
+
+[lib]
+path = "tests/shared.rs"
+
+[[test]]
+name = "shared_test"
+path = "tests/shared.rs"

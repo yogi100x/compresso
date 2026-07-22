@@ -106,6 +106,8 @@ Crate dependency rule: `core` has no internal dependencies; `store → core type
 
 CI parses every `Cargo.toml` and source dependency tree against this table. New capability requires an ADR, matrix update, threat-model update, and a deliberate failing-then-passing boundary test.
 
+A `bounded-local` crate's exact Cargo integration-test target under `tests/` may use `std::process` to execute test artifacts; network APIs, process-capable dependencies, and process use in library, binary, build, example, or benchmark targets remain denied.
+
 ## 4. CI/CD (`.github/workflows/ci.yml`)
 
 Triggers: push to main, PRs. Jobs:

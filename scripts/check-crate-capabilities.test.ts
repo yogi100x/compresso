@@ -40,6 +40,49 @@ test("test_direct_spawn_in_terminal_fails", async () => {
   );
 });
 
+test("test_bounded_local_integration_test_process_passes", async () => {
+  const result = await checkWorkspace(
+    fixture("allowed-bounded-local-test-process"),
+  );
+
+  assert.deepEqual(result, { ok: true, checkedCrates: 1, violations: [] });
+});
+
+test("test_bounded_local_production_process_still_fails", async () => {
+  const result = await checkWorkspace(
+    fixture("denied-bounded-local-production-process"),
+  );
+  const violations = result.violations.join("\n");
+
+  assert.equal(result.ok, false);
+  assert.match(violations, /compresso-cli.*process API.*src\/lib\.rs/u);
+  assert.doesNotMatch(violations, /tests\/e2e\.rs/u);
+});
+
+test("test_bounded_local_integration_test_network_still_fails", async () => {
+  const result = await checkWorkspace(
+    fixture("denied-bounded-local-test-network"),
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(
+    result.violations.join("\n"),
+    /compresso-cli.*network API std::net.*tests\/e2e\.rs/u,
+  );
+});
+
+test("test_test_target_cannot_relabel_production_source", async () => {
+  const result = await checkWorkspace(
+    fixture("denied-bounded-local-dual-target-process"),
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(
+    result.violations.join("\n"),
+    /compresso-cli.*process API.*tests\/shared\.rs/u,
+  );
+});
+
 test("test_inert_std_process_apis_pass", async () => {
   const result = await checkWorkspace(fixture("allowed-core-inert-process"));
 

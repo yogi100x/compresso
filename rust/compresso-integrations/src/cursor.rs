@@ -1177,62 +1177,6 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn test_cursor_preserves_stable_launcher_symlink_across_upgrade() {
-        use std::os::unix::fs::symlink;
-
-        let harness = Harness::new(CursorPlatform::Linux);
-        let versions = harness._directory.path().join("versions");
-        fs::create_dir(&versions).expect("versions directory created");
-        let first = versions.join("compresso-0.1.0");
-        let second = versions.join("compresso-0.2.0");
-        write_posix_engine(&first, "engine-v1");
-        write_posix_engine(&second, "engine-v2");
-        let stable = harness.bin_directory.join("compresso-stable");
-        symlink(&first, &stable).expect("stable launcher created");
-        assert_eq!(run_stable_launcher(&stable), "engine-v1\n");
-        let manager = PlanManager::new("cursor-stable-launcher").expect("manager");
-        let receipts = MemoryReceiptStore::default();
-        let plan = harness
-            .adapter
-            .plan_install(
-                &manager,
-                &InstallCtx {
-                    compresso_bin: stable.clone(),
-                    scope: Scope::User,
-                },
-            )
-            .expect("install plan");
-        harness
-            .adapter
-            .install(&manager, &PlanApproval::from(&plan), &receipts)
-            .expect("install applies");
-
-        assert_eq!(
-            read_json(&harness.user_config())["mcpServers"]["compresso"]["command"],
-            json!(stable)
-        );
-        let installed_bytes = fs::read(harness.user_config()).expect("installed config bytes");
-        fs::remove_file(&stable).expect("old stable launcher removed");
-        symlink(&second, &stable).expect("stable launcher upgraded");
-        assert_eq!(run_stable_launcher(&stable), "engine-v2\n");
-
-        assert_eq!(
-            fs::read(harness.user_config()).expect("upgraded config bytes"),
-            installed_bytes
-        );
-        assert_eq!(
-            read_json(&harness.user_config())["mcpServers"]["compresso"]["command"],
-            json!(stable)
-        );
-        let upgraded = harness
-            .adapter
-            .clone()
-            .with_live_probe_evidence(expected_probe(&stable));
-        assert!(upgraded.verify(&Scope::User).verified);
-    }
-
-    #[cfg(unix)]
-    #[test]
     fn test_cursor_rejects_non_normalized_absolute_launcher_paths() {
         let harness = Harness::new(CursorPlatform::Linux);
         let parent = harness.compresso.parent().expect("bin directory");
@@ -2069,26 +2013,6 @@ mod tests {
             fs::set_permissions(path, fs::Permissions::from_mode(0o700))
                 .expect("test executable mode");
         }
-    }
-
-    #[cfg(unix)]
-    fn write_posix_engine(path: &Path, engine: &str) {
-        use std::os::unix::fs::PermissionsExt;
-
-        fs::write(path, format!("#!/bin/sh\nprintf '%s\\n' '{engine}'\n"))
-            .expect("POSIX launcher written");
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-            .expect("POSIX launcher executable mode");
-    }
-
-    #[cfg(unix)]
-    fn run_stable_launcher(path: &Path) -> String {
-        let output = std::process::Command::new(path)
-            .output()
-            .expect("POSIX launcher executes");
-        assert!(output.status.success());
-        assert!(output.stderr.is_empty());
-        String::from_utf8(output.stdout).expect("launcher output UTF-8")
     }
 
     fn write_bytes(path: &Path, bytes: &[u8]) {
