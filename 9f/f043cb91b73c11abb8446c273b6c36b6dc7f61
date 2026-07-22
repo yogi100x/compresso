@@ -1,0 +1,29 @@
+rust/compresso-atlas/src/lib.rs
+  s_87261b37472da1::t_e6f7bf6536dca1 10-12
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_004ecd11939c5c 438
+rust/compresso-atlas/tests/queries_impact_plan.rs
+  s_87261b37472da1::t_eb26cdaabc9472 4,7,122-125,146-147
+  s_87261b37472da1::t_e094101dde97a2 1-3,5-6,8-121,126-145,148-342
+rust/compresso-atlas/src/queries.rs
+  s_87261b37472da1::t_e896d06e8a54f4 409,411,415-419,422,436-441,459,471-478
+  s_87261b37472da1::t_eb26cdaabc9472 513-517,593
+  s_87261b37472da1::t_e6f7bf6536dca1 8-10,17,95-129,400-408,410,412-414,420-421,423-435,442-458,460-470,479-512,518-592,594-635
+  s_87261b37472da1::t_7896e2ae7a0fe5 636
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "9ff043cb91b73c11abb8446c273b6c36b6dc7f61",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
