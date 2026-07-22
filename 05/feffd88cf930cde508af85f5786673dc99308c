@@ -1,0 +1,31 @@
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_35bb183d96c8bb 746
+rust/compresso-eval/src/gates.rs
+  s_87261b37472da1::t_30830a224cb424 426-434
+  s_87261b37472da1::t_17288e306fc5ef 21,46-53,78,106-108,116,128-129,147,151-156,186-204,253-265,288-294,348-350,359,370,379
+  s_87261b37472da1::t_3675ba8aa7bde3 400,441-468,480-487,562-563,667-769
+  s_87261b37472da1::t_37151419d71d2b 770
+rust/compresso-eval/src/lib.rs
+  s_87261b37472da1::t_17288e306fc5ef 15
+docs/plan/gates.toml
+  s_87261b37472da1::t_17288e306fc5ef 16-21
+rust/compresso-eval/src/cli.rs
+  s_87261b37472da1::t_3675ba8aa7bde3 439,458,464-466
+  s_87261b37472da1::t_17288e306fc5ef 346,366-374
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "05feffd88cf930cde508af85f5786673dc99308c",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
