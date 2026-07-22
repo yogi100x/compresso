@@ -1,0 +1,26 @@
+rust/compresso-core/tests/operation_identity.rs
+  s_87261b37472da1::t_99042e7d31c200 1-4,7,10-11,16,19
+  s_87261b37472da1::t_e5071b7ab94777 5-6,8-9,17-18
+  s_87261b37472da1::t_126305b59fd80b 12-15
+rust/compresso-core/src/trace.rs
+  s_87261b37472da1::t_e5071b7ab94777 17-23,71,74,85,91,109-112,131-132
+  s_87261b37472da1::t_0fe624a704d60b 90
+rust/compresso-core/src/lib.rs
+  s_87261b37472da1::t_e5071b7ab94777 34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "130d30b4821baa9fd1efced86c4eaaafff165ad7",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
