@@ -53,7 +53,7 @@ fn test_committed_generic_text_fixture_segments_losslessly() {
         node.content
             .contains("{\"inside_fence\":\"this block stays structurally whole\"}")
             && node.content.starts_with("```json")
-            && node.content.ends_with("```\n")
+            && (node.content.ends_with("```\n") || node.content.ends_with("```\r\n"))
     }));
     assert!(first.nodes.last().expect("final segment").protected);
 }
