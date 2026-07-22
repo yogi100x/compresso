@@ -270,6 +270,9 @@ pub enum IntegrationError {
     /// Adapter request was structurally invalid.
     #[error("invalid integration mutation request: {reason}")]
     InvalidRequest { reason: String },
+    /// The requested integration scope or platform is intentionally unsupported.
+    #[error("unsupported integration operation: {reason}")]
+    Unsupported { reason: String },
     /// Plan approval was never issued by this manager or was altered.
     #[error("integration plan approval is forged or unknown")]
     ForgedPlan,
@@ -282,6 +285,21 @@ pub enum IntegrationError {
     /// Target changed anywhere after preview.
     #[error("config_drift: target {path} changed after preview")]
     ConfigDrift { path: PathBuf },
+    /// The uninstall target disappeared and must not be recreated implicitly.
+    #[error("uninstall target {path} is missing; refusing to recreate it")]
+    UninstallTargetMissing { path: PathBuf },
+    /// No canonical receipt exists for the uninstall plan's claimed install.
+    #[error("canonical uninstall receipt {plan_hash} was not found")]
+    UninstallReceiptMissing { plan_hash: String },
+    /// The uninstall plan's receipt differs from the canonical stored receipt.
+    #[error("uninstall receipt {plan_hash} does not match canonical state")]
+    UninstallReceiptMismatch { plan_hash: String },
+    /// The receipt is not the currently active install for this target.
+    #[error("uninstall receipt {plan_hash} is not active for this target")]
+    UninstallReceiptNotActive { plan_hash: String },
+    /// An already-uninstalled receipt was presented outside an exact repeat.
+    #[error("uninstall receipt {plan_hash} is not an idempotent repeat for the current target")]
+    UninstallReceiptNotIdempotent { plan_hash: String },
     /// A prior crash left a commit requiring recovery.
     #[error("pending integration recovery journal exists for {path}")]
     PendingRecovery { path: PathBuf },
@@ -475,6 +493,11 @@ impl PlanManager {
 
         let current = read_target(&plan.config_path)?;
         let current_hash = hash_target(&current);
+        let authorized_uninstall_receipt = if plan.operation == MutationKind::Uninstall {
+            Some(authorize_uninstall_receipt(&plan, &current, receipts)?)
+        } else {
+            None
+        };
         if plan.operation == MutationKind::Install
             && current_hash == plan.result_hash
             && let Some(receipt) = matching_active_receipt(&plan, receipts)?
@@ -492,7 +515,12 @@ impl PlanManager {
         }
         if plan.operation == MutationKind::Uninstall
             && current_hash == plan.result_hash
-            && let Some(report) = matching_uninstall_noop(&plan, receipts)?
+            && let Some(report) = matching_uninstall_noop(
+                &plan,
+                authorized_uninstall_receipt
+                    .as_ref()
+                    .expect("uninstall authorization was established"),
+            )
         {
             self.completed
                 .lock()
@@ -506,7 +534,7 @@ impl PlanManager {
             });
         }
 
-        let commit = build_commit(&plan, apply_at)?;
+        let commit = build_commit(&plan, apply_at, authorized_uninstall_receipt.as_ref())?;
         write_journal(&plan.config_path, &commit, receipts)?;
         finish_commit(&commit, receipts)?;
         self.completed
@@ -613,16 +641,99 @@ fn matching_active_receipt(
         }))
 }
 
-fn matching_uninstall_noop(
+fn authorize_uninstall_receipt(
     plan: &MutationPlan,
+    current: &TargetState,
     receipts: &dyn ReceiptStore,
-) -> Result<Option<ApplyReport>, ReceiptError> {
-    let Some(prior) = &plan.prior_receipt else {
-        return Ok(None);
-    };
-    let Some(stored) = receipts.by_plan_hash(&prior.plan_hash)? else {
-        return Ok(None);
-    };
+) -> Result<InstallReceipt, IntegrationError> {
+    let prior = plan
+        .prior_receipt
+        .as_ref()
+        .ok_or_else(|| IntegrationError::InvalidRequest {
+            reason: "uninstall plan is missing its prior receipt".to_owned(),
+        })?;
+    authorize_uninstall_claim(plan, current, receipts, prior, false)
+}
+
+fn authorize_pending_uninstall_receipt(
+    commit: &PendingCommit,
+    current: &TargetState,
+    receipts: &dyn ReceiptStore,
+) -> Result<InstallReceipt, IntegrationError> {
+    match authorize_uninstall_receipt(&commit.plan, current, receipts) {
+        Ok(receipt) => Ok(receipt),
+        Err(IntegrationError::UninstallReceiptMismatch { .. })
+            if commit.persisted_receipt.uninstalled_at.is_some() =>
+        {
+            // A crash may occur after the canonical record was updated but
+            // before its active head or journal was removed. The verified
+            // journal binds this exact post-commit receipt.
+            authorize_uninstall_claim(
+                &commit.plan,
+                current,
+                receipts,
+                &commit.persisted_receipt,
+                true,
+            )
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn authorize_uninstall_claim(
+    plan: &MutationPlan,
+    current: &TargetState,
+    receipts: &dyn ReceiptStore,
+    claimed: &InstallReceipt,
+    authenticated_commit_result: bool,
+) -> Result<InstallReceipt, IntegrationError> {
+    if matches!(current, TargetState::Missing) {
+        if plan.base_exists {
+            return Err(IntegrationError::ConfigDrift {
+                path: plan.config_path.clone(),
+            });
+        }
+        return Err(IntegrationError::UninstallTargetMissing {
+            path: plan.config_path.clone(),
+        });
+    }
+    let stored = receipts.by_plan_hash(&claimed.plan_hash)?.ok_or_else(|| {
+        IntegrationError::UninstallReceiptMissing {
+            plan_hash: claimed.plan_hash.clone(),
+        }
+    })?;
+    if stored != *claimed {
+        return Err(IntegrationError::UninstallReceiptMismatch {
+            plan_hash: claimed.plan_hash.clone(),
+        });
+    }
+
+    let active = receipts.active_for(&plan.client, &plan.config_path)?;
+    if stored.uninstalled_at.is_none() {
+        if active.as_ref() != Some(&stored) {
+            return Err(IntegrationError::UninstallReceiptNotActive {
+                plan_hash: stored.plan_hash,
+            });
+        }
+        return Ok(stored);
+    }
+
+    if active.is_some() {
+        return Err(IntegrationError::UninstallReceiptNotActive {
+            plan_hash: stored.plan_hash,
+        });
+    }
+    if hash_target(current) != plan.result_hash
+        || (!authenticated_commit_result && matching_uninstall_noop(plan, &stored).is_none())
+    {
+        return Err(IntegrationError::UninstallReceiptNotIdempotent {
+            plan_hash: stored.plan_hash,
+        });
+    }
+    Ok(stored)
+}
+
+fn matching_uninstall_noop(plan: &MutationPlan, stored: &InstallReceipt) -> Option<ApplyReport> {
     let fully_removed = plan
         .owned_keys
         .iter()
@@ -634,7 +745,7 @@ fn matching_uninstall_noop(
             && change.before_value_hash != stored.owned_value_hashes.get(&change.key_path).cloned()
     }) && stored.uninstalled_at.is_none();
     if !fully_removed && !safely_retained {
-        return Ok(None);
+        return None;
     }
     let restore = RestoreReport {
         client: plan.client.clone(),
@@ -658,11 +769,11 @@ fn matching_uninstall_noop(
         warnings: plan.warnings.clone(),
         already_applied: true,
     };
-    Ok(Some(ApplyReport {
+    Some(ApplyReport {
         receipt: None,
         restore: Some(restore),
         already_applied: true,
-    }))
+    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -683,7 +794,11 @@ struct JournalEnvelope {
     mac: String,
 }
 
-fn build_commit(plan: &MutationPlan, now: i64) -> Result<PendingCommit, IntegrationError> {
+fn build_commit(
+    plan: &MutationPlan,
+    now: i64,
+    authorized_uninstall_receipt: Option<&InstallReceipt>,
+) -> Result<PendingCommit, IntegrationError> {
     let base = read_target(&plan.config_path)?;
     if hash_target(&base) != plan.base_hash {
         return Err(IntegrationError::ConfigDrift {
@@ -733,12 +848,12 @@ fn build_commit(plan: &MutationPlan, now: i64) -> Result<PendingCommit, Integrat
             })
         }
         MutationKind::Uninstall => {
-            let mut receipt =
-                plan.prior_receipt
-                    .clone()
-                    .ok_or_else(|| IntegrationError::InvalidRequest {
-                        reason: "uninstall plan is missing its prior receipt".to_owned(),
-                    })?;
+            let mut receipt = authorized_uninstall_receipt.cloned().ok_or_else(|| {
+                IntegrationError::InvalidRequest {
+                    reason: "uninstall commit is missing canonical receipt authorization"
+                        .to_owned(),
+                }
+            })?;
             let removed_keys = plan
                 .owned_keys
                 .iter()
@@ -795,6 +910,11 @@ fn finish_commit(
 ) -> Result<(), IntegrationError> {
     validate_pending_commit(commit)?;
     let current = read_target(&commit.plan.config_path)?;
+    if commit.plan.operation == MutationKind::Uninstall {
+        // Re-establish canonical authority during both normal commit and
+        // authenticated crash recovery before backup or config side effects.
+        authorize_pending_uninstall_receipt(commit, &current, receipts)?;
+    }
     let current_hash = hash_target(&current);
     if current_hash != commit.plan.base_hash && current_hash != commit.plan.result_hash {
         return Err(IntegrationError::RecoveryConflict {
@@ -1933,7 +2053,7 @@ mod tests {
             ))
             .expect("plan issued");
         let receipts = MemoryReceiptStore::default();
-        let commit = build_commit(&plan, clock.now_unix_seconds()).expect("commit built");
+        let commit = build_commit(&plan, clock.now_unix_seconds(), None).expect("commit built");
         write_journal(&path, &commit, &receipts).expect("durable journal written");
         atomic_replace(&path, plan.target_contents.as_bytes(), "crash-test")
             .expect("simulated pre-crash config replacement");
@@ -1958,6 +2078,79 @@ mod tests {
     }
 
     #[test]
+    fn test_uninstall_recovery_accepts_exact_committed_receipt_and_clears_journal() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("config.json");
+        fs::write(&path, "{}\n").expect("base written");
+        let clock = Arc::new(FakeClock::new(1_700_000_000));
+        let manager = manager(clock.clone());
+        let receipts = MemoryReceiptStore::default();
+        let install = manager
+            .issue(install_request(
+                path.clone(),
+                "{\"mcpServers\":{\"compresso\":{\"command\":\"/one\"}}}\n",
+            ))
+            .expect("install plan");
+        let receipt = manager
+            .apply_install(&PlanApproval::from(&install), &receipts)
+            .expect("install applies");
+        let uninstall = manager
+            .issue(MutationRequest {
+                operation: MutationKind::Uninstall,
+                client: "claude-code".to_owned(),
+                config_path: path.clone(),
+                config_format: ConfigFormat::Json,
+                target_contents: "{\"mcpServers\":{}}\n".to_owned(),
+                owned_paths: vec!["mcpServers.compresso".to_owned()],
+                compresso_version: "0.1.0".to_owned(),
+                prior_receipt: Some(receipt.clone()),
+                warnings: Vec::new(),
+            })
+            .expect("uninstall plan");
+        let current = read_target(&path).expect("installed config readable");
+        let canonical = authorize_uninstall_receipt(&uninstall, &current, &receipts)
+            .expect("active receipt authorizes uninstall");
+        let commit = build_commit(&uninstall, clock.now_unix_seconds(), Some(&canonical))
+            .expect("uninstall commit built");
+        write_journal(&path, &commit, &receipts).expect("journal written");
+        ensure_backup(&commit).expect("backup committed");
+        atomic_replace(
+            &path,
+            uninstall.target_contents.as_bytes(),
+            "uninstall-crash",
+        )
+        .expect("config committed");
+        receipts
+            .save(&commit.persisted_receipt)
+            .expect("receipt committed");
+        assert!(
+            receipts
+                .active_for("claude-code", &path)
+                .expect("active lookup")
+                .is_none()
+        );
+        assert!(journal_path(&path).exists());
+
+        let fresh = PlanManager::with_clock("uninstall-recovery", clock).expect("fresh manager");
+        let report = fresh
+            .recover(&path, &receipts)
+            .expect("recovery succeeds")
+            .expect("journal recovered");
+
+        assert_eq!(
+            report.restore.expect("restore report").removed_keys,
+            ["mcpServers.compresso"]
+        );
+        assert_eq!(
+            receipts
+                .by_plan_hash(&receipt.plan_hash)
+                .expect("receipt lookup"),
+            Some(commit.persisted_receipt)
+        );
+        assert!(!journal_path(&path).exists());
+    }
+
+    #[test]
     fn test_file_store_restart_authenticates_and_recovers_committed_target() {
         let directory = tempdir().expect("temp directory");
         let path = directory.path().join("config.json");
@@ -1972,7 +2165,7 @@ mod tests {
             ))
             .expect("plan issued");
         let first_store = FileReceiptStore::new(&state);
-        let commit = build_commit(&plan, clock.now_unix_seconds()).expect("commit built");
+        let commit = build_commit(&plan, clock.now_unix_seconds(), None).expect("commit built");
         write_journal(&path, &commit, &first_store).expect("authenticated journal written");
         atomic_replace(&path, plan.target_contents.as_bytes(), "restart-test")
             .expect("simulated config commit");
@@ -2009,7 +2202,7 @@ mod tests {
             ))
             .expect("plan issued");
         let store = FileReceiptStore::new(&state);
-        let commit = build_commit(&plan, clock.now_unix_seconds()).expect("commit built");
+        let commit = build_commit(&plan, clock.now_unix_seconds(), None).expect("commit built");
         write_journal(&path, &commit, &store).expect("authenticated journal written");
         let key_path = state.with_file_name("receipts.json.approval-key");
         fs::remove_file(&key_path).expect("test key removed");
@@ -2069,7 +2262,7 @@ mod tests {
             ))
             .expect("plan issued");
         let store = FileReceiptStore::new(&state);
-        let commit = build_commit(&plan, clock.now_unix_seconds()).expect("commit built");
+        let commit = build_commit(&plan, clock.now_unix_seconds(), None).expect("commit built");
         write_journal(&path, &commit, &store).expect("journal written");
         let journal = journal_path(&path);
         let mut forged: serde_json::Value =
@@ -2283,6 +2476,225 @@ mod tests {
         assert_eq!(fs::read(&path).expect("config readable"), config_before);
         assert_eq!(backup_files(directory.path()), backups_before);
         assert!(!journal_path(&path).exists());
+    }
+
+    #[test]
+    fn test_forged_owned_hashes_cannot_authorize_uninstall() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("config.json");
+        let installed = "{\"mcpServers\":{\"compresso\":{\"command\":\"/one\"}}}\n";
+        let user_modified = "{\"mcpServers\":{\"compresso\":{\"command\":\"/user\"}}}\n";
+        fs::write(&path, "{}\n").expect("base written");
+        let clock = Arc::new(FakeClock::new(1_700_000_000));
+        let manager = manager(clock);
+        let receipts = MemoryReceiptStore::default();
+        let install = manager
+            .issue(install_request(path.clone(), installed))
+            .expect("install plan");
+        let receipt = manager
+            .apply_install(&PlanApproval::from(&install), &receipts)
+            .expect("install applies");
+
+        fs::write(&path, user_modified).expect("user edit written");
+        let mut forged = receipt.clone();
+        forged.owned_value_hashes.insert(
+            "mcpServers.compresso".to_owned(),
+            canonical_json_hash(&json!({"command": "/user"})).expect("canonical hash"),
+        );
+        let uninstall = manager
+            .issue(MutationRequest {
+                operation: MutationKind::Uninstall,
+                client: "claude-code".to_owned(),
+                config_path: path.clone(),
+                config_format: ConfigFormat::Json,
+                target_contents: "{\"mcpServers\":{}}\n".to_owned(),
+                owned_paths: vec!["mcpServers.compresso".to_owned()],
+                compresso_version: "0.1.0".to_owned(),
+                prior_receipt: Some(forged),
+                warnings: Vec::new(),
+            })
+            .expect("forged receipt is structurally valid");
+        let backups_before = backup_files(directory.path());
+
+        let error = manager
+            .apply_uninstall(&PlanApproval::from(&uninstall), &receipts)
+            .expect_err("caller-owned hashes have no uninstall authority");
+        assert!(matches!(
+            error,
+            IntegrationError::UninstallReceiptMismatch { .. }
+        ));
+        assert_eq!(
+            fs::read_to_string(&path).expect("config readable"),
+            user_modified
+        );
+        assert_eq!(backup_files(directory.path()), backups_before);
+        assert!(!journal_path(&path).exists());
+        assert_eq!(
+            receipts
+                .active_for("claude-code", &path)
+                .expect("active lookup"),
+            Some(receipt)
+        );
+    }
+
+    #[test]
+    fn test_missing_canonical_receipt_cannot_authorize_uninstall() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("config.json");
+        let installed = "{\"mcpServers\":{\"compresso\":{\"command\":\"/one\"}}}\n";
+        fs::write(&path, "{}\n").expect("base written");
+        let clock = Arc::new(FakeClock::new(1_700_000_000));
+        let manager = manager(clock);
+        let receipts = MemoryReceiptStore::default();
+        let install = manager
+            .issue(install_request(path.clone(), installed))
+            .expect("install plan");
+        let receipt = manager
+            .apply_install(&PlanApproval::from(&install), &receipts)
+            .expect("install applies");
+        let mut forged = receipt.clone();
+        forged.plan_hash = "f".repeat(64);
+        let uninstall = manager
+            .issue(MutationRequest {
+                operation: MutationKind::Uninstall,
+                client: "claude-code".to_owned(),
+                config_path: path.clone(),
+                config_format: ConfigFormat::Json,
+                target_contents: "{\"mcpServers\":{}}\n".to_owned(),
+                owned_paths: vec!["mcpServers.compresso".to_owned()],
+                compresso_version: "0.1.0".to_owned(),
+                prior_receipt: Some(forged),
+                warnings: Vec::new(),
+            })
+            .expect("forged receipt is structurally valid");
+        let config_before = fs::read(&path).expect("config readable");
+        let backups_before = backup_files(directory.path());
+
+        let error = manager
+            .apply_uninstall(&PlanApproval::from(&uninstall), &receipts)
+            .expect_err("missing canonical receipt has no authority");
+        assert!(matches!(
+            error,
+            IntegrationError::UninstallReceiptMissing { .. }
+        ));
+        assert_eq!(fs::read(&path).expect("config readable"), config_before);
+        assert_eq!(backup_files(directory.path()), backups_before);
+        assert!(!journal_path(&path).exists());
+        assert_eq!(
+            receipts
+                .active_for("claude-code", &path)
+                .expect("active lookup"),
+            Some(receipt)
+        );
+    }
+
+    #[test]
+    fn test_superseded_receipt_cannot_uninstall_current_install() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("config.json");
+        let first_target = "{\"mcpServers\":{\"compresso\":{\"command\":\"/one\"}}}\n";
+        let second_target = "{\"mcpServers\":{\"compresso\":{\"command\":\"/two\"}}}\n";
+        fs::write(&path, "{}\n").expect("base written");
+        let clock = Arc::new(FakeClock::new(1_700_000_000));
+        let manager = manager(clock);
+        let receipts = MemoryReceiptStore::default();
+        let first_plan = manager
+            .issue(install_request(path.clone(), first_target))
+            .expect("first install plan");
+        let first = manager
+            .apply_install(&PlanApproval::from(&first_plan), &receipts)
+            .expect("first install");
+        let second_plan = manager
+            .issue(install_request(path.clone(), second_target))
+            .expect("second install plan");
+        let second = manager
+            .apply_install(&PlanApproval::from(&second_plan), &receipts)
+            .expect("second install");
+
+        fs::write(&path, first_target).expect("target manually reverted");
+        let uninstall = manager
+            .issue(MutationRequest {
+                operation: MutationKind::Uninstall,
+                client: "claude-code".to_owned(),
+                config_path: path.clone(),
+                config_format: ConfigFormat::Json,
+                target_contents: "{\"mcpServers\":{}}\n".to_owned(),
+                owned_paths: vec!["mcpServers.compresso".to_owned()],
+                compresso_version: "0.1.0".to_owned(),
+                prior_receipt: Some(first),
+                warnings: Vec::new(),
+            })
+            .expect("stale uninstall plan");
+        let backups_before = backup_files(directory.path());
+
+        let error = manager
+            .apply_uninstall(&PlanApproval::from(&uninstall), &receipts)
+            .expect_err("superseded receipt has no uninstall authority");
+        assert!(matches!(
+            error,
+            IntegrationError::UninstallReceiptNotActive { .. }
+        ));
+        assert_eq!(
+            fs::read_to_string(&path).expect("config readable"),
+            first_target
+        );
+        assert_eq!(backup_files(directory.path()), backups_before);
+        assert!(!journal_path(&path).exists());
+        assert_eq!(
+            receipts
+                .active_for("claude-code", &path)
+                .expect("active lookup"),
+            Some(second)
+        );
+    }
+
+    #[test]
+    fn test_missing_uninstall_target_is_not_recreated_and_receipt_stays_active() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join("config.json");
+        let installed = "{\"mcpServers\":{\"compresso\":{\"command\":\"/one\"}}}\n";
+        fs::write(&path, "{}\n").expect("base written");
+        let clock = Arc::new(FakeClock::new(1_700_000_000));
+        let manager = manager(clock);
+        let receipts = MemoryReceiptStore::default();
+        let install = manager
+            .issue(install_request(path.clone(), installed))
+            .expect("install plan");
+        let receipt = manager
+            .apply_install(&PlanApproval::from(&install), &receipts)
+            .expect("install applies");
+        fs::remove_file(&path).expect("config deleted outside Compresso");
+        let uninstall = manager
+            .issue(MutationRequest {
+                operation: MutationKind::Uninstall,
+                client: "claude-code".to_owned(),
+                config_path: path.clone(),
+                config_format: ConfigFormat::Json,
+                target_contents: "{}\n".to_owned(),
+                owned_paths: vec!["mcpServers.compresso".to_owned()],
+                compresso_version: "0.1.0".to_owned(),
+                prior_receipt: Some(receipt.clone()),
+                warnings: vec!["key_modified:mcpServers.compresso".to_owned()],
+            })
+            .expect("missing-target uninstall preview");
+        let backups_before = backup_files(directory.path());
+
+        let error = manager
+            .apply_uninstall(&PlanApproval::from(&uninstall), &receipts)
+            .expect_err("missing config must not be recreated");
+        assert!(matches!(
+            error,
+            IntegrationError::UninstallTargetMissing { .. }
+        ));
+        assert!(!path.exists());
+        assert_eq!(backup_files(directory.path()), backups_before);
+        assert!(!journal_path(&path).exists());
+        assert_eq!(
+            receipts
+                .active_for("claude-code", &path)
+                .expect("active lookup"),
+            Some(receipt)
+        );
     }
 
     fn backup_files(directory: &Path) -> Vec<PathBuf> {
