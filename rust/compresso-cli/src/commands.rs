@@ -6,9 +6,11 @@ pub use compresso_eval::cli::CliExitCode;
 use compresso_eval::cli::EvalCommand;
 use compresso_store::Store;
 
+mod doctor;
 mod engine;
 mod retrieval;
 
+pub use doctor::{ConfigExplainArgs, ConfigModeArg, DiagnosticEnvironment, DoctorArgs};
 pub use engine::{CompressArgs, ExplainArgs, StatsArgs};
 pub use retrieval::{
     ContextArgs, ImpactArgs, MapArgs, OutlineArgs, ReadArgs, SearchArgs, UnfoldArgs,
@@ -28,7 +30,7 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum RootCommand {
     Init(MutationArgs),
-    Doctor(DeferredArgs),
+    Doctor(DoctorArgs),
     Index(DeferredArgs),
     Map(MapArgs),
     Search(SearchArgs),
@@ -92,7 +94,7 @@ pub struct DeferredArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
-    Explain(DeferredArgs),
+    Explain(ConfigExplainArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -165,6 +167,17 @@ pub fn execute(
     match cli.command {
         RootCommand::Eval { command } => compresso_eval::cli::execute(command, output, errors),
         RootCommand::Account { command } => execute_account(command, account, output, errors),
+        command if command.is_diagnostic() => {
+            let json = command.json();
+            let environment = match DiagnosticEnvironment::system() {
+                Ok(environment) => environment,
+                Err(error) => {
+                    let _ = write_error(errors, error.code, &error.message, json);
+                    return CliExitCode::Failure;
+                }
+            };
+            execute_diagnostic(command, &environment, output, errors)
+        }
         command if command.is_engine() => {
             let json = command.json();
             let store = match Store::open_default() {
@@ -259,6 +272,17 @@ pub fn execute_with_store_and_input(
     match cli.command {
         RootCommand::Eval { command } => compresso_eval::cli::execute(command, output, errors),
         RootCommand::Account { command } => execute_account(command, account, output, errors),
+        command if command.is_diagnostic() => {
+            let json = command.json();
+            let environment = match DiagnosticEnvironment::system() {
+                Ok(environment) => environment,
+                Err(error) => {
+                    let _ = write_error(errors, error.code, &error.message, json);
+                    return CliExitCode::Failure;
+                }
+            };
+            execute_diagnostic(command, &environment, output, errors)
+        }
         command if command.is_engine() => execute_engine(command, store, input, output, errors),
         command if command.is_retrieval() => execute_retrieval(command, store, cwd, output, errors),
         command => {
@@ -269,6 +293,61 @@ pub fn execute_with_store_and_input(
                 "command wiring belongs to a later E4/E5/E6 ticket",
                 json,
             );
+            CliExitCode::Failure
+        }
+    }
+}
+
+/// Executes doctor/config diagnostics against injected runtime paths and environment values.
+pub fn execute_diagnostics(
+    cli: Cli,
+    account: &dyn AccountClient,
+    environment: &DiagnosticEnvironment,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> CliExitCode {
+    match cli.command {
+        RootCommand::Account { command } => execute_account(command, account, output, errors),
+        command if command.is_diagnostic() => {
+            execute_diagnostic(command, environment, output, errors)
+        }
+        command => {
+            let json = command.json();
+            let _ = write_error(
+                errors,
+                "unavailable",
+                "only doctor and config explain support an injected diagnostic environment",
+                json,
+            );
+            CliExitCode::Failure
+        }
+    }
+}
+
+fn execute_diagnostic(
+    command: RootCommand,
+    environment: &DiagnosticEnvironment,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> CliExitCode {
+    let json = command.json();
+    match doctor::execute(command, environment) {
+        Ok(rendered) => {
+            let result = if json {
+                serde_json::to_writer(&mut *output, &rendered.json)
+                    .map_err(std::io::Error::other)
+                    .and_then(|()| writeln!(output))
+            } else {
+                output.write_all(rendered.human.as_bytes())
+            };
+            if result.is_ok() && rendered.success {
+                CliExitCode::Success
+            } else {
+                CliExitCode::Failure
+            }
+        }
+        Err(error) => {
+            let _ = write_error(errors, error.code, &error.message, json);
             CliExitCode::Failure
         }
     }
@@ -404,6 +483,10 @@ fn write_error(
 }
 
 impl RootCommand {
+    fn is_diagnostic(&self) -> bool {
+        matches!(self, Self::Doctor(_) | Self::Config { .. })
+    }
+
     fn is_engine(&self) -> bool {
         matches!(self, Self::Compress(_) | Self::Explain(_) | Self::Stats(_))
     }
@@ -424,7 +507,8 @@ impl RootCommand {
     fn json(&self) -> bool {
         match self {
             Self::Init(arguments) => arguments.output.json,
-            Self::Doctor(arguments) | Self::Index(arguments) => arguments.output.json,
+            Self::Doctor(arguments) => arguments.output.json,
+            Self::Index(arguments) => arguments.output.json,
             Self::Map(arguments) => arguments.output.json,
             Self::Search(arguments) => arguments.output.json,
             Self::Read(arguments) => arguments.output.json,

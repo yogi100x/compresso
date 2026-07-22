@@ -485,7 +485,7 @@ Test cases:
 - test_explain_last_matches_schema: after a compress, `explain --last --json` → `data.trace` validates against schemas/compression-trace/v1.json and contains no input substring.
 - test_stats_labels_modeled: `stats --json` → keys include `net_tokens_saved` and `modeled_cost_saved`; human mode output contains the word "modeled".
 
-### [ ] E4-04: doctor and config explain
+### [x] E4-04: doctor and config explain
 Owner: D1 · Estimate: 1d · Depends: E4-01, E2-09
 Files: rust/compresso-cli/src/commands/doctor.rs, rust/compresso-core/src/config.rs, tests in both
 Description: Implement `Config::load()` (default < file < env < flag per `03-interfaces.md` §2.6, file at `~/.config/compresso/config.toml`, env overrides `COMPRESSO_MODE`, `COMPRESSO_TARGET_TOKENS`, `COMPRESSO_BYPASS`, `COMPRESSO_LOG`, `COMPRESSO_TELEMETRY` accepted but forced false) and `Config::explain()` backing `compresso config explain` (key, effective value, `ConfigSource`). `compresso doctor` checks: binary resolvable, data dir writable, DB opens and migrations current, config parses, tokenizers initialize, tree-sitter grammars load, and prints pass/fail per check with remediation hints.
