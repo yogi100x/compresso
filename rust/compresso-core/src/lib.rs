@@ -30,5 +30,8 @@ pub use strategy::{
     CompressionBudget, CompressionStrategy, Estimate, Lossiness, Mode, RemovalKind, RemovalRecord,
     StrategyError, StrategyExecution, StrategyOutput, StrategyRegistry,
 };
-pub use tokens::{CALIBRATION, TokenCounter, TokenProvider, counter_for};
+pub use tokens::{
+    CALIBRATION, TokenCounter, TokenProvider, TokenizerInitialization, counter_for,
+    initialize_tokenizers,
+};
 pub use trace::{OperationIdentity, StrategyResult, Trace, operation_identity};

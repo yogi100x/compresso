@@ -414,6 +414,7 @@ dependencies = [
  "compresso-atlas",
  "compresso-core",
  "compresso-store",
+ "criterion",
  "rmcp",
  "serde_json",
  "tempfile",
