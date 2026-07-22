@@ -11,7 +11,12 @@ expected_eval = [
 ].freeze
 shared_cache_key = 'ci-${{ matrix.os }}'
 
-workflow = YAML.safe_load(File.read(workflow_path), [], [], true)
+workflow = YAML.safe_load(
+  File.read(workflow_path),
+  permitted_classes: [],
+  permitted_symbols: [],
+  aliases: true
+)
 jobs = workflow.fetch("jobs")
 rust_job = jobs.fetch("rust")
 actual = rust_job.fetch("strategy").fetch("matrix").fetch("os")
