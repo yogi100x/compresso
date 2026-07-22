@@ -5,11 +5,13 @@
 //! caller-supplied replacement document. Plans expire after ten minutes and
 //! are bound to the session that created them.
 
+mod claude_code;
 mod plan;
 mod receipt;
 
 use std::path::PathBuf;
 
+pub use claude_code::{ClaudeCodeDiscovery, ClaudeCodeIntegration};
 pub use plan::{
     ApplyReport, ConfigFormat, Detection, InstallCtx, IntegrationError, MutationKind, MutationPlan,
     OwnedKeyMutation, PLAN_SCHEMA_VERSION, PLAN_TTL_SECONDS, PlanApproval, PlanClock, PlanManager,
