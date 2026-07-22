@@ -596,7 +596,7 @@ Acceptance criteria:
 Test cases:
 - pre-initialize construction; no handler construction; cold/warm; failure; EOF.
 
-### [ ] E5-07: Manual verification in Claude Code
+### [x] E5-07: Manual verification in Claude Code
 Owner: R2 · Estimate: 1.5d · Depends: E5-02, E5-03, E5-04, E5-05, E5-06
 Files: docs/runbooks/mcp-manual-verification.md
 Description: Register the built server in Claude Code (manual `claude mcp add compresso -- ~/.local/bin/compresso mcp serve` — the E6 adapter is not a dependency), exercise every one of the ten tools against the compresso repo itself (dogfood per D9), and record the results in a runbook checklist: arguments used, response summary, latency observation, and any schema mismatch. File and fix (or ticket) every deviation before closing.

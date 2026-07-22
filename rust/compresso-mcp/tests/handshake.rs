@@ -23,6 +23,8 @@ const TOOL_NAMES: [&str; 10] = [
     "compresso_stats",
     "compresso_unfold",
 ];
+const MANUAL_VERIFICATION_RUNBOOK: &str =
+    include_str!("../../../docs/runbooks/mcp-manual-verification.md");
 
 struct Harness {
     _temp: TempDir,
@@ -208,4 +210,45 @@ async fn test_malformed_frame_survives() {
 #[tokio::test]
 async fn test_eof_before_initialize_exits_cleanly() {
     Harness::start().await.close().await;
+}
+
+#[test]
+fn test_manual_checklist_all_tools_pass() {
+    let checked_rows = MANUAL_VERIFICATION_RUNBOOK
+        .lines()
+        .filter(|line| line.starts_with("| [x] | `compresso_"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        checked_rows.len(),
+        TOOL_NAMES.len(),
+        "the runbook must contain exactly one checked row per MCP tool"
+    );
+
+    for tool in TOOL_NAMES {
+        let row_prefix = format!("| [x] | `{tool}` |");
+        let rows = checked_rows
+            .iter()
+            .filter(|row| row.starts_with(&row_prefix))
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 1, "missing or duplicate runbook row for {tool}");
+        let columns = rows[0].split('|').map(str::trim).collect::<Vec<_>>();
+        assert!(
+            columns.get(5).is_some_and(|latency| latency.contains("ms")),
+            "runbook row for {tool} must record an observed latency"
+        );
+    }
+}
+
+#[test]
+fn test_manual_outside_root_demonstrated() {
+    assert!(
+        MANUAL_VERIFICATION_RUNBOOK.contains(r#""path":"../../etc/passwd""#),
+        "runbook must show the traversal argument sent by the live client"
+    );
+    assert!(
+        MANUAL_VERIFICATION_RUNBOOK.contains(
+            "[outside_root] The requested path resolves outside the approved repository root."
+        ),
+        "runbook must include the live outside_root response excerpt"
+    );
 }
