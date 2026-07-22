@@ -1,0 +1,19 @@
+rust/compresso-integrations/src/codex.rs
+  s_87261b37472da1::t_7a68bf3d551cc3 7,266,1450,1468,1470-1471
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "cfab0f210125ae8a9fdc204b4e0aeece13184471",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
