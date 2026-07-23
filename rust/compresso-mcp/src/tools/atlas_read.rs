@@ -7,15 +7,16 @@ use std::path::Path;
 
 use super::common::{
     MAX_TOKENS, MIN_TOKENS, REINDEX_HINT, ToolFailure, ToolResult, cap_values, checked_arguments,
-    language_name, map_atlas_error, navigation_counter, optional_bool, optional_string,
-    optional_u32, optional_usize, required_string, resolve_repository, symbol_kind_name,
-    symbol_value, token_budget, validate_repo_path,
+    map_atlas_error, navigation_counter, optional_bool, optional_string, optional_u32,
+    optional_usize, required_string, resolve_repository, symbol_kind_name, token_budget,
+    validate_repo_path,
 };
 
-const SEARCH_DEFAULT_LIMIT: usize = 20;
-const SEARCH_DEFAULT_TOKENS: usize = 2_000;
+const SEARCH_DEFAULT_LIMIT: usize = 8;
+const SEARCH_DEFAULT_TOKENS: usize = 500;
 const READ_DEFAULT_TOKENS: usize = 2_000;
-const CONTEXT_DEFAULT_TOKENS: usize = 4_000;
+const CONTEXT_DEFAULT_TOKENS: usize = 800;
+const CONTEXT_MAX_TOKENS: usize = 800;
 
 pub(crate) fn handles(name: &str) -> bool {
     matches!(
@@ -266,57 +267,84 @@ fn context_tool(
             "argument 'task' must contain at least three characters and no NUL byte.",
         ));
     }
-    let max_tokens = token_budget(&mut arguments, CONTEXT_DEFAULT_TOKENS)?;
+    let requested_tokens = token_budget(&mut arguments, CONTEXT_DEFAULT_TOKENS)?;
+    let max_tokens = requested_tokens.min(CONTEXT_MAX_TOKENS);
+    let budget_clamped = requested_tokens > max_tokens;
     let repository = resolve_repository(store, repository_root, root.as_deref())?;
-    let plan = plan_context(store, repository.id, &task, max_tokens).map_err(map_atlas_error)?;
     let stale = repository_stale(store, repository.id).map_err(map_atlas_error)?;
-    let map_excerpt = plan
-        .repo_map
-        .as_ref()
-        .map(|map| map.rendered.clone())
-        .unwrap_or_default();
-    let outlines = plan
-        .outlines
-        .iter()
-        .map(|outline| {
-            json!({
-                "path": outline.path,
-                "language": outline.language.map(language_name),
-                "symbols": outline.symbols.iter().map(symbol_value).collect::<Vec<_>>()
-            })
-        })
-        .collect::<Vec<_>>();
-    let bodies = plan
-        .symbol_bodies
-        .iter()
-        .map(|body| {
-            json!({
-                "path": body.path,
-                "symbol": body.symbol.qualified_name,
-                "kind": symbol_kind_name(body.symbol.kind),
-                "start_line": body.symbol.start_line,
-                "end_line": body.symbol.end_line,
-                "content": body.content
-            })
-        })
-        .collect::<Vec<_>>();
     let operation_id = operation_identity().id;
-    Ok(json!({
+    let counter = navigation_counter();
+    let mut planner_budget = max_tokens.saturating_mul(4) / 5;
+    loop {
+        let plan =
+            plan_context(store, repository.id, &task, planner_budget).map_err(map_atlas_error)?;
+        let mut payload =
+            compact_context_payload(&plan, &operation_id, stale, max_tokens, budget_clamped);
+        let payload_tokens = stabilize_payload_tokens(&mut payload, counter)?;
+        if payload_tokens <= max_tokens || planner_budget == 0 {
+            return Ok(payload);
+        }
+        let excess = payload_tokens.saturating_sub(max_tokens);
+        planner_budget = planner_budget.saturating_sub(excess.saturating_add(16));
+    }
+}
+
+fn compact_context_payload(
+    plan: &compresso_atlas::ContextPlan,
+    operation_id: &str,
+    stale: bool,
+    budget_applied: usize,
+    budget_clamped: bool,
+) -> Value {
+    let retrieval_status = if plan.matches_total == 0 {
+        "no_matches"
+    } else {
+        "matched"
+    };
+    let retrieval_note = (plan.matches_total == 0).then_some(
+        "No indexed symbols matched the derived task queries. This is not proof that the repository contains no relevant implementation.",
+    );
+    let broad_follow_up_required = plan.matches_total == 0 || stale;
+    let context_sufficiency = if broad_follow_up_required {
+        "follow_up_needed"
+    } else {
+        "task_pack_ready"
+    };
+    json!({
         "schema_version": 1,
         "operation_id": operation_id,
-        "task": task,
-        "plan": {
-            "map_excerpt": map_excerpt,
-            "outlines": outlines,
-            "bodies": bodies,
-            "omitted": []
-        },
+        "retrieval_status": retrieval_status,
+        "retrieval_note": retrieval_note,
+        "context_sufficiency": context_sufficiency,
+        "broad_follow_up_required": broad_follow_up_required,
+        "matches_total": plan.matches_total,
+        "content_pack": plan.rendered,
         "stale": stale,
         "reindex_hint": stale.then_some(REINDEX_HINT),
-        "tokens_used": plan.tokens_used,
+        "budget_applied": budget_applied,
+        "budget_clamped": budget_clamped,
+        "tokens_used": 0,
         "token_provider": plan.token_provider,
         "truncated": plan.truncated
-    }))
+    })
+}
+
+fn stabilize_payload_tokens(
+    payload: &mut Value,
+    counter: &dyn TokenCounter,
+) -> Result<usize, ToolFailure> {
+    let mut previous = usize::MAX;
+    for _ in 0..4 {
+        let serialized = serde_json::to_string(payload).map_err(|_| ToolFailure::internal())?;
+        let tokens = counter.count(&serialized);
+        payload["tokens_used"] = json!(tokens);
+        if tokens == previous {
+            return Ok(tokens);
+        }
+        previous = tokens;
+    }
+    let serialized = serde_json::to_string(payload).map_err(|_| ToolFailure::internal())?;
+    Ok(counter.count(&serialized))
 }
 
 fn search_hit_value(path: &str, symbol: &SymbolRecord, score: f64) -> Value {
