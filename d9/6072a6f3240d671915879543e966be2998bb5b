@@ -1,0 +1,58 @@
+rust/compresso-mcp/tests/tools_read.rs
+  s_87261b37472da1::t_e44d71c822c381 537-545,554-555,557-563,578-586,595-597
+  s_87261b37472da1::t_136676760bf7b4 547-548,550,552,564-574,576-577,587-589,591-593
+rust/compresso-cli/tests/cli_retrieval.rs
+  s_87261b37472da1::t_900c2dbe559314 213-219
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_c01a6d603ff8fd 444,450
+rust/compresso-mcp/tests/handshake.rs
+  s_87261b37472da1::t_5594fcf946b6b4 181-228,247
+rust/compresso-cli/src/commands/retrieval.rs
+  s_87261b37472da1::t_7741f531c6affa 20
+  s_87261b37472da1::t_2d4304c423572b 448-455,481-482,484
+  s_87261b37472da1::t_43901552d1efb9 483
+rust/compresso-atlas/tests/queries_impact_plan.rs
+  s_87261b37472da1::t_28cb5d48bafbf7 214-219,221-244,249-253,432-488,505
+  s_87261b37472da1::t_eecd650eb03d0a 220
+  s_87261b37472da1::t_73b34595e25230 199,292-298
+  s_87261b37472da1::t_9c24a4742daa64 245-248,489-504
+  s_87261b37472da1::t_06c6962d7aba7c 213,506
+rust/compresso-atlas/src/queries.rs
+  s_87261b37472da1::t_e1660ffac4e65b 21-22,680,682-685,709,989,993
+  s_87261b37472da1::t_59cf40df6f5d7f 837-839,875-879
+  s_87261b37472da1::t_ef03987fe87bb5 667,675-676,678,715-717,719,733-736,778-779,786-802,811-836,840-851,853-864,881-892,912-913,915-974,976-988,994-1038
+  s_87261b37472da1::t_eecd650eb03d0a 721-726,809,852,914,975,990-992
+  s_87261b37472da1::t_c9e36c8aea26f2 718
+  s_87261b37472da1::t_28499956052c09 19-20,158-159
+  s_87261b37472da1::t_3e9789fc1843d0 803-808,810
+  s_87261b37472da1::t_99763f108a5d04 865-874,880,893-911
+  s_87261b37472da1::t_0bcb4fd4ef484b 1039
+rust/compresso-mcp/src/server.rs
+  s_87261b37472da1::t_7765df65f36878 556
+  s_87261b37472da1::t_7741f531c6affa 70,73,77,508-509
+docs/plan/04-mcp-and-integrations.md
+  s_87261b37472da1::t_9d5dfa34d130d5 276-277,283-285
+  s_87261b37472da1::t_c01a6d603ff8fd 30,73,83-84,249,259,265,273-275
+  s_87261b37472da1::t_c0f1778927f88b 28
+rust/compresso-mcp/src/tools/atlas_read.rs
+  s_87261b37472da1::t_2777928c048035 293-300,304-306
+  s_87261b37472da1::t_7741f531c6affa 15-16,18
+  s_87261b37472da1::t_43e711e9cba16e 10-12
+  s_87261b37472da1::t_928d90c4c233f9 273-292,301,307,310,313-331
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "d96072a6f3240d671915879543e966be2998bb5b",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
