@@ -1,0 +1,47 @@
+packages/cli-distribution/package.json
+  s_87261b37472da1::t_30df2adfedebab 1-26
+packages/cli-distribution/tests/package_test.sh
+  s_87261b37472da1::t_fa6f43b3ecadb9 1-92,100-179
+  s_87261b37472da1::t_b463526da21720 93-99
+packages/cli-distribution/LICENSE
+  s_87261b37472da1::t_30df2adfedebab 1-7
+packages/cli-distribution/README.md
+  s_87261b37472da1::t_30df2adfedebab 1-26
+packages/cli-distribution/bin/compresso
+  s_87261b37472da1::t_bad545ece99989 14-17,27
+  s_87261b37472da1::t_30df2adfedebab 1-13,18-26,28-128
+packages/cli-distribution/THIRD_PARTY_NOTICES.md
+  s_87261b37472da1::t_30df2adfedebab 1-5
+pnpm-lock.yaml
+  s_87261b37472da1::t_72ef00d6f30b91 18-19
+packages/cli-distribution/vendor/darwin-arm64/artifact.manifest
+  s_fa9eee348dfb19::t_196c552f733004 1-4
+packages/cli-distribution/vendor/darwin-x64/artifact.manifest
+  s_fa9eee348dfb19::t_e5f9b4d50547ce 1-4
+packages/cli-distribution/vendor/linux-x64/artifact.manifest
+  s_fa9eee348dfb19::t_664ad2992fd329 1-4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "b4a1ef42a50d6b8f83d122baec0f2e5a2fdd4188",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_fa9eee348dfb19": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f8891-3d67-7f91-bd7e-e28ba24f96bc",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
