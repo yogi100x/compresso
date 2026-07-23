@@ -226,9 +226,7 @@ function stdProcessCapabilityUses(source: string) {
           });
         }
       }
-      for (const match of body.matchAll(
-        /\bprocess\s*::\s*\{([^}]*)\}/gu,
-      )) {
+      for (const match of body.matchAll(/\bprocess\s*::\s*\{([^}]*)\}/gu)) {
         if (/(?:^|,)\s*\*(?:\s*,|$)/u.test(match[1])) {
           const alias = root.origin ? " (alias of std)" : "";
           uses.push({
@@ -332,10 +330,7 @@ function stdProcessCapabilityUses(source: string) {
     }
 
     for (const entry of groupedUseEntries(source, prefix.path)) {
-      if (
-        entry.name !== "self" &&
-        !inertStdProcessMembers.has(entry.name)
-      ) {
+      if (entry.name !== "self" && !inertStdProcessMembers.has(entry.name)) {
         const alias = prefix.origin ? ` (alias of ${prefix.origin})` : "";
         uses.push({
           capability: "process",

@@ -21,7 +21,9 @@ const manifest = {
 };
 
 for (const [name, bytes] of variants) {
-  const content = rebuildLine.repeat(Math.ceil(bytes / rebuildLine.length)).slice(0, bytes);
+  const content = rebuildLine
+    .repeat(Math.ceil(bytes / rebuildLine.length))
+    .slice(0, bytes);
   const path = join(outputDirectory, name);
   writeFileSync(path, content, "ascii");
   manifest.variants.push({

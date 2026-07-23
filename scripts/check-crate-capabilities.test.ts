@@ -100,9 +100,7 @@ test("test_process_control_apis_fail", async () => {
 });
 
 test("test_std_process_wildcard_import_fails", async () => {
-  const result = await checkWorkspace(
-    fixture("denied-core-process-wildcard"),
-  );
+  const result = await checkWorkspace(fixture("denied-core-process-wildcard"));
 
   assert.equal(result.ok, false);
   assert.match(
