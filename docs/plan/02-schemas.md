@@ -314,6 +314,10 @@ CREATE TABLE update_state (               -- used by updater, Phase 8
 );
 ```
 
+The v1 `files.language` column is intentionally unconstrained `TEXT`. D68 adds
+the canonical values `shell` and `text` without rewriting the already-applied
+`0001` migration or requiring a schema migration.
+
 `integration_receipts` is a query/reporting projection, not the E6 safety
 receipt. Migration identifiers `0002`–`0005` are reserved by D60, and this
 `0001` table has no lossless fields for `plan_hash` or per-key

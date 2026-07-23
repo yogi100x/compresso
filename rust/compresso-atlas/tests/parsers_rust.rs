@@ -18,7 +18,17 @@ fn test_for_path_extension_map() {
         ("foo.mjs", Some(Language::JavaScript)),
         ("foo.cjs", Some(Language::JavaScript)),
         ("foo.py", Some(Language::Python)),
+        ("foo.sh", Some(Language::Shell)),
+        ("foo.bash", Some(Language::Shell)),
+        ("foo.zsh", Some(Language::Shell)),
+        ("README.md", Some(Language::Text)),
+        ("notes.markdown", Some(Language::Text)),
+        ("notes.txt", Some(Language::Text)),
+        ("guide.rst", Some(Language::Text)),
+        ("guide.adoc", Some(Language::Text)),
         ("foo.go", None),
+        ("config.toml", None),
+        ("secrets.yaml", None),
         ("README", None),
     ] {
         assert_eq!(

@@ -363,6 +363,8 @@ pub(crate) const fn language_name(language: FileLanguage) -> &'static str {
         FileLanguage::Tsx => "tsx",
         FileLanguage::JavaScript => "javascript",
         FileLanguage::Python => "python",
+        FileLanguage::Shell => "shell",
+        FileLanguage::Text => "text",
     }
 }
 

@@ -4,6 +4,9 @@ use std::path::Path;
 use compresso_store::{SymbolKind, SymbolRecord};
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
 
+mod shell;
+mod text;
+
 const RUST_QUERY: &str = include_str!("../queries/rust.scm");
 const JAVASCRIPT_QUERY: &str = include_str!("../queries/javascript.scm");
 const PYTHON_QUERY: &str = include_str!("../queries/python.scm");
@@ -72,6 +75,8 @@ impl ParserRegistry {
             "tsx" => Some(Language::Tsx),
             "js" | "jsx" | "mjs" | "cjs" => Some(Language::JavaScript),
             "py" => Some(Language::Python),
+            "sh" | "bash" | "zsh" => Some(Language::Shell),
+            "md" | "markdown" | "txt" | "rst" | "adoc" => Some(Language::Text),
             _ => None,
         }
     }
@@ -83,6 +88,8 @@ impl ParserRegistry {
             Language::Tsx => extract_typescript(Language::Tsx, source),
             Language::JavaScript => extract_javascript(source),
             Language::Python => extract_python(source),
+            Language::Shell => Ok(shell::extract(source)),
+            Language::Text => Ok(text::extract(source)),
         }
     }
 }

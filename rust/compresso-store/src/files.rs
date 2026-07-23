@@ -13,6 +13,8 @@ pub enum FileLanguage {
     Tsx,
     JavaScript,
     Python,
+    Shell,
+    Text,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -51,6 +53,8 @@ impl FileLanguage {
             Self::Tsx => "tsx",
             Self::JavaScript => "javascript",
             Self::Python => "python",
+            Self::Shell => "shell",
+            Self::Text => "text",
         }
     }
 
@@ -61,6 +65,8 @@ impl FileLanguage {
             "tsx" => Ok(Self::Tsx),
             "javascript" => Ok(Self::JavaScript),
             "python" => Ok(Self::Python),
+            "shell" => Ok(Self::Shell),
+            "text" => Ok(Self::Text),
             _ => Err(StoreError::InvalidStoredValue {
                 field: "files.language",
                 value: value.to_owned(),

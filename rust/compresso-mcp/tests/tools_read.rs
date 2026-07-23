@@ -253,6 +253,22 @@ impl IndexedFixture {
             .index(&self.root, |_| {})
             .expect("expanded fixture should reindex");
     }
+
+    fn add_shell_and_documentation_auth_evidence(&self) {
+        write_file(
+            &self.root,
+            "scripts/refresh-token.sh",
+            "#!/bin/sh\n# Refresh the access_token used by the local worker.\nACCESS_TOKEN_NAME=access_token\n",
+        );
+        write_file(
+            &self.root,
+            "docs/provider.md",
+            "# access_token\n\nThe access_token appears in user documentation.\n",
+        );
+        Indexer::new(&self.store, counter_for(TokenProvider::OpenAiO200k))
+            .index(&self.root, |_| {})
+            .expect("shell and text fixture should reindex");
+    }
 }
 
 #[tokio::test]
@@ -714,6 +730,48 @@ async fn test_context_tool_adaptively_expands_to_smallest_sufficient_budget() {
         preceding["context_sufficiency"], "targeted_follow_up_needed",
         "the prior stage must remain insufficient"
     );
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_context_tool_prefers_shell_implementation_and_keeps_text_opt_in() {
+    let fixture = IndexedFixture::new();
+    fixture.add_shell_and_documentation_auth_evidence();
+    let mut harness = Harness::start(fixture.store.clone()).await;
+    let mut implementation_arguments = fixture.arguments();
+    implementation_arguments.insert("task".to_owned(), json!("access_token"));
+    implementation_arguments.insert("max_tokens".to_owned(), json!(4_000));
+
+    let implementation = successful_json(
+        harness
+            .call("compresso_context", Value::Object(implementation_arguments))
+            .await,
+    );
+    let implementation_pack = implementation["content_pack"]
+        .as_str()
+        .expect("implementation pack should be text");
+    assert_eq!(implementation["context_sufficiency"], "task_pack_ready");
+    assert!(implementation_pack.contains("scripts/refresh-token.sh"));
+    assert!(!implementation_pack.contains("docs/provider.md"));
+    assert!(
+        implementation["budget_applied"]
+            .as_u64()
+            .is_some_and(|budget| budget <= 1_600)
+    );
+
+    let mut documentation_arguments = fixture.arguments();
+    documentation_arguments.insert("task".to_owned(), json!("documentation about access_token"));
+    documentation_arguments.insert("max_tokens".to_owned(), json!(4_000));
+    let documentation = successful_json(
+        harness
+            .call("compresso_context", Value::Object(documentation_arguments))
+            .await,
+    );
+    let documentation_pack = documentation["content_pack"]
+        .as_str()
+        .expect("documentation pack should be text");
+    assert!(documentation_pack.contains("scripts/refresh-token.sh"));
+    assert!(documentation_pack.contains("docs/provider.md"));
     harness.close().await;
 }
 
