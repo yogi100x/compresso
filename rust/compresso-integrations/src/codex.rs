@@ -485,7 +485,7 @@ fn read_document(path: &Path) -> Result<DocumentMut, IntegrationError> {
     match fs::read_to_string(path) {
         Ok(contents) => contents
             .parse::<DocumentMut>()
-            .map_err(|error| invalid(format!("Codex config is malformed TOML: {error}"))),
+            .map_err(|_| invalid("Codex config is malformed TOML")),
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(DocumentMut::new()),
         Err(source) => Err(IntegrationError::Io {
             path: path.to_path_buf(),
@@ -498,7 +498,7 @@ fn read_existing_document(path: &Path) -> Result<DocumentMut, IntegrationError> 
     match fs::read_to_string(path) {
         Ok(contents) => contents
             .parse::<DocumentMut>()
-            .map_err(|error| invalid(format!("Codex config is malformed TOML: {error}"))),
+            .map_err(|_| invalid("Codex config is malformed TOML")),
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
             Err(IntegrationError::UninstallTargetMissing {
                 path: path.to_path_buf(),
@@ -1037,6 +1037,73 @@ mod tests {
     }
 
     #[test]
+    fn test_reinstall_preserves_sensitive_sibling_bytes_and_previews_only_command_change() {
+        const CANARY: &str = "CODEX_SIBLING_BEARER_CANARY_f9a06b31";
+
+        let (_home, adapter, binary, config) = fixture(CodexPlatform::Linux);
+        fs::create_dir_all(config.parent().expect("config parent")).expect("parent created");
+        let original = format!(
+            "# exact top-level formatting\nmodel  =  \"gpt-5\"\n\n[mcp_servers.cubic] # preserve this sibling exactly\ncommand = \"cubic\"\nhttp_headers = {{ Authorization = \"Bearer {CANARY}\" }}\n\n[mcp_servers.compresso]\ncommand = \"/old/bin/compresso\"\nargs = [\"mcp\", \"serve\"]\n\n[features]\nexperimental = true # preserve this too\n"
+        );
+        fs::write(&config, &original).expect("base config");
+        let manager = PlanManager::new("codex-secret-safe-reinstall").expect("manager");
+        let receipts = MemoryReceiptStore::default();
+
+        let plan = adapter
+            .plan_install(
+                &manager,
+                &InstallCtx {
+                    compresso_bin: binary.clone(),
+                    scope: Scope::User,
+                },
+            )
+            .expect("reinstall plan");
+
+        assert!(plan.unified_diff.contains("/old/bin/compresso"));
+        assert!(
+            plan.unified_diff
+                .contains(&binary.to_string_lossy().into_owned())
+        );
+        assert!(!plan.unified_diff.contains(CANARY));
+        assert!(!plan.unified_diff.contains("Authorization"));
+        assert!(!plan.unified_diff.contains("mcp_servers.cubic"));
+        assert!(plan.unified_diff.lines().count() <= 8);
+
+        let receipt = adapter
+            .install(&manager, &PlanApproval::from(&plan), &receipts)
+            .expect("reinstall should apply");
+        let serialized_receipt =
+            serde_json::to_string(&receipt).expect("receipt should serialize safely");
+        assert!(!serialized_receipt.contains(CANARY));
+        assert!(!serialized_receipt.contains("Authorization"));
+        let debug_receipt = format!("{receipt:?}");
+        assert!(!debug_receipt.contains(CANARY));
+        assert!(!debug_receipt.contains("Authorization"));
+        let installed = fs::read_to_string(&config).expect("installed config");
+        let expected = original.replacen(
+            "command = \"/old/bin/compresso\"",
+            &format!("command = {:?}", binary.to_string_lossy()),
+            1,
+        );
+        assert_eq!(
+            installed, expected,
+            "reinstall should replace only the owned command bytes"
+        );
+        assert!(installed.contains(&format!(
+            "[mcp_servers.cubic] # preserve this sibling exactly\ncommand = \"cubic\"\nhttp_headers = {{ Authorization = \"Bearer {CANARY}\" }}"
+        )));
+        let mut original_without_owned = original.parse::<DocumentMut>().expect("original TOML");
+        remove_owned_table(&mut original_without_owned).expect("original owned table removable");
+        let mut installed_without_owned = installed.parse::<DocumentMut>().expect("installed TOML");
+        remove_owned_table(&mut installed_without_owned).expect("installed owned table removable");
+        assert_eq!(
+            installed_without_owned.to_string(),
+            original_without_owned.to_string(),
+            "all unrelated TOML bytes must remain exact"
+        );
+    }
+
+    #[test]
     fn test_inline_mcp_servers_round_trip_preserves_unrelated_inline_values() {
         let (_home, adapter, binary, config) = fixture(CodexPlatform::Linux);
         fs::create_dir_all(config.parent().expect("config parent")).expect("parent created");
@@ -1097,10 +1164,14 @@ mod tests {
 
     #[test]
     fn test_malformed_config_rejects_without_rewrite() {
+        const CANARY: &str = "MALFORMED_CUBIC_BEARER_CANARY_84c5d210";
+
         let (_home, adapter, binary, config) = fixture(CodexPlatform::Linux);
         fs::create_dir_all(config.parent().expect("config parent")).expect("parent created");
-        let malformed = "[mcp_servers.compresso\ncommand = ???\n";
-        fs::write(&config, malformed).expect("malformed config");
+        let malformed = format!(
+            "[mcp_servers.cubic]\nhttp_headers = {{ Authorization = \"Bearer {CANARY}\" }} invalid\n"
+        );
+        fs::write(&config, &malformed).expect("malformed config");
         let manager = PlanManager::new("codex-malformed").expect("manager");
         let error = adapter
             .plan_install(
@@ -1112,6 +1183,9 @@ mod tests {
             )
             .expect_err("malformed config rejected");
         assert!(matches!(error, IntegrationError::InvalidRequest { .. }));
+        let rendered_error = error.to_string();
+        assert!(!rendered_error.contains(CANARY));
+        assert!(!rendered_error.contains("Authorization"));
         assert_eq!(fs::read_to_string(config).expect("unchanged"), malformed);
     }
 

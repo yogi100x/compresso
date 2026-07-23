@@ -24,9 +24,9 @@ pub use cursor::{
 };
 pub use plan::{
     ApplyReport, ConfigFormat, DeferredInstallApplyReport, DeferredInstallAuthorization, Detection,
-    InstallCtx, IntegrationError, MutationKind, MutationPlan, OwnedKeyMutation,
-    PLAN_SCHEMA_VERSION, PLAN_TTL_SECONDS, PlanApproval, PlanClock, PlanManager, RestoreReport,
-    Scope, SystemPlanClock, VerificationCheck, VerificationReport,
+    InstallCtx, IntegrationError, MutationKind, MutationPlan, MutationPlanPreview,
+    OwnedKeyMutation, PLAN_SCHEMA_VERSION, PLAN_TTL_SECONDS, PlanApproval, PlanClock, PlanManager,
+    RestoreReport, Scope, SystemPlanClock, VerificationCheck, VerificationReport,
 };
 pub use receipt::{
     CREATED_FILE_BACKUP_SENTINEL, FileReceiptStore, InstallReceipt, MemoryReceiptStore,

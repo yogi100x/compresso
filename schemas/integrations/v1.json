@@ -4,6 +4,7 @@
   "title": "Compresso integration mutation documents v1",
   "oneOf": [
     { "$ref": "#/$defs/mutation_plan" },
+    { "$ref": "#/$defs/mutation_plan_preview" },
     { "$ref": "#/$defs/install_receipt" }
   ],
   "$defs": {
@@ -68,6 +69,61 @@
         "compresso_version": { "type": "string", "minLength": 1 },
         "uninstalled_at": {
           "oneOf": [{ "type": "integer" }, { "type": "null" }]
+        }
+      }
+    },
+    "mutation_plan_preview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "document_type",
+        "operation",
+        "config_format",
+        "client",
+        "config_path",
+        "base_exists",
+        "base_hash",
+        "result_hash",
+        "unified_diff",
+        "diff_hash",
+        "plan_hash",
+        "session_id",
+        "issued_at",
+        "expires_at",
+        "backup_path",
+        "owned_keys",
+        "compresso_version",
+        "warnings"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "document_type": { "const": "mutation_plan_preview" },
+        "operation": { "type": "string", "enum": ["install", "uninstall"] },
+        "config_format": { "type": "string", "enum": ["json", "toml"] },
+        "client": { "$ref": "#/$defs/client" },
+        "config_path": { "type": "string", "minLength": 1 },
+        "base_exists": { "type": "boolean" },
+        "base_hash": { "$ref": "#/$defs/digest" },
+        "result_hash": { "$ref": "#/$defs/digest" },
+        "unified_diff": { "type": "string", "minLength": 1 },
+        "diff_hash": { "$ref": "#/$defs/digest" },
+        "plan_hash": { "$ref": "#/$defs/digest" },
+        "session_id": { "type": "string", "minLength": 1 },
+        "issued_at": { "type": "integer" },
+        "expires_at": { "type": "integer" },
+        "backup_path": { "type": "string", "minLength": 1 },
+        "owned_keys": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "compresso_version": { "type": "string", "minLength": 1 },
+        "warnings": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
         }
       }
     },
