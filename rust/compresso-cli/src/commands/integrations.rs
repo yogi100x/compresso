@@ -685,7 +685,7 @@ fn render_plan(
                     "action": rendering.action.as_str(),
                     "client": rendering.client.as_str(),
                     "dry_run": rendering.dry_run,
-                    "plan": rendering.plan,
+                    "plan": rendering.plan.public_preview(),
                     "result": outcome,
                     "warnings": rendering.warnings,
                 }
