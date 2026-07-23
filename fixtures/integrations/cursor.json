@@ -3,9 +3,7 @@
   "mcpServers": {
     "other": {
       "command": "/opt/example/cursor-server",
-      "args": [
-        "--local"
-      ]
+      "args": ["--local"]
     }
   },
   "editor": {

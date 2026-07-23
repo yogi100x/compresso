@@ -3,17 +3,11 @@
   "mcpServers": {
     "other": {
       "command": "/opt/example/other-server",
-      "args": [
-        "--read-only"
-      ]
+      "args": ["--read-only"]
     }
   },
   "theme": {
     "name": "night",
-    "unknown": [
-      1,
-      2,
-      3
-    ]
+    "unknown": [1, 2, 3]
   }
 }
