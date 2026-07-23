@@ -1,0 +1,31 @@
+rust/compresso-mcp/tests/tools_read.rs
+  s_87261b37472da1::t_18d45bd46af6d9 610-632
+  s_87261b37472da1::t_260af16c3ebda8 549,552,599,601-602,682,684-685
+  s_87261b37472da1::t_636f83cae770d5 633-658
+rust/compresso-mcp/tests/handshake.rs
+  s_87261b37472da1::t_f70363ab1fd6c4 227
+  s_87261b37472da1::t_260af16c3ebda8 252
+rust/compresso-mcp/src/tools/atlas_read.rs
+  s_87261b37472da1::t_938f2d5ef3c2c5 323-332,350,353
+rust/compresso-mcp/src/server.rs
+  s_87261b37472da1::t_938f2d5ef3c2c5 70,77
+docs/plan/04-mcp-and-integrations.md
+  s_87261b37472da1::t_938f2d5ef3c2c5 30,254,281,284,296
+  s_87261b37472da1::t_18d45bd46af6d9 28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "a7320e94cd0d580462ce01a3cd61e79079c5f5f2",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
