@@ -547,6 +547,13 @@ async fn test_context_tool_budget_and_sections() {
     assert_eq!(result["retrieval_status"], "matched");
     assert_eq!(result["context_sufficiency"], "task_pack_ready");
     assert_eq!(result["broad_follow_up_required"], false);
+    assert_eq!(result["targeted_follow_up_required"], false);
+    assert_eq!(result["targeted_follow_up_limit"], 2);
+    assert!(
+        result["evidence_coverage"]["files_included"]
+            .as_u64()
+            .is_some_and(|count| count > 0)
+    );
     assert_eq!(result["budget_applied"], 800);
     assert_eq!(result["budget_clamped"], false);
     assert!(result["retrieval_note"].is_null());
@@ -653,6 +660,32 @@ async fn test_read_start_line_without_end_reads_to_eof() {
             .as_str()
             .is_some_and(|content| content.starts_with("impl SessionManager"))
     );
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_read_end_line_beyond_eof_clamps_and_reports_resolved_range() {
+    let fixture = IndexedFixture::new();
+    let mut harness = Harness::start(fixture.store.clone()).await;
+    let mut arguments = fixture.arguments();
+    arguments.insert("path".to_owned(), json!("src/session.rs"));
+    arguments.insert("start_line".to_owned(), json!(4));
+    arguments.insert("end_line".to_owned(), json!(240));
+    arguments.insert("max_tokens".to_owned(), json!(1_800));
+
+    let result = successful_json(
+        harness
+            .call("compresso_read", Value::Object(arguments))
+            .await,
+    );
+
+    assert_eq!(result["range"]["start_line"], 4);
+    assert_eq!(result["range"]["end_line"], 6);
+    assert_eq!(result["resolved_range"]["start_line"], 4);
+    assert_eq!(result["resolved_range"]["end_line"], 6);
+    assert_eq!(result["file_lines_total"], 6);
+    assert_eq!(result["range_clamped"], true);
+    assert!(result["elision"].is_null());
     harness.close().await;
 }
 

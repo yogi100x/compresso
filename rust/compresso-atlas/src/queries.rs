@@ -20,6 +20,7 @@ const PLAN_CONTEXT_QUERY_LIMIT: usize = 20;
 const PLAN_CONTEXT_HITS_PER_QUERY: usize = 8;
 const PLAN_CONTEXT_SYMBOLS_PER_FILE: usize = 3;
 const PLAN_CONTEXT_BODIES_PER_FILE: usize = 2;
+const PLAN_CONTEXT_EVIDENCE_CONTENT_TOKENS: usize = 48;
 const REINDEX_HINT: &str = "Repository index is stale; run `compresso index` and retry.";
 
 /// A deterministic, token-budgeted structural summary of an indexed repository.
@@ -98,6 +99,9 @@ pub struct BoundedRead {
     pub content: String,
     pub start_line: u32,
     pub end_line: u32,
+    pub selected_end_line: u32,
+    pub file_lines_total: u32,
+    pub range_clamped: bool,
     pub file_tokens_total: usize,
     pub tokens_used: usize,
     pub token_provider: TokenProvider,
@@ -140,12 +144,14 @@ pub struct ImpactReport {
     pub truncated: bool,
 }
 
-/// One exact symbol body included because its identity was returned by task FTS.
+/// One bounded source excerpt included because its symbol identity was returned by task FTS.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContextSymbolBody {
     pub path: String,
     pub symbol: SymbolRecord,
     pub content: String,
+    pub excerpt_end_line: u32,
+    pub truncated: bool,
 }
 
 /// A deterministic search-driven context pack under one hard tokenizer budget.
@@ -157,6 +163,8 @@ pub struct ContextPlan {
     pub symbol_bodies: Vec<ContextSymbolBody>,
     pub search_queries: Vec<String>,
     pub matches_total: usize,
+    pub evidence_files_total: usize,
+    pub evidence_files_included: usize,
     pub tokens_used: usize,
     pub token_provider: TokenProvider,
     pub truncated: bool,
@@ -504,17 +512,19 @@ pub fn read_bounded(
     let source = read_utf8(&resolved)?;
     let file_tokens_total = counter.count(&source);
     let total_lines = line_count(&source);
-    let (start_line, requested_end, selected) = match range {
+    let (start_line, selected_end_line, range_clamped, selected) = match range {
         Some((start_line, end_line)) => {
-            validate_range(start_line, end_line, total_lines)?;
+            let (selected_end_line, range_clamped) =
+                normalize_range(start_line, end_line, total_lines)?;
             (
                 start_line,
-                end_line,
-                source_line_range(&source, &resolved, start_line, end_line)?,
+                selected_end_line,
+                range_clamped,
+                source_line_range(&source, &resolved, start_line, selected_end_line)?,
             )
         }
-        None if total_lines == 0 => (0, 0, ""),
-        None => (1, total_lines, source.as_str()),
+        None if total_lines == 0 => (0, 0, false, ""),
+        None => (1, total_lines, false, source.as_str()),
     };
     let selected_tokens = counter.count(selected);
     let (content, truncated) = if selected_tokens <= budget_tokens {
@@ -524,15 +534,15 @@ pub fn read_bounded(
     };
     let tokens_used = counter.count(&content);
     let end_line = if truncated {
-        included_end_line(start_line, &content).min(requested_end)
+        included_end_line(start_line, &content).min(selected_end_line)
     } else {
-        requested_end
+        selected_end_line
     };
     let elision = truncated.then(|| {
         format!(
             "[lines {}-{} elided: {} tokens over budget]",
             end_line.max(start_line),
-            requested_end,
+            selected_end_line,
             selected_tokens.saturating_sub(tokens_used)
         )
     });
@@ -541,6 +551,9 @@ pub fn read_bounded(
         content,
         start_line,
         end_line,
+        selected_end_line,
+        file_lines_total: total_lines,
+        range_clamped,
         file_tokens_total,
         tokens_used,
         token_provider: counter.provider(),
@@ -664,7 +677,7 @@ const fn edge_kind_order(kind: EdgeKind) -> u8 {
     }
 }
 
-/// Builds a focused map, matching-symbol outlines, and exact FTS-backed bodies under one budget.
+/// Builds a focused map and file-diverse, FTS-backed evidence excerpts under one budget.
 pub fn plan_context(
     store: &Store,
     repo: RepoId,
@@ -676,11 +689,17 @@ pub fn plan_context(
         search_task_concepts(store, repo, task)?;
 
     let candidate_outlines = matching_context_outlines(store, repo, &hits)?;
-    let mut candidate_bodies = Vec::new();
-    let mut bodies_per_path = BTreeMap::<&str, usize>::new();
+    let mut bodies_by_path = Vec::<(String, Vec<ContextSymbolBody>)>::new();
     for hit in &hits {
-        let body_count = bodies_per_path.entry(&hit.path).or_default();
-        if *body_count == PLAN_CONTEXT_BODIES_PER_FILE {
+        let path_index = bodies_by_path
+            .iter()
+            .position(|(path, _)| path == &hit.path)
+            .unwrap_or_else(|| {
+                bodies_by_path.push((hit.path.clone(), Vec::new()));
+                bodies_by_path.len() - 1
+            });
+        let path_bodies = &mut bodies_by_path[path_index].1;
+        if path_bodies.len() == PLAN_CONTEXT_BODIES_PER_FILE {
             continue;
         }
         let selector = SymbolSelector {
@@ -701,14 +720,27 @@ pub fn plan_context(
             ..
         } = unfold(store, repo, &selector)?
         {
-            candidate_bodies.push(ContextSymbolBody {
+            path_bodies.push(ContextSymbolBody {
                 path,
+                excerpt_end_line: symbol.end_line,
+                truncated: false,
                 symbol,
                 content,
             });
-            *body_count += 1;
         }
     }
+    let mut candidate_bodies = Vec::new();
+    for rank in 0..PLAN_CONTEXT_BODIES_PER_FILE {
+        for (_, bodies) in &bodies_by_path {
+            if let Some(body) = bodies.get(rank) {
+                candidate_bodies.push(body.clone());
+            }
+        }
+    }
+    let evidence_files_total = bodies_by_path
+        .iter()
+        .filter(|(_, bodies)| !bodies.is_empty())
+        .count();
 
     let mut rendered = String::new();
     let mut included_map = None;
@@ -730,45 +762,46 @@ pub fn plan_context(
         }
     }
 
-    // Keep at least two fifths of the task budget available for exact bodies.
-    // Context outlines contain only matched symbols, so broad files cannot
-    // consume the pack merely because they define many unrelated symbols.
-    let outline_ceiling = budget_tokens.saturating_mul(3) / 5;
-    let mut outlines = Vec::new();
-    for outline in &candidate_outlines {
-        let item = render_outline(outline);
-        let trial = render_context_item(
-            &rendered,
-            "# Matching outlines\n",
-            &item,
-            outlines.is_empty(),
-        );
-        if counter.count(&trial) <= outline_ceiling {
-            rendered = trial;
-            outlines.push(outline.clone());
-        }
-    }
-
     let mut symbol_bodies = Vec::new();
     for body in &candidate_bodies {
-        let item = render_symbol_body(body);
+        let evidence =
+            compact_context_evidence(body, PLAN_CONTEXT_EVIDENCE_CONTENT_TOKENS, counter);
+        let item = render_context_evidence(&evidence);
         let trial = render_context_item(
             &rendered,
-            "# Matching symbol bodies\n",
+            "# Matching evidence excerpts\n",
             &item,
             symbol_bodies.is_empty(),
         );
         if counter.count(&trial) <= budget_tokens {
             rendered = trial;
-            symbol_bodies.push(body.clone());
+            symbol_bodies.push(evidence);
         }
     }
+    let included_paths = symbol_bodies
+        .iter()
+        .map(|body| body.path.as_str())
+        .collect::<BTreeSet<_>>();
+    let evidence_files_included = included_paths.len();
+    let outlines = candidate_outlines
+        .into_iter()
+        .filter_map(|mut outline| {
+            if !included_paths.contains(outline.path.as_str()) {
+                return None;
+            }
+            outline.symbols.retain(|symbol| {
+                symbol_bodies
+                    .iter()
+                    .any(|body| body.path == outline.path && same_symbol(&body.symbol, symbol))
+            });
+            (!outline.symbols.is_empty()).then_some(outline)
+        })
+        .collect::<Vec<_>>();
 
     let tokens_used = counter.count(&rendered);
     let truncated = search_truncated
         || map.truncated
         || included_map.is_none()
-        || outlines.len() < candidate_outlines.len()
         || symbol_bodies.len() < candidate_bodies.len();
     Ok(ContextPlan {
         rendered,
@@ -777,6 +810,8 @@ pub fn plan_context(
         symbol_bodies,
         search_queries,
         matches_total,
+        evidence_files_total,
+        evidence_files_included,
         tokens_used,
         token_provider: counter.provider(),
         truncated,
@@ -834,9 +869,6 @@ fn search_task_concepts(
         }
     }
 
-    // Preserve round-robin relevance within each symbol class while preferring
-    // executable implementation surfaces over constants and modules.
-    merged.sort_by_key(|hit| hit.symbol.kind);
     let matches_total = merged.len();
     let truncated = source_truncated || matches_total > PLAN_CONTEXT_SEARCH_LIMIT;
     merged.truncate(PLAN_CONTEXT_SEARCH_LIMIT);
@@ -850,8 +882,41 @@ fn task_search_queries(task: &str) -> Vec<String> {
         .map(str::to_ascii_lowercase)
         .collect::<Vec<_>>();
     let security_context = words.iter().any(|word| is_security_context_term(word));
+    let broad_auth_context = words
+        .iter()
+        .any(|word| matches!(word.as_str(), "auth" | "authentication" | "authorization"))
+        || words
+            .iter()
+            .filter(|word| is_security_context_term(word))
+            .count()
+            >= 3;
     let mut queries = Vec::new();
     let mut seen = BTreeSet::new();
+
+    if broad_auth_context {
+        for query in [
+            "login",
+            "oauth",
+            "scopes",
+            "credential",
+            "update_env",
+            "cookie",
+            "access_token",
+            "session",
+            "password",
+            "refresh_token",
+            "auth",
+            "api_key",
+            "middleware",
+            "guard",
+            "logout",
+            "signup",
+            "identity",
+            "bearer",
+        ] {
+            push_context_query(&mut queries, &mut seen, query.to_owned());
+        }
+    }
 
     // Preserve the original phrase for concise symbol-shaped tasks while
     // avoiding a long literal FTS query for prose requests.
@@ -933,10 +998,22 @@ fn is_context_stop_word(word: &str) -> bool {
             | "any"
             | "are"
             | "code"
+            | "behavior"
+            | "behaviour"
+            | "concise"
+            | "concisely"
+            | "configuration"
+            | "entry"
+            | "entries"
+            | "environment"
+            | "exact"
             | "find"
+            | "flow"
+            | "flows"
             | "for"
             | "from"
             | "how"
+            | "handling"
             | "implementation"
             | "implementations"
             | "include"
@@ -945,6 +1022,13 @@ fn is_context_stop_word(word: &str) -> bool {
             | "locate"
             | "most"
             | "of"
+            | "point"
+            | "points"
+            | "protection"
+            | "provider"
+            | "providers"
+            | "range"
+            | "ranges"
             | "related"
             | "relevant"
             | "repository"
@@ -956,8 +1040,11 @@ fn is_context_stop_word(word: &str) -> bool {
             | "their"
             | "this"
             | "through"
+            | "user"
             | "use"
             | "using"
+            | "variable"
+            | "variables"
             | "what"
             | "where"
             | "with"
@@ -1049,31 +1136,57 @@ fn render_context_item(current: &str, header: &str, item: &str, first_in_section
     rendered
 }
 
-fn render_outline(outline: &Outline) -> String {
-    let mut rendered = format!("## {}\n", outline.path);
-    for symbol in &outline.symbols {
-        let _ = writeln!(
-            rendered,
-            "- {:?} {} (lines {}-{}, ~{} tokens)",
-            symbol.kind,
-            symbol.qualified_name,
-            symbol.start_line,
-            symbol.end_line,
-            symbol.token_estimate
-        );
+fn compact_context_evidence(
+    body: &ContextSymbolBody,
+    content_budget: usize,
+    counter: &dyn TokenCounter,
+) -> ContextSymbolBody {
+    let mut content = String::new();
+    for line in body.content.split_inclusive('\n') {
+        let candidate = format!("{content}{line}");
+        if counter.count(&candidate) > content_budget {
+            break;
+        }
+        content = candidate;
     }
-    rendered
+    if content.is_empty() && !body.content.is_empty() {
+        content = prefix_within_budget(&body.content, content_budget, counter);
+    }
+    let excerpt_lines = line_count(&content).max(u32::from(!content.is_empty()));
+    let excerpt_end_line = if excerpt_lines == 0 {
+        body.symbol.start_line
+    } else {
+        body.symbol
+            .start_line
+            .saturating_add(excerpt_lines - 1)
+            .min(body.symbol.end_line)
+    };
+    ContextSymbolBody {
+        path: body.path.clone(),
+        symbol: body.symbol.clone(),
+        truncated: content != body.content,
+        content,
+        excerpt_end_line,
+    }
 }
 
-fn render_symbol_body(body: &ContextSymbolBody) -> String {
+fn render_context_evidence(body: &ContextSymbolBody) -> String {
     let mut rendered = format!(
-        "## {} — {} ({:?}, lines {}-{})\n",
+        "## {}:{}-{} — {} ({:?}",
         body.path,
+        body.symbol.start_line,
+        body.excerpt_end_line,
         body.symbol.qualified_name,
         body.symbol.kind,
-        body.symbol.start_line,
-        body.symbol.end_line
     );
+    if body.truncated {
+        let _ = write!(
+            rendered,
+            ", excerpt of lines {}-{}",
+            body.symbol.start_line, body.symbol.end_line
+        );
+    }
+    rendered.push_str(")\n");
     rendered.push_str(&body.content);
     if !rendered.ends_with('\n') {
         rendered.push('\n');
@@ -1248,15 +1361,19 @@ fn source_line_range<'a>(
     Ok(&source[start..end])
 }
 
-fn validate_range(start_line: u32, end_line: u32, total_lines: u32) -> Result<(), QueryError> {
-    if start_line == 0 || end_line < start_line || end_line > total_lines {
+fn normalize_range(
+    start_line: u32,
+    end_line: u32,
+    total_lines: u32,
+) -> Result<(u32, bool), QueryError> {
+    if start_line == 0 || end_line < start_line || start_line > total_lines {
         return Err(QueryError::InvalidRange {
             start_line,
             end_line,
             total_lines,
         });
     }
-    Ok(())
+    Ok((end_line.min(total_lines), end_line > total_lines))
 }
 
 fn line_starts(source: &str) -> Vec<usize> {

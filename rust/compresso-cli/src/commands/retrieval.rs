@@ -435,6 +435,9 @@ fn render_bounded_read(result: BoundedRead) -> Rendered {
         "content": result.content.clone(),
         "start_line": result.start_line,
         "end_line": result.end_line,
+        "selected_end_line": result.selected_end_line,
+        "file_lines_total": result.file_lines_total,
+        "range_clamped": result.range_clamped,
         "file_tokens_total": result.file_tokens_total,
         "tokens_used": result.tokens_used,
         "token_provider": result.token_provider,
@@ -473,6 +476,8 @@ fn render_context(task: String, plan: ContextPlan) -> Rendered {
                 "path": body.path,
                 "symbol": symbol_json(&body.symbol),
                 "content": body.content,
+                "excerpt_end_line": body.excerpt_end_line,
+                "truncated": body.truncated,
             })
         })
         .collect::<Vec<_>>();
@@ -482,6 +487,10 @@ fn render_context(task: String, plan: ContextPlan) -> Rendered {
         "retrieval_note": retrieval_note,
         "search_queries": &plan.search_queries,
         "matches_total": plan.matches_total,
+        "evidence_coverage": {
+            "files_included": plan.evidence_files_included,
+            "candidate_files": plan.evidence_files_total,
+        },
         "plan": {
             "map_excerpt": map_excerpt,
             "outlines": outlines,
