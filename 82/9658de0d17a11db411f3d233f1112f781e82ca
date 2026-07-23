@@ -1,0 +1,37 @@
+rust/compresso-mcp/src/server.rs
+  s_87261b37472da1::t_abb522cec89702 70,77
+  s_87261b37472da1::t_2d81c814d96633 556,603-606,610
+rust/compresso-mcp/tests/handshake.rs
+  s_87261b37472da1::t_d884ffb10a68d6 216-219,251
+  s_87261b37472da1::t_638f121bc86862 225-227
+  s_87261b37472da1::t_abb522cec89702 250
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_9916f9f35fa4f0 553
+  s_87261b37472da1::t_c1a662ad1acd6f 560
+rust/compresso-mcp/src/tools/atlas_read.rs
+  s_87261b37472da1::t_2d81c814d96633 19,270-272,281-282,296-297,309-310,312,318,324-325
+  s_87261b37472da1::t_abb522cec89702 307-308,311,319
+docs/plan/04-mcp-and-integrations.md
+  s_87261b37472da1::t_c1a662ad1acd6f 15,259,265,279-280
+  s_87261b37472da1::t_9916f9f35fa4f0 28
+  s_87261b37472da1::t_abb522cec89702 30,249,275-276,287
+rust/compresso-mcp/tests/tools_read.rs
+  s_87261b37472da1::t_abb522cec89702 548-549,590-591,622
+  s_87261b37472da1::t_d884ffb10a68d6 550-551,571-589,592-598,621
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "829658de0d17a11db411f3d233f1112f781e82ca",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
