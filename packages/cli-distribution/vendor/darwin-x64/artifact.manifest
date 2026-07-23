@@ -1,0 +1,4 @@
+schema-version: 1
+target: darwin-x64
+binary: compresso
+sha256: UNPOPULATED
