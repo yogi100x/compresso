@@ -1,0 +1,23 @@
+scripts/ci/check_ci_matrix.rb
+  s_87261b37472da1::t_d5c5954321625b 117-131
+rust/compresso-eval/src/calibrate.rs
+  s_87261b37472da1::t_90708234fdc875 1-716
+rust/compresso-eval/src/lib.rs
+  s_87261b37472da1::t_90708234fdc875 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "baf646c1cba42619ff7c77c4dc2850692b3fe5d9",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
