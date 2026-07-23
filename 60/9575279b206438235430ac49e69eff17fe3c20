@@ -1,0 +1,60 @@
+rust/compresso-atlas/tests/queries_impact_plan.rs
+  s_87261b37472da1::t_f04e96a6f55548 276-283
+  s_87261b37472da1::t_c3575990c136c9 247-260
+  s_87261b37472da1::t_d1e933564f7798 201,203-205,246
+  s_87261b37472da1::t_46482fc84f7349 264-275,285-300
+  s_87261b37472da1::t_52bbc6ed94bb73 261-263
+rust/compresso-cli/src/commands/retrieval.rs
+  s_87261b37472da1::t_ac8c44cf0d320f 479-480,490-493
+  s_87261b37472da1::t_541c2cfbb63a6d 438-440
+rust/compresso-mcp/tests/handshake.rs
+  s_87261b37472da1::t_a227848cc0f9c8 226-228,248
+  s_87261b37472da1::t_864e6bfafc4fb1 252-254
+rust/compresso-mcp/tests/tools_read.rs
+  s_87261b37472da1::t_c3575990c136c9 550-556,666-688
+  s_87261b37472da1::t_bb071e4873486a 689-691
+rust/compresso-mcp/src/server.rs
+  s_87261b37472da1::t_864e6bfafc4fb1 70,74,77
+rust/compresso-atlas/tests/queries_unfold_search_read.rs
+  s_87261b37472da1::t_c3575990c136c9 348-366
+  s_87261b37472da1::t_aa0a0c7346d393 347
+rust/compresso-mcp/src/tools/atlas_read.rs
+  s_87261b37472da1::t_ac8c44cf0d320f 314-315,318-319,323-333,341-347
+  s_87261b37472da1::t_b0492f7167bc02 310
+  s_87261b37472da1::t_541c2cfbb63a6d 151-156
+  s_87261b37472da1::t_f6d63de8799040 311-312
+rust/compresso-atlas/src/queries.rs
+  s_87261b37472da1::t_f04e96a6f55548 885,887-892
+  s_87261b37472da1::t_f6d63de8799040 767-768
+  s_87261b37472da1::t_0f826ece365a7b 680
+  s_87261b37472da1::t_b0492f7167bc02 23,886,896-919,1003-1005,1008,1016,1027,1043,1046-1047
+  s_87261b37472da1::t_541c2cfbb63a6d 102-104,515,517-518,521-523,526-527,537,539,545,554-556,1364-1369,1376
+  s_87261b37472da1::t_ac8c44cf0d320f 147,153-154,166-167,692,694-702,723,725-726,732-743,769,772,778,781-799,813-814,1001-1002,1006-1007,1009,1011-1012,1025-1026,1028-1031,1139-1169,1173,1175,1177-1178,1182-1189
+  s_87261b37472da1::t_41e0c15d09569d 920
+docs/plan/03-interfaces.md
+  s_87261b37472da1::t_0f826ece365a7b 284
+  s_87261b37472da1::t_541c2cfbb63a6d 277
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_864e6bfafc4fb1 441,444,553,557
+  s_87261b37472da1::t_b0492f7167bc02 554
+docs/plan/04-mcp-and-integrations.md
+  s_87261b37472da1::t_22ee171ef8f524 28,30
+  s_87261b37472da1::t_864e6bfafc4fb1 122,150-152,180-182,254,282-283,286
+  s_87261b37472da1::t_b0492f7167bc02 284,295
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "609575279b206438235430ac49e69eff17fe3c20",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
