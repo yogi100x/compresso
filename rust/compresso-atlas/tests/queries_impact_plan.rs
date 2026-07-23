@@ -198,15 +198,11 @@ fn test_plan_context_within_budget_and_section_order() {
         .rendered
         .find("# Relevant repository map")
         .expect("map section should render");
-    let outlines = plan
+    let evidence = plan
         .rendered
-        .find("# Matching outlines")
-        .expect("outline section should render");
-    let bodies = plan
-        .rendered
-        .find("# Matching symbol bodies")
-        .expect("body section should render");
-    assert!(map < outlines && outlines < bodies);
+        .find("# Matching evidence excerpts")
+        .expect("evidence section should render");
+    assert!(map < evidence);
     assert_eq!(before, after, "plan_context must not write to SQLite");
 }
 
@@ -247,8 +243,61 @@ fn test_plan_context_expands_natural_language_task_and_prioritizes_relevant_symb
     );
     assert!(
         !plan.symbol_bodies.is_empty(),
-        "a useful context pack must reserve room for at least one exact body"
+        "a useful context pack must reserve room for at least one source excerpt"
     );
+    let evidence_paths = plan
+        .symbol_bodies
+        .iter()
+        .map(|body| body.path.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        evidence_paths.len() >= 4,
+        "a broad authentication pack must diversify evidence across at least four files: {evidence_paths:?}"
+    );
+    assert!(
+        plan.rendered.contains("# Matching evidence excerpts"),
+        "the rendered pack must identify bounded evidence rather than imply that excerpts are complete bodies"
+    );
+}
+
+#[test]
+fn test_plan_context_prioritizes_auth_concepts_before_generic_prompt_terms() {
+    let fixture = Fixture::new();
+    fixture.seed_authentication_repository();
+    let task = "Find and concisely summarize all authentication-related code: login and signup \
+                flows, auth providers, session/token/cookie handling, middleware/route protection, \
+                API authorization checks, user identity, logout, and configuration/environment \
+                variables.";
+
+    let plan = plan_context(&fixture.store, fixture.repo, task, 800).expect("context should plan");
+
+    assert_eq!(
+        &plan.search_queries[..6],
+        [
+            "login",
+            "oauth",
+            "scopes",
+            "credential",
+            "update_env",
+            "cookie"
+        ]
+    );
+    for generic in [
+        "concisely",
+        "provider",
+        "providers",
+        "route",
+        "protection",
+        "api",
+        "configuration",
+        "environment",
+        "variables",
+    ] {
+        assert!(
+            !plan.search_queries.iter().any(|query| query == generic),
+            "generic prompt term displaced an authentication concept: {generic}"
+        );
+    }
 }
 
 #[test]

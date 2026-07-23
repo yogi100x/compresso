@@ -345,6 +345,26 @@ fn test_read_bounded_inclusive_range() {
 }
 
 #[test]
+fn test_read_bounded_clamps_end_line_to_eof_and_reports_resolved_range() {
+    let directory = tempfile::tempdir().expect("temporary directory should be created");
+    let root = directory.path().join("repo");
+    fs::create_dir(&root).expect("root should be created");
+    let root = fs::canonicalize(root).expect("root should canonicalize");
+    fs::write(root.join("sample.txt"), "one\ntwo\nthree\nfour\n")
+        .expect("sample should be written");
+
+    let result = read_bounded(&root, "sample.txt", Some((2, 400)), 100, counter())
+        .expect("an end line beyond EOF should clamp instead of failing");
+
+    assert_eq!(result.content, "two\nthree\nfour\n");
+    assert_eq!((result.start_line, result.end_line), (2, 4));
+    assert_eq!(result.selected_end_line, 4);
+    assert_eq!(result.file_lines_total, 4);
+    assert!(result.range_clamped);
+    assert!(!result.truncated);
+}
+
+#[test]
 fn test_read_bounded_token_truncation() {
     let directory = tempfile::tempdir().expect("temporary directory should be created");
     let root = directory.path().join("repo");

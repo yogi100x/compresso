@@ -274,14 +274,14 @@ pub struct Outline { pub path: String, pub language: Option<FileLanguage>, pub s
 pub struct SymbolIdentity { pub path: String, pub qualified_name: String, pub kind: SymbolKind, pub signature_hash: Option<String>, pub start_line: u32, pub end_line: u32 }
 pub enum UnfoldResult { Found { path: String, symbol: SymbolRecord, content: String, stale: bool, reindex_hint: Option<String> }, Ambiguous { candidates: Vec<SymbolIdentity>, stale: bool, reindex_hint: Option<String> }, NotFound { path: String, qualified_name: String, stale: bool, reindex_hint: String } }
 pub struct SearchHit { pub path: String, pub symbol: SymbolRecord, pub score: f64 }
-pub struct BoundedRead { pub path: String, pub content: String, pub start_line: u32, pub end_line: u32, pub file_tokens_total: usize, pub tokens_used: usize, pub token_provider: TokenProvider, pub truncated: bool, pub elision: Option<String> }
+pub struct BoundedRead { pub path: String, pub content: String, pub start_line: u32, pub end_line: u32, pub selected_end_line: u32, pub file_lines_total: u32, pub range_clamped: bool, pub file_tokens_total: usize, pub tokens_used: usize, pub token_provider: TokenProvider, pub truncated: bool, pub elision: Option<String> }
 pub fn repo_map(store: &Store, repo: RepoId, budget_tokens: usize) -> Result<RepoMap>;      // dir tree + top symbols per file, PageRank-ish by edge in-degree
 pub fn outline(store: &Store, repo: RepoId, path: &str) -> Result<Outline>;                  // symbol skeleton with line ranges + token estimates
 pub fn unfold(store: &Store, repo: RepoId, selector: &SymbolSelector) -> Result<UnfoldResult>; // multiple matches return typed Ambiguous candidates
 pub fn search(store: &Store, repo: RepoId, query: &str, limit: usize) -> Result<Vec<SearchHit>>;
 pub fn read_bounded(root: &Path, path: &str, range: Option<(u32, u32)>, budget_tokens: usize, counter: &dyn TokenCounter) -> Result<BoundedRead>; // path canonicalized, MUST be under approved root (symlink-resolved)
 pub fn impact(store: &Store, repo: RepoId, path: &str) -> Result<ImpactReport>;              // reverse-edge closure, depth 2
-pub fn plan_context(store: &Store, repo: RepoId, task: &str, budget_tokens: usize) -> Result<ContextPlan>; // search-driven pack: map + outlines + top symbols within budget
+pub fn plan_context(store: &Store, repo: RepoId, task: &str, budget_tokens: usize) -> Result<ContextPlan>; // search-driven pack: focused map + file-diverse evidence excerpts within budget
 ```
 
 Security boundary: every path from external input passes `canonicalize()` and `starts_with(approved_root)` after symlink resolution; violations return `AtlasError::OutsideRoot` (tested).

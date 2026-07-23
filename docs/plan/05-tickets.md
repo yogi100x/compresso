@@ -438,10 +438,10 @@ Test cases:
 ### [x] E3-12: Queries — impact and plan_context
 Owner: R2 · Estimate: 1.5d · Depends: E3-10, E3-11
 Files: rust/compresso-atlas/src/queries.rs, tests in rust/compresso-atlas/tests/queries_impact_plan.rs
-Description: Implement `impact(store, repo, path)` (reverse-edge closure over `edges`, depth 2, reporting dependent files and the linking edge kinds) and `plan_context(store, repo, task, budget_tokens)` (search-driven pack: repo map slice + outlines + top matching symbol bodies assembled within the token budget) per `03-interfaces.md` §4.
+Description: Implement `impact(store, repo, path)` (reverse-edge closure over `edges`, depth 2, reporting dependent files and the linking edge kinds) and `plan_context(store, repo, task, budget_tokens)` (search-driven pack: focused map plus compact, file-diverse matching evidence excerpts assembled within the token budget) per `03-interfaces.md` §4.
 Acceptance criteria:
 - `impact` includes direct importers (depth 1) and their importers (depth 2), never depth 3; each entry names the edge kind; self is excluded.
-- `plan_context` output token count ≤ `budget_tokens`; sections ordered focused map → matched-symbol outlines → symbol bodies; every included symbol matches at least one deterministic FTS query derived from the natural-language task.
+- `plan_context` output token count ≤ `budget_tokens`; sections are ordered focused map → evidence excerpts, broad packs prioritize distinct files before a second symbol from one file, and every excerpt's symbol matches at least one deterministic FTS query derived from the natural-language task.
 - Both functions read-only and deterministic for a fixed store state.
 Test cases:
 - test_impact_depth_two: fixture edges `a.rs → b.rs → c.rs → d.rs` (imports); `impact(.., "c.rs")` → contains b.rs (depth 1) and a.rs (depth 2); wait — reverse edges: importers of c.rs are b.rs, importers of b.rs are a.rs; d.rs (which c imports) absent.
@@ -550,9 +550,11 @@ Description: Implement `compresso_search` (→ `search`), `compresso_read` (→ 
 Acceptance criteria:
 - `compresso_read` with `gate: true` returns the 04 §1.5 gate object (`worth_reading`, `reason`, `file_tokens_total`, `recommended_budget`, `cheaper_alternative`) only — response contains zero file-content bytes.
 - Traversal/symlink-escape inputs return error code `outside_root`; repository content in responses is data-only (no tool-side execution of anything found in files).
-- `compresso_context` hard-caps the complete serialized MCP response at 800 tokens, clamps oversized stale-client requests, distinguishes a task-pack-ready result from no-match/stale broad follow-up, and returns plan sections in map→outline→symbol order.
+- `compresso_read` clamps an `end_line` beyond EOF, reports returned and resolved ranges plus total file lines, and keeps starts beyond EOF invalid.
+- `compresso_context` hard-caps the complete serialized MCP response at 800 tokens, clamps oversized stale-client requests, distinguishes task-pack-ready, targeted-follow-up, and no-match/stale broad-follow-up results, and requires evidence coverage from up to six distinct candidate files before declaring the pack ready.
 Test cases:
 - test_read_tool_bounded: read `src/sample.rs` with `max_tokens: 100` → ≤100 tokens, `truncated: true` in structured result.
+- test_read_end_beyond_eof_clamps: read a 73-line file with `start_line:1,end_line:240` → success, `resolved_range.end_line == 73`, `file_lines_total == 73`, `range_clamped:true`.
 - test_read_gate_mode_no_content: `{"path":"src/sample.rs","gate":true}` → response includes `gate.worth_reading`, `gate.file_tokens_total`, and `gate.recommended_budget` and omits every line of the file (assert a known source line absent).
 - test_read_dotdot_via_mcp: `{"path":"../../etc/passwd"}` → MCP error `outside_root`.
 - test_search_tool_hits: `{"query":"SessionManager"}` → first hit qualified_name `SessionManager` with path and line.

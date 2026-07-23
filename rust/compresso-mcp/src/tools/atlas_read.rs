@@ -148,6 +148,12 @@ fn read_tool(
             "start_line": result.start_line,
             "end_line": result.end_line
         },
+        "resolved_range": {
+            "start_line": result.start_line,
+            "end_line": result.selected_end_line
+        },
+        "file_lines_total": result.file_lines_total,
+        "range_clamped": result.range_clamped,
         "file_tokens_total": result.file_tokens_total,
         "tokens_used": result.tokens_used,
         "token_provider": result.token_provider,
@@ -301,14 +307,29 @@ fn compact_context_payload(
     } else {
         "matched"
     };
-    let retrieval_note = (plan.matches_total == 0).then_some(
-        "No indexed symbols matched the derived task queries. This is not proof that the repository contains no relevant implementation.",
-    );
+    let evidence_files_required = plan.evidence_files_total.min(6);
+    let evidence_ready =
+        evidence_files_required > 0 && plan.evidence_files_included >= evidence_files_required;
     let broad_follow_up_required = plan.matches_total == 0 || stale;
+    let targeted_follow_up_required =
+        !broad_follow_up_required && plan.matches_total > 0 && !evidence_ready;
     let context_sufficiency = if broad_follow_up_required {
         "follow_up_needed"
+    } else if targeted_follow_up_required {
+        "targeted_follow_up_needed"
     } else {
         "task_pack_ready"
+    };
+    let retrieval_note = if plan.matches_total == 0 {
+        Some(
+            "No indexed symbols matched the derived task queries. This is not proof that the repository contains no relevant implementation.",
+        )
+    } else if targeted_follow_up_required {
+        Some(
+            "The pack could not fit enough distinct evidence files. Use at most two precise Compresso follow-ups; do not repeat broad retrieval.",
+        )
+    } else {
+        None
     };
     json!({
         "schema_version": 1,
@@ -317,6 +338,13 @@ fn compact_context_payload(
         "retrieval_note": retrieval_note,
         "context_sufficiency": context_sufficiency,
         "broad_follow_up_required": broad_follow_up_required,
+        "targeted_follow_up_required": targeted_follow_up_required,
+        "targeted_follow_up_limit": 2,
+        "evidence_coverage": {
+            "files_included": plan.evidence_files_included,
+            "files_required": evidence_files_required,
+            "candidate_files": plan.evidence_files_total
+        },
         "matches_total": plan.matches_total,
         "content_pack": plan.rendered,
         "stale": stale,
