@@ -545,6 +545,10 @@ async fn test_context_tool_budget_and_sections() {
     let result = successful_json(response);
 
     assert_eq!(result["retrieval_status"], "matched");
+    assert_eq!(result["context_sufficiency"], "task_pack_ready");
+    assert_eq!(result["broad_follow_up_required"], false);
+    assert_eq!(result["budget_applied"], 800);
+    assert_eq!(result["budget_clamped"], false);
     assert!(result["retrieval_note"].is_null());
     assert!(
         result["matches_total"]
@@ -561,6 +565,34 @@ async fn test_context_tool_budget_and_sections() {
     assert!(result.get("task").is_none());
     assert!(result.get("search_queries").is_none());
     assert!(result.get("plan").is_none());
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_context_tool_clamps_oversized_client_budget() {
+    let fixture = IndexedFixture::new();
+    let mut harness = Harness::start(fixture.store.clone()).await;
+    let mut arguments = fixture.arguments();
+    arguments.insert("task".to_owned(), json!("session retry logic"));
+    arguments.insert("max_tokens".to_owned(), json!(10_000));
+
+    let response = harness
+        .call("compresso_context", Value::Object(arguments))
+        .await;
+    let payload = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("context payload should be text")
+        .to_owned();
+    let payload_tokens = counter_for(TokenProvider::OpenAiO200k).count(&payload);
+    let result = successful_json(response);
+
+    assert_eq!(result["retrieval_status"], "matched");
+    assert_eq!(result["context_sufficiency"], "task_pack_ready");
+    assert_eq!(result["broad_follow_up_required"], false);
+    assert_eq!(result["budget_applied"], 800);
+    assert_eq!(result["budget_clamped"], true);
+    assert_eq!(result["tokens_used"], payload_tokens);
+    assert!(payload_tokens <= 800);
     harness.close().await;
 }
 
@@ -586,6 +618,8 @@ async fn test_context_tool_no_matches_never_claims_repository_absence() {
     let result = successful_json(response);
 
     assert_eq!(result["retrieval_status"], "no_matches");
+    assert_eq!(result["context_sufficiency"], "follow_up_needed");
+    assert_eq!(result["broad_follow_up_required"], true);
     assert_eq!(result["matches_total"], 0);
     assert!(
         result["retrieval_note"]

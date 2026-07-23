@@ -550,13 +550,14 @@ Description: Implement `compresso_search` (→ `search`), `compresso_read` (→ 
 Acceptance criteria:
 - `compresso_read` with `gate: true` returns the 04 §1.5 gate object (`worth_reading`, `reason`, `file_tokens_total`, `recommended_budget`, `cheaper_alternative`) only — response contains zero file-content bytes.
 - Traversal/symlink-escape inputs return error code `outside_root`; repository content in responses is data-only (no tool-side execution of anything found in files).
-- `compresso_context` respects `max_tokens` and returns the plan sections in map→outline→symbol order.
+- `compresso_context` hard-caps the complete serialized MCP response at 800 tokens, clamps oversized stale-client requests, distinguishes a task-pack-ready result from no-match/stale broad follow-up, and returns plan sections in map→outline→symbol order.
 Test cases:
 - test_read_tool_bounded: read `src/sample.rs` with `max_tokens: 100` → ≤100 tokens, `truncated: true` in structured result.
 - test_read_gate_mode_no_content: `{"path":"src/sample.rs","gate":true}` → response includes `gate.worth_reading`, `gate.file_tokens_total`, and `gate.recommended_budget` and omits every line of the file (assert a known source line absent).
 - test_read_dotdot_via_mcp: `{"path":"../../etc/passwd"}` → MCP error `outside_root`.
 - test_search_tool_hits: `{"query":"SessionManager"}` → first hit qualified_name `SessionManager` with path and line.
 - test_context_tool_budget: `{"task":"session retry logic","max_tokens":800}` → ≤800 tokens.
+- test_context_tool_clamps_oversized_client_budget: `{"task":"session retry logic","max_tokens":10000}` → successful response with `budget_applied:800`, `budget_clamped:true`, and complete serialized payload ≤800 tokens.
 
 ### [x] E5-04: Tool handlers — compresso_compress, compresso_impact, compresso_stats, compresso_explain
 Owner: R2 · Estimate: 1.5d · Depends: E5-01, E2-09, E3-03, E3-12

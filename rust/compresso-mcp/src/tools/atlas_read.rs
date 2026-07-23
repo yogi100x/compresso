@@ -16,6 +16,7 @@ const SEARCH_DEFAULT_LIMIT: usize = 8;
 const SEARCH_DEFAULT_TOKENS: usize = 500;
 const READ_DEFAULT_TOKENS: usize = 2_000;
 const CONTEXT_DEFAULT_TOKENS: usize = 800;
+const CONTEXT_MAX_TOKENS: usize = 800;
 
 pub(crate) fn handles(name: &str) -> bool {
     matches!(
@@ -266,7 +267,9 @@ fn context_tool(
             "argument 'task' must contain at least three characters and no NUL byte.",
         ));
     }
-    let max_tokens = token_budget(&mut arguments, CONTEXT_DEFAULT_TOKENS)?;
+    let requested_tokens = token_budget(&mut arguments, CONTEXT_DEFAULT_TOKENS)?;
+    let max_tokens = requested_tokens.min(CONTEXT_MAX_TOKENS);
+    let budget_clamped = requested_tokens > max_tokens;
     let repository = resolve_repository(store, repository_root, root.as_deref())?;
     let stale = repository_stale(store, repository.id).map_err(map_atlas_error)?;
     let operation_id = operation_identity().id;
@@ -275,7 +278,8 @@ fn context_tool(
     loop {
         let plan =
             plan_context(store, repository.id, &task, planner_budget).map_err(map_atlas_error)?;
-        let mut payload = compact_context_payload(&plan, &operation_id, stale);
+        let mut payload =
+            compact_context_payload(&plan, &operation_id, stale, max_tokens, budget_clamped);
         let payload_tokens = stabilize_payload_tokens(&mut payload, counter)?;
         if payload_tokens <= max_tokens || planner_budget == 0 {
             return Ok(payload);
@@ -289,6 +293,8 @@ fn compact_context_payload(
     plan: &compresso_atlas::ContextPlan,
     operation_id: &str,
     stale: bool,
+    budget_applied: usize,
+    budget_clamped: bool,
 ) -> Value {
     let retrieval_status = if plan.matches_total == 0 {
         "no_matches"
@@ -298,15 +304,25 @@ fn compact_context_payload(
     let retrieval_note = (plan.matches_total == 0).then_some(
         "No indexed symbols matched the derived task queries. This is not proof that the repository contains no relevant implementation.",
     );
+    let broad_follow_up_required = plan.matches_total == 0 || stale;
+    let context_sufficiency = if broad_follow_up_required {
+        "follow_up_needed"
+    } else {
+        "task_pack_ready"
+    };
     json!({
         "schema_version": 1,
         "operation_id": operation_id,
         "retrieval_status": retrieval_status,
         "retrieval_note": retrieval_note,
+        "context_sufficiency": context_sufficiency,
+        "broad_follow_up_required": broad_follow_up_required,
         "matches_total": plan.matches_total,
         "content_pack": plan.rendered,
         "stale": stale,
         "reindex_hint": stale.then_some(REINDEX_HINT),
+        "budget_applied": budget_applied,
+        "budget_clamped": budget_clamped,
         "tokens_used": 0,
         "token_provider": plan.token_provider,
         "truncated": plan.truncated
