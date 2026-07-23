@@ -196,7 +196,7 @@ fn test_plan_context_within_budget_and_section_order() {
 
     let map = plan
         .rendered
-        .find("# Repository map")
+        .find("# Relevant repository map")
         .expect("map section should render");
     let outlines = plan
         .rendered
@@ -208,6 +208,47 @@ fn test_plan_context_within_budget_and_section_order() {
         .expect("body section should render");
     assert!(map < outlines && outlines < bodies);
     assert_eq!(before, after, "plan_context must not write to SQLite");
+}
+
+#[test]
+fn test_plan_context_expands_natural_language_task_and_prioritizes_relevant_symbols() {
+    let fixture = Fixture::new();
+    fixture.seed_authentication_repository();
+    let task = "Locate and summarize the repository's authentication implementations, including \
+                OAuth, credentials, sessions, passwords, tokens, and browser cookies.";
+
+    let plan = plan_context(&fixture.store, fixture.repo, task, 800).expect("context should plan");
+    let outlined_symbols = plan
+        .outlines
+        .iter()
+        .flat_map(|outline| outline.symbols.iter())
+        .map(|symbol| symbol.qualified_name.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(plan.tokens_used <= 800);
+    for expected in [
+        "YoutubeOAuth::get_oauth_token",
+        "CredentialStore::load_credentials",
+        "InstagramClient::login",
+        "BrowserCookieAuth::read_browser_cookies",
+    ] {
+        assert!(
+            outlined_symbols.contains(&expected),
+            "natural-language planning omitted {expected}: {outlined_symbols:?}"
+        );
+    }
+    assert!(
+        !outlined_symbols.contains(&"ModelProvider::complete"),
+        "irrelevant symbols must not displace authentication matches"
+    );
+    assert!(
+        !outlined_symbols.contains(&"Tokenizer::count_tokens"),
+        "generic token-processing symbols must not displace authentication-token matches"
+    );
+    assert!(
+        !plan.symbol_bodies.is_empty(),
+        "a useful context pack must reserve room for at least one exact body"
+    );
 }
 
 #[test]
@@ -241,8 +282,6 @@ fn test_plan_context_symbol_bodies_are_task_fts_hits() {
     let fixture = Fixture::new();
     fixture.seed_context_repository();
 
-    let hits = search(&fixture.store, fixture.repo, "session retry logic", 100)
-        .expect("task search should work");
     let plan = plan_context(
         &fixture.store,
         fixture.repo,
@@ -250,6 +289,13 @@ fn test_plan_context_symbol_bodies_are_task_fts_hits() {
         usize::MAX,
     )
     .expect("context should plan");
+    let hits = plan
+        .search_queries
+        .iter()
+        .flat_map(|query| {
+            search(&fixture.store, fixture.repo, query, 100).expect("task search should work")
+        })
+        .collect::<Vec<_>>();
 
     assert!(!plan.symbol_bodies.is_empty());
     for body in &plan.symbol_bodies {
@@ -377,6 +423,81 @@ impl Fixture {
                 "CacheManager",
                 SymbolKind::Struct,
                 "pub struct CacheManager",
+                1,
+                1,
+            )],
+        );
+    }
+
+    fn seed_authentication_repository(&self) {
+        self.write_indexed_file(
+            "src/youtube_oauth.rs",
+            "pub fn get_oauth_token() -> &'static str { \"token\" }\n",
+            &[symbol(
+                "get_oauth_token",
+                "YoutubeOAuth::get_oauth_token",
+                SymbolKind::Function,
+                "pub fn get_oauth_token(credentials: Credentials) -> AccessToken",
+                1,
+                1,
+            )],
+        );
+        self.write_indexed_file(
+            "src/credentials.rs",
+            "pub fn load_credentials() -> bool { true }\n",
+            &[symbol(
+                "load_credentials",
+                "CredentialStore::load_credentials",
+                SymbolKind::Function,
+                "pub fn load_credentials() -> Credentials",
+                1,
+                1,
+            )],
+        );
+        self.write_indexed_file(
+            "src/instagram.rs",
+            "pub fn login() -> bool { true }\n",
+            &[symbol(
+                "login",
+                "InstagramClient::login",
+                SymbolKind::Method,
+                "pub fn login(username: &str, password: &str, session: &Session) -> bool",
+                1,
+                1,
+            )],
+        );
+        self.write_indexed_file(
+            "src/browser_cookies.rs",
+            "pub fn read_browser_cookies() -> bool { true }\n",
+            &[symbol(
+                "read_browser_cookies",
+                "BrowserCookieAuth::read_browser_cookies",
+                SymbolKind::Function,
+                "pub fn read_browser_cookies() -> CookieJar",
+                1,
+                1,
+            )],
+        );
+        self.write_indexed_file(
+            "src/provider.rs",
+            "pub fn complete() -> bool { true }\n",
+            &[symbol(
+                "complete",
+                "ModelProvider::complete",
+                SymbolKind::Method,
+                "pub fn complete(prompt: &str) -> bool",
+                1,
+                1,
+            )],
+        );
+        self.write_indexed_file(
+            "src/tokenizer.rs",
+            "pub fn count_tokens() -> usize { 0 }\n",
+            &[symbol(
+                "count_tokens",
+                "Tokenizer::count_tokens",
+                SymbolKind::Method,
+                "pub fn count_tokens(input: &str) -> usize",
                 1,
                 1,
             )],

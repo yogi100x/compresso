@@ -17,7 +17,7 @@ use super::{OutputArgs, RootCommand};
 const DEFAULT_MAP_TOKENS: usize = 2_000;
 const DEFAULT_READ_TOKENS: usize = 2_000;
 const DEFAULT_UNFOLD_TOKENS: usize = 4_000;
-const DEFAULT_CONTEXT_TOKENS: usize = 4_000;
+const DEFAULT_CONTEXT_TOKENS: usize = 800;
 const DEFAULT_SEARCH_LIMIT: usize = 20;
 const DEFAULT_IMPACT_RESULTS: usize = 100;
 const MIN_TOKEN_BUDGET: usize = 100;
@@ -445,6 +445,14 @@ fn render_bounded_read(result: BoundedRead) -> Rendered {
 }
 
 fn render_context(task: String, plan: ContextPlan) -> Rendered {
+    let retrieval_status = if plan.matches_total == 0 {
+        "no_matches"
+    } else {
+        "matched"
+    };
+    let retrieval_note = (plan.matches_total == 0).then_some(
+        "No indexed symbols matched the derived task queries. This is not proof that the repository contains no relevant implementation.",
+    );
     let map_excerpt = plan.repo_map.as_ref().map(|map| map.rendered.clone());
     let outlines = plan
         .outlines
@@ -470,6 +478,10 @@ fn render_context(task: String, plan: ContextPlan) -> Rendered {
         .collect::<Vec<_>>();
     let data = json!({
         "task": task,
+        "retrieval_status": retrieval_status,
+        "retrieval_note": retrieval_note,
+        "search_queries": &plan.search_queries,
+        "matches_total": plan.matches_total,
         "plan": {
             "map_excerpt": map_excerpt,
             "outlines": outlines,

@@ -534,32 +534,67 @@ async fn test_context_tool_budget_and_sections() {
     arguments.insert("task".to_owned(), json!("session retry logic"));
     arguments.insert("max_tokens".to_owned(), json!(800));
 
-    let result = successful_json(
-        harness
-            .call("compresso_context", Value::Object(arguments))
-            .await,
-    );
+    let response = harness
+        .call("compresso_context", Value::Object(arguments))
+        .await;
+    let payload = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("context payload should be text")
+        .to_owned();
+    let payload_tokens = counter_for(TokenProvider::OpenAiO200k).count(&payload);
+    let result = successful_json(response);
 
-    assert_eq!(result["task"], "session retry logic");
+    assert_eq!(result["retrieval_status"], "matched");
+    assert!(result["retrieval_note"].is_null());
     assert!(
-        result["tokens_used"]
+        result["matches_total"]
             .as_u64()
-            .is_some_and(|used| used <= 800)
+            .is_some_and(|matches| matches > 0)
     );
-    assert!(result["plan"]["map_excerpt"].is_string());
-    assert!(result["plan"]["outlines"].is_array());
-    assert!(result["plan"]["bodies"].is_array());
+    assert_eq!(result["tokens_used"], payload_tokens);
+    assert!(payload_tokens <= 800);
     assert!(
-        result["plan"]["outlines"]
-            .as_array()
-            .is_some_and(|outlines| !outlines.is_empty())
+        result["content_pack"]
+            .as_str()
+            .is_some_and(|content| content.contains("SessionManager::retry_session"))
     );
+    assert!(result.get("task").is_none());
+    assert!(result.get("search_queries").is_none());
+    assert!(result.get("plan").is_none());
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_context_tool_no_matches_never_claims_repository_absence() {
+    let fixture = IndexedFixture::new();
+    let mut harness = Harness::start(fixture.store.clone()).await;
+    let mut arguments = fixture.arguments();
+    arguments.insert(
+        "task".to_owned(),
+        json!("locate quantum cryptography lattice handshake"),
+    );
+    arguments.insert("max_tokens".to_owned(), json!(800));
+
+    let response = harness
+        .call("compresso_context", Value::Object(arguments))
+        .await;
+    let payload = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("context payload should be text")
+        .to_owned();
+    let payload_tokens = counter_for(TokenProvider::OpenAiO200k).count(&payload);
+    let result = successful_json(response);
+
+    assert_eq!(result["retrieval_status"], "no_matches");
+    assert_eq!(result["matches_total"], 0);
     assert!(
-        result["plan"]["bodies"]
-            .as_array()
-            .is_some_and(|bodies| !bodies.is_empty())
+        result["retrieval_note"]
+            .as_str()
+            .is_some_and(|note| note.contains("not proof"))
     );
-    assert_eq!(result["plan"]["bodies"][0]["symbol"], "SessionManager");
+    assert_eq!(result["tokens_used"], payload_tokens);
+    assert!(payload_tokens <= 800);
+    assert!(result["content_pack"].is_string());
     harness.close().await;
 }
 
