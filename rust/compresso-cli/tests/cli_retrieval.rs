@@ -210,6 +210,13 @@ fn test_map_outline_and_context_use_approved_cwd_and_canonical_queries() {
     assert!(context_errors.is_null());
     assert_eq!(context["schema_version"], 1);
     assert_eq!(context["data"]["task"], "SessionManager");
+    assert_eq!(context["data"]["retrieval_status"], "matched");
+    assert!(
+        context["data"]["matches_total"]
+            .as_u64()
+            .is_some_and(|matches| matches > 0)
+    );
+    assert!(context["data"]["search_queries"].is_array());
     assert!(context["data"]["tokens_used"].as_u64().unwrap() <= 800);
     assert!(context["data"]["plan"]["outlines"].is_array());
     assert!(context["data"]["plan"]["bodies"].is_array());
