@@ -615,11 +615,11 @@ Test cases:
 ### [x] E6-01: Integration trait, base-bound plans, and receipts
 Owner: D1 · Estimate: 2d · Depends: E5-01
 Files: rust/compresso-integrations/src/{lib,plan,receipt}.rs, schemas/integrations/v1.json
-Description: Define detect and plan/apply install/uninstall with full-file base hash, plan, diff, expiry, session, backup.
+Description: Define detect and plan/apply install/uninstall with full-file base/result hashes, a secret-safe owned-key preview, private exact target, expiry, session, and backup.
 Acceptance criteria:
-- Rehash before writes; drift/forge/expiry/session reject; atomic receipts; owned-key uninstall; idempotent.
+- Rehash before writes; drift/forge/expiry/session reject; atomic receipts; owned-key uninstall; idempotent. Human/JSON previews never serialize exact target bytes or unrelated configuration and structurally redact unknown fields inside an owned value.
 Test cases:
-- outside-diff rewrite; forged/expired; crash; unknown keys.
+- outside-diff rewrite; forged/expired; crash; unknown keys; secret canary absent from preview and Debug output.
 
 ### [x] E6-02: Claude Code adapter
 Owner: D1 · Estimate: 2d · Depends: E6-01, E5-01
@@ -643,7 +643,7 @@ Description: Implement Codex CLI/Desktop without Claude assumptions.
 Acceptance criteria:
 - Base-bound owned-key lifecycle and typed unsupported no-op.
 Test cases:
-- fresh/existing/malformed; drift; disable/uninstall/repeat; platforms.
+- fresh/existing/malformed; drift; disable/uninstall/repeat; platforms; unrelated authorization header absent from minimal preview.
 
 ### [x] E6-04: Cursor adapter
 Owner: D1 · Estimate: 1.5d · Depends: E6-01, E5-01
@@ -805,7 +805,7 @@ Files: rust/compresso-cli/src/commands/, rust/compresso-store/src/, rust/compres
 Description: Add deterministic `compresso repos list`, safe `compresso repos remove ROOT`, and `compresso setup CLIENT ROOT`. Setup canonicalizes and indexes the repository, then installs client-appropriate MCP configuration. A global Codex entry omits `--root` so each Codex session binds from its cwd's longest approved ancestor; project-scoped Claude Code/Cursor entries may pass `mcp serve --root CANONICAL_ROOT`. Public launchers export a validated stable `COMPRESSO_LAUNCHER_PATH`; integrations record that normalized absolute lexical package-manager shim, not a resolved/versioned engine path, so upgrades require no client rewrite.
 Acceptance criteria:
 - Repositories list deterministically in text and JSON; remove previews or explicitly confirms removal of Compresso approval/index metadata and never deletes repository files.
-- Setup dry-run mutates nothing and shows index/approval plus exact client-config changes; real setup preserves backup, receipt, idempotence, and reversible uninstall behavior.
+- Setup dry-run mutates nothing and shows index/approval plus exact Compresso-owned client-config changes through the secret-safe public preview; it never returns private target bytes or unrelated configuration. Real setup preserves backup, receipt, idempotence, and reversible uninstall behavior.
 - Global Codex configuration contains no fixed `--root` and is tested from two approved cwd sessions; each binds its own longest approved ancestor. Project-scoped Claude Code/Cursor configuration may include the exact canonical root, and no tool can switch the resulting session.
 - `COMPRESSO_LAUNCHER_PATH` is normalized to an absolute lexical path without resolving away the final shim symlink; its resolved target must be an existing executable regular file. Relative, missing, non-regular, or non-executable targets fail closed, while expected npm/pnpm symlinks remain valid. Direct engine use retains a documented safe fallback.
 - Upgrading package contents beneath the same launcher leaves installed client configuration byte-identical and still invokes the new engine.
@@ -816,6 +816,7 @@ Test cases:
 - `test_setup_project_scoped_clients_may_pin_exact_canonical_root`.
 - `test_launcher_path_preserves_absolute_lexical_shim_and_validates_target`.
 - `test_package_upgrade_preserves_client_config_and_uses_new_engine`.
+- `test_setup_codex_dry_run_redacts_unrelated_authorization_and_target_document`.
 
 ### [ ] PB-04: Private signed beta artifact pipeline
 Owner: I1+PQ · Estimate: 3d · Depends: PB-03, E7-04

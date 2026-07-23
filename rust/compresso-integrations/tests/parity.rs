@@ -412,17 +412,16 @@ fn test_base_plan_atomic_apply_receipt_and_unknown_key_contract() {
             client.id()
         );
         assert_eq!(plan.base_hash, present_hash(&harness.baseline));
-        assert_eq!(
-            plan.result_hash,
-            present_hash(plan.target_contents.as_bytes())
-        );
+        assert_ne!(plan.result_hash, plan.base_hash);
         assert_eq!(
             plan.diff_hash,
             blake3::hash(plan.unified_diff.as_bytes())
                 .to_hex()
                 .to_string()
         );
-        assert_eq!(plan.plan_hash, recompute_plan_hash(&plan));
+        let public_plan = serde_json::to_value(&plan).expect("public plan should serialize");
+        assert_eq!(public_plan["document_type"], "mutation_plan_preview");
+        assert!(public_plan.get("target_contents").is_none());
         assert_eq!(
             fs::read(&harness.config_path).expect("preview target readable"),
             harness.baseline,
@@ -439,6 +438,14 @@ fn test_base_plan_atomic_apply_receipt_and_unknown_key_contract() {
         assert_eq!(receipt.config_path, harness.config_path);
         assert_eq!(receipt.keys_owned, [client.owned_path()]);
         assert_eq!(receipt.plan_hash, plan.plan_hash);
+        assert_eq!(
+            plan.result_hash,
+            present_hash(
+                &fs::read(&harness.config_path).expect("installed config should be readable")
+            ),
+            "{} result hash binds the private target",
+            client.id()
+        );
         assert_eq!(
             fs::read(&receipt.backup_path).expect("byte-exact backup readable"),
             harness.baseline,
@@ -522,9 +529,11 @@ fn test_atomic_receipt_failure_recovers_each_adapter_commit() {
             client.id()
         );
         assert_eq!(
-            fs::read_to_string(&harness.config_path).expect("committed config readable"),
-            plan.target_contents,
-            "{} config committed before receipt failure",
+            present_hash(
+                &fs::read(&harness.config_path).expect("committed config should be readable")
+            ),
+            plan.result_hash,
+            "{} private target committed before receipt failure",
             client.id()
         );
         assert!(
@@ -751,14 +760,6 @@ fn present_hash(bytes: &[u8]) -> String {
     hasher.update(b"present\0");
     hasher.update(bytes);
     hasher.finalize().to_hex().to_string()
-}
-
-fn recompute_plan_hash(plan: &MutationPlan) -> String {
-    let mut unsigned = plan.clone();
-    unsigned.plan_hash.clear();
-    blake3::hash(&serde_json::to_vec(&unsigned).expect("plan JSON"))
-        .to_hex()
-        .to_string()
 }
 
 fn write_json(path: &Path, document: &Value) {
