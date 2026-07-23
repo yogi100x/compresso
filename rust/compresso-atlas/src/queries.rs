@@ -88,6 +88,7 @@ pub enum UnfoldResult {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SearchHit {
     pub path: String,
+    pub language: Option<FileLanguage>,
     pub symbol: SymbolRecord,
     pub score: f64,
 }
@@ -480,13 +481,26 @@ pub fn search(
     query: &str,
     limit: usize,
 ) -> Result<Vec<SearchHit>, AtlasError> {
-    store
-        .search_symbols(repo, query, limit)?
-        .into_iter()
+    search_hits(store.search_symbols(repo, query, limit)?)
+}
+
+fn search_excluding_language(
+    store: &Store,
+    repo: RepoId,
+    query: &str,
+    limit: usize,
+    excluded_language: FileLanguage,
+) -> Result<Vec<SearchHit>, AtlasError> {
+    search_hits(store.search_symbols_excluding_language(repo, query, limit, excluded_language)?)
+}
+
+fn search_hits(hits: Vec<compresso_store::SymbolHit>) -> Result<Vec<SearchHit>, AtlasError> {
+    hits.into_iter()
         .filter(|hit| !is_secret_path(Path::new(&hit.file.path)))
         .map(|hit| {
             Ok(SearchHit {
                 path: hit.file.path,
+                language: hit.file.language,
                 symbol: hit.symbol,
                 score: hit.rank,
             })
@@ -824,26 +838,11 @@ fn search_task_concepts(
     task: &str,
 ) -> Result<(Vec<String>, Vec<SearchHit>, usize, bool), AtlasError> {
     let search_queries = task_search_queries(task);
-    let mut query_hits = Vec::with_capacity(search_queries.len());
-    let mut source_truncated = false;
-    for query in &search_queries {
-        let mut hits = search(
-            store,
-            repo,
-            query,
-            PLAN_CONTEXT_HITS_PER_QUERY.saturating_add(1),
-        )?;
-        source_truncated |= hits.len() > PLAN_CONTEXT_HITS_PER_QUERY;
-        hits.truncate(PLAN_CONTEXT_HITS_PER_QUERY);
-        hits.sort_by(|left, right| {
-            left.symbol
-                .kind
-                .cmp(&right.symbol.kind)
-                .then_with(|| left.score.total_cmp(&right.score))
-                .then_with(|| left.path.cmp(&right.path))
-                .then_with(|| left.symbol.qualified_name.cmp(&right.symbol.qualified_name))
-        });
-        query_hits.push(hits);
+    let text_requested = task_requests_text_evidence(task);
+    let (mut query_hits, mut source_truncated) =
+        context_query_hits(store, repo, &search_queries, !text_requested)?;
+    if !text_requested && query_hits.iter().all(Vec::is_empty) {
+        (query_hits, source_truncated) = context_query_hits(store, repo, &search_queries, false)?;
     }
 
     // Interleave queries by rank so one broad concept cannot crowd every
@@ -873,6 +872,81 @@ fn search_task_concepts(
     let truncated = source_truncated || matches_total > PLAN_CONTEXT_SEARCH_LIMIT;
     merged.truncate(PLAN_CONTEXT_SEARCH_LIMIT);
     Ok((search_queries, merged, matches_total, truncated))
+}
+
+fn context_query_hits(
+    store: &Store,
+    repo: RepoId,
+    search_queries: &[String],
+    exclude_text: bool,
+) -> Result<(Vec<Vec<SearchHit>>, bool), AtlasError> {
+    let mut query_hits = Vec::with_capacity(search_queries.len());
+    let mut source_truncated = false;
+    for query in search_queries {
+        let mut hits = if exclude_text {
+            search_excluding_language(
+                store,
+                repo,
+                query,
+                PLAN_CONTEXT_HITS_PER_QUERY.saturating_add(1),
+                FileLanguage::Text,
+            )?
+        } else {
+            search(
+                store,
+                repo,
+                query,
+                PLAN_CONTEXT_HITS_PER_QUERY.saturating_add(1),
+            )?
+        };
+        source_truncated |= hits.len() > PLAN_CONTEXT_HITS_PER_QUERY;
+        hits.truncate(PLAN_CONTEXT_HITS_PER_QUERY);
+        hits.sort_by(|left, right| {
+            context_language_order(left.language)
+                .cmp(&context_language_order(right.language))
+                .then_with(|| left.symbol.kind.cmp(&right.symbol.kind))
+                .then_with(|| left.score.total_cmp(&right.score))
+                .then_with(|| left.path.cmp(&right.path))
+                .then_with(|| left.symbol.qualified_name.cmp(&right.symbol.qualified_name))
+        });
+        query_hits.push(hits);
+    }
+    Ok((query_hits, source_truncated))
+}
+
+fn task_requests_text_evidence(task: &str) -> bool {
+    task.split(|character: char| !character.is_alphanumeric())
+        .map(str::to_ascii_lowercase)
+        .any(|word| {
+            matches!(
+                word.as_str(),
+                "adr"
+                    | "design"
+                    | "doc"
+                    | "docs"
+                    | "documentation"
+                    | "guide"
+                    | "markdown"
+                    | "readme"
+                    | "spec"
+                    | "specification"
+            )
+        })
+}
+
+const fn context_language_order(language: Option<FileLanguage>) -> u8 {
+    match language {
+        Some(FileLanguage::Shell) => 0,
+        Some(
+            FileLanguage::Rust
+            | FileLanguage::TypeScript
+            | FileLanguage::Tsx
+            | FileLanguage::JavaScript
+            | FileLanguage::Python,
+        ) => 1,
+        Some(FileLanguage::Text) => 2,
+        None => 3,
+    }
 }
 
 fn task_search_queries(task: &str) -> Vec<String> {

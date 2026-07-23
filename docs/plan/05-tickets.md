@@ -450,6 +450,27 @@ Test cases:
 - test_plan_context_natural_language_recall: one 800-token authentication task recalls OAuth, credentials, login/session/password, and browser-cookie symbols without generic token-processing false positives.
 - test_plan_context_deterministic: two calls with identical inputs → identical rendered output.
 
+### [x] E3-13: Safe shell and generic-text indexing
+Owner: R2 · Estimate: 1d · Depends: E3-04, E3-09, E3-12
+Files: rust/compresso-store/src/{files,symbols}.rs, rust/compresso-atlas/src/parsers/{shell,text}.rs, rust/compresso-atlas/src/{parsers,indexer,queries}.rs, tests in rust/compresso-atlas/tests/{parsers_shell_text,indexer_shell_text}.rs, rust/compresso-mcp/tests/tools_read.rs, docs/adr/0026-safe-shell-and-generic-text-indexing.md
+Description: Extend the parser registry with conservative shell (`.sh`, `.bash`, `.zsh`) and inert documentation/plain-text (`.md`, `.markdown`, `.txt`, `.rst`, `.adoc`) packs. Shell extraction is lexical only: it emits one searchable script summary plus bounded function definitions and never invokes a shell, expands a variable, follows a reference, or reads another file. Generic text emits bounded heading sections or paragraphs and never interprets markup directives, links, includes, or code blocks. Existing approval, canonical-root, ignore, secret-path, binary, UTF-8, and one-million-byte scanner boundaries apply before persistence. Config/data formats remain unsupported. A parser fingerprint change forces one deterministic re-index of existing repositories.
+Acceptance criteria:
+- Shell scripts are searchable by descriptive comments, function names, and assignment identifiers without indexing assignment values into the script-summary signature; function bodies remain available only through the existing bounded read/unfold path.
+- Generic text produces at most 256 deterministic records per file, each covering at most 40 lines with a UTF-8-safe signature of at most 1,024 bytes.
+- Context planning prefers implementation records when a concept matches both implementation and generic prose; text joins a mixed evidence pack only when the task explicitly asks for documentation/design/specification evidence, and remains the fallback when no implementation record matches.
+- Extracting hostile or malformed shell source performs no process or filesystem action, never panics, and returns at most one script record plus 256 function records.
+- `.env*` and every existing secret-path pattern remain excluded before content inspection; unsupported config formats produce no FTS records.
+- Re-indexing a repository created with the former package-only parser version marks it stale once, adds the new records, then returns to incremental no-op behavior.
+Test cases:
+- test_shell_extracts_script_summary_and_functions_without_execution.
+- test_shell_malformed_is_partial_deterministic_and_bounded.
+- test_generic_text_extracts_searchable_bounded_sections.
+- test_generic_text_plain_paragraphs_and_resource_caps.
+- test_shell_and_generic_text_index_incrementally_with_secret_paths_excluded.
+- test_context_prefers_shell_evidence_over_duplicate_documentation_mentions.
+- test_context_tool_prefers_shell_implementation_and_keeps_text_opt_in.
+- test_shell_text_parser_fingerprint_forces_one_time_reindex.
+
 ---
 
 ## E4 — CLI

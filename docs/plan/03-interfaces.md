@@ -179,7 +179,7 @@ pub type RepoId = i64;
 pub type FileId = i64;
 pub struct RepoRecord { pub id: RepoId, pub root: PathBuf, pub approved_at: i64, pub parser_version: String, pub schema_version: u32, pub last_indexed_at: Option<i64> }
 pub struct IndexVersionRecord { pub parser_version: String, pub schema_version: u32, pub created_at: i64 }
-pub enum FileLanguage { Rust, TypeScript, Tsx, JavaScript, Python }
+pub enum FileLanguage { Rust, TypeScript, Tsx, JavaScript, Python, Shell, Text }
 pub struct FileRecord { pub path: String, pub hash: String, pub language: Option<FileLanguage>, pub size_bytes: u64, pub token_estimate: usize, pub indexed_at: i64 }
 pub enum SymbolKind { Function, Method, Struct, Class, Enum, Trait, Interface, Const, Type, Module }
 pub struct SymbolRecord { pub name: String, pub qualified_name: String, pub kind: SymbolKind, pub signature: Option<String>, pub start_line: u32, pub end_line: u32, pub token_estimate: usize }
@@ -216,6 +216,7 @@ impl Store {
     pub fn replace_symbols(&self, file: FileId, symbols: &[SymbolRecord], edges: &[EdgeRecord]) -> Result<()>; // single transaction
     pub fn delete_files(&self, repo: RepoId, paths: &[String]) -> Result<()>;
     pub fn search_symbols(&self, repo: RepoId, query: &str, limit: usize) -> Result<Vec<SymbolHit>>; // FTS5, bm25-ranked
+    pub fn search_symbols_excluding_language(&self, repo: RepoId, query: &str, limit: usize, excluded: FileLanguage) -> Result<Vec<SymbolHit>>; // exclusion occurs in SQL before bm25 limit
     pub fn symbols_in_file(&self, repo: RepoId, path: &str) -> Result<Vec<SymbolRecord>>;
     pub fn resolved_edges(&self, repo: RepoId) -> Result<Vec<ResolvedEdgeRecord>>; // deterministic, resolved rows only
     pub fn unresolved_edge_sources(&self, repo: RepoId) -> Result<Vec<String>>; // deterministic sources to reconsider when paths expand
@@ -250,14 +251,14 @@ pub fn scan_with_options(store: &Store, repo: RepoId, root: &Path, options: Scan
 pub type Language = compresso_store::FileLanguage;        // Store owns the canonical persisted language vocabulary
 pub struct ParserRegistry;
 impl ParserRegistry {
-    pub fn for_path(path: &Path) -> Option<Language>;      // by extension: rs, ts, tsx, js, jsx, mjs, cjs, py
+    pub fn for_path(path: &Path) -> Option<Language>;      // code: rs, ts, tsx, js, jsx, mjs, cjs, py; shell: sh, bash, zsh; inert text: md, markdown, txt, rst, adoc
     pub fn extract(lang: Language, source: &str) -> Result<Extraction, ParseError>;
 }
 pub enum ImportKind { Use, Import, ExportFrom, Require, FromImport }
 pub struct ImportRecord { pub raw: String, pub kind: ImportKind, pub resolved_path: Option<String>, pub resolution: ImportResolution }
 pub enum ImportResolution { Resolved, Ambiguous(Vec<String>), Unresolved(String) }
 pub struct Extraction { pub symbols: Vec<SymbolRecord>, pub imports: Vec<ImportRecord> }
-// tree-sitter queries per language live in queries/<lang>.scm; symbol kinds normalized to store vocabulary
+// code languages use pinned tree-sitter queries in queries/<lang>.scm; shell and inert text use bounded, non-executing structural scanners; all kinds normalize to store vocabulary
 
 // indexer.rs
 pub struct Indexer<'a> { /* store, registry, counter */ }

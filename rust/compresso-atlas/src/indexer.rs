@@ -11,6 +11,7 @@ use crate::parsers::{ImportRecord, ImportResolution, ParseError, ParserRegistry}
 use crate::scanner::{AtlasError, scan};
 
 const INDEX_SCHEMA_VERSION: u32 = 1;
+const DEFAULT_PARSER_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+atlas-shell-text-v1");
 
 /// A deterministic progress event emitted only after its corresponding action starts or commits.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -93,7 +94,7 @@ impl<'a> Indexer<'a> {
         Self {
             store,
             counter,
-            parser_version: env!("CARGO_PKG_VERSION").to_owned(),
+            parser_version: DEFAULT_PARSER_VERSION.to_owned(),
             schema_version: INDEX_SCHEMA_VERSION,
         }
     }

@@ -7,7 +7,7 @@ use crate::files::{
     validate_nonempty, validate_relative_path,
 };
 use crate::repos::ensure_repo_exists;
-use crate::{FileId, FileRecord, RepoId, Store, StoreError};
+use crate::{FileId, FileLanguage, FileRecord, RepoId, Store, StoreError};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum SymbolKind {
@@ -230,6 +230,28 @@ impl Store {
         query: &str,
         limit: usize,
     ) -> Result<Vec<SymbolHit>, StoreError> {
+        self.search_symbols_with_excluded_language(repo, query, limit, None)
+    }
+
+    /// Searches indexed symbol fields while excluding one persisted language
+    /// before ranking and limiting the result set.
+    pub fn search_symbols_excluding_language(
+        &self,
+        repo: RepoId,
+        query: &str,
+        limit: usize,
+        excluded_language: FileLanguage,
+    ) -> Result<Vec<SymbolHit>, StoreError> {
+        self.search_symbols_with_excluded_language(repo, query, limit, Some(excluded_language))
+    }
+
+    fn search_symbols_with_excluded_language(
+        &self,
+        repo: RepoId,
+        query: &str,
+        limit: usize,
+        excluded_language: Option<FileLanguage>,
+    ) -> Result<Vec<SymbolHit>, StoreError> {
         validate_search_query(query)?;
         let limit = sqlite_integer_from_usize("symbol search limit", limit)?;
         let connection = self.connection()?;
@@ -239,11 +261,12 @@ impl Store {
         }
 
         let fts_query = fts_literal(query);
+        let excluded_language = excluded_language.map(FileLanguage::as_db);
         let mut statement = connection.prepare(
-            "SELECT f.path, f.hash, f.language, f.size_bytes, f.token_estimate, f.indexed_at, s.id, s.name, s.qualified_name, s.kind, s.signature, s.start_line, s.end_line, s.token_estimate, bm25(symbols_fts) FROM symbols_fts JOIN symbols AS s ON s.id = symbols_fts.rowid JOIN files AS f ON f.id = s.file_id WHERE symbols_fts MATCH ?1 AND f.repo_id = ?2 ORDER BY bm25(symbols_fts) ASC, f.path ASC, s.qualified_name ASC, s.kind ASC, s.start_line ASC, s.end_line ASC, s.id ASC LIMIT ?3",
+            "SELECT f.path, f.hash, f.language, f.size_bytes, f.token_estimate, f.indexed_at, s.id, s.name, s.qualified_name, s.kind, s.signature, s.start_line, s.end_line, s.token_estimate, bm25(symbols_fts) FROM symbols_fts JOIN symbols AS s ON s.id = symbols_fts.rowid JOIN files AS f ON f.id = s.file_id WHERE symbols_fts MATCH ?1 AND f.repo_id = ?2 AND (?3 IS NULL OR f.language IS NULL OR f.language != ?3) ORDER BY bm25(symbols_fts) ASC, f.path ASC, s.qualified_name ASC, s.kind ASC, s.start_line ASC, s.end_line ASC, s.id ASC LIMIT ?4",
         )?;
         let raw = statement
-            .query_map(params![fts_query, repo, limit], |row| {
+            .query_map(params![fts_query, repo, excluded_language, limit], |row| {
                 Ok((
                     raw_file_from_row(row, 0)?,
                     raw_symbol_from_row(row, 6)?,
@@ -894,6 +917,31 @@ mod tests {
         assert_eq!(hits[0].file.path, "src/a.rs");
         assert_eq!(hits[1].file.path, "src/b.rs");
         assert!(hits[0].rank.is_finite());
+    }
+
+    #[test]
+    fn test_search_symbols_excluding_language_filters_before_limit() {
+        let (_directory, store, repo) = setup();
+        let mut documentation = file("docs/auth.md");
+        documentation.language = Some(FileLanguage::Text);
+        let mut shell = file("scripts/auth.sh");
+        shell.language = Some(FileLanguage::Shell);
+        for record in [documentation, shell] {
+            let file_id = store
+                .upsert_file(repo, &record)
+                .expect("file should insert");
+            store
+                .replace_symbols(file_id, &[symbol("access_token", "access_token", 1)], &[])
+                .expect("symbol should insert");
+        }
+
+        let hits = store
+            .search_symbols_excluding_language(repo, "access_token", 1, FileLanguage::Text)
+            .expect("filtered search should succeed");
+
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].file.path, "scripts/auth.sh");
+        assert_eq!(hits[0].file.language, Some(FileLanguage::Shell));
     }
 
     #[test]
