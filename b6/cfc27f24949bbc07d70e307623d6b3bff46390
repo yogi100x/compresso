@@ -1,0 +1,31 @@
+biome.json
+  s_87261b37472da1::t_c78d997d8b5be5 7-12
+fixtures/integrations/claude-code.json
+  s_87261b37472da1::t_6bed83a4cead0b 6,11
+scripts/check-crate-capabilities.ts
+  s_87261b37472da1::t_6bed83a4cead0b 229,333
+fixtures/benchmarks/mib-rebuild-stream/generate.mjs
+  s_87261b37472da1::t_6bed83a4cead0b 24-26
+scripts/check-crate-capabilities.test.ts
+  s_87261b37472da1::t_6bed83a4cead0b 103
+fixtures/integrations/cursor.json
+  s_87261b37472da1::t_6bed83a4cead0b 6
+schemas/context-graph/v1.json
+  s_87261b37472da1::t_6bed83a4cead0b 75-89
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "b6cfc27f24949bbc07d70e307623d6b3bff46390",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
