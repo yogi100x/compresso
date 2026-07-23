@@ -211,11 +211,11 @@ async fn test_retrieval_tools_advertise_one_call_routing_and_conservative_defaul
     );
     assert_eq!(
         context["inputSchema"]["properties"]["max_tokens"]["default"],
-        800
+        4_000
     );
     assert_eq!(
         context["inputSchema"]["properties"]["max_tokens"]["maximum"],
-        800
+        4_000
     );
     assert!(
         search["description"]
@@ -224,6 +224,8 @@ async fn test_retrieval_tools_advertise_one_call_routing_and_conservative_defaul
     );
     assert!(context["description"].as_str().is_some_and(|description| {
         description.contains("Primary one-call planner")
+            && description.contains("starts at 800 tokens")
+            && description.contains("4,000-token ceiling")
             && description.contains("zero follow-up repository tool calls")
             && description.contains("at most two precise Compresso follow-ups")
     }));

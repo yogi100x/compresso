@@ -12,7 +12,7 @@ Production MCP transports are stdio and authenticated Streamable HTTP. HTTP bind
 
 - **Transport**: stdio (`compresso mcp serve`), rmcp `ServerHandler` per 03-interfaces §5. One handler per tool; pure request/response, no background tasks, no shell execution anywhere in the tool path.
 - **Repository resolution**: the server binds repository access to one immutable session root at startup, selected only by explicit `mcp serve --root ROOT` naming an approved canonical repository or by resolving the canonical server working directory to its longest approved ancestor. There is no sole-approved-repository fallback. With neither source, the session remains unbound: `compresso_compress`, `compresso_stats`, and `compresso_explain` remain available, while repository tools return an actionable, content-free `not_indexed` error. A tool call cannot bind an unbound session. A tool `root`, when accepted for compatibility, must canonicalize to the already bound session root and cannot select another repository, even if it is approved. Unknown, unapproved, or cross-session roots return actionable errors and never trigger implicit indexing or filesystem access.
-- **Token budgets**: every tool that returns repository or text content takes `max_tokens` (name chosen for Tetris compatibility, D7). Bounds are minimum 100 and maximum 100000 unless a tool declares a tighter safety cap; `compresso_context` is capped at 800 because it is the one-call task-start surface. Output is truncated to fit the applied budget with an explicit elision marker and `truncated: true` in the result. Token counts are produced by the real tokenizer stack (D14) and always carry a `token_provider` tag.
+- **Token budgets**: every tool that returns repository or text content takes `max_tokens` (name chosen for Tetris compatibility, D7). Bounds are minimum 100 and maximum 100000 unless a tool declares a tighter safety cap. For `compresso_context`, `max_tokens` is the caller's hard ceiling (default and maximum 4000): planning starts at 800 serialized-response tokens and expands through 1600 and 3200 only while ranked evidence coverage remains insufficient, with 4000 as the final safety ceiling. An explicit lower ceiling is never exceeded. Output is truncated to fit the applied budget with an explicit elision marker and `truncated: true` in the result. Token counts are produced by the real tokenizer stack (D14) and always carry a `token_provider` tag.
 - **Operation recording**: every handler calls `Store::record_operation` (03-interfaces §3). Compression operations (`compresso_compress`) record the full compression-trace v1 `trace_json` (02-schemas §2); retrieval operations (map, search, read, outline, unfold, context, impact, stats, explain) record `trace_json = NULL` with `tokens_served` set to the tokens returned (02-schemas §4). Traces never contain raw content. The `operation_id` (ulid) is included in every successful result so `compresso_explain` can retrieve it.
 - **Error behavior**: errors are returned as MCP tool results with `isError: true` and a single text content block — never protocol-level failures, never a crashed server. The text starts with a stable code in brackets, then an instructive human sentence. Codes: `not_indexed`, `outside_root`, `not_found`, `invalid_arguments`, `internal`. (Staleness is never an error code — stale results are served with `stale: true` plus a reindex hint.) Unknown/unindexed repository always produces:
 
@@ -251,7 +251,7 @@ Shipped verbatim as the rmcp server `instructions` (build-doc §13.4: brief, fac
 
 ### 1.8 compresso_context
 
-**Description (final copy)**: Primary one-call planner for broad natural-language or multi-concept repository tasks. It expands task concepts, removes generic false positives, diversifies matches by file, and returns compact source evidence with exact paths and excerpt ranges under a hard 800-token MCP response cap. For `task_pack_ready` or `next_action: answer_from_pack`, answer immediately with zero follow-up repository tool calls. Only for `targeted_follow_up_needed`, use at most two precise Compresso follow-ups. Read-only; requires an indexed repository.
+**Description (final copy)**: Primary one-call planner for broad natural-language or multi-concept repository tasks. It starts at 800 tokens and expands only when ranked evidence coverage is insufficient, using 1600 and 3200 token stages under a 4000-token ceiling. `max_tokens` is the caller's hard ceiling. For `task_pack_ready` or `next_action: answer_from_pack`, answer immediately with zero follow-up repository tool calls. Only for `targeted_follow_up_needed`, use at most two precise Compresso follow-ups. Read-only; requires an indexed repository.
 
 **inputSchema**:
 
@@ -261,13 +261,13 @@ Shipped verbatim as the rmcp server `instructions` (build-doc §13.4: brief, fac
   "properties": {
     "root": { "type": "string", "description": "Optional absolute root; when supplied, it must equal the server's bound repository session root." },
     "task": { "type": "string", "minLength": 3, "description": "Natural-language task, e.g. 'fix session timeout'." },
-    "max_tokens": { "type": "integer", "minimum": 100, "maximum": 800, "default": 800 }
+    "max_tokens": { "type": "integer", "minimum": 100, "maximum": 4000, "default": 4000 }
   },
   "required": ["task"]
 }
 ```
 
-The task-start surface has a hard 800-token serialized-response cap. Fresh clients cannot request more through the schema; the server clamps oversized requests from stale or non-validating clients to 800 instead of returning an error or flooding context.
+The task-start surface applies the smallest sufficient serialized-response stage from `800`, `1600`, `3200`, and `4000`, never exceeding the caller's `max_tokens` ceiling. If the caller supplies a value between stages, that exact value becomes the final stage; values below 800 are a single-stage request. Fresh clients cannot request more than 4000 through the schema, and the server clamps oversized requests from stale or non-validating clients to 4000 instead of returning an error or flooding context.
 
 **Result shape**:
 
@@ -282,18 +282,23 @@ The task-start surface has a hard 800-token serialized-response cap. Fresh clien
   "broad_follow_up_required": false,
   "targeted_follow_up_required": false,
   "targeted_follow_up_limit": 0,
-  "evidence_coverage": { "files_included": 6, "files_required": 6, "candidate_files": 9 },
-  "matches_total": 7,
+  "evidence_coverage": { "files_included": 9, "files_required": 9, "candidate_files": 9 },
+  "matches_total": 12,
   "content_pack": "# Relevant repository map\nsrc/session.rs — SessionManager::start\n\n# Matching evidence excerpts\n## src/session.rs:42-50 — SessionManager::start (Method, excerpt of lines 42-88)\n...",
-  "budget_applied": 800,
+  "budget_applied": 1600,
+  "budget_ceiling": 4000,
+  "budget_expanded": true,
+  "budget_expansion_reason": "insufficient_evidence_coverage_at_lower_budget",
   "budget_clamped": false,
-  "tokens_used": 780,
+  "tokens_used": 1512,
   "token_provider": "openai_o200k",
   "truncated": true
 }
 ```
 
-`tokens_used` counts the serialized MCP result payload—not only the inner context text—and never exceeds `budget_applied`. The response carries one compact `content_pack`; evidence items combine path, returned line range, symbol identity, and a bounded source excerpt without parallel duplication. A pack is `task_pack_ready` only after it includes evidence from up to six distinct candidate files; it returns `next_action: answer_from_pack` and a zero targeted-follow-up limit. If that coverage does not fit, it returns `targeted_follow_up_needed`, `next_action: targeted_follow_up`, and permits at most two precise Compresso follow-ups. `truncated` alone never requires another broad scan. Broad follow-up is required only for no matches or stale results.
+`tokens_used` counts the serialized MCP result payload—not only the inner context text—and never exceeds `budget_applied`. `budget_ceiling` is the accepted caller ceiling, `budget_expanded` records whether a lower stage was insufficient, and `budget_expansion_reason` is non-null only after expansion. The response carries one compact `content_pack`; evidence items combine path, returned line range, symbol identity, and a bounded source excerpt without parallel duplication.
+
+A pack is `task_pack_ready` only after it includes evidence from every distinct candidate file in the bounded ranked search result, not merely an arbitrary six-file threshold. The planner stops at the first stage that satisfies this condition and returns `next_action: answer_from_pack` with a zero targeted-follow-up limit. If coverage still does not fit at the caller's ceiling, it returns `targeted_follow_up_needed`, `next_action: targeted_follow_up`, and permits at most two precise Compresso follow-ups. No-match and stale results return at the initial stage without wasteful expansion. `truncated` alone never requires another broad scan. Broad follow-up is required only for no matches or stale results.
 
 **Errors**: `not_indexed`, `invalid_arguments`. If every derived search query yields no relevant symbol, success uses `retrieval_status: "no_matches"` and a `retrieval_note` stating explicitly that this is not proof of repository absence — never a guess.
 

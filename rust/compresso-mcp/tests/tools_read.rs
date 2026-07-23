@@ -223,6 +223,36 @@ impl IndexedFixture {
             Value::String(self.root.to_string_lossy().into_owned()),
         )])
     }
+
+    fn add_authentication_files(&self, count: usize) {
+        for index in 0..count {
+            let concept = match index % 5 {
+                0 => "login",
+                1 => "oauth",
+                2 => "credential",
+                3 => "cookie",
+                _ => "access_token",
+            };
+            write_file(
+                &self.root,
+                &format!("src/auth_{index:02}.rs"),
+                &format!(
+                    concat!(
+                        "pub fn {concept}_provider_{index:02}() -> &'static str {{\n",
+                        "    let credential = \"authentication session credential ",
+                        "provider login callback token refresh storage validation\";\n",
+                        "    credential\n",
+                        "}}\n",
+                    ),
+                    concept = concept,
+                    index = index,
+                ),
+            );
+        }
+        Indexer::new(&self.store, counter_for(TokenProvider::OpenAiO200k))
+            .index(&self.root, |_| {})
+            .expect("expanded fixture should reindex");
+    }
 }
 
 #[tokio::test]
@@ -556,6 +586,9 @@ async fn test_context_tool_budget_and_sections() {
             .is_some_and(|count| count > 0)
     );
     assert_eq!(result["budget_applied"], 800);
+    assert_eq!(result["budget_ceiling"], 800);
+    assert_eq!(result["budget_expanded"], false);
+    assert!(result["budget_expansion_reason"].is_null());
     assert_eq!(result["budget_clamped"], false);
     assert!(result["retrieval_note"].is_null());
     assert!(
@@ -577,7 +610,7 @@ async fn test_context_tool_budget_and_sections() {
 }
 
 #[tokio::test]
-async fn test_context_tool_clamps_oversized_client_budget() {
+async fn test_context_tool_clamps_oversized_ceiling_but_stops_at_smallest_ready_pack() {
     let fixture = IndexedFixture::new();
     let mut harness = Harness::start(fixture.store.clone()).await;
     let mut arguments = fixture.arguments();
@@ -601,7 +634,125 @@ async fn test_context_tool_clamps_oversized_client_budget() {
     assert_eq!(result["targeted_follow_up_required"], false);
     assert_eq!(result["targeted_follow_up_limit"], 0);
     assert_eq!(result["budget_applied"], 800);
+    assert_eq!(result["budget_ceiling"], 4_000);
+    assert_eq!(result["budget_expanded"], false);
+    assert!(result["budget_expansion_reason"].is_null());
     assert_eq!(result["budget_clamped"], true);
+    assert_eq!(result["tokens_used"], payload_tokens);
+    assert!(payload_tokens <= 800);
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_context_tool_adaptively_expands_to_smallest_sufficient_budget() {
+    let fixture = IndexedFixture::new();
+    fixture.add_authentication_files(20);
+    let mut harness = Harness::start(fixture.store.clone()).await;
+    let mut arguments = fixture.arguments();
+    arguments.insert(
+        "task".to_owned(),
+        json!("authentication login credential session"),
+    );
+    arguments.insert("max_tokens".to_owned(), json!(4_000));
+
+    let response = harness
+        .call("compresso_context", Value::Object(arguments))
+        .await;
+    let payload = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("context payload should be text")
+        .to_owned();
+    let payload_tokens = counter_for(TokenProvider::OpenAiO200k).count(&payload);
+    let result = successful_json(response);
+
+    assert_eq!(result["context_sufficiency"], "task_pack_ready");
+    assert_eq!(result["next_action"], "answer_from_pack");
+    let budget_applied = result["budget_applied"]
+        .as_u64()
+        .expect("applied budget should be numeric");
+    assert!(
+        matches!(budget_applied, 1_600 | 3_200 | 4_000),
+        "adaptive pack should expand through a declared stage: {result}"
+    );
+    assert_eq!(result["budget_ceiling"], 4_000);
+    assert_eq!(result["budget_expanded"], true);
+    assert_eq!(
+        result["budget_expansion_reason"],
+        "insufficient_evidence_coverage_at_lower_budget"
+    );
+    assert_eq!(result["budget_clamped"], false);
+    assert_eq!(
+        result["evidence_coverage"]["files_included"],
+        result["evidence_coverage"]["files_required"]
+    );
+    assert_eq!(
+        result["evidence_coverage"]["files_required"],
+        result["evidence_coverage"]["candidate_files"]
+    );
+    assert_eq!(result["targeted_follow_up_limit"], 0);
+    assert_eq!(result["tokens_used"], payload_tokens);
+    assert!(payload_tokens <= budget_applied as usize);
+
+    let preceding_ceiling = match budget_applied {
+        1_600 => 800,
+        3_200 => 1_600,
+        4_000 => 3_200,
+        _ => unreachable!("asserted adaptive stage"),
+    };
+    let mut preceding_arguments = fixture.arguments();
+    preceding_arguments.insert(
+        "task".to_owned(),
+        json!("authentication login credential session"),
+    );
+    preceding_arguments.insert("max_tokens".to_owned(), json!(preceding_ceiling));
+    let preceding = successful_json(
+        harness
+            .call("compresso_context", Value::Object(preceding_arguments))
+            .await,
+    );
+    assert_eq!(
+        preceding["context_sufficiency"], "targeted_follow_up_needed",
+        "the prior stage must remain insufficient"
+    );
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_context_tool_respects_explicit_800_token_ceiling() {
+    let fixture = IndexedFixture::new();
+    fixture.add_authentication_files(20);
+    let mut harness = Harness::start(fixture.store.clone()).await;
+    let mut arguments = fixture.arguments();
+    arguments.insert(
+        "task".to_owned(),
+        json!("authentication login credential session"),
+    );
+    arguments.insert("max_tokens".to_owned(), json!(800));
+
+    let response = harness
+        .call("compresso_context", Value::Object(arguments))
+        .await;
+    let payload = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("context payload should be text")
+        .to_owned();
+    let payload_tokens = counter_for(TokenProvider::OpenAiO200k).count(&payload);
+    let result = successful_json(response);
+
+    assert_eq!(result["context_sufficiency"], "targeted_follow_up_needed");
+    assert_eq!(result["next_action"], "targeted_follow_up");
+    assert_eq!(result["budget_applied"], 800);
+    assert_eq!(result["budget_ceiling"], 800);
+    assert_eq!(result["budget_expanded"], false);
+    assert!(result["budget_expansion_reason"].is_null());
+    assert_eq!(result["budget_clamped"], false);
+    assert!(
+        result["evidence_coverage"]["files_included"]
+            .as_u64()
+            .zip(result["evidence_coverage"]["candidate_files"].as_u64())
+            .is_some_and(|(included, candidates)| included < candidates)
+    );
+    assert_eq!(result["targeted_follow_up_limit"], 2);
     assert_eq!(result["tokens_used"], payload_tokens);
     assert!(payload_tokens <= 800);
     harness.close().await;

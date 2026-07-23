@@ -15,8 +15,11 @@ use super::common::{
 const SEARCH_DEFAULT_LIMIT: usize = 8;
 const SEARCH_DEFAULT_TOKENS: usize = 500;
 const READ_DEFAULT_TOKENS: usize = 2_000;
-const CONTEXT_DEFAULT_TOKENS: usize = 800;
-const CONTEXT_MAX_TOKENS: usize = 800;
+const CONTEXT_INITIAL_TOKENS: usize = 800;
+const CONTEXT_DEFAULT_CEILING: usize = 4_000;
+const CONTEXT_MAX_TOKENS: usize = 4_000;
+const CONTEXT_BUDGET_STEPS: [usize; 4] = [800, 1_600, 3_200, 4_000];
+const CONTEXT_EXPANSION_REASON: &str = "insufficient_evidence_coverage_at_lower_budget";
 
 pub(crate) fn handles(name: &str) -> bool {
     matches!(
@@ -273,26 +276,83 @@ fn context_tool(
             "argument 'task' must contain at least three characters and no NUL byte.",
         ));
     }
-    let requested_tokens = token_budget(&mut arguments, CONTEXT_DEFAULT_TOKENS)?;
-    let max_tokens = requested_tokens.min(CONTEXT_MAX_TOKENS);
-    let budget_clamped = requested_tokens > max_tokens;
+    let requested_ceiling = token_budget(&mut arguments, CONTEXT_DEFAULT_CEILING)?;
+    let budget_ceiling = requested_ceiling.min(CONTEXT_MAX_TOKENS);
+    let budget_clamped = requested_ceiling > budget_ceiling;
     let repository = resolve_repository(store, repository_root, root.as_deref())?;
     let stale = repository_stale(store, repository.id).map_err(map_atlas_error)?;
     let operation_id = operation_identity().id;
     let counter = navigation_counter();
-    let mut planner_budget = max_tokens.saturating_mul(4) / 5;
-    loop {
-        let plan =
-            plan_context(store, repository.id, &task, planner_budget).map_err(map_atlas_error)?;
-        let mut payload =
-            compact_context_payload(&plan, &operation_id, stale, max_tokens, budget_clamped);
-        let payload_tokens = stabilize_payload_tokens(&mut payload, counter)?;
-        if payload_tokens <= max_tokens || planner_budget == 0 {
+    let mut expanded = false;
+    for budget_applied in context_budget_steps(budget_ceiling) {
+        let payload = context_payload_for_budget(
+            store,
+            repository.id,
+            &task,
+            &operation_id,
+            stale,
+            budget_applied,
+            budget_ceiling,
+            budget_clamped,
+            expanded,
+            counter,
+        )?;
+        let targeted_follow_up_required =
+            payload["targeted_follow_up_required"].as_bool() == Some(true);
+        if !targeted_follow_up_required || budget_applied == budget_ceiling {
             return Ok(payload);
         }
-        let excess = payload_tokens.saturating_sub(max_tokens);
+        expanded = true;
+    }
+    Err(ToolFailure::internal())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn context_payload_for_budget(
+    store: &Store,
+    repository_id: i64,
+    task: &str,
+    operation_id: &str,
+    stale: bool,
+    budget_applied: usize,
+    budget_ceiling: usize,
+    budget_clamped: bool,
+    budget_expanded: bool,
+    counter: &dyn TokenCounter,
+) -> ToolResult {
+    let mut planner_budget = budget_applied.saturating_mul(4) / 5;
+    loop {
+        let plan =
+            plan_context(store, repository_id, task, planner_budget).map_err(map_atlas_error)?;
+        let mut payload = compact_context_payload(
+            &plan,
+            operation_id,
+            stale,
+            budget_applied,
+            budget_ceiling,
+            budget_clamped,
+            budget_expanded,
+        );
+        let payload_tokens = stabilize_payload_tokens(&mut payload, counter)?;
+        if payload_tokens <= budget_applied || planner_budget == 0 {
+            return Ok(payload);
+        }
+        let excess = payload_tokens.saturating_sub(budget_applied);
         planner_budget = planner_budget.saturating_sub(excess.saturating_add(16));
     }
+}
+
+fn context_budget_steps(budget_ceiling: usize) -> Vec<usize> {
+    let mut steps = vec![budget_ceiling.min(CONTEXT_INITIAL_TOKENS)];
+    steps.extend(
+        CONTEXT_BUDGET_STEPS
+            .into_iter()
+            .filter(|budget| *budget > CONTEXT_INITIAL_TOKENS && *budget <= budget_ceiling),
+    );
+    if steps.last().copied() != Some(budget_ceiling) {
+        steps.push(budget_ceiling);
+    }
+    steps
 }
 
 fn compact_context_payload(
@@ -300,14 +360,16 @@ fn compact_context_payload(
     operation_id: &str,
     stale: bool,
     budget_applied: usize,
+    budget_ceiling: usize,
     budget_clamped: bool,
+    budget_expanded: bool,
 ) -> Value {
     let retrieval_status = if plan.matches_total == 0 {
         "no_matches"
     } else {
         "matched"
     };
-    let evidence_files_required = plan.evidence_files_total.min(6);
+    let evidence_files_required = plan.evidence_files_total;
     let evidence_ready =
         evidence_files_required > 0 && plan.evidence_files_included >= evidence_files_required;
     let broad_follow_up_required = plan.matches_total == 0 || stale;
@@ -361,6 +423,9 @@ fn compact_context_payload(
         "stale": stale,
         "reindex_hint": stale.then_some(REINDEX_HINT),
         "budget_applied": budget_applied,
+        "budget_ceiling": budget_ceiling,
+        "budget_expanded": budget_expanded,
+        "budget_expansion_reason": budget_expanded.then_some(CONTEXT_EXPANSION_REASON),
         "budget_clamped": budget_clamped,
         "tokens_used": 0,
         "token_provider": plan.token_provider,

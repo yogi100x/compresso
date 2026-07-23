@@ -551,7 +551,7 @@ Acceptance criteria:
 - `compresso_read` with `gate: true` returns the 04 §1.5 gate object (`worth_reading`, `reason`, `file_tokens_total`, `recommended_budget`, `cheaper_alternative`) only — response contains zero file-content bytes.
 - Traversal/symlink-escape inputs return error code `outside_root`; repository content in responses is data-only (no tool-side execution of anything found in files).
 - `compresso_read` clamps an `end_line` beyond EOF, reports returned and resolved ranges plus total file lines, and keeps starts beyond EOF invalid.
-- `compresso_context` hard-caps the complete serialized MCP response at 800 tokens, clamps oversized stale-client requests, distinguishes task-pack-ready, targeted-follow-up, and no-match/stale broad-follow-up results, and requires evidence coverage from up to six distinct candidate files before declaring the pack ready.
+- `compresso_context` treats `max_tokens` as a caller ceiling up to 4000, starts at 800 serialized-response tokens, expands through 1600 and 3200 only while ranked evidence coverage is insufficient, clamps oversized stale-client requests to 4000, distinguishes task-pack-ready, targeted-follow-up, and no-match/stale broad-follow-up results, and requires evidence from every distinct candidate file in the bounded ranked result before declaring the pack ready.
 Test cases:
 - test_read_tool_bounded: read `src/sample.rs` with `max_tokens: 100` → ≤100 tokens, `truncated: true` in structured result.
 - test_read_end_beyond_eof_clamps: read a 73-line file with `start_line:1,end_line:240` → success, `resolved_range.end_line == 73`, `file_lines_total == 73`, `range_clamped:true`.
@@ -559,7 +559,9 @@ Test cases:
 - test_read_dotdot_via_mcp: `{"path":"../../etc/passwd"}` → MCP error `outside_root`.
 - test_search_tool_hits: `{"query":"SessionManager"}` → first hit qualified_name `SessionManager` with path and line.
 - test_context_tool_budget: `{"task":"session retry logic","max_tokens":800}` → ≤800 tokens.
-- test_context_tool_clamps_oversized_client_budget: `{"task":"session retry logic","max_tokens":10000}` → successful response with `budget_applied:800`, `budget_clamped:true`, and complete serialized payload ≤800 tokens.
+- test_context_tool_adaptively_expands_to_smallest_sufficient_budget: a twenty-file authentication corpus with `max_tokens:4000` → expands through declared stages, stops at the first stage with complete ranked-file evidence coverage, and returns a complete serialized payload within `budget_applied`.
+- test_context_tool_respects_explicit_800_token_ceiling: the same corpus with `max_tokens:800` → no expansion, `targeted_follow_up_needed`, and complete serialized payload ≤800 tokens.
+- test_context_tool_clamps_oversized_ceiling_but_stops_at_smallest_ready_pack: `{"task":"session retry logic","max_tokens":10000}` → successful response with `budget_ceiling:4000`, `budget_clamped:true`, while `budget_applied` remains the smallest sufficient stage and the complete serialized payload stays within it.
 
 ### [x] E5-04: Tool handlers — compresso_compress, compresso_impact, compresso_stats, compresso_explain
 Owner: R2 · Estimate: 1.5d · Depends: E5-01, E2-09, E3-03, E3-12
