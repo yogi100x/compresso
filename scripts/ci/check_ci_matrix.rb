@@ -114,3 +114,18 @@ unless upload && upload["if"] == "always()" &&
 end
 
 puts "CI eval job has the required runners, cache reuse, gate split, and report artifact"
+
+calibration_command = ["calibrate", "anthropic"].join("-")
+workflow_paths = Dir.glob(File.expand_path("../../.github/workflows/*.{yml,yaml}", __dir__))
+calibration_workflows = workflow_paths.select do |path|
+  File.read(path).include?(calibration_command)
+end
+unless calibration_workflows.empty?
+  relative_paths = calibration_workflows.map do |path|
+    path.delete_prefix(File.expand_path("../..", __dir__) + File::SEPARATOR)
+  end
+  warn "maintainer-only Anthropic calibration must never run in CI: #{relative_paths.join(", ")}"
+  exit 1
+end
+
+puts "CI workflows do not invoke maintainer-only Anthropic calibration"
