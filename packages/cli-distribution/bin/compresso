@@ -1,0 +1,128 @@
+#!/bin/sh
+
+set -eu
+
+fail() {
+  printf 'compresso launcher: %s\n' "$*" >&2
+  exit 1
+}
+
+absolute_lexical_path() {
+  invoked_path=$1
+
+  case "$invoked_path" in
+    /*)
+      printf '%s\n' "$invoked_path"
+      return
+      ;;
+    */*) ;;
+    *)
+      invoked_path=$(command -v "$invoked_path" 2>/dev/null) ||
+        fail "cannot locate launcher invocation: $1"
+      ;;
+  esac
+
+  invoked_name=$(basename "$invoked_path")
+  invoked_dir=$(dirname "$invoked_path")
+  invoked_dir=$(CDPATH='' cd "$invoked_dir" 2>/dev/null && pwd -L) ||
+    fail "cannot resolve launcher directory: $invoked_dir"
+  printf '%s/%s\n' "$invoked_dir" "$invoked_name"
+}
+
+resolve_symlinks() {
+  unresolved_path=$1
+  link_hops=0
+
+  while [ -L "$unresolved_path" ]; do
+    link_hops=$((link_hops + 1))
+    [ "$link_hops" -le 40 ] || fail 'launcher symlink chain exceeds 40 links'
+    command -v readlink >/dev/null 2>&1 ||
+      fail 'readlink is required to resolve the package launcher'
+    link_target=$(readlink "$unresolved_path") ||
+      fail "cannot read launcher symlink: $unresolved_path"
+    case "$link_target" in
+      /*) unresolved_path=$link_target ;;
+      *) unresolved_path="$(dirname "$unresolved_path")/$link_target" ;;
+    esac
+  done
+
+  resolved_name=$(basename "$unresolved_path")
+  resolved_dir=$(CDPATH='' cd -P "$(dirname "$unresolved_path")" 2>/dev/null && pwd) ||
+    fail "cannot resolve package directory from: $unresolved_path"
+  printf '%s/%s\n' "$resolved_dir" "$resolved_name"
+}
+
+sha256_file() {
+  subject=$1
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$subject" | awk '{ print $1 }'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$subject" | awk '{ print $1 }'
+  elif command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha256 "$subject" | awk '{ print $NF }'
+  else
+    fail 'no SHA-256 implementation found (need sha256sum, shasum, or openssl)'
+  fi
+}
+
+COMPRESSO_LAUNCHER_PATH=$(absolute_lexical_path "$0")
+export COMPRESSO_LAUNCHER_PATH
+
+resolved_launcher=$(resolve_symlinks "$COMPRESSO_LAUNCHER_PATH")
+launcher_dir=$(CDPATH='' cd -P "$(dirname "$resolved_launcher")" && pwd)
+package_dir=$(CDPATH='' cd -P "$launcher_dir/.." && pwd)
+
+system=$(uname -s 2>/dev/null) || fail 'cannot determine operating system'
+machine=$(uname -m 2>/dev/null) || fail 'cannot determine machine architecture'
+case "$system:$machine" in
+  Darwin:arm64 | Darwin:aarch64) target=darwin-arm64 ;;
+  Darwin:x86_64 | Darwin:amd64) target=darwin-x64 ;;
+  Linux:x86_64 | Linux:amd64) target=linux-x64 ;;
+  *)
+    fail "unsupported platform: $system $machine (supported: darwin-arm64, darwin-x64, linux-x64)"
+    ;;
+esac
+
+artifact_dir="$package_dir/vendor/$target"
+binary_path="$artifact_dir/compresso"
+manifest_path="$artifact_dir/artifact.manifest"
+
+[ -f "$binary_path" ] || fail "native binary is missing for $target: $binary_path"
+[ ! -L "$binary_path" ] || fail "native binary is not a regular packaged file for $target"
+[ -x "$binary_path" ] || fail "native binary is not executable for $target: $binary_path"
+[ -f "$manifest_path" ] || fail "artifact manifest is missing for $target: $manifest_path"
+[ ! -L "$manifest_path" ] || fail "artifact manifest is not a regular packaged file for $target"
+
+if ! awk '
+  $1 == "schema-version:" && NF == 2 { schema += 1; next }
+  $1 == "target:" && NF == 2 { target += 1; next }
+  $1 == "binary:" && NF == 2 { binary += 1; next }
+  $1 == "sha256:" && NF == 2 { sha256 += 1; next }
+  { invalid += 1 }
+  END {
+    if (schema != 1 || target != 1 || binary != 1 || sha256 != 1 || invalid != 0) {
+      exit 1
+    }
+  }
+' "$manifest_path"; then
+  fail "artifact manifest is corrupt for $target: $manifest_path"
+fi
+
+manifest_schema=$(awk '$1 == "schema-version:" { print $2 }' "$manifest_path")
+manifest_target=$(awk '$1 == "target:" { print $2 }' "$manifest_path")
+manifest_binary=$(awk '$1 == "binary:" { print $2 }' "$manifest_path")
+expected_hash=$(awk '$1 == "sha256:" { print $2 }' "$manifest_path")
+
+[ "$manifest_schema" = 1 ] || fail "unsupported artifact manifest schema for $target"
+[ "$manifest_target" = "$target" ] || fail "artifact manifest target mismatch for $target"
+[ "$manifest_binary" = compresso ] || fail "artifact manifest binary mismatch for $target"
+case "$expected_hash" in
+  *[!0-9a-fA-F]* | '') fail "artifact manifest checksum is corrupt for $target" ;;
+esac
+[ "${#expected_hash}" -eq 64 ] || fail "artifact manifest checksum is corrupt for $target"
+
+actual_hash=$(sha256_file "$binary_path")
+[ "$actual_hash" = "$expected_hash" ] ||
+  fail "native binary failed integrity verification for $target"
+
+exec "$binary_path" "$@"
