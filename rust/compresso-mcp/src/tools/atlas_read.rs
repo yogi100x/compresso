@@ -320,6 +320,16 @@ fn compact_context_payload(
     } else {
         "task_pack_ready"
     };
+    let next_action = if stale {
+        "reindex_then_retry"
+    } else if plan.matches_total == 0 {
+        "broaden_task"
+    } else if targeted_follow_up_required {
+        "targeted_follow_up"
+    } else {
+        "answer_from_pack"
+    };
+    let targeted_follow_up_limit = if targeted_follow_up_required { 2 } else { 0 };
     let retrieval_note = if plan.matches_total == 0 {
         Some(
             "No indexed symbols matched the derived task queries. This is not proof that the repository contains no relevant implementation.",
@@ -337,9 +347,10 @@ fn compact_context_payload(
         "retrieval_status": retrieval_status,
         "retrieval_note": retrieval_note,
         "context_sufficiency": context_sufficiency,
+        "next_action": next_action,
         "broad_follow_up_required": broad_follow_up_required,
         "targeted_follow_up_required": targeted_follow_up_required,
-        "targeted_follow_up_limit": 2,
+        "targeted_follow_up_limit": targeted_follow_up_limit,
         "evidence_coverage": {
             "files_included": plan.evidence_files_included,
             "files_required": evidence_files_required,

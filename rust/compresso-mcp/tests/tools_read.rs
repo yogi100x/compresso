@@ -546,9 +546,10 @@ async fn test_context_tool_budget_and_sections() {
 
     assert_eq!(result["retrieval_status"], "matched");
     assert_eq!(result["context_sufficiency"], "task_pack_ready");
+    assert_eq!(result["next_action"], "answer_from_pack");
     assert_eq!(result["broad_follow_up_required"], false);
     assert_eq!(result["targeted_follow_up_required"], false);
-    assert_eq!(result["targeted_follow_up_limit"], 2);
+    assert_eq!(result["targeted_follow_up_limit"], 0);
     assert!(
         result["evidence_coverage"]["files_included"]
             .as_u64()
@@ -595,11 +596,63 @@ async fn test_context_tool_clamps_oversized_client_budget() {
 
     assert_eq!(result["retrieval_status"], "matched");
     assert_eq!(result["context_sufficiency"], "task_pack_ready");
+    assert_eq!(result["next_action"], "answer_from_pack");
     assert_eq!(result["broad_follow_up_required"], false);
+    assert_eq!(result["targeted_follow_up_required"], false);
+    assert_eq!(result["targeted_follow_up_limit"], 0);
     assert_eq!(result["budget_applied"], 800);
     assert_eq!(result["budget_clamped"], true);
     assert_eq!(result["tokens_used"], payload_tokens);
     assert!(payload_tokens <= 800);
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_context_tool_only_advertises_two_calls_for_targeted_follow_up() {
+    let fixture = IndexedFixture::new();
+    let mut harness = Harness::start(fixture.store.clone()).await;
+    let mut arguments = fixture.arguments();
+    arguments.insert("task".to_owned(), json!("manager reader"));
+    arguments.insert("max_tokens".to_owned(), json!(300));
+
+    let result = successful_json(
+        harness
+            .call("compresso_context", Value::Object(arguments))
+            .await,
+    );
+
+    assert_eq!(result["context_sufficiency"], "targeted_follow_up_needed");
+    assert_eq!(result["next_action"], "targeted_follow_up");
+    assert_eq!(result["broad_follow_up_required"], false);
+    assert_eq!(result["targeted_follow_up_required"], true);
+    assert_eq!(result["targeted_follow_up_limit"], 2);
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_context_tool_stale_pack_requests_reindex_without_targeted_calls() {
+    let fixture = IndexedFixture::new();
+    fs::write(
+        fixture.root.join("src/session.rs"),
+        "pub struct SessionManager;\n// changed after indexing\n",
+    )
+    .expect("session should change");
+    let mut harness = Harness::start(fixture.store.clone()).await;
+    let mut arguments = fixture.arguments();
+    arguments.insert("task".to_owned(), json!("session retry logic"));
+    arguments.insert("max_tokens".to_owned(), json!(800));
+
+    let result = successful_json(
+        harness
+            .call("compresso_context", Value::Object(arguments))
+            .await,
+    );
+
+    assert_eq!(result["context_sufficiency"], "follow_up_needed");
+    assert_eq!(result["next_action"], "reindex_then_retry");
+    assert_eq!(result["broad_follow_up_required"], true);
+    assert_eq!(result["targeted_follow_up_required"], false);
+    assert_eq!(result["targeted_follow_up_limit"], 0);
     harness.close().await;
 }
 
@@ -626,7 +679,10 @@ async fn test_context_tool_no_matches_never_claims_repository_absence() {
 
     assert_eq!(result["retrieval_status"], "no_matches");
     assert_eq!(result["context_sufficiency"], "follow_up_needed");
+    assert_eq!(result["next_action"], "broaden_task");
     assert_eq!(result["broad_follow_up_required"], true);
+    assert_eq!(result["targeted_follow_up_required"], false);
+    assert_eq!(result["targeted_follow_up_limit"], 0);
     assert_eq!(result["matches_total"], 0);
     assert!(
         result["retrieval_note"]
