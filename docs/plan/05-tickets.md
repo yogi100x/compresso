@@ -441,12 +441,13 @@ Files: rust/compresso-atlas/src/queries.rs, tests in rust/compresso-atlas/tests/
 Description: Implement `impact(store, repo, path)` (reverse-edge closure over `edges`, depth 2, reporting dependent files and the linking edge kinds) and `plan_context(store, repo, task, budget_tokens)` (search-driven pack: repo map slice + outlines + top matching symbol bodies assembled within the token budget) per `03-interfaces.md` §4.
 Acceptance criteria:
 - `impact` includes direct importers (depth 1) and their importers (depth 2), never depth 3; each entry names the edge kind; self is excluded.
-- `plan_context` output token count ≤ `budget_tokens`; sections ordered map → outlines → symbol bodies; every included symbol matches the task query via FTS.
+- `plan_context` output token count ≤ `budget_tokens`; sections ordered focused map → matched-symbol outlines → symbol bodies; every included symbol matches at least one deterministic FTS query derived from the natural-language task.
 - Both functions read-only and deterministic for a fixed store state.
 Test cases:
 - test_impact_depth_two: fixture edges `a.rs → b.rs → c.rs → d.rs` (imports); `impact(.., "c.rs")` → contains b.rs (depth 1) and a.rs (depth 2); wait — reverse edges: importers of c.rs are b.rs, importers of b.rs are a.rs; d.rs (which c imports) absent.
 - test_impact_edge_kinds_reported: tests edge `tests/a_test.rs → a.rs (tests)` → impact of a.rs lists a_test.rs with kind `tests`.
 - test_plan_context_within_budget: `plan_context(.., "session retry logic", 800)` on fixture → `counter.count(rendered) <= 800` and includes the `SessionManager` outline.
+- test_plan_context_natural_language_recall: one 800-token authentication task recalls OAuth, credentials, login/session/password, and browser-cookie symbols without generic token-processing false positives.
 - test_plan_context_deterministic: two calls with identical inputs → identical rendered output.
 
 ---

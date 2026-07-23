@@ -16,6 +16,10 @@ use crate::scanner::is_secret_path;
 const TOP_SYMBOLS_PER_FILE: usize = 3;
 const MAX_AMBIGUITY_CANDIDATES: usize = 20;
 const PLAN_CONTEXT_SEARCH_LIMIT: usize = 20;
+const PLAN_CONTEXT_QUERY_LIMIT: usize = 20;
+const PLAN_CONTEXT_HITS_PER_QUERY: usize = 8;
+const PLAN_CONTEXT_SYMBOLS_PER_FILE: usize = 3;
+const PLAN_CONTEXT_BODIES_PER_FILE: usize = 2;
 const REINDEX_HINT: &str = "Repository index is stale; run `compresso index` and retry.";
 
 /// A deterministic, token-budgeted structural summary of an indexed repository.
@@ -151,6 +155,8 @@ pub struct ContextPlan {
     pub repo_map: Option<RepoMap>,
     pub outlines: Vec<Outline>,
     pub symbol_bodies: Vec<ContextSymbolBody>,
+    pub search_queries: Vec<String>,
+    pub matches_total: usize,
     pub tokens_used: usize,
     pub token_provider: TokenProvider,
     pub truncated: bool,
@@ -658,7 +664,7 @@ const fn edge_kind_order(kind: EdgeKind) -> u8 {
     }
 }
 
-/// Builds a map, matching-file outlines, and exact FTS-backed bodies under one budget.
+/// Builds a focused map, matching-symbol outlines, and exact FTS-backed bodies under one budget.
 pub fn plan_context(
     store: &Store,
     repo: RepoId,
@@ -666,26 +672,17 @@ pub fn plan_context(
     budget_tokens: usize,
 ) -> Result<ContextPlan, AtlasError> {
     let counter = counter_for(TokenProvider::OpenAiO200k);
-    let mut hits = search(
-        store,
-        repo,
-        task,
-        PLAN_CONTEXT_SEARCH_LIMIT.saturating_add(1),
-    )?;
-    let search_truncated = hits.len() > PLAN_CONTEXT_SEARCH_LIMIT;
-    hits.truncate(PLAN_CONTEXT_SEARCH_LIMIT);
+    let (search_queries, hits, matches_total, search_truncated) =
+        search_task_concepts(store, repo, task)?;
 
-    let map = repo_map(store, repo, budget_tokens / 4)?;
-    let mut candidate_outlines = Vec::new();
-    let mut outlined_paths = BTreeSet::new();
-    for hit in &hits {
-        if outlined_paths.insert(hit.path.clone()) {
-            candidate_outlines.push(outline(store, repo, &hit.path)?);
-        }
-    }
-
+    let candidate_outlines = matching_context_outlines(store, repo, &hits)?;
     let mut candidate_bodies = Vec::new();
+    let mut bodies_per_path = BTreeMap::<&str, usize>::new();
     for hit in &hits {
+        let body_count = bodies_per_path.entry(&hit.path).or_default();
+        if *body_count == PLAN_CONTEXT_BODIES_PER_FILE {
+            continue;
+        }
         let selector = SymbolSelector {
             path: hit.path.clone(),
             qualified_name: hit.symbol.qualified_name.clone(),
@@ -709,20 +706,34 @@ pub fn plan_context(
                 symbol,
                 content,
             });
+            *body_count += 1;
         }
     }
 
     let mut rendered = String::new();
     let mut included_map = None;
+    let map = if hits.is_empty() {
+        repo_map(store, repo, budget_tokens / 5)?
+    } else {
+        focused_context_map(&hits, budget_tokens / 5, counter)
+    };
     if !map.rendered.is_empty() {
-        let trial = render_context_item(&rendered, "# Repository map\n", &map.rendered, true);
+        let trial = render_context_item(
+            &rendered,
+            "# Relevant repository map\n",
+            &map.rendered,
+            true,
+        );
         if counter.count(&trial) <= budget_tokens {
             rendered = trial;
             included_map = Some(map.clone());
         }
     }
 
-    let outline_ceiling = budget_tokens.saturating_sub(budget_tokens / 3);
+    // Keep at least two fifths of the task budget available for exact bodies.
+    // Context outlines contain only matched symbols, so broad files cannot
+    // consume the pack merely because they define many unrelated symbols.
+    let outline_ceiling = budget_tokens.saturating_mul(3) / 5;
     let mut outlines = Vec::new();
     for outline in &candidate_outlines {
         let item = render_outline(outline);
@@ -764,10 +775,266 @@ pub fn plan_context(
         repo_map: included_map,
         outlines,
         symbol_bodies,
+        search_queries,
+        matches_total,
         tokens_used,
         token_provider: counter.provider(),
         truncated,
     })
+}
+
+fn search_task_concepts(
+    store: &Store,
+    repo: RepoId,
+    task: &str,
+) -> Result<(Vec<String>, Vec<SearchHit>, usize, bool), AtlasError> {
+    let search_queries = task_search_queries(task);
+    let mut query_hits = Vec::with_capacity(search_queries.len());
+    let mut source_truncated = false;
+    for query in &search_queries {
+        let mut hits = search(
+            store,
+            repo,
+            query,
+            PLAN_CONTEXT_HITS_PER_QUERY.saturating_add(1),
+        )?;
+        source_truncated |= hits.len() > PLAN_CONTEXT_HITS_PER_QUERY;
+        hits.truncate(PLAN_CONTEXT_HITS_PER_QUERY);
+        hits.sort_by(|left, right| {
+            left.symbol
+                .kind
+                .cmp(&right.symbol.kind)
+                .then_with(|| left.score.total_cmp(&right.score))
+                .then_with(|| left.path.cmp(&right.path))
+                .then_with(|| left.symbol.qualified_name.cmp(&right.symbol.qualified_name))
+        });
+        query_hits.push(hits);
+    }
+
+    // Interleave queries by rank so one broad concept cannot crowd every
+    // other task concept out of the bounded context pack.
+    let mut merged = Vec::new();
+    let mut seen = BTreeSet::new();
+    let max_query_hits = query_hits.iter().map(Vec::len).max().unwrap_or_default();
+    for rank in 0..max_query_hits {
+        for hits in &query_hits {
+            let Some(hit) = hits.get(rank) else {
+                continue;
+            };
+            let identity = (
+                hit.path.clone(),
+                hit.symbol.qualified_name.clone(),
+                hit.symbol.kind,
+                hit.symbol.start_line,
+                hit.symbol.end_line,
+            );
+            if seen.insert(identity) {
+                merged.push(hit.clone());
+            }
+        }
+    }
+
+    // Preserve round-robin relevance within each symbol class while preferring
+    // executable implementation surfaces over constants and modules.
+    merged.sort_by_key(|hit| hit.symbol.kind);
+    let matches_total = merged.len();
+    let truncated = source_truncated || matches_total > PLAN_CONTEXT_SEARCH_LIMIT;
+    merged.truncate(PLAN_CONTEXT_SEARCH_LIMIT);
+    Ok((search_queries, merged, matches_total, truncated))
+}
+
+fn task_search_queries(task: &str) -> Vec<String> {
+    let words = task
+        .split(|character: char| !character.is_alphanumeric() && character != '_')
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect::<Vec<_>>();
+    let security_context = words.iter().any(|word| is_security_context_term(word));
+    let mut queries = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    // Preserve the original phrase for concise symbol-shaped tasks while
+    // avoiding a long literal FTS query for prose requests.
+    if words.len() <= 5 {
+        push_context_query(&mut queries, &mut seen, task.trim().to_owned());
+    }
+    for word in words {
+        if word.chars().count() < 3 || is_context_stop_word(&word) {
+            continue;
+        }
+        if security_context && matches!(word.as_str(), "token" | "tokens") {
+            for compound in [
+                "access_token",
+                "oauth_token",
+                "refresh_token",
+                "bearer_token",
+            ] {
+                push_context_query(&mut queries, &mut seen, compound.to_owned());
+            }
+            continue;
+        }
+        if matches!(word.as_str(), "authentication" | "authorization") {
+            for root in ["auth", "authenticate", "authenticated", "authorize"] {
+                push_context_query(&mut queries, &mut seen, root.to_owned());
+            }
+        }
+        push_context_query(&mut queries, &mut seen, word.clone());
+        if let Some(singular) = singular_context_term(&word) {
+            push_context_query(&mut queries, &mut seen, singular);
+        }
+        if queries.len() == PLAN_CONTEXT_QUERY_LIMIT {
+            break;
+        }
+    }
+    if queries.is_empty() {
+        push_context_query(&mut queries, &mut seen, task.trim().to_owned());
+    }
+    queries
+}
+
+fn is_security_context_term(word: &str) -> bool {
+    matches!(
+        word,
+        "auth"
+            | "authentication"
+            | "authorization"
+            | "cookie"
+            | "cookies"
+            | "credential"
+            | "credentials"
+            | "login"
+            | "oauth"
+            | "password"
+            | "passwords"
+            | "session"
+            | "sessions"
+    )
+}
+
+fn push_context_query(queries: &mut Vec<String>, seen: &mut BTreeSet<String>, query: String) {
+    if queries.len() < PLAN_CONTEXT_QUERY_LIMIT && !query.is_empty() && seen.insert(query.clone()) {
+        queries.push(query);
+    }
+}
+
+fn singular_context_term(word: &str) -> Option<String> {
+    if word.len() > 4 && word.ends_with('s') && !word.ends_with("ss") {
+        return Some(word[..word.len() - 1].to_owned());
+    }
+    None
+}
+
+fn is_context_stop_word(word: &str) -> bool {
+    matches!(
+        word,
+        "about"
+            | "all"
+            | "and"
+            | "any"
+            | "are"
+            | "code"
+            | "find"
+            | "for"
+            | "from"
+            | "how"
+            | "implementation"
+            | "implementations"
+            | "include"
+            | "including"
+            | "into"
+            | "locate"
+            | "most"
+            | "of"
+            | "related"
+            | "relevant"
+            | "repository"
+            | "show"
+            | "summarize"
+            | "summary"
+            | "that"
+            | "the"
+            | "their"
+            | "this"
+            | "through"
+            | "use"
+            | "using"
+            | "what"
+            | "where"
+            | "with"
+            | "within"
+    )
+}
+
+fn matching_context_outlines(
+    store: &Store,
+    repo: RepoId,
+    hits: &[SearchHit],
+) -> Result<Vec<Outline>, AtlasError> {
+    let mut outlines = Vec::<Outline>::new();
+    for hit in hits {
+        let outline_index = outlines.iter().position(|outline| outline.path == hit.path);
+        let index = match outline_index {
+            Some(index) => index,
+            None => {
+                let stored = outline(store, repo, &hit.path)?;
+                outlines.push(Outline {
+                    path: stored.path,
+                    language: stored.language,
+                    symbols: Vec::new(),
+                });
+                outlines.len() - 1
+            }
+        };
+        let symbols = &mut outlines[index].symbols;
+        if symbols.len() < PLAN_CONTEXT_SYMBOLS_PER_FILE
+            && !symbols
+                .iter()
+                .any(|symbol| same_symbol(symbol, &hit.symbol))
+        {
+            symbols.push(hit.symbol.clone());
+        }
+    }
+    Ok(outlines)
+}
+
+fn same_symbol(left: &SymbolRecord, right: &SymbolRecord) -> bool {
+    left.qualified_name == right.qualified_name
+        && left.kind == right.kind
+        && left.start_line == right.start_line
+        && left.end_line == right.end_line
+}
+
+fn focused_context_map(
+    hits: &[SearchHit],
+    budget_tokens: usize,
+    counter: &dyn TokenCounter,
+) -> RepoMap {
+    let mut first_symbols = Vec::<(&str, &str)>::new();
+    let mut seen_paths = BTreeSet::new();
+    for hit in hits {
+        if seen_paths.insert(hit.path.as_str()) {
+            first_symbols.push((&hit.path, &hit.symbol.qualified_name));
+        }
+    }
+    let files_total = first_symbols.len();
+    let mut rendered = String::new();
+    let mut files_shown = 0;
+    for (path, symbol) in first_symbols {
+        let candidate = format!("{rendered}{path} — {symbol}\n");
+        if counter.count(&candidate) > budget_tokens {
+            continue;
+        }
+        rendered = candidate;
+        files_shown += 1;
+    }
+    RepoMap {
+        tokens_used: counter.count(&rendered),
+        rendered,
+        files_total,
+        files_shown,
+        truncated: files_shown < files_total,
+        token_provider: counter.provider(),
+    }
 }
 
 fn render_context_item(current: &str, header: &str, item: &str, first_in_section: bool) -> String {
