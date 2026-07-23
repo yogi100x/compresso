@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 #[cfg(unix)]
 use std::fs::File;
 use std::fs::{self, OpenOptions};
@@ -188,8 +189,13 @@ pub(crate) struct MutationRequest {
     pub(crate) warnings: Vec<String>,
 }
 
-/// Immutable, base-bound integration mutation preview.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+/// Immutable, base-bound integration mutation plan.
+///
+/// This internal plan contains the exact target document required for safe
+/// apply and crash recovery. User-facing boundaries must serialize
+/// [`MutationPlan::public_preview`] instead so unrelated configuration and
+/// credentials never enter terminal or assistant output.
+#[derive(Clone, Eq, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MutationPlan {
     /// Boundary schema version.
@@ -211,8 +217,8 @@ pub struct MutationPlan {
     /// Full-file result hash.
     pub result_hash: String,
     /// Complete exact output bytes as UTF-8.
-    pub target_contents: String,
-    /// Human-readable exact unified diff.
+    pub(crate) target_contents: String,
+    /// Human-readable, secret-safe key-level unified diff.
     pub unified_diff: String,
     /// Hash of `unified_diff` bytes.
     pub diff_hash: String,
@@ -234,6 +240,156 @@ pub struct MutationPlan {
     pub prior_receipt: Option<InstallReceipt>,
     /// Content-free preview warnings.
     pub warnings: Vec<String>,
+}
+
+/// Private wire projection used only for integrity hashing and authenticated
+/// crash-recovery journals. Unlike [`MutationPlanPreview`], this contains the
+/// exact target document and must never cross a user-facing boundary.
+#[derive(Serialize)]
+struct ExactMutationPlanRef<'a> {
+    schema_version: u32,
+    document_type: &'a str,
+    operation: MutationKind,
+    config_format: ConfigFormat,
+    client: &'a str,
+    config_path: &'a Path,
+    base_exists: bool,
+    base_hash: &'a str,
+    result_hash: &'a str,
+    target_contents: &'a str,
+    unified_diff: &'a str,
+    diff_hash: &'a str,
+    plan_hash: &'a str,
+    session_id: &'a str,
+    issued_at: i64,
+    expires_at: i64,
+    backup_path: &'a str,
+    owned_keys: &'a [OwnedKeyMutation],
+    compresso_version: &'a str,
+    prior_receipt: &'a Option<InstallReceipt>,
+    warnings: &'a [String],
+}
+
+impl<'a> From<&'a MutationPlan> for ExactMutationPlanRef<'a> {
+    fn from(plan: &'a MutationPlan) -> Self {
+        Self {
+            schema_version: plan.schema_version,
+            document_type: &plan.document_type,
+            operation: plan.operation,
+            config_format: plan.config_format,
+            client: &plan.client,
+            config_path: &plan.config_path,
+            base_exists: plan.base_exists,
+            base_hash: &plan.base_hash,
+            result_hash: &plan.result_hash,
+            target_contents: &plan.target_contents,
+            unified_diff: &plan.unified_diff,
+            diff_hash: &plan.diff_hash,
+            plan_hash: &plan.plan_hash,
+            session_id: &plan.session_id,
+            issued_at: plan.issued_at,
+            expires_at: plan.expires_at,
+            backup_path: &plan.backup_path,
+            owned_keys: &plan.owned_keys,
+            compresso_version: &plan.compresso_version,
+            prior_receipt: &plan.prior_receipt,
+            warnings: &plan.warnings,
+        }
+    }
+}
+
+fn serialize_exact_mutation_plan<S>(plan: &MutationPlan, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    ExactMutationPlanRef::from(plan).serialize(serializer)
+}
+
+/// Secret-safe user-facing projection of an integration mutation plan.
+///
+/// Exact target bytes and the prior receipt are deliberately absent. The
+/// full-file base/result hashes retain drift and approval binding without
+/// copying unrelated configuration into CLI or assistant-visible output.
+#[derive(Clone, Debug, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MutationPlanPreview<'a> {
+    pub schema_version: u32,
+    pub document_type: &'static str,
+    pub operation: MutationKind,
+    pub config_format: ConfigFormat,
+    pub client: &'a str,
+    pub config_path: &'a Path,
+    pub base_exists: bool,
+    pub base_hash: &'a str,
+    pub result_hash: &'a str,
+    pub unified_diff: &'a str,
+    pub diff_hash: &'a str,
+    pub plan_hash: &'a str,
+    pub session_id: &'a str,
+    pub issued_at: i64,
+    pub expires_at: i64,
+    pub backup_path: &'a str,
+    pub owned_keys: Vec<&'a str>,
+    pub compresso_version: &'a str,
+    pub warnings: &'a [String],
+}
+
+impl MutationPlan {
+    /// Returns the only representation safe to expose at a user-facing
+    /// process boundary.
+    pub fn public_preview(&self) -> MutationPlanPreview<'_> {
+        MutationPlanPreview {
+            schema_version: self.schema_version,
+            document_type: "mutation_plan_preview",
+            operation: self.operation,
+            config_format: self.config_format,
+            client: &self.client,
+            config_path: &self.config_path,
+            base_exists: self.base_exists,
+            base_hash: &self.base_hash,
+            result_hash: &self.result_hash,
+            unified_diff: &self.unified_diff,
+            diff_hash: &self.diff_hash,
+            plan_hash: &self.plan_hash,
+            session_id: &self.session_id,
+            issued_at: self.issued_at,
+            expires_at: self.expires_at,
+            backup_path: &self.backup_path,
+            owned_keys: self
+                .owned_keys
+                .iter()
+                .map(|mutation| mutation.key_path.as_str())
+                .collect(),
+            compresso_version: &self.compresso_version,
+            warnings: &self.warnings,
+        }
+    }
+}
+
+/// General-purpose serialization is intentionally restricted to the
+/// secret-safe preview. Exact bytes have a separate private serializer used
+/// only by authenticated local persistence and integrity hashing.
+impl Serialize for MutationPlan {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.public_preview().serialize(serializer)
+    }
+}
+
+impl fmt::Debug for MutationPlan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MutationPlan")
+            .field("public_preview", &self.public_preview())
+            .field(
+                "target_contents",
+                &format_args!("<redacted:{} bytes>", self.target_contents.len()),
+            )
+            .field("prior_receipt", &self.prior_receipt)
+            .finish()
+    }
 }
 
 /// Minimal approval payload accepted by apply.
@@ -474,12 +630,13 @@ impl PlanManager {
         };
         let unified_diff = make_unified_diff(
             &request.config_path,
+            request.config_format,
             &base,
             &request.target_contents,
             request.operation,
             &owned_keys,
             &backup_path,
-        );
+        )?;
         let diff_hash = blake3::hash(unified_diff.as_bytes()).to_hex().to_string();
         let mut plan = MutationPlan {
             schema_version: PLAN_SCHEMA_VERSION,
@@ -1026,17 +1183,18 @@ fn matching_uninstall_noop(plan: &MutationPlan, stored: &InstallReceipt) -> Opti
     })
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PendingCommit {
     journal_version: u32,
+    #[serde(serialize_with = "serialize_exact_mutation_plan")]
     plan: MutationPlan,
     base_contents: Option<String>,
     persisted_receipt: InstallReceipt,
     report: ApplyReport,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct JournalEnvelope {
     envelope_version: u32,
@@ -1716,8 +1874,8 @@ fn derive_toml_owned_mutations(
     let mut target_document =
         target
             .parse::<DocumentMut>()
-            .map_err(|error| IntegrationError::InvalidRequest {
-                reason: format!("target TOML is malformed: {error}"),
+            .map_err(|_| IntegrationError::InvalidRequest {
+                reason: "target TOML is malformed".to_owned(),
             })?;
     let mut changes = Vec::with_capacity(owned_paths.len());
     for path in owned_paths {
@@ -1754,8 +1912,8 @@ fn parse_toml_target(target: &TargetState, label: &str) -> Result<DocumentMut, I
         TargetState::Present(bytes) => std::str::from_utf8(bytes)
             .map_err(|_| invalid("TOML configuration must be UTF-8"))?
             .parse::<DocumentMut>()
-            .map_err(|error| IntegrationError::InvalidRequest {
-                reason: format!("{label} TOML is malformed: {error}"),
+            .map_err(|_| IntegrationError::InvalidRequest {
+                reason: format!("{label} TOML is malformed"),
             }),
     }
 }
@@ -1797,10 +1955,11 @@ fn invalid(reason: &str) -> IntegrationError {
 fn compute_plan_hash(plan: &MutationPlan) -> Result<String, IntegrationError> {
     let mut unsigned = plan.clone();
     unsigned.plan_hash.clear();
-    let bytes =
-        serde_json::to_vec(&unsigned).map_err(|error| IntegrationError::InvalidRequest {
+    let bytes = serde_json::to_vec(&ExactMutationPlanRef::from(&unsigned)).map_err(|error| {
+        IntegrationError::InvalidRequest {
             reason: format!("plan serialization failed: {error}"),
-        })?;
+        }
+    })?;
     Ok(blake3::hash(&bytes).to_hex().to_string())
 }
 
@@ -1835,52 +1994,287 @@ fn hash_target(state: &TargetState) -> String {
 
 fn make_unified_diff(
     path: &Path,
+    format: ConfigFormat,
     base: &TargetState,
     target: &str,
     operation: MutationKind,
     owned: &[OwnedKeyMutation],
     backup_path: &str,
-) -> String {
-    let before = match base {
-        TargetState::Missing => "",
-        TargetState::Present(bytes) => std::str::from_utf8(bytes).unwrap_or("<non-UTF-8>"),
-    };
-    let before_lines = exact_line_count(before);
-    let after_lines = exact_line_count(target);
+) -> Result<String, IntegrationError> {
     let label = path.display();
     let action = match operation {
         MutationKind::Install => "after compresso integration install",
         MutationKind::Uninstall => "after compresso integration uninstall",
     };
     let mut diff = format!(
-        "--- {label} (current)\n+++ {label} ({action})\n@@ -1,{before_lines} +1,{after_lines} @@\n"
+        "--- {label} (current Compresso-owned values)\n+++ {label} ({action}; Compresso-owned values)\n"
     );
-    append_exact_diff_side(&mut diff, '-', before);
-    append_exact_diff_side(&mut diff, '+', target);
+    for change in owned {
+        let (before, after) = safe_owned_projections(format, base, target, &change.key_path)?;
+        diff.push_str(&format!("@@ {} @@\n", change.key_path));
+        append_projection_diff(&mut diff, format, &before, &after, change);
+    }
     let keys = owned
         .iter()
         .map(|change| change.key_path.as_str())
         .collect::<Vec<_>>()
         .join(", ");
+    diff.push_str("# Unrelated configuration omitted; sensitive values are never displayed.\n");
     diff.push_str(&format!(
         "# Compresso-owned keys: {keys}; backup: {backup_path}\n"
     ));
-    diff
+    Ok(diff)
 }
 
-fn exact_line_count(contents: &str) -> usize {
-    contents.bytes().filter(|byte| *byte == b'\n').count()
-        + usize::from(!contents.is_empty() && !contents.ends_with('\n'))
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct SafeOwnedProjection {
+    present: bool,
+    server_type: Option<String>,
+    command: Option<String>,
+    args: Option<String>,
+    redacted_fields: usize,
 }
 
-fn append_exact_diff_side(diff: &mut String, prefix: char, contents: &str) {
-    for line in contents.split_inclusive('\n') {
-        diff.push(prefix);
-        diff.push_str(line);
-        if !line.ends_with('\n') {
-            diff.push('\n');
-            diff.push_str("\\ No newline at end of file\n");
+fn safe_owned_projections(
+    format: ConfigFormat,
+    base: &TargetState,
+    target: &str,
+    key_path: &str,
+) -> Result<(SafeOwnedProjection, SafeOwnedProjection), IntegrationError> {
+    let segments = key_path.split('.').collect::<Vec<_>>();
+    match format {
+        ConfigFormat::Json => {
+            let base = parse_json_target(base, "base")?;
+            let target: serde_json::Value =
+                serde_json::from_str(target).map_err(|error| IntegrationError::InvalidRequest {
+                    reason: format!("target JSON is malformed: {error}"),
+                })?;
+            Ok((
+                safe_json_projection(json_value_at(&base, &segments)),
+                safe_json_projection(json_value_at(&target, &segments)),
+            ))
         }
+        ConfigFormat::Toml => {
+            let base = parse_toml_target(base, "base")?;
+            let target =
+                target
+                    .parse::<DocumentMut>()
+                    .map_err(|_| IntegrationError::InvalidRequest {
+                        reason: "target TOML is malformed".to_owned(),
+                    })?;
+            Ok((
+                safe_toml_projection(toml_item_at(base.as_item(), &segments)),
+                safe_toml_projection(toml_item_at(target.as_item(), &segments)),
+            ))
+        }
+    }
+}
+
+fn safe_json_projection(value: Option<&serde_json::Value>) -> SafeOwnedProjection {
+    let Some(value) = value else {
+        return SafeOwnedProjection::default();
+    };
+    let Some(object) = value.as_object() else {
+        return SafeOwnedProjection {
+            present: true,
+            redacted_fields: 1,
+            ..SafeOwnedProjection::default()
+        };
+    };
+    let mut projection = SafeOwnedProjection {
+        present: true,
+        redacted_fields: object
+            .keys()
+            .filter(|key| !matches!(key.as_str(), "type" | "command" | "args"))
+            .count(),
+        ..SafeOwnedProjection::default()
+    };
+    projection.server_type = object
+        .get("type")
+        .map(|value| safe_type_value(value.as_str()));
+    projection.command = object
+        .get("command")
+        .map(|value| safe_command_value(value.as_str()));
+    projection.args = object
+        .get("args")
+        .map(|value| safe_json_args_value(value.as_array()));
+    projection
+}
+
+fn safe_toml_projection(item: Option<&Item>) -> SafeOwnedProjection {
+    let Some(item) = item else {
+        return SafeOwnedProjection::default();
+    };
+    let Some(table) = item.as_table_like() else {
+        return SafeOwnedProjection {
+            present: true,
+            redacted_fields: 1,
+            ..SafeOwnedProjection::default()
+        };
+    };
+    let mut projection = SafeOwnedProjection {
+        present: true,
+        redacted_fields: table
+            .iter()
+            .filter(|(key, _)| !matches!(*key, "type" | "command" | "args"))
+            .count(),
+        ..SafeOwnedProjection::default()
+    };
+    projection.server_type = table
+        .get("type")
+        .map(|value| safe_type_value(value.as_str()));
+    projection.command = table
+        .get("command")
+        .map(|value| safe_command_value(value.as_str()));
+    projection.args = table
+        .get("args")
+        .map(|value| safe_toml_args_value(value.as_array()));
+    projection
+}
+
+fn safe_type_value(value: Option<&str>) -> String {
+    value
+        .filter(|value| *value == "stdio")
+        .map(quoted_preview_value)
+        .unwrap_or_else(redacted_preview_value)
+}
+
+fn safe_command_value(value: Option<&str>) -> String {
+    value
+        .filter(|value| {
+            Path::new(value).is_absolute()
+                && !value.contains("://")
+                && !value.contains(['?', '#'])
+                && !value.chars().any(char::is_control)
+        })
+        .map(quoted_preview_value)
+        .unwrap_or_else(redacted_preview_value)
+}
+
+fn safe_json_args_value(value: Option<&Vec<serde_json::Value>>) -> String {
+    let Some(arguments) = value.and_then(|values| {
+        values
+            .iter()
+            .map(serde_json::Value::as_str)
+            .collect::<Option<Vec<_>>>()
+    }) else {
+        return redacted_preview_value();
+    };
+    safe_args_value(&arguments)
+}
+
+fn safe_toml_args_value(value: Option<&toml_edit::Array>) -> String {
+    let Some(arguments) = value.and_then(|values| {
+        values
+            .iter()
+            .map(toml_edit::Value::as_str)
+            .collect::<Option<Vec<_>>>()
+    }) else {
+        return redacted_preview_value();
+    };
+    safe_args_value(&arguments)
+}
+
+fn safe_args_value(arguments: &[&str]) -> String {
+    let safe = arguments == ["mcp", "serve"]
+        || (arguments.len() == 4
+            && arguments[..3] == ["mcp", "serve", "--root"]
+            && Path::new(arguments[3]).is_absolute()
+            && !arguments[3].chars().any(char::is_control));
+    if !safe {
+        return redacted_preview_value();
+    }
+    format!(
+        "[{}]",
+        arguments
+            .iter()
+            .map(|value| quoted_preview_value(value))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn quoted_preview_value(value: &str) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| redacted_preview_value())
+}
+
+fn redacted_preview_value() -> String {
+    "\"<redacted>\"".to_owned()
+}
+
+fn append_projection_diff(
+    diff: &mut String,
+    format: ConfigFormat,
+    before: &SafeOwnedProjection,
+    after: &SafeOwnedProjection,
+    mutation: &OwnedKeyMutation,
+) {
+    let mut displayed = 0;
+    for (name, before, after) in [
+        (
+            "type",
+            before.server_type.as_deref(),
+            after.server_type.as_deref(),
+        ),
+        (
+            "command",
+            before.command.as_deref(),
+            after.command.as_deref(),
+        ),
+        ("args", before.args.as_deref(), after.args.as_deref()),
+    ] {
+        if before == after {
+            continue;
+        }
+        if let Some(value) = before {
+            append_preview_line(diff, '-', format, name, value);
+            displayed += 1;
+        }
+        if let Some(value) = after {
+            append_preview_line(diff, '+', format, name, value);
+            displayed += 1;
+        }
+    }
+    if before.redacted_fields != after.redacted_fields {
+        if before.redacted_fields > 0 {
+            diff.push_str(&format!(
+                "- <{} additional field(s) redacted>\n",
+                before.redacted_fields
+            ));
+            displayed += 1;
+        }
+        if after.redacted_fields > 0 {
+            diff.push_str(&format!(
+                "+ <{} additional field(s) redacted>\n",
+                after.redacted_fields
+            ));
+            displayed += 1;
+        }
+    }
+    if before.present != after.present && displayed == 0 {
+        let prefix = if before.present { '-' } else { '+' };
+        diff.push_str(&format!("{prefix} <Compresso-owned value>\n"));
+        displayed += 1;
+    }
+    if displayed == 0 && mutation.before_value_hash != mutation.after_value_hash {
+        diff.push_str("- <changed fields redacted>\n+ <changed fields redacted>\n");
+        displayed += 2;
+    }
+    if displayed == 0 {
+        diff.push_str("  <no Compresso-owned value changes>\n");
+    }
+}
+
+fn append_preview_line(
+    diff: &mut String,
+    prefix: char,
+    format: ConfigFormat,
+    name: &str,
+    value: &str,
+) {
+    match format {
+        ConfigFormat::Json => diff.push_str(&format!("{prefix} \"{name}\": {value}\n")),
+        ConfigFormat::Toml => diff.push_str(&format!("{prefix} {name} = {value}\n")),
     }
 }
 
@@ -2654,40 +3048,89 @@ mod tests {
     }
 
     #[test]
-    fn test_unified_diff_records_exact_eof_newline_state() {
-        let path = Path::new("/tmp/config.json");
-        let owned = [OwnedKeyMutation {
-            key_path: "mcpServers.compresso".to_owned(),
-            before_value_hash: None,
-            after_value_hash: Some("a".repeat(64)),
-        }];
-        let without_newline = make_unified_diff(
+    fn test_key_level_diff_omits_unrelated_values_and_redacts_unknown_owned_fields() {
+        const CANARY: &str = "PLAN_PREVIEW_SECRET_CANARY_aa179e42";
+
+        let path = Path::new("/tmp/config.toml");
+        let base = format!(
+            "[mcp_servers.cubic]\nhttp_headers = {{ Authorization = \"Bearer {CANARY}\" }}\n\n[mcp_servers.compresso]\ncommand = \"/old/compresso\"\nargs = [\"mcp\", \"serve\"]\nhttp_headers = {{ Authorization = \"Bearer {CANARY}\" }}\n"
+        );
+        let target = format!(
+            "[mcp_servers.cubic]\nhttp_headers = {{ Authorization = \"Bearer {CANARY}\" }}\n\n[mcp_servers.compresso]\ncommand = \"/new/compresso\"\nargs = [\"mcp\", \"serve\"]\n"
+        );
+        let base_state = TargetState::Present(base.into_bytes());
+        let owned_paths = vec!["mcp_servers.compresso".to_owned()];
+        let owned = derive_owned_mutations(
+            MutationKind::Install,
+            ConfigFormat::Toml,
+            &base_state,
+            &target,
+            &owned_paths,
+        )
+        .expect("owned mutation should derive");
+
+        let diff = make_unified_diff(
             path,
-            &TargetState::Present(b"{}".to_vec()),
-            "{\"mcpServers\":{}}",
+            ConfigFormat::Toml,
+            &base_state,
+            &target,
             MutationKind::Install,
             &owned,
             CREATED_FILE_BACKUP_SENTINEL,
+        )
+        .expect("safe key-level diff should render");
+
+        assert!(diff.contains("- command = \"/old/compresso\""));
+        assert!(diff.contains("+ command = \"/new/compresso\""));
+        assert!(!diff.contains(CANARY));
+        assert!(!diff.contains("Authorization"));
+        assert!(!diff.contains("mcp_servers.cubic"));
+        assert!(diff.contains("<1 additional field(s) redacted>"));
+        assert!(
+            diff.lines().count() <= 10,
+            "preview was not minimal: {diff}"
         );
-        let with_newline = make_unified_diff(
-            path,
-            &TargetState::Present(b"{}\n".to_vec()),
-            "{\"mcpServers\":{}}\n",
-            MutationKind::Install,
-            &owned,
-            CREATED_FILE_BACKUP_SENTINEL,
+    }
+
+    #[test]
+    fn test_public_preview_and_debug_never_expose_exact_target_contents() {
+        const CANARY: &str = "MUTATION_TARGET_SECRET_CANARY_47c1be20";
+
+        let directory = tempdir().expect("temp directory");
+        let manager = manager(Arc::new(FakeClock::new(1_700_000_000)));
+        let target = format!(
+            "{{\"mcpServers\":{{\"compresso\":{{\"type\":\"stdio\",\"command\":\"/bin/compresso\",\"args\":[\"mcp\",\"serve\"],\"headers\":{{\"Authorization\":\"Bearer {CANARY}\"}}}}}}}}\n"
         );
+        let plan = manager
+            .issue(install_request(
+                directory.path().join("config.json"),
+                &target,
+            ))
+            .expect("plan should issue");
+
+        assert!(plan.target_contents.contains(CANARY));
+        let directly_serialized =
+            serde_json::to_value(&plan).expect("public plan serialization should be safe");
+        let directly_serialized_text = serde_json::to_string(&directly_serialized)
+            .expect("public plan serialization should encode");
         assert_eq!(
-            without_newline
-                .matches("\\ No newline at end of file")
-                .count(),
-            2
+            directly_serialized["document_type"],
+            "mutation_plan_preview"
         );
-        assert!(!with_newline.contains("\\ No newline at end of file"));
-        assert_ne!(
-            blake3::hash(without_newline.as_bytes()),
-            blake3::hash(with_newline.as_bytes())
-        );
+        assert!(directly_serialized.get("target_contents").is_none());
+        assert!(!directly_serialized_text.contains(CANARY));
+        assert!(!directly_serialized_text.contains("Authorization"));
+        let preview =
+            serde_json::to_value(plan.public_preview()).expect("preview should serialize");
+        let serialized = serde_json::to_string(&preview).expect("preview JSON should encode");
+        assert!(preview.get("target_contents").is_none());
+        assert_eq!(preview["owned_keys"], json!(["mcpServers.compresso"]));
+        assert!(!serialized.contains(CANARY));
+        assert!(!serialized.contains("Authorization"));
+        let debug = format!("{plan:?}");
+        assert!(!debug.contains(CANARY));
+        assert!(!debug.contains("Authorization"));
+        assert!(debug.contains("<redacted:"));
     }
 
     #[test]
@@ -3556,8 +3999,21 @@ mod tests {
                 "{\"mcpServers\":{\"compresso\":{}}}\n",
             ))
             .expect("plan issued");
-        let plan_value = serde_json::to_value(&plan).expect("plan serializes");
+        let exact_plan_value = serde_json::to_value(ExactMutationPlanRef::from(&plan))
+            .expect("private exact plan serializes");
+        assert!(validator.is_valid(&exact_plan_value));
+        assert_eq!(exact_plan_value["document_type"], "mutation_plan");
+        assert!(exact_plan_value.get("target_contents").is_some());
+
+        let plan_value = serde_json::to_value(&plan).expect("public plan serialization is safe");
         assert!(validator.is_valid(&plan_value));
+        let preview_value =
+            serde_json::to_value(plan.public_preview()).expect("public preview serializes");
+        assert!(validator.is_valid(&preview_value));
+        assert_eq!(plan_value, preview_value);
+        assert_eq!(preview_value["document_type"], "mutation_plan_preview");
+        assert!(preview_value.get("target_contents").is_none());
+        assert!(preview_value.get("prior_receipt").is_none());
 
         let receipts = MemoryReceiptStore::default();
         let receipt = manager

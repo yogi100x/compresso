@@ -163,6 +163,116 @@ fn test_human_preview_includes_diff_owned_key_backup_and_plan_hash() {
 }
 
 #[test]
+fn test_codex_previews_redact_unrelated_authorization_and_show_only_owned_change() {
+    const CANARY: &str = "CUBIC_BEARER_CANARY_DO_NOT_PRINT_8f4c2d1a";
+
+    let fixture = Fixture::new();
+    let config = fixture.codex_config();
+    fs::create_dir_all(config.parent().expect("Codex config parent"))
+        .expect("Codex config parent should be created");
+    let old_command = fixture.home.join("old/bin/compresso");
+    let filler = (0..180)
+        .map(|index| format!("# unrelated configuration line {index}\n"))
+        .collect::<String>();
+    let original = format!(
+        "model = \"gpt-5\"\n{filler}\n[mcp_servers.cubic]\ncommand = \"cubic\"\nhttp_headers = {{ Authorization = \"Bearer {CANARY}\" }}\n\n[mcp_servers.compresso]\ncommand = {}\nargs = [\"mcp\", \"serve\"]\n",
+        serde_json::to_string(&old_command.to_string_lossy()).expect("old command should encode"),
+    );
+    fs::write(&config, &original).expect("secret-bearing Codex fixture should be written");
+
+    let (exit, output, errors) = fixture.run(
+        &["integrations", "install", "codex", "--dry-run", "--json"],
+        "",
+    );
+
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert!(errors.is_null());
+    let serialized = serde_json::to_string(&output).expect("preview JSON should encode");
+    assert!(!serialized.contains(CANARY));
+    assert!(!serialized.contains("Authorization"));
+    assert!(output["data"]["plan"].get("target_contents").is_none());
+    let diff = output["data"]["plan"]["unified_diff"]
+        .as_str()
+        .expect("safe diff should be present");
+    assert!(diff.contains(&old_command.to_string_lossy().into_owned()));
+    assert!(
+        diff.contains(
+            &fixture
+                .environment
+                .compresso_bin
+                .to_string_lossy()
+                .into_owned()
+        )
+    );
+    assert!(!diff.contains("mcp_servers.cubic"));
+    assert!(!diff.contains("unrelated configuration line"));
+    assert!(
+        diff.lines().count() <= 10,
+        "preview was not minimal: {diff}"
+    );
+    assert_eq!(
+        fs::read_to_string(config).expect("Codex config should remain readable"),
+        original
+    );
+}
+
+#[test]
+fn test_codex_human_preview_never_prints_unrelated_authorization() {
+    const CANARY: &str = "CUBIC_BEARER_CANARY_DO_NOT_PRINT_761eab39";
+
+    let fixture = Fixture::new();
+    let config = fixture.codex_config();
+    fs::create_dir_all(config.parent().expect("Codex config parent"))
+        .expect("Codex config parent should be created");
+    let old_command = fixture.home.join("old/bin/compresso");
+    let original = format!(
+        "[mcp_servers.cubic]\nhttp_headers = {{ Authorization = \"Bearer {CANARY}\" }}\n\n[mcp_servers.compresso]\ncommand = {}\nargs = [\"mcp\", \"serve\"]\n",
+        serde_json::to_string(&old_command.to_string_lossy()).expect("old command should encode"),
+    );
+    fs::write(&config, &original).expect("secret-bearing Codex fixture should be written");
+    let cli = Cli::try_parse_from(["compresso", "integrations", "install", "codex", "--dry-run"])
+        .expect("dry-run command should parse");
+    let RootCommand::Integrations { command } = cli.command else {
+        panic!("expected integration command");
+    };
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+
+    let exit = execute_integrations(
+        command,
+        &fixture.environment,
+        &mut std::io::empty(),
+        &mut output,
+        &mut errors,
+    );
+
+    assert_eq!(exit, CliExitCode::Success);
+    assert!(errors.is_empty());
+    let preview = String::from_utf8(output).expect("preview should be UTF-8");
+    assert!(!preview.contains(CANARY));
+    assert!(!preview.contains("Authorization"));
+    assert!(!preview.contains("mcp_servers.cubic"));
+    assert!(preview.contains(&old_command.to_string_lossy().into_owned()));
+    assert!(
+        preview.contains(
+            &fixture
+                .environment
+                .compresso_bin
+                .to_string_lossy()
+                .into_owned()
+        )
+    );
+    assert!(
+        preview.lines().count() <= 12,
+        "preview was not minimal: {preview}"
+    );
+    assert_eq!(
+        fs::read_to_string(config).expect("Codex config should remain readable"),
+        original
+    );
+}
+
+#[test]
 fn test_json_install_requires_yes_and_leaves_all_state_untouched() {
     let fixture = Fixture::new();
 

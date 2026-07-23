@@ -302,7 +302,7 @@ pub struct McpDeps { pub store: Store, pub engine: Engine, pub config: Config }
 pub trait Integration {
     fn client_id(&self) -> &'static str;                 // "claude-code" | "codex" | "cursor"
     fn detect(&self) -> Detection;                       // Installed { version, config_path } | NotFound | Unsupported { reason }
-    fn plan_install(&self, ctx: &InstallCtx) -> Result<InstallPlan>;   // exact key-level diff, human-readable
+    fn plan_install(&self, ctx: &InstallCtx) -> Result<InstallPlan>;   // secret-safe exact key-level diff; exact target stays private
     fn install(&self, plan: &InstallPlan) -> Result<InstallReceipt>;   // backup first; atomic write (tmp+rename); only Compresso-owned keys
     fn verify(&self) -> VerificationReport;              // config parses + compresso server entry resolves to existing binary
     fn uninstall(&self, receipt: &InstallReceipt) -> Result<RestoreReport>; // remove owned keys only; restore semantics per adapter spec
@@ -315,12 +315,15 @@ Per-client config details in `04-mcp-and-integrations.md` §2. User-scoped entri
 PB-03 CLI orchestration adds deterministic `compresso repos list`, exact and
 confirmable `compresso repos remove ROOT`, and `compresso setup CLIENT ROOT`.
 Repository removal binds confirmation to the exact previewed record and Store
-revision. Setup approves one exact config path, base, target bytes, unified
-diff, diff hash, backup path, and owned-key effect. Before indexing it converts
-that still-valid preview into an opaque, manager-bound, one-use authorization.
+revision. Setup approves one exact config path, full-file base/result hashes,
+secret-safe key-level diff, diff hash, backup path, and owned-key effect. Exact
+target bytes stay private inside the manager and remain bound by `result_hash`;
+they are never serialized into CLI or assistant-visible preview output. Before
+indexing setup converts that still-valid plan into an opaque, manager-bound,
+one-use authorization.
 Because indexing may outlive the plan TTL, setup renews only `issued_at`,
 `expires_at`, and the derived plan hash afterward; every approved material
-field remains byte-identical. The strict setup apply path refuses any pending
+field, including the private target, remains byte-identical. The strict setup apply path refuses any pending
 recovery journal instead of replaying it, and reports the approved, effective,
 and active-receipt plan identities without calling an idempotent receipt newly
 applied. It also revalidates the repository, project config target, and launcher

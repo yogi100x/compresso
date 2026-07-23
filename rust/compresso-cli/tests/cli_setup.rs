@@ -12,10 +12,12 @@ use compresso_cli::{
     execute_setup, execute_setup_with_runtime,
 };
 use compresso_integrations::{
-    ApplyReport, FileReceiptStore, InstallReceipt, MutationPlan, PlanClock, PlanManager,
-    RECEIPT_SCHEMA_VERSION, ReceiptStore,
+    ApplyReport, CodexIntegration, ConfigFormat, FileReceiptStore, InstallCtx, InstallReceipt,
+    Integration, MutationKind, MutationPlan, OwnedKeyMutation, PlanClock, PlanManager,
+    RECEIPT_SCHEMA_VERSION, ReceiptStore, Scope,
 };
 use compresso_store::{Store, StoreError};
+use serde::Serialize;
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -67,6 +69,59 @@ fn test_setup_dry_run_renders_both_plans_without_any_writes() {
     );
     assert!(!fixture.codex_config().exists());
     assert!(!fixture.receipt_store().exists());
+}
+
+#[test]
+fn test_setup_codex_dry_run_redacts_unrelated_authorization_and_target_document() {
+    const CANARY: &str = "CUBIC_BEARER_CANARY_DO_NOT_PRINT_347d10be";
+
+    let fixture = Fixture::new();
+    let config = fixture.codex_config();
+    fs::create_dir_all(config.parent().expect("Codex config parent"))
+        .expect("Codex config parent should be created");
+    let old_command = fixture.directory.path().join("old/bin/compresso");
+    let original = format!(
+        "# preserve this exact comment\n[mcp_servers.cubic]\nhttp_headers = {{ Authorization = \"Bearer {CANARY}\" }}\n\n[mcp_servers.compresso]\ncommand = {}\nargs = [\"mcp\", \"serve\"]\n",
+        serde_json::to_string(&old_command.to_string_lossy()).expect("old command should encode"),
+    );
+    fs::write(&config, &original).expect("secret-bearing Codex fixture should be written");
+
+    let (exit, output, errors) = fixture.run_setup_json(
+        &["setup", "codex", fixture.root_str(), "--dry-run", "--json"],
+        None,
+        &mut std::io::empty(),
+    );
+
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert!(errors.is_null());
+    let serialized = serde_json::to_string(&output).expect("setup preview should encode");
+    assert!(!serialized.contains(CANARY));
+    assert!(!serialized.contains("Authorization"));
+    let integration = &output["data"]["plan"]["integration"];
+    assert!(integration.get("target_contents").is_none());
+    let diff = integration["unified_diff"]
+        .as_str()
+        .expect("safe integration diff should be present");
+    assert!(diff.contains(&old_command.to_string_lossy().into_owned()));
+    assert!(
+        diff.contains(
+            &fixture
+                .environment
+                .compresso_bin
+                .to_string_lossy()
+                .into_owned()
+        )
+    );
+    assert!(!diff.contains("mcp_servers.cubic"));
+    assert!(!diff.contains("preserve this exact comment"));
+    assert!(
+        diff.lines().count() <= 10,
+        "preview was not minimal: {diff}"
+    );
+    assert_eq!(
+        fs::read_to_string(config).expect("Codex config should remain readable"),
+        original
+    );
 }
 
 #[test]
@@ -352,12 +407,18 @@ fn test_setup_plan_renewal_preserves_approved_diff_and_backup_identity() {
         installed["receipt_plan_hash"],
         installed["effective_plan_hash"]
     );
+    assert!(approved.get("target_contents").is_none());
+    let installed_config =
+        fs::read_to_string(fixture.codex_config()).expect("installed config should be readable");
+    assert!(
+        installed_config.starts_with(std::str::from_utf8(original).expect("fixture is UTF-8")),
+        "unrelated Codex formatting must remain byte-preserved"
+    );
+    let installed_toml: toml::Value =
+        toml::from_str(&installed_config).expect("installed config should remain valid TOML");
     assert_eq!(
-        fs::read(fixture.codex_config()).expect("installed config should be readable"),
-        approved["target_contents"]
-            .as_str()
-            .expect("approved target should be text")
-            .as_bytes()
+        installed_toml["mcp_servers"]["compresso"]["command"].as_str(),
+        fixture.environment.compresso_bin.to_str()
     );
 
     let receipts = FileReceiptStore::new(fixture.receipt_store_path());
@@ -547,11 +608,16 @@ fn test_setup_passes_normalized_stable_launcher_path_to_client_config() {
 
     assert_eq!(exit, CliExitCode::Success, "{errors}");
     assert!(errors.is_null());
-    let target = output["data"]["plan"]["integration"]["target_contents"]
+    let preview = output["data"]["plan"]["integration"]["unified_diff"]
         .as_str()
-        .expect("target contents should be text");
-    assert!(target.contains(&launcher.to_string_lossy().into_owned()));
-    assert!(!target.contains(&raw_launcher.to_string_lossy().into_owned()));
+        .expect("safe preview should be text");
+    assert!(preview.contains(&launcher.to_string_lossy().into_owned()));
+    assert!(!preview.contains(&raw_launcher.to_string_lossy().into_owned()));
+    assert!(
+        output["data"]["plan"]["integration"]
+            .get("target_contents")
+            .is_none()
+    );
     assert_eq!(runtime.open_count(), 0);
 }
 
@@ -1077,11 +1143,24 @@ impl PlanClock for JournalInjectClock {
 }
 
 fn authenticated_install_journal(fixture: &Fixture) -> (PathBuf, Vec<u8>) {
-    let (exit, preview, errors) =
-        fixture.run_integration(&["integrations", "install", "codex", "--dry-run", "--json"]);
-    assert_eq!(exit, CliExitCode::Success, "{errors}");
-    let plan: MutationPlan = serde_json::from_value(preview["data"]["plan"].clone())
-        .expect("integration preview should decode as a mutation plan");
+    let manager = PlanManager::new("authenticated-journal-fixture")
+        .expect("journal fixture manager should initialize");
+    let adapter = CodexIntegration::new(
+        fixture.environment.home_dir.clone(),
+        fixture.environment.path_entries.clone(),
+        None,
+        "setup-cli-test",
+    )
+    .expect("Codex adapter should initialize");
+    let plan = adapter
+        .plan_install(
+            &manager,
+            &InstallCtx {
+                compresso_bin: fixture.environment.compresso_bin.clone(),
+                scope: Scope::User,
+            },
+        )
+        .expect("internal journal plan should be issued");
     let owned_value_hashes = plan
         .owned_keys
         .iter()
@@ -1122,11 +1201,16 @@ fn authenticated_install_journal(fixture: &Fixture) -> (PathBuf, Vec<u8>) {
     } else {
         None
     };
+    let target_contents = format!(
+        "[mcp_servers.compresso]\ncommand = {:?}\nargs = [\"mcp\", \"serve\"]\n",
+        fixture.environment.compresso_bin.to_string_lossy()
+    );
+    let exact_plan = ExactJournalPlan::new(&plan, &target_contents);
     // Match the private journal struct's compact serde field order exactly so
     // FileReceiptStore authenticates the same bytes recovery will re-encode.
     let payload = format!(
         "{{\"journal_version\":1,\"plan\":{},\"base_contents\":{},\"persisted_receipt\":{},\"report\":{}}}",
-        serde_json::to_string(&plan).expect("plan should serialize"),
+        serde_json::to_string(&exact_plan).expect("exact fixture plan should serialize"),
         serde_json::to_string(&base_contents).expect("base should serialize"),
         serde_json::to_string(&receipt).expect("receipt should serialize"),
         serde_json::to_string(&report).expect("report should serialize"),
@@ -1149,6 +1233,61 @@ fn authenticated_install_journal(fixture: &Fixture) -> (PathBuf, Vec<u8>) {
         .config_path
         .with_file_name(format!("{file_name}.compresso-journal"));
     (journal_path, envelope)
+}
+
+/// Test-only mirror of the private authenticated-journal plan wire format.
+/// Production callers can serialize only `MutationPlanPreview`.
+#[derive(Serialize)]
+struct ExactJournalPlan<'a> {
+    schema_version: u32,
+    document_type: &'a str,
+    operation: MutationKind,
+    config_format: ConfigFormat,
+    client: &'a str,
+    config_path: &'a Path,
+    base_exists: bool,
+    base_hash: &'a str,
+    result_hash: &'a str,
+    target_contents: &'a str,
+    unified_diff: &'a str,
+    diff_hash: &'a str,
+    plan_hash: &'a str,
+    session_id: &'a str,
+    issued_at: i64,
+    expires_at: i64,
+    backup_path: &'a str,
+    owned_keys: &'a [OwnedKeyMutation],
+    compresso_version: &'a str,
+    prior_receipt: &'a Option<InstallReceipt>,
+    warnings: &'a [String],
+}
+
+impl<'a> ExactJournalPlan<'a> {
+    fn new(plan: &'a MutationPlan, target_contents: &'a str) -> Self {
+        Self {
+            schema_version: plan.schema_version,
+            document_type: &plan.document_type,
+            operation: plan.operation,
+            config_format: plan.config_format,
+            client: &plan.client,
+            config_path: &plan.config_path,
+            base_exists: plan.base_exists,
+            base_hash: &plan.base_hash,
+            result_hash: &plan.result_hash,
+            target_contents,
+            unified_diff: &plan.unified_diff,
+            diff_hash: &plan.diff_hash,
+            plan_hash: &plan.plan_hash,
+            session_id: &plan.session_id,
+            issued_at: plan.issued_at,
+            expires_at: plan.expires_at,
+            backup_path: &plan.backup_path,
+            owned_keys: &plan.owned_keys,
+            compresso_version: &plan.compresso_version,
+            prior_receipt: &plan.prior_receipt,
+            warnings: &plan.warnings,
+        }
+    }
 }
 
 #[cfg(unix)]

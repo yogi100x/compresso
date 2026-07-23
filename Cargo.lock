@@ -363,6 +363,7 @@ dependencies = [
  "compresso-integrations",
  "compresso-mcp",
  "compresso-store",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",

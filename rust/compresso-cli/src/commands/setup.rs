@@ -391,7 +391,7 @@ fn render_plan(
                     "root": plan.root,
                     "plan": {
                         "repository": plan.repository.json["data"].clone(),
-                        "integration": plan.integration,
+                        "integration": plan.integration.public_preview(),
                     },
                     "result": result,
                 },
