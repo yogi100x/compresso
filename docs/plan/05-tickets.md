@@ -744,7 +744,7 @@ Test cases:
 - test_protected_gate_zero_tolerance: report with `protected_mutations == 1` → gate fails regardless of other metrics.
 - test_gates_toml_parses_and_matches_d37: parse gates.toml → thresholds `{0.25, 0, 0, 200}` exactly.
 
-### [ ] E7-04: Eval CI integration
+### [x] E7-04: Eval CI integration
 Owner: I1 · Estimate: 1.5d · Depends: E7-03, E1-02
 Files: .github/workflows/ci.yml (eval job)
 Description: Add the `eval` CI job per `01-stack` §4 on ubuntu-24.04 and macos-14: build release, run `cargo run -p compresso-eval --release -- run fixtures/ --gates docs/plan/gates.toml`, upload the JSON report as an artifact, and fail the workflow on any gate regression. Latency-sensitive gates run only on the macos-14 leg (dedicated hardware class) with the ubuntu leg enforcing the non-latency gates, to keep the P95 gate meaningful.
@@ -755,6 +755,11 @@ Acceptance criteria:
 Test cases:
 - test_ci_eval_wiring: actionlint passes; ci.yml contains the eval invocation string with `--gates docs/plan/gates.toml`.
 - test_gate_regression_fails_ci: scratch-branch verification recorded in the PR description with the failing run link.
+
+Evidence:
+
+- Green `main` run: https://github.com/yogi100x/compresso/actions/runs/30101524537
+- Deliberate `0.99` scratch regression: PR https://github.com/yogi100x/compresso/pull/8 was closed unmerged after both Eval legs failed with `gate_regression` naming `median_reduction_eligible` (Ubuntu job https://github.com/yogi100x/compresso/actions/runs/30103553223/job/89517646125; macOS job https://github.com/yogi100x/compresso/actions/runs/30103553223/job/89517646193).
 
 ### [x] E7-05: Recall-probe evaluation and passthrough baseline
 Owner: PQ · Estimate: 2d · Depends: E7-01, E7-02
