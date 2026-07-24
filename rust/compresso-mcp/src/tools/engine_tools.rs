@@ -150,6 +150,7 @@ fn compress_tool(
             compression_overhead: 0,
             fallback_used,
             tokens_served: None,
+            retrieval: None,
             trace_json: None,
             created_at,
         },
@@ -215,7 +216,7 @@ fn stats_tool(
     mode: Mode,
     arguments: Option<JsonObject>,
 ) -> Result<ToolSuccess, ToolFailure> {
-    let mut arguments = checked_arguments(arguments, &["since", "session_id"])?;
+    let mut arguments = checked_arguments(arguments, &["since", "session_id", "limit"])?;
     let since = optional_string(&mut arguments, "since", false)?;
     let session_id = optional_string(&mut arguments, "session_id", false)?
         .map(|value| {
@@ -224,6 +225,7 @@ fn stats_tool(
             })
         })
         .transpose()?;
+    let operation_limit = optional_usize(&mut arguments, "limit", 1, 1_000)?.unwrap_or(20);
     let now = unix_timestamp()?;
     let since_timestamp = since
         .as_deref()
@@ -233,6 +235,7 @@ fn stats_tool(
         .detailed_stats(&StatsFilter {
             since: since_timestamp,
             session_id,
+            operation_limit: Some(operation_limit),
         })
         .map_err(|_| ToolFailure::internal())?;
     let by_tool = stats
@@ -242,7 +245,8 @@ fn stats_tool(
             json!({
                 "tool": row.tool,
                 "operations": row.operations,
-                "net_tokens_saved": row.net_tokens_saved
+                "net_tokens_saved": row.net_tokens_saved,
+                "retrieval_tokens_avoided": row.retrieval_tokens_avoided
             })
         })
         .collect::<Vec<_>>();
@@ -264,7 +268,42 @@ fn stats_tool(
                 "label": stats.summary.modeled_cost_saved.label
             },
             "fallback_rate": stats.summary.fallback_rate,
-            "by_tool": by_tool
+            "compression_savings": {
+                "removed_tokens": stats.summary.removed_tokens,
+                "compression_overhead": stats.summary.compression_overhead,
+                "net_tokens_saved": stats.summary.net_tokens_saved,
+                "basis": "applied"
+            },
+            "retrieval_savings": {
+                "retrieval_pack_tokens": stats.summary.retrieval_pack_tokens,
+                "estimated_raw_source_tokens": stats.summary.estimated_raw_source_tokens,
+                "retrieval_tokens_avoided": stats.summary.retrieval_tokens_avoided,
+                "follow_up_calls_avoided": stats.summary.follow_up_calls_avoided,
+                "basis": "modeled"
+            },
+            "total_effective_savings": stats.summary.total_effective_savings,
+            "by_tool": by_tool,
+            "by_repository": stats.by_repository.iter().map(|row| json!({
+                "repository": row.repository,
+                "operations": row.operations,
+                "retrieval_pack_tokens": row.retrieval_pack_tokens,
+                "estimated_raw_source_tokens": row.estimated_raw_source_tokens,
+                "retrieval_tokens_avoided": row.retrieval_tokens_avoided,
+                "follow_up_calls_avoided": row.follow_up_calls_avoided,
+                "total_effective_savings": row.total_effective_savings
+            })).collect::<Vec<_>>(),
+            "by_operation": stats.by_operation.iter().map(|row| json!({
+                "operation_id": row.operation_id,
+                "repository": row.repository,
+                "tool": row.tool,
+                "compression_savings": row.compression_savings,
+                "retrieval_pack_tokens": row.retrieval_pack_tokens,
+                "estimated_raw_source_tokens": row.estimated_raw_source_tokens,
+                "retrieval_tokens_avoided": row.retrieval_tokens_avoided,
+                "follow_up_calls_avoided": row.follow_up_calls_avoided,
+                "total_effective_savings": row.total_effective_savings,
+                "created_at": row.created_at
+            })).collect::<Vec<_>>()
         }),
         "compresso_stats",
         mode,
@@ -336,6 +375,7 @@ fn retrieval_success(
             compression_overhead: 0,
             fallback_used: false,
             tokens_served: Some(tokens_used),
+            retrieval: None,
             trace_json: None,
             created_at: identity.created_at,
         },

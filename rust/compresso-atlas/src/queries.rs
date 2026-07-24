@@ -166,6 +166,8 @@ pub struct ContextPlan {
     pub matches_total: usize,
     pub evidence_files_total: usize,
     pub evidence_files_included: usize,
+    /// Modeled raw-file token baseline for distinct candidate evidence files.
+    pub estimated_raw_source_tokens: usize,
     pub tokens_used: usize,
     pub token_provider: TokenProvider,
     pub truncated: bool,
@@ -755,6 +757,13 @@ pub fn plan_context(
         .iter()
         .filter(|(_, bodies)| !bodies.is_empty())
         .count();
+    let estimated_raw_source_tokens = bodies_by_path
+        .iter()
+        .filter(|(_, bodies)| !bodies.is_empty())
+        .filter_map(|(path, _)| store.indexed_file(repo, path).ok().flatten())
+        .fold(0_usize, |total, file| {
+            total.saturating_add(file.token_estimate)
+        });
 
     let mut rendered = String::new();
     let mut included_map = None;
@@ -826,6 +835,7 @@ pub fn plan_context(
         matches_total,
         evidence_files_total,
         evidence_files_included,
+        estimated_raw_source_tokens,
         tokens_used,
         token_provider: counter.provider(),
         truncated,

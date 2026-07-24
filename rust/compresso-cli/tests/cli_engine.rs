@@ -211,16 +211,24 @@ fn test_stats_json_uses_exact_savings_vocabulary_and_human_labels_modeled() {
         keys,
         std::collections::BTreeSet::from([
             "applied_tokens",
+            "by_operation",
+            "by_repository",
+            "by_tool",
             "compression_overhead",
+            "compression_savings",
             "fallback_rate",
             "modeled_cost_saved",
             "net_tokens_saved",
             "observed_tokens",
             "operations",
             "removed_tokens",
+            "retrieval_savings",
+            "total_effective_savings",
         ])
     );
     assert_eq!(output["data"]["modeled_cost_saved"]["label"], "modeled");
+    assert_eq!(output["data"]["compression_savings"]["basis"], "applied");
+    assert_eq!(output["data"]["retrieval_savings"]["basis"], "modeled");
 
     let (human_exit, human, human_errors) = fixture.run_raw(&["stats"], b"");
     assert_eq!(human_exit, CliExitCode::Success);

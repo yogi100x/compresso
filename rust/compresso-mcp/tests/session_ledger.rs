@@ -334,6 +334,7 @@ async fn test_operation_per_tool_call() {
         .detailed_stats(&StatsFilter {
             since: None,
             session_id: Some(session_id),
+            operation_limit: None,
         })
         .expect("session stats should load");
     assert_eq!(summary.summary.operations, 3);

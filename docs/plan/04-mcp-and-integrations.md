@@ -370,7 +370,7 @@ Counts are reported for both `openai_o200k` (exact) and `anthropic_calibrated` (
 
 ### 1.11 compresso_stats
 
-**Description (final copy)**: Returns Compresso's local savings summary: operations recorded, observed vs applied tokens, net tokens saved, and modeled cost saved, using the fixed savings vocabulary. All figures come from the local SQLite store, and Compresso makes no independent network request. The result is delivered to the configured coding client and may be sent by that client to its configured model provider under client policy. Optional filters narrow by time window or session.
+**Description (final copy)**: Returns Compresso's local applied-compression and modeled-retrieval savings, including aggregate, per-tool, per-repository, and bounded per-operation results. Exact retrieval pack tokens remain separate from estimated raw-source tokens and modeled follow-up calls avoided. All figures come from local SQLite, and Compresso makes no independent network request. Optional filters narrow by time window or session.
 
 **inputSchema**:
 
@@ -379,7 +379,8 @@ Counts are reported for both `openai_o200k` (exact) and `anthropic_calibrated` (
   "type": "object",
   "properties": {
     "since": { "type": "string", "description": "ISO 8601 timestamp or relative duration ('24h', '7d', '30d'). Default: all retained history (90 days)." },
-    "session_id": { "type": "string", "description": "Restrict to one session (ulid)." }
+    "session_id": { "type": "string", "description": "Restrict to one session (ulid)." },
+    "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 20, "description": "Maximum newest per-operation rows." }
   },
   "required": []
 }
@@ -400,6 +401,9 @@ Counts are reported for both `openai_o200k` (exact) and `anthropic_calibrated` (
   "net_tokens_saved": 366600,
   "modeled_cost_saved": { "amount_usd": 4.12, "label": "modeled" },
   "fallback_rate": 0.02,
+  "compression_savings": { "removed_tokens": 379000, "compression_overhead": 12400, "net_tokens_saved": 366600, "basis": "applied" },
+  "retrieval_savings": { "retrieval_pack_tokens": 82000, "estimated_raw_source_tokens": 510000, "retrieval_tokens_avoided": 428000, "follow_up_calls_avoided": 91, "basis": "modeled" },
+  "total_effective_savings": 794600,
   "by_tool": [ { "tool": "compresso_read", "operations": 120, "net_tokens_saved": 141000 } ]
 }
 ```

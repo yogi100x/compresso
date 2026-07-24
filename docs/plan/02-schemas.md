@@ -169,6 +169,11 @@ net_tokens_saved           removed_tokens - compression_overhead
 provider_observed_input_tokens  actual input/cache fields reported for the request sent
 provider_observed_cost          actual cost from observed usage and a versioned price table
 modeled_cost_saved              counterfactual only; never provider-verified
+retrieval_pack_tokens           exact tokens returned by retrieval tools
+estimated_raw_source_tokens     modeled raw-source baseline; never provider-observed
+retrieval_tokens_avoided        saturating modeled baseline - exact pack tokens
+follow_up_calls_avoided         modeled separate reads replaced by a ready pack
+total_effective_savings         applied net compression + modeled retrieval avoidance
 ```
 
 ## 4. SQLite DDL v1 (`rust/compresso-store/migrations/0001_init.sql`)
@@ -317,6 +322,11 @@ CREATE TABLE update_state (               -- used by updater, Phase 8
 The v1 `files.language` column is intentionally unconstrained `TEXT`. D68 adds
 the canonical values `shell` and `text` without rewriting the already-applied
 `0001` migration or requiring a schema migration.
+
+Migration `0006_retrieval_metrics.sql` adds nullable `repository_id`,
+`estimated_raw_source_tokens`, and `modeled_follow_up_calls_avoided` columns to
+`operations`. `tokens_served` remains the exact retrieval-pack count. Null
+historical baselines produce zero modeled retrieval avoidance (D69).
 
 `integration_receipts` is a query/reporting projection, not the E6 safety
 receipt. Migration identifiers `0002`–`0005` are reserved by D60, and this

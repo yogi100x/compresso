@@ -7,7 +7,7 @@ use compresso_core::{
     CompressionBudget, ContextGraph, Engine, Lossiness, Mode, NodeKind, TokenProvider, Trace,
     counter_for,
 };
-use compresso_store::{OperationRecord, StatsSummary, Store};
+use compresso_store::{DetailedStatsSummary, OperationRecord, StatsFilter, Store};
 use serde_json::{Value, json};
 
 use super::{OutputArgs, RootCommand};
@@ -88,6 +88,9 @@ pub struct ExplainArgs {
 
 #[derive(Args, Debug, Default)]
 pub struct StatsArgs {
+    /// Maximum number of newest per-operation rows to display.
+    #[arg(long, default_value_t = 20)]
+    pub limit: usize,
     #[command(flatten)]
     pub output: OutputArgs,
 }
@@ -164,6 +167,7 @@ fn execute_compress(
             compression_overhead: 0,
             fallback_used: result.fallback_used,
             tokens_served: None,
+            retrieval: None,
             trace_json: Some(trace_json),
             created_at: result.trace.created_at,
         })
@@ -213,23 +217,76 @@ fn execute_explain(store: &Store, arguments: ExplainArgs) -> Result<Rendered, En
     Ok(rendered(data, format!("{human}\n")))
 }
 
-fn execute_stats(store: &Store, _arguments: StatsArgs) -> Result<Rendered, EngineCommandError> {
-    let summary = store
-        .stats(None)
+fn execute_stats(store: &Store, arguments: StatsArgs) -> Result<Rendered, EngineCommandError> {
+    if !(1..=1_000).contains(&arguments.limit) {
+        return Err(EngineCommandError::invalid(
+            "stats limit must be between 1 and 1000",
+        ));
+    }
+    let stats = store
+        .detailed_stats(&StatsFilter {
+            since: None,
+            session_id: None,
+            operation_limit: Some(arguments.limit),
+        })
         .map_err(|_| EngineCommandError::internal())?;
-    let data = stats_json(&summary);
-    let human = format!(
-        "operations: {}\nobserved tokens: {}\napplied tokens: {}\nremoved tokens: {}\ncompression overhead: {}\nnet tokens saved: {}\nmodeled cost saved: ${:.6} ({})\nfallback rate: {:.2}%\n",
+    let summary = &stats.summary;
+    let data = stats_json(&stats);
+    let mut human = format!(
+        "operations: {}\n\ncompression savings (applied):\n  observed tokens: {}\n  applied tokens: {}\n  removed tokens: {}\n  compression overhead: {}\n  net compression savings: {}\n  fallback rate: {:.2}%\n\nretrieval savings (modeled baseline):\n  retrieval pack tokens: {}\n  estimated raw-source tokens: {}\n  retrieval tokens avoided: {}\n  follow-up calls avoided: {}\n\ntotal effective savings: {} (applied compression + modeled retrieval)\nmodeled cost saved: ${:.6} ({})\n",
         summary.operations,
         summary.observed_tokens,
         summary.applied_tokens,
         summary.removed_tokens,
         summary.compression_overhead,
         summary.net_tokens_saved,
+        summary.fallback_rate * 100.0,
+        summary.retrieval_pack_tokens,
+        summary.estimated_raw_source_tokens,
+        summary.retrieval_tokens_avoided,
+        summary.follow_up_calls_avoided,
+        summary.total_effective_savings,
         summary.modeled_cost_saved.amount_usd,
         summary.modeled_cost_saved.label,
-        summary.fallback_rate * 100.0,
     );
+    human.push_str("\nper repository:\n");
+    if stats.by_repository.is_empty() {
+        human.push_str("  none recorded\n");
+    }
+    for row in &stats.by_repository {
+        human.push_str(&format!(
+            "  {}: operations {}, pack {}, raw estimate {}, avoided {}, follow-ups {}, effective {}\n",
+            row.repository,
+            row.operations,
+            row.retrieval_pack_tokens,
+            row.estimated_raw_source_tokens,
+            row.retrieval_tokens_avoided,
+            row.follow_up_calls_avoided,
+            row.total_effective_savings,
+        ));
+    }
+    human.push_str(&format!(
+        "\nper operation (newest {}, limit {}):\n",
+        stats.by_operation.len(),
+        arguments.limit
+    ));
+    if stats.by_operation.is_empty() {
+        human.push_str("  none recorded\n");
+    }
+    for row in &stats.by_operation {
+        human.push_str(&format!(
+            "  {} {} [{}]: compression {}, pack {}, raw estimate {}, avoided {}, follow-ups {}, effective {}\n",
+            row.operation_id,
+            row.tool,
+            row.repository.as_deref().unwrap_or("no repository"),
+            row.compression_savings,
+            row.retrieval_pack_tokens,
+            row.estimated_raw_source_tokens,
+            row.retrieval_tokens_avoided,
+            row.follow_up_calls_avoided,
+            row.total_effective_savings,
+        ));
+    }
     Ok(rendered(data, human))
 }
 
@@ -254,7 +311,8 @@ fn read_input(input: &mut dyn Read, file: Option<&Path>) -> Result<String, Engin
     Ok(source)
 }
 
-fn stats_json(summary: &StatsSummary) -> Value {
+fn stats_json(stats: &DetailedStatsSummary) -> Value {
+    let summary = &stats.summary;
     json!({
         "operations": summary.operations,
         "observed_tokens": summary.observed_tokens,
@@ -267,6 +325,47 @@ fn stats_json(summary: &StatsSummary) -> Value {
             "label": summary.modeled_cost_saved.label,
         },
         "fallback_rate": summary.fallback_rate,
+        "compression_savings": {
+            "removed_tokens": summary.removed_tokens,
+            "compression_overhead": summary.compression_overhead,
+            "net_tokens_saved": summary.net_tokens_saved,
+            "basis": "applied"
+        },
+        "retrieval_savings": {
+            "retrieval_pack_tokens": summary.retrieval_pack_tokens,
+            "estimated_raw_source_tokens": summary.estimated_raw_source_tokens,
+            "retrieval_tokens_avoided": summary.retrieval_tokens_avoided,
+            "follow_up_calls_avoided": summary.follow_up_calls_avoided,
+            "basis": "modeled"
+        },
+        "total_effective_savings": summary.total_effective_savings,
+        "by_tool": stats.by_tool.iter().map(|row| json!({
+            "tool": row.tool,
+            "operations": row.operations,
+            "net_tokens_saved": row.net_tokens_saved,
+            "retrieval_tokens_avoided": row.retrieval_tokens_avoided
+        })).collect::<Vec<_>>(),
+        "by_repository": stats.by_repository.iter().map(|row| json!({
+            "repository": row.repository,
+            "operations": row.operations,
+            "retrieval_pack_tokens": row.retrieval_pack_tokens,
+            "estimated_raw_source_tokens": row.estimated_raw_source_tokens,
+            "retrieval_tokens_avoided": row.retrieval_tokens_avoided,
+            "follow_up_calls_avoided": row.follow_up_calls_avoided,
+            "total_effective_savings": row.total_effective_savings
+        })).collect::<Vec<_>>(),
+        "by_operation": stats.by_operation.iter().map(|row| json!({
+            "operation_id": row.operation_id,
+            "repository": row.repository,
+            "tool": row.tool,
+            "compression_savings": row.compression_savings,
+            "retrieval_pack_tokens": row.retrieval_pack_tokens,
+            "estimated_raw_source_tokens": row.estimated_raw_source_tokens,
+            "retrieval_tokens_avoided": row.retrieval_tokens_avoided,
+            "follow_up_calls_avoided": row.follow_up_calls_avoided,
+            "total_effective_savings": row.total_effective_savings,
+            "created_at": row.created_at
+        })).collect::<Vec<_>>()
     })
 }
 

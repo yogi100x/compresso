@@ -622,6 +622,27 @@ async fn test_context_tool_budget_and_sections() {
     assert!(result.get("task").is_none());
     assert!(result.get("search_queries").is_none());
     assert!(result.get("plan").is_none());
+    let stats = successful_json(harness.call("compresso_stats", json!({ "limit": 5 })).await);
+    assert_eq!(
+        stats["retrieval_savings"]["retrieval_pack_tokens"],
+        payload_tokens
+    );
+    assert!(
+        stats["retrieval_savings"]["estimated_raw_source_tokens"]
+            .as_u64()
+            .is_some_and(|tokens| tokens > 0)
+    );
+    assert!(
+        stats["retrieval_savings"]["follow_up_calls_avoided"]
+            .as_u64()
+            .is_some_and(|calls| calls > 0)
+    );
+    assert_eq!(stats["retrieval_savings"]["basis"], "modeled");
+    assert_eq!(
+        stats["by_repository"][0]["repository"],
+        fixture.root.to_string_lossy().as_ref()
+    );
+    assert_eq!(stats["by_operation"][0]["tool"], "compresso_context");
     harness.close().await;
 }
 
