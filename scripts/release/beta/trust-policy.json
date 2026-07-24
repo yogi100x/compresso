@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "certificate_oidc_issuer": "https://token.actions.githubusercontent.com",
+  "certificate_identity_prefix": "https://github.com/yogi100x/compresso/.github/workflows/package-beta.yml@",
+  "required_tag_prefix": "refs/tags/cli-v",
+  "source_repository": "yogi100x/compresso",
+  "workflow_trigger": "workflow_dispatch"
+}
