@@ -1,0 +1,52 @@
+.gitignore
+  s_87261b37472da1::t_888d54c239b1a2 4-5
+scripts/release/beta/tests/test_beta_release.py
+  s_87261b37472da1::t_08e7af24a4cad4 222
+  s_87261b37472da1::t_c5fd0d09531039 248-261,388-389
+  s_87261b37472da1::t_ea5f6dc53078a6 267-278
+  s_87261b37472da1::t_58d3ee3806b29d 56
+  s_87261b37472da1::t_c810803a07a674 1-55,57-175,210-221,223-247,262-266,279-387,390-415
+  s_87261b37472da1::t_a70526bc8039c2 176-209
+scripts/release/beta/verify-release.sh
+  s_87261b37472da1::t_61858986b732ef 1-65,67-76,79-81,91-95,99-108,112-113,117-121,126-132
+  s_87261b37472da1::t_816988090da33d 66,77-78,82-90,96-98,109-111,114-116,122-125
+scripts/release/beta/release.py
+  s_87261b37472da1::t_a70526bc8039c2 35-37,113-119,423,502-505
+  s_87261b37472da1::t_61858986b732ef 1-34,38-112,120-422,424-501,506-646
+scripts/release/beta/trust-policy.json
+  s_87261b37472da1::t_816988090da33d 5-7
+  s_87261b37472da1::t_61858986b732ef 1-4,8
+.github/workflows/ci.yml
+  s_87261b37472da1::t_4e106c8c3a433c 22,27-28
+schemas/release-manifest/beta-v1.json
+  s_87261b37472da1::t_9c208b2da3e0f6 63,81,102,105,140
+  s_87261b37472da1::t_61858986b732ef 1-32,34-62,64-78,86,96,98-101,103-104,106-139,141-200
+  s_87261b37472da1::t_a70526bc8039c2 33
+  s_87261b37472da1::t_fb3ed6fb1664df 79-80,82-85,87-95,97
+.github/workflows/package-beta.yml
+  s_87261b37472da1::t_a70526bc8039c2 59-60
+  s_87261b37472da1::t_de68d1229179cb 207-209
+  s_87261b37472da1::t_8b5d41cbcde35e 1-58,61-196,199-206,210-222,224-228,237-263,265-277,280-300,302-422
+  s_87261b37472da1::t_5bfbe84290b2f7 197-198,301
+  s_87261b37472da1::t_a5c812920bf030 223,229-236,264,278-279
+Cargo.toml
+  s_87261b37472da1::t_61858986b732ef 57-67
+rust/compresso-core/tests/schema_meta.rs
+  s_87261b37472da1::t_c5f70cef5c7ea8 130-202
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "d80b532308d70ee6e8f04c34015622e5e0c38887",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
