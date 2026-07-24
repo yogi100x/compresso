@@ -171,12 +171,17 @@ fn test_codex_previews_redact_unrelated_authorization_and_show_only_owned_change
     fs::create_dir_all(config.parent().expect("Codex config parent"))
         .expect("Codex config parent should be created");
     let old_command = fixture.home.join("old/bin/compresso");
+    let old_command_literal =
+        serde_json::to_string(&old_command.to_string_lossy()).expect("old command should encode");
+    let new_command_literal =
+        serde_json::to_string(&fixture.environment.compresso_bin.to_string_lossy())
+            .expect("new command should encode");
     let filler = (0..180)
         .map(|index| format!("# unrelated configuration line {index}\n"))
         .collect::<String>();
     let original = format!(
         "model = \"gpt-5\"\n{filler}\n[mcp_servers.cubic]\ncommand = \"cubic\"\nhttp_headers = {{ Authorization = \"Bearer {CANARY}\" }}\n\n[mcp_servers.compresso]\ncommand = {}\nargs = [\"mcp\", \"serve\"]\n",
-        serde_json::to_string(&old_command.to_string_lossy()).expect("old command should encode"),
+        old_command_literal,
     );
     fs::write(&config, &original).expect("secret-bearing Codex fixture should be written");
 
@@ -194,16 +199,8 @@ fn test_codex_previews_redact_unrelated_authorization_and_show_only_owned_change
     let diff = output["data"]["plan"]["unified_diff"]
         .as_str()
         .expect("safe diff should be present");
-    assert!(diff.contains(&old_command.to_string_lossy().into_owned()));
-    assert!(
-        diff.contains(
-            &fixture
-                .environment
-                .compresso_bin
-                .to_string_lossy()
-                .into_owned()
-        )
-    );
+    assert!(diff.contains(&old_command_literal));
+    assert!(diff.contains(&new_command_literal));
     assert!(!diff.contains("mcp_servers.cubic"));
     assert!(!diff.contains("unrelated configuration line"));
     assert!(
@@ -225,9 +222,14 @@ fn test_codex_human_preview_never_prints_unrelated_authorization() {
     fs::create_dir_all(config.parent().expect("Codex config parent"))
         .expect("Codex config parent should be created");
     let old_command = fixture.home.join("old/bin/compresso");
+    let old_command_literal =
+        serde_json::to_string(&old_command.to_string_lossy()).expect("old command should encode");
+    let new_command_literal =
+        serde_json::to_string(&fixture.environment.compresso_bin.to_string_lossy())
+            .expect("new command should encode");
     let original = format!(
         "[mcp_servers.cubic]\nhttp_headers = {{ Authorization = \"Bearer {CANARY}\" }}\n\n[mcp_servers.compresso]\ncommand = {}\nargs = [\"mcp\", \"serve\"]\n",
-        serde_json::to_string(&old_command.to_string_lossy()).expect("old command should encode"),
+        old_command_literal,
     );
     fs::write(&config, &original).expect("secret-bearing Codex fixture should be written");
     let cli = Cli::try_parse_from(["compresso", "integrations", "install", "codex", "--dry-run"])
@@ -252,16 +254,8 @@ fn test_codex_human_preview_never_prints_unrelated_authorization() {
     assert!(!preview.contains(CANARY));
     assert!(!preview.contains("Authorization"));
     assert!(!preview.contains("mcp_servers.cubic"));
-    assert!(preview.contains(&old_command.to_string_lossy().into_owned()));
-    assert!(
-        preview.contains(
-            &fixture
-                .environment
-                .compresso_bin
-                .to_string_lossy()
-                .into_owned()
-        )
-    );
+    assert!(preview.contains(&old_command_literal));
+    assert!(preview.contains(&new_command_literal));
     assert!(
         preview.lines().count() <= 12,
         "preview was not minimal: {preview}"

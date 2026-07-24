@@ -1060,10 +1060,9 @@ mod tests {
             .expect("reinstall plan");
 
         assert!(plan.unified_diff.contains("/old/bin/compresso"));
-        assert!(
-            plan.unified_diff
-                .contains(&binary.to_string_lossy().into_owned())
-        );
+        let binary_literal =
+            serde_json::to_string(&binary.to_string_lossy()).expect("binary path should encode");
+        assert!(plan.unified_diff.contains(&binary_literal));
         assert!(!plan.unified_diff.contains(CANARY));
         assert!(!plan.unified_diff.contains("Authorization"));
         assert!(!plan.unified_diff.contains("mcp_servers.cubic"));
