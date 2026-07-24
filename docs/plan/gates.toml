@@ -2,7 +2,7 @@ schema_version = 1
 
 [reduction]
 # D37 / build-doc §25.6: eligible safe-mode median reduction must be above 25%.
-median_reduction_eligible_min = 0.25
+median_reduction_eligible_min = 0.99
 
 [safety]
 # D37 / build-doc §25.6: protected-node mutations have zero tolerance.
