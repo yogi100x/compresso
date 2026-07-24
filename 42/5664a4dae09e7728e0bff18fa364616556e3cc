@@ -1,0 +1,37 @@
+rust/compresso-mcp/src/tools/atlas_read.rs
+  s_87261b37472da1::t_dc0face2d9677c 384,441-446
+docs/adr/0027-local-retrieval-savings-accounting.md
+  s_87261b37472da1::t_9ef9165eef5557 19-21
+rust/compresso-atlas/src/queries.rs
+  s_87261b37472da1::t_a86b0f25930902 760-762
+  s_87261b37472da1::t_dc0face2d9677c 169
+rust/compresso-store/src/lib.rs
+  s_87261b37472da1::t_40149aa844aa0a 47-50
+  s_87261b37472da1::t_51c266ba5a665b 510
+  s_87261b37472da1::t_77ffbef64ecb7f 461,475,483,623,646,656-659,665,674-680,688
+  s_87261b37472da1::t_07e40944503263 495-509,511-529
+  s_87261b37472da1::t_a86b0f25930902 470
+  s_87261b37472da1::t_c17326f5550ade 494
+docs/plan/02-schemas.md
+  s_87261b37472da1::t_40149aa844aa0a 330-332
+rust/compresso-store/migrations/0007_reset_unqualified_retrieval_baselines.sql
+  s_87261b37472da1::t_40149aa844aa0a 1-8
+rust/compresso-mcp/tests/tools_read.rs
+  s_87261b37472da1::t_a741da6c9279c2 886-892
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "425664a4dae09e7728e0bff18fa364616556e3cc",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
