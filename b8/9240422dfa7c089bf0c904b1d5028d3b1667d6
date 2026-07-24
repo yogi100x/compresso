@@ -1,0 +1,21 @@
+docs/plan/gates.toml
+  s_87261b37472da1::t_84c870f49bc53f 5
+.github/workflows/ci.yml
+  s_87261b37472da1::t_84c870f49bc53f 209-217
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "b89240422dfa7c089bf0c904b1d5028d3b1667d6",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
