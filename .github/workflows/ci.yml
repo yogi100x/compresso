@@ -206,6 +206,15 @@ jobs:
           REPORT_PATH: eval-report-${{ matrix.os }}.json
         run: |
           set +e
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("docs/plan/gates.toml")
+          contents = path.read_text()
+          expected = "median_reduction_eligible_min = 0.25"
+          if contents.count(expected) != 1:
+              raise SystemExit("expected one committed reduction threshold")
+          path.write_text(contents.replace(expected, "median_reduction_eligible_min = 0.99"))
+          PY
           cargo run -p compresso-eval --release -- run fixtures/ --gates docs/plan/gates.toml --json > "${REPORT_PATH}"
           eval_status=$?
           set -e
