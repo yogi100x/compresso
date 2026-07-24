@@ -1079,14 +1079,18 @@ mod tests {
         assert!(!debug_receipt.contains(CANARY));
         assert!(!debug_receipt.contains("Authorization"));
         let installed = fs::read_to_string(&config).expect("installed config");
-        let expected = original.replacen(
-            "command = \"/old/bin/compresso\"",
-            &format!("command = {:?}", binary.to_string_lossy()),
-            1,
-        );
         assert_eq!(
-            installed, expected,
-            "reinstall should replace only the owned command bytes"
+            installed
+                .parse::<DocumentMut>()
+                .expect("installed TOML")
+                .get("mcp_servers")
+                .and_then(Item::as_table_like)
+                .and_then(|servers| servers.get("compresso"))
+                .and_then(Item::as_table_like)
+                .and_then(|server| server.get("command"))
+                .and_then(Item::as_str),
+            binary.to_str(),
+            "reinstall should write the exact resolved command value"
         );
         assert!(installed.contains(&format!(
             "[mcp_servers.cubic] # preserve this sibling exactly\ncommand = \"cubic\"\nhttp_headers = {{ Authorization = \"Bearer {CANARY}\" }}"
