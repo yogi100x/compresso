@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.compresso.dev/release-manifest/beta-v1.json",
+  "title": "Compresso private beta release manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "channel",
+    "package_name",
+    "package_version",
+    "engine_version",
+    "immutable_release_identity",
+    "provenance",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "compresso_beta_release"
+    },
+    "channel": {
+      "const": "beta"
+    },
+    "package_name": {
+      "const": "@compresso/cli"
+    },
+    "package_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+-beta\\.[0-9]+$"
+    },
+    "engine_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$"
+    },
+    "immutable_release_identity": {
+      "type": "string",
+      "minLength": 1
+    },
+    "provenance": {
+      "$ref": "#/$defs/provenance"
+    },
+    "artifacts": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "$ref": "#/$defs/artifact"
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "size"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "sbom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "size", "format"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "format": {
+          "const": "cyclonedx-json"
+        }
+      }
+    },
+    "native_signing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "verified", "identity"],
+      "properties": {
+        "kind": {
+          "enum": ["apple_codesign", "sigstore_manifest"]
+        },
+        "verified": {
+          "const": true
+        },
+        "identity": {
+          "type": "string"
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "rust_target",
+        "package_target",
+        "binary",
+        "sbom",
+        "native_signing",
+        "immutable_identity",
+        "provenance_identity"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "rust_target": {
+          "enum": [
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+            "x86_64-unknown-linux-gnu"
+          ]
+        },
+        "package_target": {
+          "enum": ["darwin-arm64", "darwin-x64", "linux-x64"]
+        },
+        "binary": {
+          "$ref": "#/$defs/file"
+        },
+        "sbom": {
+          "$ref": "#/$defs/sbom"
+        },
+        "native_signing": {
+          "$ref": "#/$defs/native_signing"
+        },
+        "immutable_identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provenance_identity": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "source_repository",
+        "source_commit",
+        "workflow_ref",
+        "run_id",
+        "run_attempt"
+      ],
+      "properties": {
+        "identity": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "workflow_ref": {
+          "type": "string",
+          "minLength": 1
+        },
+        "run_id": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$"
+        },
+        "run_attempt": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}
