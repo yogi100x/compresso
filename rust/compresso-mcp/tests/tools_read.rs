@@ -883,6 +883,13 @@ async fn test_context_tool_stale_pack_requests_reindex_without_targeted_calls() 
     assert_eq!(result["broad_follow_up_required"], true);
     assert_eq!(result["targeted_follow_up_required"], false);
     assert_eq!(result["targeted_follow_up_limit"], 0);
+    let stats = successful_json(harness.call("compresso_stats", json!({ "limit": 1 })).await);
+    assert_eq!(
+        stats["by_operation"][0]["estimated_raw_source_tokens"],
+        stats["by_operation"][0]["retrieval_pack_tokens"]
+    );
+    assert_eq!(stats["by_operation"][0]["retrieval_tokens_avoided"], 0);
+    assert_eq!(stats["by_operation"][0]["follow_up_calls_avoided"], 0);
     harness.close().await;
 }
 
