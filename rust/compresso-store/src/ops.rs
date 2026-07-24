@@ -11,7 +11,7 @@ use rusqlite::{OptionalExtension, Row, params};
 use serde_json::Value;
 
 use crate::files::{sqlite_integer_from_u64, sqlite_integer_from_usize, validate_nonempty};
-use crate::{Store, StoreError, unix_timestamp};
+use crate::{RepoId, Store, StoreError, unix_timestamp};
 
 const TRACE_SCHEMA: &str = include_str!("../../../schemas/compression-trace/v1.json");
 const CROCKFORD_BASE32: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -92,10 +92,23 @@ pub struct OperationRecord {
     pub fallback_used: bool,
     /// Retrieval payload tokens; forbidden for compression operations.
     pub tokens_served: Option<usize>,
+    /// Repository and modeled baseline metadata for retrieval operations.
+    pub retrieval: Option<RetrievalMetrics>,
     /// Root compression-trace v1 JSON; forbidden for retrieval operations.
     pub trace_json: Option<String>,
     /// Unix timestamp in seconds.
     pub created_at: i64,
+}
+
+/// Content-free retrieval accounting persisted beside one operation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RetrievalMetrics {
+    /// Approved repository used by the operation, when repository-bound.
+    pub repository_id: Option<RepoId>,
+    /// Modeled tokens a raw-source workflow would have delivered.
+    pub estimated_raw_source_tokens: usize,
+    /// Modeled separate repository reads avoided by the packed result.
+    pub modeled_follow_up_calls_avoided: usize,
 }
 
 /// Counterfactual savings estimate, always explicitly labelled as modeled.
@@ -126,6 +139,16 @@ pub struct StatsSummary {
     pub modeled_cost_saved: ModeledCostSaved,
     /// Fraction of selected operations whose fallback flag is set.
     pub fallback_rate: f64,
+    /// Exact tokens delivered by retrieval operations.
+    pub retrieval_pack_tokens: u64,
+    /// Counterfactual raw-source baseline, explicitly modeled.
+    pub estimated_raw_source_tokens: u64,
+    /// Saturating modeled baseline minus exact retrieval pack tokens.
+    pub retrieval_tokens_avoided: u64,
+    /// Counterfactual repository calls avoided by packed retrieval.
+    pub follow_up_calls_avoided: u64,
+    /// Applied compression savings plus modeled retrieval avoidance.
+    pub total_effective_savings: i64,
 }
 
 /// Optional filters for detailed local savings metrics.
@@ -133,6 +156,7 @@ pub struct StatsSummary {
 pub struct StatsFilter {
     pub since: Option<i64>,
     pub session_id: Option<SessionId>,
+    pub operation_limit: Option<usize>,
 }
 
 /// Per-tool savings breakdown using the same fixed vocabulary as the total.
@@ -141,6 +165,34 @@ pub struct ToolStatsSummary {
     pub tool: String,
     pub operations: u64,
     pub net_tokens_saved: i64,
+    pub retrieval_tokens_avoided: u64,
+}
+
+/// Per-operation accounting ordered newest-first.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperationStatsSummary {
+    pub operation_id: OperationId,
+    pub repository: Option<String>,
+    pub tool: String,
+    pub compression_savings: i64,
+    pub retrieval_pack_tokens: u64,
+    pub estimated_raw_source_tokens: u64,
+    pub retrieval_tokens_avoided: u64,
+    pub follow_up_calls_avoided: u64,
+    pub total_effective_savings: i64,
+    pub created_at: i64,
+}
+
+/// Per-repository accounting ordered by canonical repository root.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RepositoryStatsSummary {
+    pub repository: String,
+    pub operations: u64,
+    pub retrieval_pack_tokens: u64,
+    pub estimated_raw_source_tokens: u64,
+    pub retrieval_tokens_avoided: u64,
+    pub follow_up_calls_avoided: u64,
+    pub total_effective_savings: i64,
 }
 
 /// Aggregate savings plus a deterministic tool-name-ordered breakdown.
@@ -148,6 +200,8 @@ pub struct ToolStatsSummary {
 pub struct DetailedStatsSummary {
     pub summary: StatsSummary,
     pub by_tool: Vec<ToolStatsSummary>,
+    pub by_repository: Vec<RepositoryStatsSummary>,
+    pub by_operation: Vec<OperationStatsSummary>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -176,6 +230,9 @@ type RawOperation = (
     Option<i64>,
     Option<String>,
     i64,
+    Option<i64>,
+    Option<i64>,
+    Option<i64>,
 );
 
 impl Store {
@@ -261,6 +318,30 @@ impl Store {
             .tokens_served
             .map(|value| sqlite_integer_from_usize("operation tokens_served", value))
             .transpose()?;
+        let repository_id = operation
+            .retrieval
+            .as_ref()
+            .and_then(|metrics| metrics.repository_id);
+        let estimated_raw_source_tokens = operation
+            .retrieval
+            .as_ref()
+            .map(|metrics| {
+                sqlite_integer_from_usize(
+                    "operation estimated_raw_source_tokens",
+                    metrics.estimated_raw_source_tokens,
+                )
+            })
+            .transpose()?;
+        let modeled_follow_up_calls_avoided = operation
+            .retrieval
+            .as_ref()
+            .map(|metrics| {
+                sqlite_integer_from_usize(
+                    "operation modeled_follow_up_calls_avoided",
+                    metrics.modeled_follow_up_calls_avoided,
+                )
+            })
+            .transpose()?;
 
         let mut connection = self.connection()?;
         let transaction = connection.transaction()?;
@@ -279,7 +360,7 @@ impl Store {
         }
 
         transaction.execute(
-            "INSERT INTO operations (id, session_id, tool, mode, observed_tokens, applied_tokens, compression_overhead, fallback_used, tokens_served, trace_json, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO operations (id, session_id, tool, mode, observed_tokens, applied_tokens, compression_overhead, fallback_used, tokens_served, trace_json, created_at, repository_id, estimated_raw_source_tokens, modeled_follow_up_calls_avoided) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 &operation.id,
                 operation.session_id.as_ref().map(SessionId::as_str),
@@ -292,6 +373,9 @@ impl Store {
                 tokens_served,
                 operation.trace_json.as_deref(),
                 operation.created_at,
+                repository_id,
+                estimated_raw_source_tokens,
+                modeled_follow_up_calls_avoided,
             ],
         )?;
 
@@ -328,7 +412,7 @@ impl Store {
         let connection = self.connection()?;
         let raw = connection
             .query_row(
-                "SELECT id, session_id, tool, mode, observed_tokens, applied_tokens, compression_overhead, fallback_used, tokens_served, trace_json, created_at FROM operations WHERE id = ?1",
+                "SELECT id, session_id, tool, mode, observed_tokens, applied_tokens, compression_overhead, fallback_used, tokens_served, trace_json, created_at, repository_id, estimated_raw_source_tokens, modeled_follow_up_calls_avoided FROM operations WHERE id = ?1",
                 [id],
                 raw_operation_from_row,
             )
@@ -341,7 +425,7 @@ impl Store {
         let connection = self.connection()?;
         let raw = connection
             .query_row(
-                "SELECT id, session_id, tool, mode, observed_tokens, applied_tokens, compression_overhead, fallback_used, tokens_served, trace_json, created_at FROM operations WHERE tool IN ('engine_compress', 'compresso_compress') ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                "SELECT id, session_id, tool, mode, observed_tokens, applied_tokens, compression_overhead, fallback_used, tokens_served, trace_json, created_at, repository_id, estimated_raw_source_tokens, modeled_follow_up_calls_avoided FROM operations WHERE tool IN ('engine_compress', 'compresso_compress') ORDER BY created_at DESC, rowid DESC LIMIT 1",
                 [],
                 raw_operation_from_row,
             )
@@ -355,6 +439,7 @@ impl Store {
             .detailed_stats(&StatsFilter {
                 since,
                 session_id: None,
+                operation_limit: Some(0),
             })?
             .summary)
     }
@@ -363,7 +448,11 @@ impl Store {
     pub fn detailed_stats(&self, filter: &StatsFilter) -> Result<DetailedStatsSummary, StoreError> {
         let connection = self.connection()?;
         let mut statement = connection.prepare(
-            "SELECT tool, observed_tokens, applied_tokens, compression_overhead, fallback_used FROM operations WHERE (?1 IS NULL OR created_at >= ?1) AND (?2 IS NULL OR session_id = ?2) ORDER BY created_at, id",
+            "SELECT o.id, o.tool, o.observed_tokens, o.applied_tokens, o.compression_overhead, o.fallback_used, o.tokens_served, o.estimated_raw_source_tokens, o.modeled_follow_up_calls_avoided, o.created_at, r.root
+             FROM operations AS o
+             LEFT JOIN repositories AS r ON r.id = o.repository_id
+             WHERE (?1 IS NULL OR o.created_at >= ?1) AND (?2 IS NULL OR o.session_id = ?2)
+             ORDER BY o.created_at, o.id",
         )?;
         let rows = statement.query_map(
             params![
@@ -373,10 +462,16 @@ impl Store {
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, i64>(3)?,
                     row.get::<_, i64>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, Option<i64>>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, Option<String>>(10)?,
                 ))
             },
         )?;
@@ -387,31 +482,88 @@ impl Store {
         let mut removed_tokens = 0_u64;
         let mut compression_overhead = 0_u64;
         let mut fallbacks = 0_u64;
-        let mut by_tool = BTreeMap::<String, (u64, u64, u64)>::new();
+        let mut retrieval_pack_tokens = 0_u64;
+        let mut estimated_raw_source_tokens = 0_u64;
+        let mut retrieval_tokens_avoided = 0_u64;
+        let mut follow_up_calls_avoided = 0_u64;
+        let mut by_tool = BTreeMap::<String, (u64, u64, u64, u64)>::new();
+        let mut by_repository = BTreeMap::<String, (u64, u64, u64, u64, u64)>::new();
+        let mut by_operation = Vec::new();
         for row in rows {
-            let (tool, observed, applied, overhead, fallback) = row?;
+            let (
+                operation_id,
+                tool,
+                observed,
+                applied,
+                overhead,
+                fallback,
+                pack,
+                raw,
+                follow_ups,
+                created_at,
+                repository,
+            ) = row?;
             let kind = classify_stored_tool(&tool)?;
             let observed = decode_nonnegative("operations.observed_tokens", observed)?;
             let applied = decode_nonnegative("operations.applied_tokens", applied)?;
             let overhead = decode_nonnegative("operations.compression_overhead", overhead)?;
             let fallback = decode_stored_bool("operations.fallback_used", fallback)?;
+            let pack = decode_optional_nonnegative("operations.tokens_served", pack)?;
+            let raw = decode_optional_nonnegative("operations.estimated_raw_source_tokens", raw)?;
+            let follow_ups = decode_optional_nonnegative(
+                "operations.modeled_follow_up_calls_avoided",
+                follow_ups,
+            )?;
+            let avoided = raw.saturating_sub(pack);
 
             operations = operations.saturating_add(1);
             observed_tokens = observed_tokens.saturating_add(observed);
             applied_tokens = applied_tokens.saturating_add(applied);
             compression_overhead = compression_overhead.saturating_add(overhead);
-            if kind == OperationKind::Compression && !fallback {
+            let compression_savings = if kind == OperationKind::Compression && !fallback {
                 let removed = observed.saturating_sub(applied);
                 removed_tokens = removed_tokens.saturating_add(removed);
-                let entry = by_tool.entry(tool).or_default();
+                let entry = by_tool.entry(tool.clone()).or_default();
                 entry.0 = entry.0.saturating_add(1);
                 entry.1 = entry.1.saturating_add(removed);
                 entry.2 = entry.2.saturating_add(overhead);
+                signed_token_difference(removed, overhead)
             } else {
-                let entry = by_tool.entry(tool).or_default();
+                let entry = by_tool.entry(tool.clone()).or_default();
                 entry.0 = entry.0.saturating_add(1);
                 entry.2 = entry.2.saturating_add(overhead);
+                if kind == OperationKind::Compression {
+                    signed_token_difference(0, overhead)
+                } else {
+                    0
+                }
+            };
+            let entry = by_tool.entry(tool.clone()).or_default();
+            entry.3 = entry.3.saturating_add(avoided);
+            retrieval_pack_tokens = retrieval_pack_tokens.saturating_add(pack);
+            estimated_raw_source_tokens = estimated_raw_source_tokens.saturating_add(raw);
+            retrieval_tokens_avoided = retrieval_tokens_avoided.saturating_add(avoided);
+            follow_up_calls_avoided = follow_up_calls_avoided.saturating_add(follow_ups);
+            if let Some(root) = &repository {
+                let entry = by_repository.entry(root.clone()).or_default();
+                entry.0 = entry.0.saturating_add(1);
+                entry.1 = entry.1.saturating_add(pack);
+                entry.2 = entry.2.saturating_add(raw);
+                entry.3 = entry.3.saturating_add(avoided);
+                entry.4 = entry.4.saturating_add(follow_ups);
             }
+            by_operation.push(OperationStatsSummary {
+                operation_id,
+                repository,
+                tool,
+                compression_savings,
+                retrieval_pack_tokens: pack,
+                estimated_raw_source_tokens: raw,
+                retrieval_tokens_avoided: avoided,
+                follow_up_calls_avoided: follow_ups,
+                total_effective_savings: compression_savings.saturating_add(u64_to_i64(avoided)),
+                created_at,
+            });
             if fallback {
                 fallbacks = fallbacks.saturating_add(1);
             }
@@ -434,18 +586,60 @@ impl Store {
                 label: "modeled".to_owned(),
             },
             fallback_rate,
+            retrieval_pack_tokens,
+            estimated_raw_source_tokens,
+            retrieval_tokens_avoided,
+            follow_up_calls_avoided,
+            total_effective_savings: signed_token_difference(
+                removed_tokens.saturating_add(retrieval_tokens_avoided),
+                compression_overhead,
+            ),
         };
         let by_tool = by_tool
             .into_iter()
             .map(
-                |(tool, (operations, removed_tokens, compression_overhead))| ToolStatsSummary {
+                |(
+                    tool,
+                    (operations, removed_tokens, compression_overhead, retrieval_tokens_avoided),
+                )| ToolStatsSummary {
                     tool,
                     operations,
                     net_tokens_saved: signed_token_difference(removed_tokens, compression_overhead),
+                    retrieval_tokens_avoided,
                 },
             )
             .collect();
-        Ok(DetailedStatsSummary { summary, by_tool })
+        let by_repository = by_repository
+            .into_iter()
+            .map(
+                |(repository, (operations, pack, raw, avoided, follow_ups))| {
+                    RepositoryStatsSummary {
+                        repository,
+                        operations,
+                        retrieval_pack_tokens: pack,
+                        estimated_raw_source_tokens: raw,
+                        retrieval_tokens_avoided: avoided,
+                        follow_up_calls_avoided: follow_ups,
+                        total_effective_savings: u64_to_i64(avoided),
+                    }
+                },
+            )
+            .collect();
+        by_operation.sort_by(|left, right| {
+            right
+                .created_at
+                .cmp(&left.created_at)
+                .then_with(|| right.operation_id.cmp(&left.operation_id))
+        });
+        if let Some(limit) = filter.operation_limit {
+            by_operation.truncate(limit);
+        }
+        Ok(DetailedStatsSummary {
+            summary,
+            by_tool,
+            by_repository,
+            by_operation,
+        })
     }
 }
 
@@ -462,6 +656,9 @@ fn raw_operation_from_row(row: &Row<'_>) -> rusqlite::Result<RawOperation> {
         row.get(8)?,
         row.get(9)?,
         row.get(10)?,
+        row.get(11)?,
+        row.get(12)?,
+        row.get(13)?,
     ))
 }
 
@@ -478,6 +675,9 @@ fn decode_operation(raw: RawOperation) -> Result<OperationRecord, StoreError> {
         tokens_served,
         trace_json,
         created_at,
+        repository_id,
+        estimated_raw_source_tokens,
+        modeled_follow_up_calls_avoided,
     ) = raw;
     validate_nonempty("stored operation id", &id)?;
     validate_nonempty("stored operation tool", &tool)?;
@@ -502,6 +702,26 @@ fn decode_operation(raw: RawOperation) -> Result<OperationRecord, StoreError> {
         tokens_served: tokens_served
             .map(|value| decode_usize("operations.tokens_served", value))
             .transpose()?,
+        retrieval: match (estimated_raw_source_tokens, modeled_follow_up_calls_avoided) {
+            (None, None) => None,
+            (Some(raw), Some(follow_ups)) => Some(RetrievalMetrics {
+                repository_id,
+                estimated_raw_source_tokens: decode_usize(
+                    "operations.estimated_raw_source_tokens",
+                    raw,
+                )?,
+                modeled_follow_up_calls_avoided: decode_usize(
+                    "operations.modeled_follow_up_calls_avoided",
+                    follow_ups,
+                )?,
+            }),
+            _ => {
+                return Err(StoreError::InvalidStoredValue {
+                    field: "operations retrieval metrics",
+                    value: "partial retrieval metrics".to_owned(),
+                });
+            }
+        },
         trace_json,
         created_at,
     };
@@ -533,6 +753,12 @@ fn validate_operation_shape(
 ) -> Result<Option<Value>, StoreError> {
     match kind {
         OperationKind::Compression => {
+            if operation.retrieval.is_some() {
+                return Err(StoreError::InvalidField {
+                    field: "compression retrieval metrics",
+                    reason: "compression operations cannot carry retrieval metrics",
+                });
+            }
             if operation.tokens_served.is_some() {
                 return Err(StoreError::UnexpectedTokensServed {
                     tool: operation.tool.clone(),
@@ -812,6 +1038,17 @@ fn decode_nonnegative(field: &'static str, value: i64) -> Result<u64, StoreError
     })
 }
 
+fn decode_optional_nonnegative(field: &'static str, value: Option<i64>) -> Result<u64, StoreError> {
+    value
+        .map(|value| decode_nonnegative(field, value))
+        .transpose()
+        .map(Option::unwrap_or_default)
+}
+
+fn u64_to_i64(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
 fn decode_usize(field: &'static str, value: i64) -> Result<usize, StoreError> {
     let value = decode_nonnegative(field, value)?;
     usize::try_from(value).map_err(|_| StoreError::NumericOutOfRange {
@@ -849,7 +1086,7 @@ mod tests {
     use serde_json::{Value, json};
     use tempfile::tempdir;
 
-    use crate::{OperationRecord, SessionId, StatsFilter, Store, StoreError};
+    use crate::{OperationRecord, RetrievalMetrics, SessionId, StatsFilter, Store, StoreError};
 
     fn setup() -> (tempfile::TempDir, Store) {
         let directory = tempdir().expect("temp directory should be created");
@@ -903,6 +1140,7 @@ mod tests {
             compression_overhead: 0,
             fallback_used,
             tokens_served,
+            retrieval: None,
             trace_json,
             created_at,
         }
@@ -1459,6 +1697,48 @@ mod tests {
     }
 
     #[test]
+    fn test_retrieval_stats_separate_exact_pack_from_modeled_baseline() {
+        let (directory, store) = setup();
+        let repository_id = store
+            .approve_repo(directory.path())
+            .expect("repository should be approved");
+        let mut retrieval = operation(
+            "retrieval-metrics",
+            "compresso_context",
+            (800, 800),
+            false,
+            Some(800),
+            None,
+            100,
+        );
+        retrieval.retrieval = Some(RetrievalMetrics {
+            repository_id: Some(repository_id),
+            estimated_raw_source_tokens: 4_200,
+            modeled_follow_up_calls_avoided: 6,
+        });
+        store
+            .record_operation(&retrieval)
+            .expect("retrieval should record");
+
+        let stats = store
+            .detailed_stats(&StatsFilter {
+                since: None,
+                session_id: None,
+                operation_limit: Some(10),
+            })
+            .expect("stats should aggregate");
+        assert_eq!(stats.summary.retrieval_pack_tokens, 800);
+        assert_eq!(stats.summary.estimated_raw_source_tokens, 4_200);
+        assert_eq!(stats.summary.retrieval_tokens_avoided, 3_400);
+        assert_eq!(stats.summary.follow_up_calls_avoided, 6);
+        assert_eq!(stats.summary.net_tokens_saved, 0);
+        assert_eq!(stats.summary.total_effective_savings, 3_400);
+        assert_eq!(stats.by_repository.len(), 1);
+        assert_eq!(stats.by_repository[0].retrieval_tokens_avoided, 3_400);
+        assert_eq!(stats.by_operation[0].operation_id, "retrieval-metrics");
+    }
+
+    #[test]
     fn test_detailed_stats_filters_session_and_groups_tools() {
         let (_directory, store) = setup();
         let first_session = store
@@ -1524,6 +1804,7 @@ mod tests {
             .detailed_stats(&StatsFilter {
                 since: Some(90),
                 session_id: Some(first_session),
+                operation_limit: None,
             })
             .expect("session stats should load");
         assert_eq!(detailed.summary.operations, 2);

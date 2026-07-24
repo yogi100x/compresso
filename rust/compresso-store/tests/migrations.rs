@@ -60,13 +60,13 @@ fn test_open_idempotent() {
     drop(Store::open(&path).expect("first open should succeed"));
 
     let first_connection = Connection::open(&path).expect("database should be inspectable");
-    let first_row: (i64, i64) = first_connection
-        .query_row(
-            "SELECT version, applied_at FROM schema_migrations",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .expect("migration row should exist");
+    let first_rows: Vec<(i64, i64)> = first_connection
+        .prepare("SELECT version, applied_at FROM schema_migrations ORDER BY version")
+        .expect("migration query should prepare")
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .expect("migration rows should be queryable")
+        .collect::<Result<_, _>>()
+        .expect("migration rows should decode");
     drop(first_connection);
 
     drop(Store::open(&path).expect("second open should succeed"));
@@ -78,7 +78,7 @@ fn test_open_idempotent() {
         .expect("migration rows should be queryable")
         .collect::<Result<_, _>>()
         .expect("migration rows should decode");
-    assert_eq!(rows, vec![first_row]);
+    assert_eq!(rows, first_rows);
 }
 
 #[test]

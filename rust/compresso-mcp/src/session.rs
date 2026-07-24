@@ -256,6 +256,7 @@ mod tests {
             compression_overhead: 0,
             fallback_used: false,
             tokens_served: Some(17),
+            retrieval: None,
             trace_json: None,
             created_at,
         }

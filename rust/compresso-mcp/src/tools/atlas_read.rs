@@ -333,7 +333,13 @@ fn context_payload_for_budget(
             budget_clamped,
             budget_expanded,
         );
+        let telemetry = payload
+            .as_object_mut()
+            .and_then(|object| object.remove("_compresso_telemetry"));
         let payload_tokens = stabilize_payload_tokens(&mut payload, counter)?;
+        if let (Some(object), Some(telemetry)) = (payload.as_object_mut(), telemetry) {
+            object.insert("_compresso_telemetry".to_owned(), telemetry);
+        }
         if payload_tokens <= budget_applied || planner_budget == 0 {
             return Ok(payload);
         }
@@ -429,7 +435,15 @@ fn compact_context_payload(
         "budget_clamped": budget_clamped,
         "tokens_used": 0,
         "token_provider": plan.token_provider,
-        "truncated": plan.truncated
+        "truncated": plan.truncated,
+        "_compresso_telemetry": {
+            "estimated_raw_source_tokens": plan.estimated_raw_source_tokens,
+            "modeled_follow_up_calls_avoided": if evidence_ready {
+                plan.evidence_files_included
+            } else {
+                0
+            }
+        }
     })
 }
 

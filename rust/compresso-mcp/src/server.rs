@@ -77,7 +77,7 @@ const UNFOLD_DESCRIPTION: &str = "Returns the exact indexed source body for one 
 const CONTEXT_DESCRIPTION: &str = "Primary one-call planner for broad natural-language or multi-concept repository tasks. It starts at 800 tokens and expands only when ranked evidence coverage is insufficient, using 1,600 and 3,200 token stages under a 4,000-token ceiling. max_tokens is the caller's hard ceiling. For task_pack_ready or next_action answer_from_pack, answer immediately with zero follow-up repository tool calls. Only for targeted_follow_up_needed, use at most two precise Compresso follow-ups. Read-only; requires an indexed repository.";
 const IMPACT_DESCRIPTION: &str = "Returns a bounded reverse-dependency report for one indexed file. The result identifies dependency depth and reports unresolved or ambiguous edges so completeness is explicit. Read-only; requires an indexed repository and an approved path.";
 const COMPRESS_DESCRIPTION: &str = "Compresses arbitrary text (logs, transcripts, search dumps, tool output) using Compresso's safe, deterministic strategy pipeline, and returns the compressed string with before/after token counts per provider. Safe mode is deterministic and rule-based (dedup, log collapsing, structured compaction, budget packing): removals are whole units, every removal is enumerated in the operation trace, protected content is never altered, and any failure returns the original text unchanged. It is not lossless; request passthrough mode for byte-exact needs. Use before passing long text to a sub-agent or follow-up prompt. Does not require an indexed repository.";
-const STATS_DESCRIPTION: &str = "Returns Compresso's local savings summary: operations recorded, observed vs applied tokens, net tokens saved, and modeled cost saved, using the fixed savings vocabulary. All figures come from the local SQLite store; the result is returned over MCP to the configured client. Optional filters narrow by time window or session.";
+const STATS_DESCRIPTION: &str = "Returns local applied-compression and modeled-retrieval savings with aggregate, per-tool, per-repository, and bounded per-operation results. Exact retrieval pack tokens remain separate from estimated raw-source tokens and modeled follow-up calls avoided. Historical rows without a baseline claim zero retrieval avoidance. All figures come from local SQLite; optional filters narrow by time window or session.";
 const EXPLAIN_DESCRIPTION: &str = "Returns the full compression trace for one past operation: mode, strategies attempted and applied, per-strategy token deltas, safety-check outcomes, fallback status, and a human-readable explanation. Traces contain no raw content — only identifiers, kinds, counts, and explanations. Use it to understand exactly what Compresso did to a given result.";
 
 /// Dependencies shared by the MCP server and its tool handlers.
@@ -584,7 +584,8 @@ fn tool_declarations() -> Vec<Tool> {
             STATS_DESCRIPTION,
             json!({
                 "since": { "type": "string", "description": "ISO 8601 timestamp or relative duration ('24h', '7d', '30d'). Default: all retained history (90 days)." },
-                "session_id": { "type": "string", "description": "Restrict to one session (ulid)." }
+                "session_id": { "type": "string", "description": "Restrict to one session (ulid)." },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 20, "description": "Maximum newest per-operation rows returned." }
             }),
             &[],
         ),

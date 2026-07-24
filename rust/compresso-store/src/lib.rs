@@ -16,8 +16,9 @@ use thiserror::Error;
 
 pub use files::{FileLanguage, FileRecord, RelativePathError};
 pub use ops::{
-    DetailedStatsSummary, ModeledCostSaved, OperationId, OperationRecord, SessionId, SessionRecord,
-    StatsFilter, StatsSummary, ToolStatsSummary,
+    DetailedStatsSummary, ModeledCostSaved, OperationId, OperationRecord, OperationStatsSummary,
+    RepositoryStatsSummary, RetrievalMetrics, SessionId, SessionRecord, StatsFilter, StatsSummary,
+    ToolStatsSummary,
 };
 pub use receipts::{ReceiptId, ReceiptRecord};
 pub use repos::{FileId, IndexVersionRecord, RepoId, RepoRecord, RepoRemovalPreview};
@@ -34,10 +35,16 @@ const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 /// Default retention window for operation metadata.
 pub const DEFAULT_OPERATION_RETENTION: Duration = Duration::from_secs(90 * SECONDS_PER_DAY);
 
-const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    sql: include_str!("../migrations/0001_init.sql"),
-}];
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        sql: include_str!("../migrations/0001_init.sql"),
+    },
+    Migration {
+        version: 6,
+        sql: include_str!("../migrations/0006_retrieval_metrics.sql"),
+    },
+];
 
 #[derive(Clone, Copy)]
 struct Migration {
@@ -447,7 +454,7 @@ mod tests {
     #[test]
     fn test_failed_migration_rolls_back() {
         const BAD_MIGRATION: Migration = Migration {
-            version: 2,
+            version: 7,
             sql: "CREATE TABLE test_table (id INTEGER PRIMARY KEY); THIS IS INVALID SQL;",
         };
         let (_directory, path) = test_database_path();
@@ -456,12 +463,12 @@ mod tests {
         let error = match Store::open_with_migrations(
             &path,
             StoreOptions::default(),
-            &[MIGRATIONS[0], BAD_MIGRATION],
+            &[MIGRATIONS[0], MIGRATIONS[1], BAD_MIGRATION],
         ) {
             Ok(_) => panic!("bad migration should fail"),
             Err(error) => error,
         };
-        assert!(matches!(error, StoreError::Migration { version: 2, .. }));
+        assert!(matches!(error, StoreError::Migration { version: 7, .. }));
 
         let connection = Connection::open(path).expect("database should reopen");
         let version: i64 = connection
@@ -469,7 +476,7 @@ mod tests {
                 row.get(0)
             })
             .expect("migration version should be readable");
-        assert_eq!(version, 1);
+        assert_eq!(version, 6);
         let test_table_exists: bool = connection
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'test_table')",
@@ -573,7 +580,7 @@ mod tests {
             .expect("migration rows should be queryable")
             .collect::<Result<_, _>>()
             .expect("migration rows should decode");
-        assert_eq!(rows, [1]);
+        assert_eq!(rows, [1, 6]);
     }
 
     #[test]
@@ -596,18 +603,18 @@ mod tests {
         assert!(matches!(
             error,
             StoreError::InvalidMigrationHistory { found, expected }
-                if found == [1, 99] && expected == [1]
+                if found == [1, 6, 99] && expected == [1, 6]
         ));
     }
 
     #[test]
     fn test_gap_in_migration_history_rejected() {
-        const MIGRATION_2: Migration = Migration {
-            version: 2,
+        const MIGRATION_7: Migration = Migration {
+            version: 7,
             sql: "SELECT 1;",
         };
-        const MIGRATION_3: Migration = Migration {
-            version: 3,
+        const MIGRATION_8: Migration = Migration {
+            version: 8,
             sql: "SELECT 1;",
         };
         let (_directory, path) = test_database_path();
@@ -615,7 +622,7 @@ mod tests {
         let connection = Connection::open(&path).expect("database should be inspectable");
         connection
             .execute(
-                "INSERT INTO schema_migrations (version, applied_at) VALUES (3, 1)",
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (8, 1)",
                 [],
             )
             .expect("gapped migration row should insert");
@@ -624,7 +631,7 @@ mod tests {
         let error = match Store::open_with_migrations(
             &path,
             StoreOptions::default(),
-            &[MIGRATIONS[0], MIGRATION_2, MIGRATION_3],
+            &[MIGRATIONS[0], MIGRATIONS[1], MIGRATION_7, MIGRATION_8],
         ) {
             Ok(_) => panic!("gapped migration history should be rejected"),
             Err(error) => error,
@@ -632,7 +639,7 @@ mod tests {
         assert!(matches!(
             error,
             StoreError::InvalidMigrationHistory { found, expected }
-                if found == [1, 3] && expected == [1, 2]
+                if found == [1, 6, 8] && expected == [1, 6, 7]
         ));
     }
 

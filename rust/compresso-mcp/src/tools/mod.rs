@@ -7,7 +7,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use compresso_core::{Config, Engine, Mode, TokenProvider, Trace, counter_for};
-use compresso_store::{OperationRecord, Store};
+use compresso_store::{OperationRecord, RetrievalMetrics, Store};
 use rmcp::model::{CallToolResult, JsonObject};
 
 use crate::session::SessionRuntime;
@@ -34,12 +34,15 @@ pub(crate) fn dispatch(
     let Some(session_id) = session.current() else {
         return common::ToolFailure::internal().into_result();
     };
+    let repository_id = repository_root
+        .and_then(|root| store.repo_by_root(root).ok().flatten())
+        .map(|repository| repository.id);
     let outcome = if atlas_nav::handles(name) {
         atlas_nav::dispatch(store, repository_root, name, arguments)
-            .and_then(|payload| retrieval_outcome(payload, name, engine.mode()))
+            .and_then(|payload| retrieval_outcome(payload, name, engine.mode(), repository_id))
     } else if atlas_read::handles(name) {
         atlas_read::dispatch(store, repository_root, name, arguments)
-            .and_then(|payload| retrieval_outcome(payload, name, engine.mode()))
+            .and_then(|payload| retrieval_outcome(payload, name, engine.mode(), repository_id))
     } else {
         engine_tools::dispatch(store, engine, config, repository_root, name, arguments)
     };
@@ -54,6 +57,20 @@ pub(crate) fn dispatch(
                 success.operation.observed_tokens = tokens_served;
                 success.operation.applied_tokens = tokens_served;
                 success.operation.tokens_served = Some(tokens_served);
+                if success.operation.retrieval.is_none()
+                    && matches!(success.operation.tool.as_str(), "compresso_impact")
+                {
+                    success.operation.retrieval = Some(RetrievalMetrics {
+                        repository_id,
+                        estimated_raw_source_tokens: tokens_served,
+                        modeled_follow_up_calls_avoided: 0,
+                    });
+                }
+                if let Some(metrics) = &mut success.operation.retrieval
+                    && metrics.estimated_raw_source_tokens == 0
+                {
+                    metrics.estimated_raw_source_tokens = tokens_served;
+                }
             }
             if let Some(trace) = &mut success.compression_trace {
                 trace.session_id = Some(session_id.into_string());
@@ -70,10 +87,26 @@ pub(crate) fn dispatch(
 }
 
 fn retrieval_outcome(
-    payload: serde_json::Value,
+    mut payload: serde_json::Value,
     tool: &str,
     mode: Mode,
+    repository_id: Option<i64>,
 ) -> Result<ToolSuccess, common::ToolFailure> {
+    let telemetry = payload
+        .as_object_mut()
+        .and_then(|object| object.remove("_compresso_telemetry"));
+    let estimated_raw_source_tokens = telemetry
+        .as_ref()
+        .and_then(|value| value.get("estimated_raw_source_tokens"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or_default();
+    let modeled_follow_up_calls_avoided = telemetry
+        .as_ref()
+        .and_then(|value| value.get("modeled_follow_up_calls_avoided"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or_default();
     let id = payload
         .get("operation_id")
         .and_then(serde_json::Value::as_str)
@@ -97,6 +130,11 @@ fn retrieval_outcome(
             compression_overhead: 0,
             fallback_used: false,
             tokens_served: Some(0),
+            retrieval: Some(RetrievalMetrics {
+                repository_id,
+                estimated_raw_source_tokens,
+                modeled_follow_up_calls_avoided,
+            }),
             trace_json: None,
             created_at,
         },
