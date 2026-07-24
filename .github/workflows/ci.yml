@@ -19,11 +19,13 @@ jobs:
       - name: Lint CI workflow
         uses: docker://rhysd/actionlint:1.7.12
         with:
-          args: .github/workflows/ci.yml
+          args: .github/workflows/ci.yml .github/workflows/package-beta.yml .github/workflows/release.yml
       - name: Assert required runner matrix
         run: ruby scripts/ci/check_ci_matrix.rb
       - name: Test deterministic release packaging
         run: scripts/package-tarball.sh --self-test
+      - name: Test private beta release contracts
+        run: python3 scripts/release/beta/tests/test_beta_release.py
 
   security:
     name: Security gates

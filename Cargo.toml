@@ -54,3 +54,14 @@ keyring = "3.6"
 jsonwebtoken = "9.3"
 reqwest = "0.12"
 windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[profile.dist]
+inherits = "release"
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = 2
+split-debuginfo = "packed"
+strip = "symbols"
+incremental = false
+panic = "unwind"

@@ -1,0 +1,422 @@
+name: Package private beta
+
+on:
+  workflow_dispatch:
+    inputs:
+      package_version:
+        description: SemVer package version (for example 0.1.0-beta.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-private-beta-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    name: Validate beta release contracts
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out immutable source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Run PB-04 contract tests
+        # Acceptance coverage:
+        # test_beta_matrix_exact_three_targets
+        # test_beta_manifest_signature_digest_and_provenance_reject_tamper
+        # test_beta_artifact_allowlist_rejects_each_private_class
+        # test_beta_symbols_private_and_native_signing_policy
+        run: python3 scripts/release/beta/tests/test_beta_release.py
+      - name: Validate release manifest schema JSON
+        run: python3 -m json.tool schemas/release-manifest/beta-v1.json >/dev/null
+
+  preflight:
+    name: Bind version to an immutable tag
+    needs: contract
+    runs-on: ubuntu-24.04
+    outputs:
+      engine_version: ${{ steps.version.outputs.engine_version }}
+      provenance_identity: ${{ steps.version.outputs.provenance_identity }}
+    steps:
+      - name: Check out immutable source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: version
+        name: Validate package, engine, source, and workflow identity
+        shell: bash
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        run: |
+          set -euo pipefail
+          python3 - "${PACKAGE_VERSION}" <<'PY'
+          import re
+          import sys
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+", sys.argv[1]):
+              raise SystemExit("package_version must use the numeric -beta.N prerelease form")
+          PY
+          expected_ref="refs/tags/cli-v${PACKAGE_VERSION}"
+          test "${GITHUB_REF_TYPE}" = "tag"
+          test "${GITHUB_REF}" = "${expected_ref}"
+          test "${GITHUB_REPOSITORY}" = "yogi100x/compresso"
+          test "${GITHUB_WORKFLOW_REF}" = \
+            "${GITHUB_REPOSITORY}/.github/workflows/package-beta.yml@${expected_ref}"
+          engine_version="$(
+            sed -n 's/^version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n 1
+          )"
+          test -n "${engine_version}"
+          provenance_identity="github-actions:${GITHUB_REPOSITORY}:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}"
+          {
+            printf 'engine_version=%s\n' "${engine_version}"
+            printf 'provenance_identity=%s\n' "${provenance_identity}"
+          } >> "${GITHUB_OUTPUT}"
+
+  quality:
+    name: Block release on E1-E7 and PB gates
+    needs: preflight
+    runs-on: macos-14
+    steps:
+      - name: Check out immutable source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        env:
+          # Remove after https://github.com/Swatinem/rust-cache/issues/331 is fixed.
+          NODE_OPTIONS: --disable-warning=DEP0040
+        with:
+          shared-key: package-beta-quality-macos-14
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install pnpm
+        run: corepack enable
+      - name: Install locked TypeScript dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Check formatting
+        run: cargo fmt --check
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Run full Rust workspace tests
+        run: cargo test --workspace --no-fail-fast
+      - name: Run TypeScript workspace checks
+        run: pnpm check
+      - name: Test local and npm packaging contracts
+        run: |
+          scripts/package-tarball.sh --self-test
+          packages/cli-distribution/tests/package_test.sh
+          python3 scripts/release/beta/tests/test_beta_release.py
+      - name: Run release evaluation gates against the hardened profile
+        run: |
+          cargo run -p compresso-eval --profile dist -- \
+            run fixtures/ \
+            --gates docs/plan/gates.toml \
+            --json > eval-report-macos-14-dist.json
+      - name: Run large-payload latency gates
+        run: cargo bench -p compresso-eval --bench large_payload_latency -- --noplot
+      - name: Upload private evaluation evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: private-beta-eval-${{ github.run_id }}-${{ github.run_attempt }}
+          path: eval-report-macos-14-dist.json
+          if-no-files-found: error
+          retention-days: 90
+
+  build:
+    name: Build and sign ${{ matrix.rust_target }}
+    needs:
+      - preflight
+      - quality
+    runs-on: ${{ matrix.os }}
+    environment: private-beta-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rust_target: aarch64-apple-darwin
+            package_target: darwin-arm64
+            os: macos-14
+            signing_kind: apple_codesign
+          - rust_target: x86_64-apple-darwin
+            package_target: darwin-x64
+            os: macos-15-intel
+            signing_kind: apple_codesign
+          - rust_target: x86_64-unknown-linux-gnu
+            package_target: linux-x64
+            os: ubuntu-24.04
+            signing_kind: sigstore_manifest
+    steps:
+      - name: Check out immutable source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        env:
+          # Remove after https://github.com/Swatinem/rust-cache/issues/331 is fixed.
+          NODE_OPTIONS: --disable-warning=DEP0040
+        with:
+          shared-key: package-beta-${{ matrix.rust_target }}
+      - name: Install target
+        run: rustup target add "${{ matrix.rust_target }}"
+      - name: Install pinned CycloneDX generator
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-cyclonedx@0.5.9
+      - name: Build hardened native engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          export RUSTFLAGS="--remap-path-prefix=${GITHUB_WORKSPACE}=/compresso --remap-path-prefix=${HOME}=/~"
+          export SOURCE_DATE_EPOCH
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct "${GITHUB_SHA}")"
+          cargo build \
+            --locked \
+            --profile dist \
+            --package compresso-cli \
+            --target "${{ matrix.rust_target }}"
+      - name: Generate target CycloneDX SBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct "${GITHUB_SHA}")"
+          cargo cyclonedx \
+            --manifest-path rust/compresso-cli/Cargo.toml \
+            --format json \
+            --describe binaries \
+            --target "${{ matrix.rust_target }}" \
+            --spec-version 1.5
+          test -f rust/compresso-cli/compresso_bin.cdx.json
+      - name: Archive private debug symbols
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="target/${{ matrix.rust_target }}/dist/compresso"
+          symbol_dir="private-symbols/${{ matrix.rust_target }}"
+          mkdir -p "${symbol_dir}"
+          if [[ "${{ matrix.signing_kind }}" = "apple_codesign" ]]; then
+            dsym_bundle="${binary}.dSYM"
+            test -d "${dsym_bundle}"
+            cp -R "${dsym_bundle}" "${symbol_dir}/compresso.dSYM"
+          else
+            dwp_file="target/${{ matrix.rust_target }}/dist/compresso.dwp"
+            test -f "${dwp_file}"
+            cp "${dwp_file}" "${symbol_dir}/compresso.dwp"
+          fi
+          test -n "$(find "${symbol_dir}" -type f -print -quit)"
+      - name: Import Apple Developer ID certificate
+        if: matrix.signing_kind == 'apple_codesign'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          test -n "${APPLE_CERTIFICATE_P12_BASE64}"
+          test -n "${APPLE_CERTIFICATE_PASSWORD}"
+          test -n "${APPLE_SIGNING_IDENTITY}"
+          test -n "${APPLE_TEAM_ID}"
+          case "${APPLE_SIGNING_IDENTITY}" in
+            "Developer ID Application: "*) ;;
+            *)
+              echo "APPLE_SIGNING_IDENTITY must be a Developer ID Application identity" >&2
+              exit 1
+              ;;
+          esac
+          certificate_path="${RUNNER_TEMP}/compresso-beta-signing.p12"
+          keychain_path="${RUNNER_TEMP}/compresso-beta-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          printf '%s' "${APPLE_CERTIFICATE_P12_BASE64}" |
+            openssl base64 -d -A -out "${certificate_path}"
+          security create-keychain -p "${keychain_password}" "${keychain_path}"
+          security set-keychain-settings -lut 21600 "${keychain_path}"
+          security unlock-keychain -p "${keychain_password}" "${keychain_path}"
+          security import "${certificate_path}" \
+            -k "${keychain_path}" \
+            -P "${APPLE_CERTIFICATE_PASSWORD}" \
+            -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s \
+            -k "${keychain_password}" \
+            "${keychain_path}"
+          security list-keychains -d user -s "${keychain_path}"
+          {
+            printf 'COMPRESSO_APPLE_KEYCHAIN=%s\n' "${keychain_path}"
+            printf 'COMPRESSO_APPLE_CERTIFICATE=%s\n' "${certificate_path}"
+          } >> "${GITHUB_ENV}"
+      - name: Sign and verify macOS native engine
+        if: matrix.signing_kind == 'apple_codesign'
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          binary="target/${{ matrix.rust_target }}/dist/compresso"
+          codesign \
+            --force \
+            --options runtime \
+            --timestamp \
+            --keychain "${COMPRESSO_APPLE_KEYCHAIN}" \
+            --sign "${APPLE_SIGNING_IDENTITY}" \
+            "${binary}"
+          codesign --verify --strict --verbose=2 "${binary}"
+          codesign --display --verbose=4 "${binary}" 2>&1 |
+            grep -F "Authority=${APPLE_SIGNING_IDENTITY}" >/dev/null
+          codesign --display --verbose=4 "${binary}" 2>&1 |
+            grep -F "TeamIdentifier=${APPLE_TEAM_ID}" >/dev/null
+      - name: Remove temporary Apple signing material
+        if: always() && matrix.signing_kind == 'apple_codesign'
+        shell: bash
+        run: |
+          set -eu
+          if [ -n "${COMPRESSO_APPLE_KEYCHAIN:-}" ]; then
+            security delete-keychain "${COMPRESSO_APPLE_KEYCHAIN}" || true
+          fi
+          if [ -n "${COMPRESSO_APPLE_CERTIFICATE:-}" ]; then
+            rm -f "${COMPRESSO_APPLE_CERTIFICATE}"
+          fi
+      - name: Assemble exact public artifact payload
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          artifact_dir="public-artifact/${{ matrix.package_target }}"
+          mkdir -p "${artifact_dir}"
+          cp "target/${{ matrix.rust_target }}/dist/compresso" \
+            "${artifact_dir}/compresso"
+          cp rust/compresso-cli/compresso_bin.cdx.json \
+            "${artifact_dir}/compresso.cdx.json"
+          signing_identity=
+          if [[ "${{ matrix.signing_kind }}" = "apple_codesign" ]]; then
+            signing_identity="${APPLE_SIGNING_IDENTITY}"
+          fi
+          scripts/release/beta/release.py write-metadata \
+            --artifact-dir "${artifact_dir}" \
+            --rust-target "${{ matrix.rust_target }}" \
+            --package-target "${{ matrix.package_target }}" \
+            --signing-kind "${{ matrix.signing_kind }}" \
+            --signing-identity "${signing_identity}"
+      - name: Upload immutable native artifact
+        id: native_upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: compresso-beta-${{ matrix.package_target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: public-artifact
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+      - name: Upload private debug symbols
+        uses: actions/upload-artifact@v7
+        with:
+          name: private-symbols-${{ matrix.rust_target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: private-symbols/${{ matrix.rust_target }}
+          if-no-files-found: error
+          retention-days: 90
+
+  sign:
+    name: Validate, scan, and sign release manifest
+    needs:
+      - preflight
+      - build
+    runs-on: ubuntu-24.04
+    environment: private-beta-release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out immutable source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Download exactly three immutable native artifacts
+        uses: actions/download-artifact@v8
+        env:
+          # Remove after https://github.com/actions/download-artifact/issues/484 is fixed.
+          NODE_OPTIONS: --disable-warning=DEP0005
+        with:
+          pattern: compresso-beta-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts
+          merge-multiple: true
+      - name: Assemble versioned release manifest
+        shell: bash
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+          ENGINE_VERSION: ${{ needs.preflight.outputs.engine_version }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          scripts/release/beta/release.py assemble \
+            --artifacts-root artifacts \
+            --package-version "${PACKAGE_VERSION}" \
+            --engine-version "${ENGINE_VERSION}" \
+            --source-repository "${GITHUB_REPOSITORY}" \
+            --source-commit "${GITHUB_SHA}" \
+            --workflow-ref "${GITHUB_WORKFLOW_REF}" \
+            --run-id "${GITHUB_RUN_ID}" \
+            --run-attempt "${GITHUB_RUN_ATTEMPT}" \
+            --output release/beta-release-manifest.json
+          cp schemas/release-manifest/beta-v1.json release/
+          cp scripts/release/beta/trust-policy.json release/
+      - name: Scan public artifact payload for secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --workdir /payload \
+            --volume "${PWD}/artifacts:/payload:ro" \
+            --volume "${PWD}/.gitleaks.toml:/gitleaks.toml:ro" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            dir . --config /gitleaks.toml --no-banner
+      - name: Install pinned Cosign
+        uses: sigstore/cosign-installer@v4.1.2
+      - name: Sign manifest with GitHub OIDC identity
+        run: |
+          cosign sign-blob \
+            --yes \
+            --bundle release/beta-release-manifest.sigstore.json \
+            release/beta-release-manifest.json
+      - name: Verify signature, signer, provenance, and artifact bytes
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+          PROVENANCE_IDENTITY: ${{ needs.preflight.outputs.provenance_identity }}
+        run: |
+          scripts/release/beta/verify-release.sh \
+            --manifest release/beta-release-manifest.json \
+            --bundle release/beta-release-manifest.sigstore.json \
+            --artifacts-root artifacts \
+            --package-version "${PACKAGE_VERSION}" \
+            --provenance-identity "${PROVENANCE_IDENTITY}"
+      - name: Enforce release evidence allowlist
+        shell: bash
+        run: |
+          set -euo pipefail
+          find release -type f -print | LC_ALL=C sort > release-files.actual
+          cat > release-files.expected <<'EOF'
+          release/beta-release-manifest.json
+          release/beta-release-manifest.sigstore.json
+          release/beta-v1.json
+          release/trust-policy.json
+          EOF
+          diff -u release-files.expected release-files.actual
+      - name: Upload signed private release evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: compresso-beta-release-evidence-${{ inputs.package_version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
