@@ -77,9 +77,14 @@ fn test_setup_codex_dry_run_redacts_unrelated_authorization_and_target_document(
     fs::create_dir_all(config.parent().expect("Codex config parent"))
         .expect("Codex config parent should be created");
     let old_command = fixture.directory.path().join("old/bin/compresso");
+    let old_command_literal =
+        serde_json::to_string(&old_command.to_string_lossy()).expect("old command should encode");
+    let new_command_literal =
+        serde_json::to_string(&fixture.environment.compresso_bin.to_string_lossy())
+            .expect("new command should encode");
     let original = format!(
         "# preserve this exact comment\n[mcp_servers.cubic]\nhttp_headers = {{ Authorization = \"Bearer {CANARY}\" }}\n\n[mcp_servers.compresso]\ncommand = {}\nargs = [\"mcp\", \"serve\"]\n",
-        serde_json::to_string(&old_command.to_string_lossy()).expect("old command should encode"),
+        old_command_literal,
     );
     fs::write(&config, &original).expect("secret-bearing Codex fixture should be written");
 
@@ -99,16 +104,8 @@ fn test_setup_codex_dry_run_redacts_unrelated_authorization_and_target_document(
     let diff = integration["unified_diff"]
         .as_str()
         .expect("safe integration diff should be present");
-    assert!(diff.contains(&old_command.to_string_lossy().into_owned()));
-    assert!(
-        diff.contains(
-            &fixture
-                .environment
-                .compresso_bin
-                .to_string_lossy()
-                .into_owned()
-        )
-    );
+    assert!(diff.contains(&old_command_literal));
+    assert!(diff.contains(&new_command_literal));
     assert!(!diff.contains("mcp_servers.cubic"));
     assert!(!diff.contains("preserve this exact comment"));
     assert!(
