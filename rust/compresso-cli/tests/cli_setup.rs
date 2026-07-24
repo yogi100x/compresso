@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{Cursor, Read};
@@ -12,12 +11,10 @@ use compresso_cli::{
     execute_setup, execute_setup_with_runtime,
 };
 use compresso_integrations::{
-    ApplyReport, CodexIntegration, ConfigFormat, FileReceiptStore, InstallCtx, InstallReceipt,
-    Integration, MutationKind, MutationPlan, OwnedKeyMutation, PlanClock, PlanManager,
-    RECEIPT_SCHEMA_VERSION, ReceiptStore, Scope,
+    CodexIntegration, FileReceiptStore, InstallCtx, InstallReceipt, Integration, PlanApproval,
+    PlanClock, PlanManager, ReceiptError, ReceiptStore, Scope,
 };
 use compresso_store::{Store, StoreError};
-use serde::Serialize;
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -1161,69 +1158,7 @@ fn authenticated_install_journal(fixture: &Fixture) -> (PathBuf, Vec<u8>) {
             },
         )
         .expect("internal journal plan should be issued");
-    let owned_value_hashes = plan
-        .owned_keys
-        .iter()
-        .filter_map(|mutation| {
-            mutation
-                .after_value_hash
-                .as_ref()
-                .map(|hash| (mutation.key_path.clone(), hash.clone()))
-        })
-        .collect::<BTreeMap<_, _>>();
-    let receipt = InstallReceipt {
-        schema_version: RECEIPT_SCHEMA_VERSION,
-        document_type: "install_receipt".to_owned(),
-        plan_hash: plan.plan_hash.clone(),
-        client: plan.client.clone(),
-        config_path: plan.config_path.clone(),
-        keys_owned: plan
-            .owned_keys
-            .iter()
-            .map(|mutation| mutation.key_path.clone())
-            .collect(),
-        owned_value_hashes,
-        backup_path: plan.backup_path.clone(),
-        installed_at: plan.issued_at,
-        compresso_version: plan.compresso_version.clone(),
-        uninstalled_at: None,
-    };
-    let report = ApplyReport {
-        receipt: Some(receipt.clone()),
-        restore: None,
-        already_applied: false,
-    };
-    let base_contents = if plan.base_exists {
-        Some(
-            fs::read_to_string(&plan.config_path)
-                .expect("previewed existing config should remain readable"),
-        )
-    } else {
-        None
-    };
-    let target_contents = format!(
-        "[mcp_servers.compresso]\ncommand = {:?}\nargs = [\"mcp\", \"serve\"]\n",
-        fixture.environment.compresso_bin.to_string_lossy()
-    );
-    let exact_plan = ExactJournalPlan::new(&plan, &target_contents);
-    // Match the private journal struct's compact serde field order exactly so
-    // FileReceiptStore authenticates the same bytes recovery will re-encode.
-    let payload = format!(
-        "{{\"journal_version\":1,\"plan\":{},\"base_contents\":{},\"persisted_receipt\":{},\"report\":{}}}",
-        serde_json::to_string(&exact_plan).expect("exact fixture plan should serialize"),
-        serde_json::to_string(&base_contents).expect("base should serialize"),
-        serde_json::to_string(&receipt).expect("receipt should serialize"),
-        serde_json::to_string(&report).expect("report should serialize"),
-    );
     let receipts = FileReceiptStore::new(fixture.receipt_store_path());
-    let mac = receipts
-        .seal_journal(payload.as_bytes())
-        .expect("journal should be authenticated by the canonical receipt store");
-    let envelope = format!(
-        "{{\"envelope_version\":1,\"commit\":{payload},\"mac\":{}}}",
-        serde_json::to_string(&mac).expect("journal MAC should serialize")
-    )
-    .into_bytes();
     let file_name = plan
         .config_path
         .file_name()
@@ -1232,61 +1167,57 @@ fn authenticated_install_journal(fixture: &Fixture) -> (PathBuf, Vec<u8>) {
     let journal_path = plan
         .config_path
         .with_file_name(format!("{file_name}.compresso-journal"));
-    (journal_path, envelope)
+    let failing_store = FailAfterJournalStore { inner: &receipts };
+    let error = manager
+        .apply_install(&PlanApproval::from(&plan), &failing_store)
+        .expect_err("fixture store should stop after the target and journal are written");
+    assert!(matches!(
+        error,
+        compresso_integrations::IntegrationError::Receipt(ReceiptError::Invalid { .. })
+    ));
+    let journal_bytes =
+        fs::read(&journal_path).expect("production apply should leave an authenticated journal");
+    fs::remove_file(&plan.config_path).expect("fixture should restore the missing base target");
+    fs::remove_file(&journal_path).expect("fixture should defer journal injection to the clock");
+    assert!(
+        receipts
+            .all()
+            .expect("receipt snapshot should load")
+            .is_empty(),
+        "the failing store must not persist a receipt"
+    );
+    (journal_path, journal_bytes)
 }
 
-/// Test-only mirror of the private authenticated-journal plan wire format.
-/// Production callers can serialize only `MutationPlanPreview`.
-#[derive(Serialize)]
-struct ExactJournalPlan<'a> {
-    schema_version: u32,
-    document_type: &'a str,
-    operation: MutationKind,
-    config_format: ConfigFormat,
-    client: &'a str,
-    config_path: &'a Path,
-    base_exists: bool,
-    base_hash: &'a str,
-    result_hash: &'a str,
-    target_contents: &'a str,
-    unified_diff: &'a str,
-    diff_hash: &'a str,
-    plan_hash: &'a str,
-    session_id: &'a str,
-    issued_at: i64,
-    expires_at: i64,
-    backup_path: &'a str,
-    owned_keys: &'a [OwnedKeyMutation],
-    compresso_version: &'a str,
-    prior_receipt: &'a Option<InstallReceipt>,
-    warnings: &'a [String],
+struct FailAfterJournalStore<'a> {
+    inner: &'a FileReceiptStore,
 }
 
-impl<'a> ExactJournalPlan<'a> {
-    fn new(plan: &'a MutationPlan, target_contents: &'a str) -> Self {
-        Self {
-            schema_version: plan.schema_version,
-            document_type: &plan.document_type,
-            operation: plan.operation,
-            config_format: plan.config_format,
-            client: &plan.client,
-            config_path: &plan.config_path,
-            base_exists: plan.base_exists,
-            base_hash: &plan.base_hash,
-            result_hash: &plan.result_hash,
-            target_contents,
-            unified_diff: &plan.unified_diff,
-            diff_hash: &plan.diff_hash,
-            plan_hash: &plan.plan_hash,
-            session_id: &plan.session_id,
-            issued_at: plan.issued_at,
-            expires_at: plan.expires_at,
-            backup_path: &plan.backup_path,
-            owned_keys: &plan.owned_keys,
-            compresso_version: &plan.compresso_version,
-            prior_receipt: &plan.prior_receipt,
-            warnings: &plan.warnings,
-        }
+impl ReceiptStore for FailAfterJournalStore<'_> {
+    fn by_plan_hash(&self, plan_hash: &str) -> Result<Option<InstallReceipt>, ReceiptError> {
+        self.inner.by_plan_hash(plan_hash)
+    }
+
+    fn active_for(
+        &self,
+        client: &str,
+        config_path: &Path,
+    ) -> Result<Option<InstallReceipt>, ReceiptError> {
+        self.inner.active_for(client, config_path)
+    }
+
+    fn save(&self, _receipt: &InstallReceipt) -> Result<(), ReceiptError> {
+        Err(ReceiptError::Invalid {
+            reason: "intentional post-journal fixture failure".to_owned(),
+        })
+    }
+
+    fn seal_journal(&self, payload: &[u8]) -> Result<String, ReceiptError> {
+        self.inner.seal_journal(payload)
+    }
+
+    fn verify_journal(&self, payload: &[u8], mac: &str) -> Result<(), ReceiptError> {
+        self.inner.verify_journal(payload, mac)
     }
 }
 
