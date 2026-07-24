@@ -2142,9 +2142,12 @@ fn safe_type_value(value: Option<&str>) -> String {
 fn safe_command_value(value: Option<&str>) -> String {
     value
         .filter(|value| {
-            Path::new(value).is_absolute()
+            is_lexically_absolute_preview_path(value)
                 && !value.contains("://")
-                && !value.contains(['?', '#'])
+                && !value
+                    .strip_prefix("\\\\?\\")
+                    .unwrap_or(value)
+                    .contains(['?', '#'])
                 && !value.chars().any(char::is_control)
         })
         .map(quoted_preview_value)
@@ -2179,7 +2182,7 @@ fn safe_args_value(arguments: &[&str]) -> String {
     let safe = arguments == ["mcp", "serve"]
         || (arguments.len() == 4
             && arguments[..3] == ["mcp", "serve", "--root"]
-            && Path::new(arguments[3]).is_absolute()
+            && is_lexically_absolute_preview_path(arguments[3])
             && !arguments[3].chars().any(char::is_control));
     if !safe {
         return redacted_preview_value();
@@ -2192,6 +2195,17 @@ fn safe_args_value(arguments: &[&str]) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     )
+}
+
+fn is_lexically_absolute_preview_path(value: &str) -> bool {
+    if Path::new(value).is_absolute() || value.starts_with('/') || value.starts_with(r"\\") {
+        return true;
+    }
+    let bytes = value.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && matches!(bytes[2], b'/' | b'\\')
 }
 
 fn quoted_preview_value(value: &str) -> String {
@@ -3090,6 +3104,34 @@ mod tests {
             diff.lines().count() <= 10,
             "preview was not minimal: {diff}"
         );
+    }
+
+    #[test]
+    fn test_secret_safe_preview_recognizes_absolute_paths_cross_platform() {
+        for absolute in [
+            "/opt/compresso",
+            r"C:\Program Files\Compresso\compresso.exe",
+            r"\\server\share\compresso.exe",
+            r"\\?\C:\tools\compresso.exe",
+        ] {
+            assert_ne!(
+                safe_command_value(Some(absolute)),
+                redacted_preview_value(),
+                "absolute path should be previewable: {absolute}"
+            );
+        }
+        for unsafe_value in [
+            "relative/compresso",
+            r"..\compresso.exe",
+            "https://example.invalid/compresso",
+            "/opt/compresso?token=secret",
+        ] {
+            assert_eq!(
+                safe_command_value(Some(unsafe_value)),
+                redacted_preview_value(),
+                "unsafe command should be redacted: {unsafe_value}"
+            );
+        }
     }
 
     #[test]
