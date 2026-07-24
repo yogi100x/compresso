@@ -1,0 +1,77 @@
+docs/plan/04-mcp-and-integrations.md
+  s_87261b37472da1::t_2e376deb6a9cc4 373,382-383,404-406
+rust/compresso-store/tests/migrations.rs
+  s_87261b37472da1::t_e8682808be147f 63-69,81
+docs/plan/02-schemas.md
+  s_87261b37472da1::t_2e376deb6a9cc4 172-176,326-329
+  s_87261b37472da1::t_e76eb914018e17 330
+rust/compresso-mcp/src/tools/engine_tools.rs
+  s_87261b37472da1::t_ebc4d5056fcad6 153,378
+  s_87261b37472da1::t_9abefe8e258fe4 219,228,238,248-249,271-306
+rust/compresso-mcp/src/server.rs
+  s_87261b37472da1::t_c7b924160b15d9 80
+  s_87261b37472da1::t_9abefe8e258fe4 587-588
+decisions.md
+  s_87261b37472da1::t_2e376deb6a9cc4 97
+rust/compresso-atlas/src/queries.rs
+  s_87261b37472da1::t_80f8865489ce5f 169-170,760-762,764-766,838
+  s_87261b37472da1::t_a908397ea393b1 763
+rust/compresso-mcp/src/tools/atlas_read.rs
+  s_87261b37472da1::t_f66032ba197d1e 438-446
+  s_87261b37472da1::t_eaf6e622626117 336-338,340-342
+rust/compresso-mcp/src/session.rs
+  s_87261b37472da1::t_ebc4d5056fcad6 259
+rust/compresso-cli/tests/cli_engine.rs
+  s_87261b37472da1::t_29fd6686245336 214-216,218,225-226,230-231
+rust/compresso-mcp/tests/tools_read.rs
+  s_87261b37472da1::t_a87daa6bd9e387 626-645
+  s_87261b37472da1::t_5c02e10dc51fe0 625
+rust/compresso-store/src/ops.rs
+  s_87261b37472da1::t_fc6e3614ecfbd5 526
+  s_87261b37472da1::t_ebaf3b584ad68d 321-344,363,376-378,415,428,442
+  s_87261b37472da1::t_17d042c8ca5fb5 678-680,706-724,756-761,1046-1050
+  s_87261b37472da1::t_9962aad0d521e8 535-539
+  s_87261b37472da1::t_c907203257d80c 512,615-624,705,1041-1045
+  s_87261b37472da1::t_a908397ea393b1 1143,1807
+  s_87261b37472da1::t_e2bb9274acb440 451-455,465,469-474,485-491,493-505,511,513-517,523,530,532,540-553,555-566,589-596,601-604,608,612-614,628-642,659-661
+  s_87261b37472da1::t_912ff98c70cbb5 1700,1702-1740
+  s_87261b37472da1::t_ba5a3fdfa6d196 233-235
+  s_87261b37472da1::t_5c02e10dc51fe0 1089
+  s_87261b37472da1::t_48244fe0181427 14,95-96,103-113,142-151,159,168-195,203-204
+  s_87261b37472da1::t_d72b6dfb2bb204 1701
+  s_87261b37472da1::t_259682a4e4fe83 625-627
+  s_87261b37472da1::t_56bcc1ccedaede 1051
+  s_87261b37472da1::t_aecdc2befb6c6f 1699
+rust/compresso-mcp/tests/session_ledger.rs
+  s_87261b37472da1::t_c946e7782d7d9d 337
+docs/adr/0027-local-retrieval-savings-accounting.md
+  s_87261b37472da1::t_2e376deb6a9cc4 1-42
+rust/compresso-store/migrations/0006_retrieval_metrics.sql
+  s_87261b37472da1::t_48244fe0181427 1-6
+rust/compresso-mcp/src/tools/mod.rs
+  s_87261b37472da1::t_78c6daa104a478 60-68
+  s_87261b37472da1::t_f66032ba197d1e 10,37-39,42,45,69-73,90,93,95-109,133-137
+rust/compresso-cli/src/commands/engine.rs
+  s_87261b37472da1::t_c946e7782d7d9d 170
+  s_87261b37472da1::t_74feab522762ff 92,221-225
+  s_87261b37472da1::t_9b0e76d1040880 10,91,93,220,226-231,233-236,243-248,252-289,314-315,328-368
+rust/compresso-store/src/lib.rs
+  s_87261b37472da1::t_8f778443a3d2e8 457,466,471,479,583,606,612-613,616-617,625,634,642
+  s_87261b37472da1::t_48244fe0181427 19-21,38-47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "6fccf46933d127e915f69c4870ffac15f917e9ae",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
