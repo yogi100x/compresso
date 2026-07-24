@@ -1,0 +1,21 @@
+docs/plan/05-tickets.md
+  s_87261b37472da1::t_55441a8c1d1047 760
+  s_87261b37472da1::t_cbdef281b948ce 747,759,761-762
+  s_87261b37472da1::t_4d2ad53fa53b9c 763
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "9f2453931da62db8d25a1c82fcea732392228f6b",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
