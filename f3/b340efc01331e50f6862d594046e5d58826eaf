@@ -1,0 +1,23 @@
+rust/compresso-cli/tests/cli_setup.rs
+  s_87261b37472da1::t_8fde48ecb0f836 80-84,87,107-108
+rust/compresso-integrations/src/codex.rs
+  s_87261b37472da1::t_8fde48ecb0f836 1063-1065
+rust/compresso-cli/tests/cli_integrations.rs
+  s_87261b37472da1::t_8fde48ecb0f836 174-178,184,202-203,225-229,232,257-258
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "f3b340efc01331e50f6862d594046e5d58826eaf",
+  "prompts": {},
+  "sessions": {
+    "s_87261b37472da1": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f865b-e787-78b0-81d4-9af383e61060",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
