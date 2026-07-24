@@ -327,6 +327,9 @@ Migration `0006_retrieval_metrics.sql` adds nullable `repository_id`,
 `estimated_raw_source_tokens`, and `modeled_follow_up_calls_avoided` columns to
 `operations`. `tokens_served` remains the exact retrieval-pack count. Null
 historical baselines produce zero modeled retrieval avoidance (D69).
+Migration `0007_reset_unqualified_retrieval_baselines.sql` conservatively
+resets baselines written by the initial whole-file estimator; corrected
+matched-evidence estimates are recorded only after that migration.
 
 `integration_receipts` is a query/reporting projection, not the E6 safety
 receipt. Migration identifiers `0002`–`0005` are reserved by D60, and this

@@ -16,9 +16,9 @@ counterfactual raw read as applied savings would violate D58.
 Retrieval operations persist content-free local metadata: repository id,
 exact serialized pack tokens, estimated raw-source tokens, and modeled
 follow-up calls avoided. `compresso_context` estimates its raw baseline as the
-sum of indexed token estimates for distinct candidate evidence files. A
-task-ready pack models one avoided follow-up read per included evidence file;
-incomplete, stale, and no-match packs claim none.
+sum of indexed token estimates for matched symbol bodies before bounded
+excerpt packing. A task-ready pack models one avoided follow-up read per
+included evidence file; incomplete, stale, and no-match packs claim none.
 
 Statistics keep two bases separate:
 

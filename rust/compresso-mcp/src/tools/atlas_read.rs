@@ -381,6 +381,7 @@ fn compact_context_payload(
     let broad_follow_up_required = plan.matches_total == 0 || stale;
     let targeted_follow_up_required =
         !broad_follow_up_required && plan.matches_total > 0 && !evidence_ready;
+    let task_pack_ready = !broad_follow_up_required && !targeted_follow_up_required;
     let context_sufficiency = if broad_follow_up_required {
         "follow_up_needed"
     } else if targeted_follow_up_required {
@@ -437,8 +438,12 @@ fn compact_context_payload(
         "token_provider": plan.token_provider,
         "truncated": plan.truncated,
         "_compresso_telemetry": {
-            "estimated_raw_source_tokens": plan.estimated_raw_source_tokens,
-            "modeled_follow_up_calls_avoided": if evidence_ready {
+            "estimated_raw_source_tokens": if task_pack_ready {
+                plan.estimated_raw_source_tokens
+            } else {
+                0
+            },
+            "modeled_follow_up_calls_avoided": if task_pack_ready {
                 plan.evidence_files_included
             } else {
                 0
