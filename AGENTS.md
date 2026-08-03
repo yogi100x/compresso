@@ -95,3 +95,22 @@ inventing a new contract.
 - Name tests `test_snake_case`.
 - Do not add network or process capabilities without the ADR and boundary-test
   updates required by `docs/plan/01-stack-and-workspace.md`.
+
+## Git History and Naming (2026-08-04)
+
+- The entire git history was rewritten on 2026-08-04: every commit SHA changed
+  and the pre-rewrite history was purged locally and force-pushed. Any commit
+  SHA cited in documents or your own notes from before this date no longer
+  exists. Do not push refs based on pre-rewrite SHAs; if a push is rejected,
+  fetch and rebase onto current `origin/main` rather than force-pushing old
+  history back.
+- Commit messages must not carry tool-attribution trailers (no
+  `Co-Authored-By` marketing trailers) and PR bodies must not carry
+  tool-attribution footers.
+- Third-party product names were neutralized repo-wide by owner decision:
+  refer to the owner's earlier tool as "the predecessor CLI" and the
+  researched third-party agent product as "the reference product". Never
+  reintroduce the actual product names in file contents, filenames, commit
+  messages, or PR text. Renamed sources: `compresso-addon-capabilities.md`,
+  `docs/plan/09-advanced-capabilities.md`,
+  `docs/adr/0023-clean-room-advanced-capabilities.md`.
