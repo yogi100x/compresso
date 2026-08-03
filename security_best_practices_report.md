@@ -358,7 +358,7 @@ Confidence: **Medium**
 
 Relevant weakness: CWE-829 (Inclusion of Functionality from Untrusted Control Sphere)
 
-The tracked [CLAUDE.md](/Users/yogi/compresso/CLAUDE.md:1) mandates routing repository reads, shell execution, and web access through the locally installed `context-mode` plugin. Static inspection of the installed plugin found no Sentry, PostHog, or obvious telemetry path, and it is separate from Woz. Nevertheless, a tracked instruction that requires an unpinned local plugin creates a development supply-chain boundary with repository-read, sandbox execution, and network-fetch capabilities.
+The tracked [CLAUDE.md](/Users/yogi/compresso/CLAUDE.md:1) mandates routing repository reads, shell execution, and web access through the locally installed `context-mode` plugin. Static inspection of the installed plugin found no Sentry, PostHog, or obvious telemetry path, and it is separate from the third-party agent plugin discussed below. Nevertheless, a tracked instruction that requires an unpinned local plugin creates a development supply-chain boundary with repository-read, sandbox execution, and network-fetch capabilities.
 
 Recommended remediation: make the integration optional for contributors or document a reviewed version/hash/source; treat plugin upgrades as dependency changes; and ensure the plugin cannot expand Compresso runtime capabilities or bypass the one-project policy.
 
@@ -421,14 +421,14 @@ The worktree already contained modifications to `rust/compresso-eval/src/lib.rs`
 
 ## Related local-environment observations (not Compresso findings)
 
-### Woz for Claude
+### Third-party agent plugin for Claude
 
-Woz 0.3.71 is installed in the local Claude plugin cache but is currently disabled in Claude settings. No running Woz process or active Woz TCP connection was observed at inspection time. The local update metadata and the [official Woz repository](https://github.com/WithWoz/wozcode-plugin) indicate a newer 0.3.87 release.
+Version 0.3.71 of the third-party agent plugin is installed in the local Claude plugin cache but is currently disabled in Claude settings. No running process or active TCP connection for the plugin was observed at inspection time. The local update metadata and the plugin's public repository indicate a newer 0.3.87 release.
 
-Static inspection of the installed version, without executing it, found that when enabled it configures PostHog telemetry on by default and installs session telemetry hooks. The inspected event paths include session completion/failure/usage metrics, session and user identifiers, service tier, token/cache counts, turn/tool counts, compaction statistics, and timing/savings metrics. No outbound prompt or source-body field was observed in the session telemetry payload paths inspected, though runtime error metadata/stacks can contain contextual details and the obfuscated bundle prevents an absolute claim about every path. Set `WOZCODE_TELEMETRY_DISABLED=true` before enabling it if no Woz telemetry is desired, or leave the plugin disabled.
+Static inspection of the installed version, without executing it, found that when enabled it configures PostHog telemetry on by default and installs session telemetry hooks. The inspected event paths include session completion/failure/usage metrics, session and user identifiers, service tier, token/cache counts, turn/tool counts, compaction statistics, and timing/savings metrics. No outbound prompt or source-body field was observed in the session telemetry payload paths inspected, though runtime error metadata/stacks can contain contextual details and the obfuscated bundle prevents an absolute claim about every path. Set its documented telemetry-disable environment variable (see the vendor's docs) before enabling it if no plugin telemetry is desired, or leave the plugin disabled.
 
-Local Woz usage metadata is stored with relatively permissive file modes, while its authentication file is owner-only. Tightening the Woz metadata directory to owner-only access is prudent on a multi-user system.
+The plugin's local usage metadata is stored with relatively permissive file modes, while its authentication file is owner-only. Tightening its metadata directory to owner-only access is prudent on a multi-user system.
 
 ### Separate exposed process argument
 
-During host-process inspection, a live Supabase access token belonging to a separate Claude MCP process was visible in that process's command line. The token is not repeated here and was not associated with Compresso or Woz. It should be revoked/rotated and supplied through a mechanism that does not place secrets in process arguments; command-line secrets are discoverable through process listings and diagnostic tools.
+During host-process inspection, a live Supabase access token belonging to a separate Claude MCP process was visible in that process's command line. The token is not repeated here and was not associated with Compresso or the third-party plugin. It should be revoked/rotated and supplied through a mechanism that does not place secrets in process arguments; command-line secrets are discoverable through process listings and diagnostic tools.

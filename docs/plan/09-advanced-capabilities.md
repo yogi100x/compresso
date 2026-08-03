@@ -1,6 +1,6 @@
-# 09 - Clean-room WOZ-Inspired Capabilities (E15)
+# 09 - Clean-room Advanced Capabilities (E15)
 
-Source research: `compresso-addon-woz.md`. Decisions: D49-D50 and ADR-0023/0024. This specification replaces source naming with original Compresso contracts.
+Source research: `compresso-addon-capabilities.md`. Decisions: D49-D50 and ADR-0023/0024. This specification replaces source naming with original Compresso contracts.
 
 ## 1. Product boundary
 
@@ -9,9 +9,9 @@ E15 adds `compresso-search`, `compresso-edit`, `compresso-sql`, `compresso-recal
 ## 2. Clean-room rules
 
 - Public behavior is input, not implementation.
-- Do not copy WOZ source, prompts, copy, identifiers, assets, or obfuscated structures.
+- Do not copy the reference product's source, prompts, copy, identifiers, assets, or obfuscated structures.
 - Every algorithm, schema, fixture, and prompt is authored from Compresso requirements.
-- WOZ is never downloaded by builds, tests, benchmarks, or runtime code.
+- The reference product is never downloaded by builds, tests, benchmarks, or runtime code.
 - Unknown behavior is not inferred from obfuscated bundles.
 
 ## 3. Permission classes

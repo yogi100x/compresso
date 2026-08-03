@@ -12,7 +12,7 @@ Production MCP transports are stdio and authenticated Streamable HTTP. HTTP bind
 
 - **Transport**: stdio (`compresso mcp serve`), rmcp `ServerHandler` per 03-interfaces §5. One handler per tool; pure request/response, no background tasks, no shell execution anywhere in the tool path.
 - **Repository resolution**: the server binds repository access to one immutable session root at startup, selected only by explicit `mcp serve --root ROOT` naming an approved canonical repository or by resolving the canonical server working directory to its longest approved ancestor. There is no sole-approved-repository fallback. With neither source, the session remains unbound: `compresso_compress`, `compresso_stats`, and `compresso_explain` remain available, while repository tools return an actionable, content-free `not_indexed` error. A tool call cannot bind an unbound session. A tool `root`, when accepted for compatibility, must canonicalize to the already bound session root and cannot select another repository, even if it is approved. Unknown, unapproved, or cross-session roots return actionable errors and never trigger implicit indexing or filesystem access.
-- **Token budgets**: every tool that returns repository or text content takes `max_tokens` (name chosen for Tetris compatibility, D7). Bounds are minimum 100 and maximum 100000 unless a tool declares a tighter safety cap. For `compresso_context`, `max_tokens` is the caller's hard ceiling (default and maximum 4000): planning starts at 800 serialized-response tokens and expands through 1600 and 3200 only while ranked evidence coverage remains insufficient, with 4000 as the final safety ceiling. An explicit lower ceiling is never exceeded. Output is truncated to fit the applied budget with an explicit elision marker and `truncated: true` in the result. Token counts are produced by the real tokenizer stack (D14) and always carry a `token_provider` tag.
+- **Token budgets**: every tool that returns repository or text content takes `max_tokens` (name chosen for predecessor compatibility, D7). Bounds are minimum 100 and maximum 100000 unless a tool declares a tighter safety cap. For `compresso_context`, `max_tokens` is the caller's hard ceiling (default and maximum 4000): planning starts at 800 serialized-response tokens and expands through 1600 and 3200 only while ranked evidence coverage remains insufficient, with 4000 as the final safety ceiling. An explicit lower ceiling is never exceeded. Output is truncated to fit the applied budget with an explicit elision marker and `truncated: true` in the result. Token counts are produced by the real tokenizer stack (D14) and always carry a `token_provider` tag.
 - **Operation recording**: every handler calls `Store::record_operation` (03-interfaces §3). Compression operations (`compresso_compress`) record the full compression-trace v1 `trace_json` (02-schemas §2); retrieval operations (map, search, read, outline, unfold, context, impact, stats, explain) record `trace_json = NULL` with `tokens_served` set to the tokens returned (02-schemas §4). Traces never contain raw content. The `operation_id` (ulid) is included in every successful result so `compresso_explain` can retrieve it.
 - **Error behavior**: errors are returned as MCP tool results with `isError: true` and a single text content block — never protocol-level failures, never a crashed server. The text starts with a stable code in brackets, then an instructive human sentence. Codes: `not_indexed`, `outside_root`, `not_found`, `invalid_arguments`, `internal`. (Staleness is never an error code — stale results are served with `stale: true` plus a reindex hint.) Unknown/unindexed repository always produces:
 
@@ -66,7 +66,7 @@ Shipped verbatim as the rmcp server `instructions` (build-doc §13.4: brief, fac
 
 **Errors**: `not_indexed` (with `compresso index` instruction), `outside_root`, `invalid_arguments`. `stale: true` (not an error) when file hashes have drifted since last index; the map is still served with a reindex hint appended.
 
-**Tetris compatibility**: functional counterpart of `tetris_repo_map`; same purpose, `max_tokens` budget name retained.
+**Predecessor compatibility**: functional counterpart of the predecessor `repo_map` tool; same purpose, `max_tokens` budget name retained.
 
 ### 1.4 compresso_search
 
@@ -115,7 +115,7 @@ Shipped verbatim as the rmcp server `instructions` (build-doc §13.4: brief, fac
 
 **Errors**: `not_indexed`, `invalid_arguments` (empty query). Zero hits is a success with `hits: []`, plus a one-line suggestion to broaden the query or reindex if `stale`.
 
-**Tetris compatibility (D7)**: replaces `tetris_search`. Argument names `query`, `limit`, `max_tokens` match Tetris semantics; results are token-bounded the same way.
+**Predecessor compatibility (D7)**: replaces the predecessor `search` tool. Argument names `query`, `limit`, `max_tokens` match the predecessor CLI's semantics; results are token-bounded the same way.
 
 ### 1.5 compresso_read
 
@@ -181,7 +181,7 @@ Shipped verbatim as the rmcp server `instructions` (build-doc §13.4: brief, fac
 
 **Errors**: `not_indexed`, `outside_root` (canonicalized path escapes approved root), `not_found` (file missing on disk), `invalid_arguments` (start beyond EOF, end_line < start_line, end_line without start_line). Binary files return `invalid_arguments` with a note; never raw bytes.
 
-**Tetris compatibility (D7)**: replaces `tetris_read` (token-budgeted file read; budget argument is named `max_tokens` exactly as in Tetris) and replaces `tetris_context_gate` via `gate: true` (verdict + cost estimate without content).
+**Predecessor compatibility (D7)**: replaces the predecessor `read` tool (token-budgeted file read; budget argument is named `max_tokens` exactly as in the predecessor CLI) and replaces the predecessor `context_gate` tool via `gate: true` (verdict + cost estimate without content).
 
 ### 1.6 compresso_outline
 
@@ -222,7 +222,7 @@ Shipped verbatim as the rmcp server `instructions` (build-doc §13.4: brief, fac
 
 **Errors**: `not_indexed`, `outside_root`, `not_found` (file not in index — message distinguishes "not on disk" from "on disk but unparsed language; use compresso_read"). `stale: true` when the on-disk blake3 hash no longer matches the index; outline is still served with a reindex hint.
 
-**Tetris compatibility (D7)**: replaces `tetris_outline`; same skeleton-first workflow and argument semantics.
+**Predecessor compatibility (D7)**: replaces the predecessor `outline` tool; same skeleton-first workflow and argument semantics.
 
 ### 1.7 compresso_unfold
 
@@ -302,7 +302,7 @@ A pack is `task_pack_ready` only after it includes evidence from every distinct 
 
 **Errors**: `not_indexed`, `invalid_arguments`. If every derived search query yields no relevant symbol, success uses `retrieval_status: "no_matches"` and a `retrieval_note` stating explicitly that this is not proof of repository absence — never a guess.
 
-**Tetris compatibility**: counterpart of `tetris_minimal_context`; not name-mapped in D7 but keeps the same budgeted-pack semantics.
+**Predecessor compatibility**: counterpart of the predecessor `minimal_context` tool; not name-mapped in D7 but keeps the same budgeted-pack semantics.
 
 ### 1.9 compresso_impact
 
@@ -366,7 +366,7 @@ Counts are reported for both `openai_o200k` (exact) and `anthropic_calibrated` (
 
 **Errors**: `invalid_arguments` (empty text) only. Compression failures, safety-check failures, and latency overruns are not errors: the engine fails open (D38) and returns the original text with `fallback_used: true` and a reason. Input larger than the engine's body limit (8 MiB) returns the original text with `fallback_used: true`, `fallback_reason: "input_too_large"`.
 
-**Tetris compatibility (D7)**: replaces `tetris_compress_text`. Accepts raw text, returns compressed string plus before/after token counts per provider — the same contract, with real-tokenizer counts.
+**Predecessor compatibility (D7)**: replaces the predecessor `compress_text` tool. Accepts raw text, returns compressed string plus before/after token counts per provider — the same contract, with real-tokenizer counts.
 
 ### 1.11 compresso_stats
 
@@ -410,7 +410,7 @@ Counts are reported for both `openai_o200k` (exact) and `anthropic_calibrated` (
 
 **Errors**: `invalid_arguments` (unparseable `since`). An empty store is a success with zeros. `modeled_cost_saved` is always labelled `modeled`; `provider_observed_cost` is post-slice and never fabricated (D6: local-only, no telemetry).
 
-**Tetris compatibility**: counterpart of `tetris stats` / `tetris_session_insights`; no argument mapping required by D7.
+**Predecessor compatibility**: counterpart of the predecessor `stats` command / `session_insights` tool; no argument mapping required by D7.
 
 ### 1.12 compresso_explain
 
@@ -456,7 +456,7 @@ Counts are reported for both `openai_o200k` (exact) and `anthropic_calibrated` (
 
 **Errors**: `not_found` (unknown or pruned operation_id — message notes the 90-day retention), `invalid_arguments`. This tool records an operation row like every other, with `observed_tokens = applied_tokens` (no compression applied).
 
-**Tetris compatibility**: no Tetris equivalent; new surface.
+**Predecessor compatibility**: no predecessor equivalent; new surface.
 
 ## 2. Client integrations
 
@@ -565,11 +565,11 @@ args = ["mcp", "serve"]
 
 - **Claude Desktop**: no adapter, no detection, no writes to `~/Library/Application Support/Claude/claude_desktop_config.json` under any code path (D5). The CLI responds to `compresso integrations install claude-desktop` with a refusal citing this decision.
 - No hooks, wrappers, or PATH shims are installed for any client in the slice; the integration surface is exactly one MCP server entry per client.
-- No automatic migration of Tetris client configs. Tetris entries are never read, modified, or removed by Compresso adapters (D2/D3); users remove Tetris separately.
+- No automatic migration of the predecessor CLI's client configs. The predecessor CLI's entries are never read, modified, or removed by Compresso adapters (D2/D3); users remove the predecessor CLI separately.
 
 ## 3. Future E15 tool surface
 
-E15 adds versioned `compresso_search_combined`, `compresso_importers`, `compresso_edit_plan`, `compresso_edit_apply`, `compresso_edit_rollback`, `compresso_sql_schema`, `compresso_sql_query`, `compresso_sql_mutate`, `compresso_recall`, `compresso_remember`, `compresso_forget`, `compresso_review`, and `compresso_review_apply` tools. Exact schemas live in `09-woz-inspired-capabilities.md` and `schemas/{search,edit,sql,recall,knowledge,review}/v1.json`.
+E15 adds versioned `compresso_search_combined`, `compresso_importers`, `compresso_edit_plan`, `compresso_edit_apply`, `compresso_edit_rollback`, `compresso_sql_schema`, `compresso_sql_query`, `compresso_sql_mutate`, `compresso_recall`, `compresso_remember`, `compresso_forget`, `compresso_review`, and `compresso_review_apply` tools. Exact schemas live in `09-advanced-capabilities.md` and `schemas/{search,edit,sql,recall,knowledge,review}/v1.json`.
 
 Search/schema/query are read classes; recall is private-read and opt-in; planning has no side effects; edit/remember/review-apply are write; rollback/forget/SQL mutation are destructive. Every apply request binds an explicit approval to an unexpired plan hash and current base versions (D50). Claude Code and Codex receive schema-identical tools. Browser and terminal tools remain disabled until E15-31/E15-32 and E14-19/E14-20 pass.
 

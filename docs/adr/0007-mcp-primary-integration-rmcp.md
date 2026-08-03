@@ -6,7 +6,7 @@ Accepted
 
 ## Context
 
-Claude Code, Codex, Cursor, and most VS Code-compatible assistants share one integration surface: the Model Context Protocol (build-doc §13, §15). Native hooks and the provider proxy are client- or provider-specific and riskier. Decision D17 selects `rmcp`, the official Rust MCP SDK, with stdio transport first; D7 locks the tool surface to the build-doc §13 names with argument semantics compatible with the Tetris behavioral reference where tools overlap.
+Claude Code, Codex, Cursor, and most VS Code-compatible assistants share one integration surface: the Model Context Protocol (build-doc §13, §15). Native hooks and the provider proxy are client- or provider-specific and riskier. Decision D17 selects `rmcp`, the official Rust MCP SDK, with stdio transport first; D7 locks the tool surface to the build-doc §13 names with argument semantics compatible with the predecessor CLI's behavioral reference where tools overlap.
 
 ## Decision
 

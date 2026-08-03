@@ -225,7 +225,7 @@ Trade-secret status requires operational evidence: restricted access, classifica
 
 ## 18. Open-source compliance
 
-`cargo deny check licenses` already gates CI (E1-03). E14-11 extends it into a full program: machine-generated dependency inventory (Rust + TS) reviewed each release; MIT/BSD/Apache-2.0 allowed with notice compliance and Apache-2.0 patent terms preserved; LGPL requires linking/modification review; GPL requires distribution-model review; AGPL requires legal review before any use — CI fails when an unapproved license enters a release dependency graph (both `cargo deny` and a pnpm license check). A generated `THIRD-PARTY-NOTICES` file ships in every artifact. Clean-room rule (D2): no code, prompts, or assets copied from Tetris or WOZCODE; public behavior is reimplemented from our own specs and fixtures, and reviews enforce it.
+`cargo deny check licenses` already gates CI (E1-03). E14-11 extends it into a full program: machine-generated dependency inventory (Rust + TS) reviewed each release; MIT/BSD/Apache-2.0 allowed with notice compliance and Apache-2.0 patent terms preserved; LGPL requires linking/modification review; GPL requires distribution-model review; AGPL requires legal review before any use — CI fails when an unapproved license enters a release dependency graph (both `cargo deny` and a pnpm license check). A generated `THIRD-PARTY-NOTICES` file ships in every artifact. Clean-room rule (D2): no code, prompts, or assets copied from the predecessor CLI or the reference product; public behavior is reimplemented from our own specs and fixtures, and reviews enforce it.
 
 ## 19. Legal protection program
 

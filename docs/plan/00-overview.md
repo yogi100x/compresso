@@ -37,7 +37,7 @@ E10 Cloud control plane (contracts in 02/03 now; build Phase 6)
 E11 Provider proxy      E12 Release engineering & signing
 E13 Model & client expansion (07-model-expansion.md; source: compresso-expand.md)
 E14 IP protection & secure deployment (08-ip-and-secure-deployment.md; source: ip.md)
-E15 Clean-room advanced capabilities (09-woz-inspired-capabilities.md; source: compresso-addon-woz.md)
+E15 Clean-room advanced capabilities (09-advanced-capabilities.md; source: compresso-addon-capabilities.md)
 E16 Full-product completion (routing, modes, languages, integrations, operations)
 ```
 
@@ -53,7 +53,7 @@ E16 Full-product completion (routing, modes, languages, integrations, operations
 | E8–E12 | Supervisor, desktop, cloud, proxy, release eng | 4–9 | full tickets in 05 |
 | E13 Model & client expansion | Canonical protocol, drivers, profiles, router, initial and future providers | post-slice | 32 tickets in 05 |
 | E14 IP & secure deployment | Hardening, anti-tamper, legal/compliance, high-impact sandbox gates | 8–9 | 17 tickets in 05 |
-| E15 WOZ-inspired capabilities | Search, transactional edit, SQL, recall, knowledge, review, deferred browser/terminal | future | 34 tickets in 05 |
+| E15 Clean-room advanced capabilities | Search, transactional edit, SQL, recall, knowledge, review, deferred browser/terminal | future | 34 tickets in 05 |
 | E16 Full-product completion | Remaining routing, modes, languages, clients, desktop/cloud operations | future | 16 tickets / 59d |
 
 Slice total (E1–E7, 58 tickets): ~19 solo engineer-weeks; 2 engineers approximately 9–10 calendar weeks; solo approximately 3–3.5 months. Full backlog: 204 tickets; rollup at the end of `05-tickets.md`.
@@ -84,7 +84,7 @@ Roles from build-doc §27, used as `owner` on tickets. Solo mode: all roles = ow
 | `06-fixtures.md` | Evaluation fixture format and initial corpus |
 | `07-model-expansion.md` | Canonical model protocol, drivers, profiles, router, conformance (source: `compresso-expand.md`) |
 | `08-ip-and-secure-deployment.md` | IP boundaries, release hardening, anti-tamper, legal program (source: `ip.md`) |
-| `09-woz-inspired-capabilities.md` | Clean-room search, edit, SQL, recall, knowledge, review, parity, sandbox phases |
+| `09-advanced-capabilities.md` | Clean-room search, edit, SQL, recall, knowledge, review, parity, sandbox phases |
 | `docs/adr/` | Architecture decision records (0001–0024) |
 
 

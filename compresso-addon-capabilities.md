@@ -1,15 +1,15 @@
-# Compresso WOZ-Inspired Add-on Plan
+# Compresso Advanced Capabilities Add-on Plan
 
 ## 1. Purpose
 
-This document specifies how Compresso can implement the useful product capabilities observed in WOZCODE without copying proprietary source code, prompts, branding, or obfuscated implementation details.
+This document specifies how Compresso can implement the useful product capabilities observed in the reference product (a third-party coding-agent product) without copying proprietary source code, prompts, branding, or obfuscated implementation details.
 
 The work must use a clean-room approach:
 
 - Treat public documentation, public manifests, and runtime protocol schemas as behavioral requirements only.
 - Design original interfaces and implementations inside Compresso.
-- Do not copy WOZCODE source, bundled prompts, marketing language, or internal identifiers.
-- Do not depend on WOZCODE at runtime.
+- Do not copy the reference product's source, bundled prompts, marketing language, or internal identifiers.
+- Do not depend on the reference product at runtime.
 - Validate Compresso against independently created fixtures and product requirements.
 
 This add-on extends the main production plan in `compresso-build.md`.
@@ -18,8 +18,8 @@ This add-on extends the main production plan in `compresso-build.md`.
 
 The feature inventory below comes from:
 
-- The `@wozcode/install` npm package metadata and launcher.
-- The public `WithWoz/wozcode-plugin` repository.
+- The reference product's public npm installer package metadata and launcher.
+- The reference product's public plugin repository.
 - Claude plugin manifests and hook definitions.
 - Public agent and skill definitions.
 - An isolated MCP initialization and `tools/list` handshake with telemetry disabled.
@@ -31,16 +31,16 @@ Confidence labels:
 - **Strong inference:** implementation is indicated by bundled components and public behavior.
 - **Unknown:** obfuscation or missing source prevents reliable implementation-level confirmation.
 
-## 3. High-level WOZCODE product architecture
+## 3. High-level Reference Product architecture
 
-WOZCODE is not only a search plugin. It behaves as a replacement coding-agent layer:
+The reference product is not only a search plugin. It behaves as a replacement coding-agent layer:
 
 ```text
 Claude Code / Codex
         |
         | default agent selection
         v
-WOZ coding agent
+reference coding agent
         |
         +-- Search MCP tool
         +-- Edit MCP tool
@@ -66,26 +66,26 @@ The npm installer:
 
 1. Requires Node.js 22.5 or newer.
 2. Verifies that the Claude CLI is on `PATH`.
-3. Adds the public WOZCODE marketplace repository.
-4. Installs the WOZCODE Claude plugin.
+3. Adds the reference product's public marketplace repository.
+4. Installs the reference product's Claude plugin.
 5. Prints restart instructions.
 
 The installer does not pin the second-stage plugin to a specific immutable commit. Compresso must improve this with signed and version-pinned installation.
 
 ### 4.2 Main and fallback agents
 
-WOZCODE exposes three agent profiles:
+The reference product exposes three agent profiles:
 
 #### Main coding agent
 
 - Uses the current primary model.
-- Uses WOZ search, edit, and SQL tools.
+- Uses the reference product's search, edit, and SQL tools.
 - Disables native Read, Edit, Write, Grep, Glob, and NotebookEdit.
 
 #### Free-plan fallback agent
 
 - Uses native Claude tools.
-- Disables WOZ Search, Edit, and SQL after a plan cap is exhausted.
+- Disables the reference product's Search, Edit, and SQL after a plan cap is exhausted.
 
 #### Explore agent
 
@@ -160,7 +160,7 @@ The Edit tool supports:
 - Notebook cell insertion, deletion, movement, and type changes.
 - Post-edit syntax validation.
 
-WOZCODE encourages batching to reduce model round trips.
+The reference product encourages batching to reduce model round trips.
 
 Compresso should implement the batching benefit but use safer defaults:
 
@@ -374,7 +374,7 @@ Compresso must keep observed, applied, modeled, and provider-verified savings se
 
 ### 4.14 Controlled benchmark system
 
-The benchmark system compares WOZCODE and vanilla Claude behavior on the same repository and prompts.
+The benchmark system compares the reference product and vanilla Claude behavior on the same repository and prompts.
 
 Confirmed outputs include:
 
@@ -642,7 +642,7 @@ notebook cell replace
 - Notebook schema validation.
 - Optional repository-defined commands with explicit approval.
 
-### 7.4 Differences from WOZCODE behavior
+### 7.4 Differences from the reference product's behavior
 
 - Exact matching is the default.
 - Fuzzy matching requires an explicit request flag.
@@ -1121,7 +1121,7 @@ Compresso does not need these internals. It should implement the behaviors from 
 
 ## 19. Definition of done
 
-The WOZ-inspired Compresso add-on is production-ready when:
+The Compresso advanced-capabilities add-on is production-ready when:
 
 - Combined Search replaces common discover-search-read chains with bounded output.
 - Search supports text, source files, images, and PDFs safely.
@@ -1138,7 +1138,7 @@ The WOZ-inspired Compresso add-on is production-ready when:
 
 ## 20. Claude Code and Codex parity
 
-All WOZ-inspired Compresso features must be implemented for both Claude Code and Codex. The product core must not depend on either client's private configuration format or lifecycle hooks.
+All Compresso advanced-capabilities features must be implemented for both Claude Code and Codex. The product core must not depend on either client's private configuration format or lifecycle hooks.
 
 ### 20.1 Shared feature surface
 

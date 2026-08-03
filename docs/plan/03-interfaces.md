@@ -425,4 +425,4 @@ impl EntitlementCache<'_> {
 
 ## 10. E15 capability interfaces
 
-Authoritative E15 state machines are in `09-woz-inspired-capabilities.md`. Public surfaces are `CombinedSearch`, `EditPlanner`/`EditApplier`, `SqlInspector`/`SqlExecutor`, `RecallIndex`, `KnowledgeStore`, `ReviewOrchestrator`, and `ClientCapabilityNegotiator`. Read and apply interfaces are separate types; apply requires an unexpired content-hashed plan and `ApprovalGrant` issued by the permission engine.
+Authoritative E15 state machines are in `09-advanced-capabilities.md`. Public surfaces are `CombinedSearch`, `EditPlanner`/`EditApplier`, `SqlInspector`/`SqlExecutor`, `RecallIndex`, `KnowledgeStore`, `ReviewOrchestrator`, and `ClientCapabilityNegotiator`. Read and apply interfaces are separate types; apply requires an unexpired content-hashed plan and `ApprovalGrant` issued by the permission engine.

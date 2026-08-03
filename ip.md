@@ -589,7 +589,7 @@ Policy:
 - LGPL dependencies require linking and modification review.
 - GPL dependencies require distribution-model review.
 - AGPL dependencies require legal review before any use in a proprietary product or service.
-- Do not copy code, prompts, or assets from Tetris or WOZCODE.
+- Do not copy code, prompts, or assets from the predecessor CLI or the reference product.
 - Reimplement public behavior through original specifications and fixtures.
 - Preserve all required third-party notices.
 

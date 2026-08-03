@@ -567,7 +567,7 @@ Test cases:
 ### [x] E5-03: Tool handlers — compresso_search, compresso_read (gate mode), compresso_context
 Owner: R2 · Estimate: 1.5d · Depends: E5-01, E3-11, E3-12
 Files: rust/compresso-mcp/src/tools/atlas_read.rs, tests in rust/compresso-mcp/tests/tools_read.rs
-Description: Implement `compresso_search` (→ `search`), `compresso_read` (→ `read_bounded`, plus a `gate: true` argument implementing the Tetris `tetris_context_gate` semantics per D7: return size/token estimate and a worth-reading verdict without file content), and `compresso_context` (→ `plan_context`). All path arguments flow through the E3-11 canonicalization boundary; `OutsideRoot` maps to a stable MCP error code and never echoes the resolved path outside the root.
+Description: Implement `compresso_search` (→ `search`), `compresso_read` (→ `read_bounded`, plus a `gate: true` argument implementing the predecessor `context_gate` tool's semantics per D7: return size/token estimate and a worth-reading verdict without file content), and `compresso_context` (→ `plan_context`). All path arguments flow through the E3-11 canonicalization boundary; `OutsideRoot` maps to a stable MCP error code and never echoes the resolved path outside the root.
 Acceptance criteria:
 - `compresso_read` with `gate: true` returns the 04 §1.5 gate object (`worth_reading`, `reason`, `file_tokens_total`, `recommended_budget`, `cheaper_alternative`) only — response contains zero file-content bytes.
 - Traversal/symlink-escape inputs return error code `outside_root`; repository content in responses is data-only (no tool-side execution of anything found in files).
@@ -587,7 +587,7 @@ Test cases:
 ### [x] E5-04: Tool handlers — compresso_compress, compresso_impact, compresso_stats, compresso_explain
 Owner: R2 · Estimate: 1.5d · Depends: E5-01, E2-09, E3-03, E3-12
 Files: rust/compresso-mcp/src/tools/engine_tools.rs, tests in rust/compresso-mcp/tests/tools_engine.rs
-Description: `compresso_compress` builds a graph from the `text` argument (D7: compatible with `tetris_compress_text`), runs `Engine::compress` in the configured mode, returns compressed text plus real-tokenizer before/after counts; `compresso_impact` → `impact`; `compresso_stats` → `Store::stats` in the §3 vocabulary; `compresso_explain` returns the stored trace for an `operation_id`. Operation recording follows D47 (02-schemas §4, 04 §1.1): `compresso_compress` records a compression operation whose `trace_json` is the compression-trace v1 document validated against the **root** schema; the retrieval handlers (`compresso_impact`, `compresso_stats`, `compresso_explain`, plus the E5-02/E5-03 navigation and read tools) record `trace_json = NULL` with `tokens_served` set to the tokens returned to the client (E5-05 supplies the session id plumbing).
+Description: `compresso_compress` builds a graph from the `text` argument (D7: compatible with the predecessor `compress_text` tool), runs `Engine::compress` in the configured mode, returns compressed text plus real-tokenizer before/after counts; `compresso_impact` → `impact`; `compresso_stats` → `Store::stats` in the §3 vocabulary; `compresso_explain` returns the stored trace for an `operation_id`. Operation recording follows D47 (02-schemas §4, 04 §1.1): `compresso_compress` records a compression operation whose `trace_json` is the compression-trace v1 document validated against the **root** schema; the retrieval handlers (`compresso_impact`, `compresso_stats`, `compresso_explain`, plus the E5-02/E5-03 navigation and read tools) record `trace_json = NULL` with `tokens_served` set to the tokens returned to the client (E5-05 supplies the session id plumbing).
 Acceptance criteria:
 - `compresso_compress` on the 500-line log fixture text returns content containing `[×500` with `after_tokens < before_tokens`; on unparseable/edge input it returns the original text with `fallback_used: true` — never an MCP error for content reasons.
 - `compresso_explain` output validates against compression-trace v1 and contains no raw content.
@@ -2117,7 +2117,7 @@ Test cases:
 ### [ ] E14-11: License-compliance program
 Owner: I1 · Estimate: 2d · Depends: E1-03
 Files: deny.toml (extended), scripts/ci/pnpm_license_check.mjs, scripts/release/third_party_notices.sh, .github/workflows/ci.yml
-Description: Extend the E1-03 gate into the full 08 §18 program: machine-generated dependency inventory (Rust + TS) reviewed each release; MIT/BSD/Apache-2.0 allowed with notice compliance and Apache-2.0 patent terms preserved; LGPL requires linking/modification review; GPL requires distribution-model review; AGPL requires legal review before any use — CI fails when an unapproved license enters a release dependency graph via either `cargo deny` or the pnpm license check. A generated `THIRD-PARTY-NOTICES` file ships in every artifact (gate G12). Clean-room rule (D2) restated as a review requirement: no code, prompts, or assets copied from Tetris or WOZCODE.
+Description: Extend the E1-03 gate into the full 08 §18 program: machine-generated dependency inventory (Rust + TS) reviewed each release; MIT/BSD/Apache-2.0 allowed with notice compliance and Apache-2.0 patent terms preserved; LGPL requires linking/modification review; GPL requires distribution-model review; AGPL requires legal review before any use — CI fails when an unapproved license enters a release dependency graph via either `cargo deny` or the pnpm license check. A generated `THIRD-PARTY-NOTICES` file ships in every artifact (gate G12). Clean-room rule (D2) restated as a review requirement: no code, prompts, or assets copied from the predecessor CLI or the reference product.
 Acceptance criteria:
 - pnpm and cargo license gates both green on the tree; an injected AGPL dev-dependency in a scratch branch fails CI.
 - THIRD-PARTY-NOTICES generated per artifact and verified present by the E14-10 allowlist.
@@ -2198,12 +2198,12 @@ Test cases:
 
 ---
 
-## E15 — Clean-room WOZ-inspired capabilities
+## E15 — Clean-room advanced capabilities
 
-Per `09-woz-inspired-capabilities.md`, D49-D50, and ADR-0023/0024. All fixtures and implementation artifacts are original. Epic estimate: 116.5 engineer-days.
+Per `09-advanced-capabilities.md`, D49-D50, and ADR-0023/0024. All fixtures and implementation artifacts are original. Epic estimate: 116.5 engineer-days.
 
 ### [ ] E15-01: Schemas, migration 0004, and permission types
-Owner: R1+R2 · Estimate: 2.5d · Depends: E3-01, E8-02 · Files: schemas/{search,edit,sql,recall,knowledge,review}/v1.json, rust/compresso-store/migrations/0004_woz_capabilities.sql
+Owner: R1+R2 · Estimate: 2.5d · Depends: E3-01, E8-02 · Files: schemas/{search,edit,sql,recall,knowledge,review}/v1.json, rust/compresso-store/migrations/0004_advanced_capabilities.sql
 Acceptance/tests: strict schemas, transactional migration, unforgeable scoped grants, stale/expired plans, and ciphertext-only DB scan.
 
 ### [ ] E15-02: Combined bounded search core
@@ -2325,7 +2325,7 @@ Acceptance/tests: assist default, native tools retained, enforce visible/acknowl
 
 ### [ ] E15-30: E15 production and clean-room gates
 Owner: PQ+I1 · Estimate: 4d · Depends: E15-24, E15-26, E14-17 · Files: docs/plan/gates.toml, docs/security/clean-room-e15.md, .github/workflows/ci.yml
-Acceptance/tests: G16-G17, search/edit/SQL/recall/review/parity/provenance/license gates; deliberate failure and no-WOZ-dependency scans block publish.
+Acceptance/tests: G16-G17, search/edit/SQL/recall/review/parity/provenance/license gates; deliberate failure and no-reference-product-dependency scans block publish.
 
 ### [ ] E15-31: Sandboxed browser workflows
 Owner: R2+I1 · Estimate: 5d · Depends: E14-19, E15-30
@@ -2738,7 +2738,7 @@ Parallelism notes:
 | E12 Release engineering | 9 | 28 | ~5.5 wk | absorbs E14-06/07/13 |
 | E13 Model & client expansion | 32 | 91 | ~18 engineer-wk, phased | +D52 future phases |
 | E14 IP & secure deployment | 17 | 39 | ~8 wk | +E15 threat/sandbox gates |
-| E15 WOZ-inspired capabilities | 34 | 121.5 | ~24.5 engineer-wk | A-F incremental; G deferred |
+| E15 Clean-room advanced capabilities | 34 | 121.5 | ~24.5 engineer-wk | A-F incremental; G deferred |
 | E16 Full-product completion | 16 | 59 | ~12 engineer-wk, dependency-phased | |
 | **Post-slice + PB total** | **154** | **462 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
 | **Grand total** | **212** | **558 gross** | **~111.6 engineer-wk** | |
