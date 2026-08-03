@@ -1,0 +1,19 @@
+AGENTS.md
+  s_113efb253e9989::t_f93d466b82ae88 98-116
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.20",
+  "base_commit_sha": "e769ec67604149985ba8d1eaeff132b874b78496",
+  "prompts": {},
+  "sessions": {
+    "s_113efb253e9989": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "131b5d4d-b8c8-4f56-ae95-f52b77b5f684",
+        "model": "claude-fable-5"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
