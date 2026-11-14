@@ -521,14 +521,15 @@ function checkTools(context: Context, line: number, text: string) {
   )) {
     const name = match[0];
     const after = text.slice((match.index as number) + name.length);
-    if (
-      context.surface.crateIdentifiers.has(name) ||
-      /^(?:::|\.[a-z]|\/|-|\*)/u.test(after)
-    ) {
+    if (/^(?:::|\.[a-z]|\/|-|\*)/u.test(after)) {
       continue;
     }
+    // A registered tool can share its name with a crate identifier, so the
+    // tool check comes first.
     if (context.surface.tools.has(name)) {
       context.mentionedTools.add(name);
+    } else if (context.surface.crateIdentifiers.has(name)) {
+      continue;
     } else {
       context.findings.push({
         kind: "unknown_mcp_tool",

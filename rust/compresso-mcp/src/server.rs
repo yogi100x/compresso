@@ -566,10 +566,13 @@ pub const fn server_instructions() -> &'static str {
     INSTRUCTIONS
 }
 
-/// Names of every tool the server advertises, in declaration order.
+/// Names of every tool the server can advertise, in declaration order. The
+/// recall tool is last because it is advertised only once an operator enables
+/// a recall source.
 pub fn tool_names() -> Vec<String> {
     tool_declarations()
         .into_iter()
+        .chain(std::iter::once(recall_tool_declaration()))
         .map(|tool| tool.name.into_owned())
         .collect()
 }
@@ -871,6 +874,17 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_tool_names_include_the_operator_enabled_recall_tool() {
+        let names = tool_names();
+        assert!(
+            names
+                .iter()
+                .any(|name| name == crate::tools::recall::TOOL_NAME)
+        );
+        assert_eq!(names.len(), tool_declarations().len() + 1);
+    }
 
     #[test]
     fn test_explicit_root_rejects_unapproved_and_invalid_directories() {
