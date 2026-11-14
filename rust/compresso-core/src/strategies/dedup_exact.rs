@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 
-use crate::graph::{ContextEdge, ContextGraph, EdgeKind};
+use crate::graph::{ContextEdge, ContextGraph, EdgeKind, NodeKind};
 use crate::safety::{duplicate_group_node_ids, duplicate_references_well_formed, duplicate_stub};
 use crate::strategy::{
     CompressionBudget, CompressionStrategy, Estimate, RemovalKind, RemovalRecord, StrategyError,
@@ -23,11 +23,11 @@ impl CompressionStrategy for DedupExact {
     }
 
     fn supports(&self, input: &ContextGraph) -> bool {
-        !duplicate_plan(input).is_empty()
+        !duplicate_plan(input, &[]).is_empty()
     }
 
     fn estimate(&self, input: &ContextGraph) -> Estimate {
-        let duplicates = duplicate_plan(input);
+        let duplicates = duplicate_plan(input, &[]);
         if duplicates.is_empty() {
             return Estimate::default();
         }
@@ -49,9 +49,9 @@ impl CompressionStrategy for DedupExact {
     fn execute(
         &self,
         input: &ContextGraph,
-        _budget: &CompressionBudget,
+        budget: &CompressionBudget,
     ) -> Result<StrategyOutput, StrategyError> {
-        let duplicates = duplicate_plan(input);
+        let duplicates = duplicate_plan(input, &budget.protected_kinds);
         if duplicates.is_empty() {
             return Ok(StrategyOutput {
                 graph: input.clone(),
@@ -111,7 +111,7 @@ impl CompressionStrategy for DedupExact {
     }
 }
 
-fn duplicate_plan(input: &ContextGraph) -> Vec<Duplicate<'_>> {
+fn duplicate_plan<'a>(input: &'a ContextGraph, protected_kinds: &[NodeKind]) -> Vec<Duplicate<'a>> {
     if !duplicate_references_well_formed(input) {
         return Vec::new();
     }
@@ -123,6 +123,7 @@ fn duplicate_plan(input: &ContextGraph) -> Vec<Duplicate<'_>> {
     for (index, node) in input.nodes.iter().enumerate() {
         if node.protected
             || node.kind.requires_protection()
+            || protected_kinds.contains(&node.kind)
             || existing_duplicate_group.contains(node.id.as_str())
         {
             continue;
@@ -494,5 +495,17 @@ mod tests {
         assert_eq!(dedup.id(), "dedup_exact");
         assert!(dedup.supports(&graph));
         assert!(dedup.execute(&graph, &budget()).is_ok());
+    }
+
+    #[test]
+    fn test_budget_protected_kind_duplicate_untouched() {
+        let graph = three_duplicate_graph();
+        let mut protected_budget = budget();
+        protected_budget.protected_kinds = graph.nodes.iter().map(|node| node.kind).collect();
+
+        assert!(DedupExact.execute(&graph, &budget()).unwrap().graph != graph);
+        let output = DedupExact.execute(&graph, &protected_budget).unwrap();
+        assert_eq!(output.graph, graph);
+        assert!(output.removals.is_empty());
     }
 }

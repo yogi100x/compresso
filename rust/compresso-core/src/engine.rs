@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::graph::ContextGraph;
+use crate::graph::{ContextGraph, ContextNode};
 use crate::provider_conversation::{
     DefaultProviderConversationValidator, ProviderConversationValidator,
 };
@@ -14,7 +14,7 @@ use crate::safety::{
     SafetyCheck, identity_checks, run_after_differential_recount, run_all_with_provider_validator,
     run_preflight_after_recount,
 };
-use crate::segment::{is_generic_text_graph, segment_graph};
+use crate::segment::{is_generic_text_graph, segment_graph_with_protected_kinds};
 use crate::strategy::{
     CompressionBudget, Mode, RemovalKind, RemovalRecord, StrategyExecution, StrategyOutput,
     StrategyRegistry,
@@ -148,26 +148,27 @@ impl Engine {
         }
 
         let generic_text_ingress = is_generic_text_graph(&original);
-        let segmented_ingress = match segment_graph(&original) {
-            Ok(graph) => graph,
-            Err(error) => {
-                let before_tokens = recounted_total(&original);
-                let safety_checks = self.run_safety_checks(
-                    &original,
-                    &original,
-                    budget,
-                    elapsed_ms(started.elapsed()),
-                    &[],
-                );
-                return self.fallback(
-                    original,
-                    before_tokens,
-                    Vec::new(),
-                    safety_checks,
-                    format!("segmentation:{error}"),
-                );
-            }
-        };
+        let segmented_ingress =
+            match segment_graph_with_protected_kinds(&original, &budget.protected_kinds) {
+                Ok(graph) => graph,
+                Err(error) => {
+                    let before_tokens = recounted_total(&original);
+                    let safety_checks = self.run_safety_checks(
+                        &original,
+                        &original,
+                        budget,
+                        elapsed_ms(started.elapsed()),
+                        &[],
+                    );
+                    return self.fallback(
+                        original,
+                        before_tokens,
+                        Vec::new(),
+                        safety_checks,
+                        format!("segmentation:{error}"),
+                    );
+                }
+            };
         let mut ingress = segmented_ingress;
         recount_graph(&mut ingress);
         force_protection(&mut ingress, budget);
@@ -495,6 +496,27 @@ impl Engine {
                 reason,
             );
         }
+        // The checks above compare against the engine's own ingress, which is
+        // derived from the caller's graph. Prove the same guarantee against
+        // the caller's graph so no ingress rewrite can rename, split, or alter
+        // a protected node unnoticed.
+        if !caller_protected_nodes_preserved(&original, &current, budget) {
+            let mut safety_checks = safety_checks;
+            for check in &mut safety_checks {
+                if check.name == "protected_unchanged" {
+                    check.passed = false;
+                    check.detail =
+                        "one or more caller-protected nodes changed or were removed".to_owned();
+                }
+            }
+            return self.fallback(
+                original,
+                before_tokens,
+                strategy_results,
+                safety_checks,
+                "safety_check_failed:protected_unchanged".to_owned(),
+            );
+        }
 
         let after_tokens = current_tokens;
         self.complete(
@@ -634,6 +656,39 @@ impl Engine {
             provider_validator: Arc::new(DefaultProviderConversationValidator),
         }
     }
+}
+
+fn is_caller_protected(node: &ContextNode, budget: &CompressionBudget) -> bool {
+    node.protected || node.kind.requires_protection() || budget.protected_kinds.contains(&node.kind)
+}
+
+/// Every node the caller protected (by flag, inherent kind, or budget kind)
+/// must be present in `candidate` under the same id with byte-identical
+/// content. Token counts and the protection flag are engine-owned and may be
+/// normalized, so they are deliberately not compared here.
+fn caller_protected_nodes_preserved(
+    original: &ContextGraph,
+    candidate: &ContextGraph,
+    budget: &CompressionBudget,
+) -> bool {
+    let mut protected = original
+        .nodes
+        .iter()
+        .filter(|node| is_caller_protected(node, budget))
+        .peekable();
+    if protected.peek().is_none() {
+        return true;
+    }
+    let candidate_nodes = candidate
+        .nodes
+        .iter()
+        .map(|node| (node.id.as_str(), node))
+        .collect::<BTreeMap<_, _>>();
+    protected.all(|node| {
+        candidate_nodes.get(node.id.as_str()).is_some_and(|kept| {
+            kept.content == node.content && kept.kind == node.kind && kept.source == node.source
+        })
+    })
 }
 
 fn force_protection(graph: &mut ContextGraph, budget: &CompressionBudget) {
@@ -1006,6 +1061,7 @@ mod tests {
         Source, ToolCallId,
     };
     use crate::provider_conversation::ProviderConversationError;
+    use crate::segment::segment_graph;
     use crate::strategy::{Estimate, Lossiness, StrategyError, StrategyOutput};
 
     const LOG_FIXTURE: &str = include_str!("../../../fixtures/logs/repeated-npm-install/input.txt");
@@ -2189,5 +2245,47 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn test_caller_protected_gate_rejects_renamed_split_or_altered_nodes() {
+        let original = graph(vec![
+            node("keep", NodeKind::Summary, "a\n\nN", true),
+            node("free", NodeKind::Summary, "droppable", false),
+        ]);
+        let budget = budget();
+
+        let mut dropped_unprotected = original.clone();
+        dropped_unprotected.nodes.pop();
+        assert!(caller_protected_nodes_preserved(
+            &original,
+            &dropped_unprotected,
+            &budget
+        ));
+
+        let mut renamed = original.clone();
+        renamed.nodes[0].id = "keep::segment-0000".to_owned();
+        assert!(!caller_protected_nodes_preserved(
+            &original, &renamed, &budget
+        ));
+
+        let mut split = original.clone();
+        split.nodes[0].content = "a\n\n".to_owned();
+        split
+            .nodes
+            .push(node("keep::segment-0001", NodeKind::Summary, "N", true));
+        assert!(!caller_protected_nodes_preserved(
+            &original, &split, &budget
+        ));
+
+        let mut kind_protected_budget = budget.clone();
+        kind_protected_budget
+            .protected_kinds
+            .push(NodeKind::Summary);
+        assert!(!caller_protected_nodes_preserved(
+            &original,
+            &dropped_unprotected,
+            &kind_protected_budget
+        ));
     }
 }

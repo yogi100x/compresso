@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use thiserror::Error;
 
-use crate::graph::{ContextGraph, ContextNode};
+use crate::graph::{ContextGraph, ContextNode, NodeKind};
 use crate::tokens::counter_for;
 
 const MAX_PLAIN_LINES: usize = 32;
@@ -43,14 +43,31 @@ struct Line<'a> {
 /// and provider token accounting. E5's `compresso_compress` handler can use the
 /// engine directly and reconstruct successful text by concatenating node content
 /// in graph order; fallback continues to return the caller-owned graph unchanged.
+///
+/// A protected node is never segmented: splitting would replace its id with
+/// derived segment ids, so the caller could no longer find the node it marked
+/// as untouchable. It is returned whole, with its id, bytes, and metadata intact.
 pub fn segment_graph(input: &ContextGraph) -> Result<ContextGraph, SegmentError> {
+    segment_graph_with_protected_kinds(input, &[])
+}
+
+/// Segments like [`segment_graph`], additionally treating every node whose kind
+/// is listed in `protected_kinds` (the budget's protection set) as protected.
+pub(crate) fn segment_graph_with_protected_kinds(
+    input: &ContextGraph,
+    protected_kinds: &[NodeKind],
+) -> Result<ContextGraph, SegmentError> {
     if !is_generic_text_graph(input) {
         return Ok(input.clone());
     }
 
     let mut nodes = Vec::new();
     for node in &input.nodes {
-        nodes.extend(segment_node(node)?);
+        if is_protected(node, protected_kinds) {
+            nodes.push(node.clone());
+        } else {
+            nodes.extend(segment_node(node)?);
+        }
     }
 
     let mut ids = BTreeSet::new();
@@ -73,6 +90,11 @@ pub(crate) fn is_generic_text_graph(input: &ContextGraph) -> bool {
     input.nodes.len() == 1 && input.edges.is_empty() && input.nodes[0].provider_turn.is_none()
 }
 
+fn is_protected(node: &ContextNode, protected_kinds: &[NodeKind]) -> bool {
+    node.protected || node.kind.requires_protection() || protected_kinds.contains(&node.kind)
+}
+
+// Callers must filter protected nodes out first; see `is_protected`.
 fn segment_node(node: &ContextNode) -> Result<Vec<ContextNode>, SegmentError> {
     let spans = structural_spans(&node.content).map_err(|()| SegmentError::UnbalancedFence {
         node_id: node.id.clone(),
@@ -104,8 +126,7 @@ fn segment_node(node: &ContextNode) -> Result<Vec<ContextNode>, SegmentError> {
             segment.id = format!("{}::segment-{index:04}", node.id);
             segment.content = content;
             segment.token_count = counter.count(&segment.content);
-            segment.protected =
-                node.protected || node.kind.requires_protection() || structural_anchor;
+            segment.protected = structural_anchor;
             if error_anchor {
                 segment.priority = 1.0;
             }
@@ -560,7 +581,7 @@ mod tests {
     use serde_json::Map;
 
     use super::*;
-    use crate::graph::{ContextNode, NodeKind, Source};
+    use crate::graph::{ContextNode, Source};
     use crate::tokens::TokenProvider;
 
     fn graph(content: &str, kind: NodeKind) -> ContextGraph {
@@ -703,5 +724,52 @@ mod tests {
         input.nodes.push(second);
 
         assert_eq!(segment_graph(&input), Ok(input.clone()));
+    }
+
+    const SPLITTABLE_CONTENTS: [&str; 6] = [
+        "a\n\nN",
+        "a\r\n\r\nN",
+        "before\n\n```rust\nfn main() {}\n```\n\nafter",
+        "{\"a\":1}\n{\"b\":2}\n",
+        "ERROR first failure\n  detail\nERROR second failure\n  detail\n",
+        "before\n\n```rust\nfn main() {}\n",
+    ];
+
+    #[test]
+    fn test_protected_node_is_never_segmented() {
+        for content in SPLITTABLE_CONTENTS {
+            let mut input = graph(content, NodeKind::Summary);
+            input.nodes[0].protected = true;
+
+            assert_eq!(segment_graph(&input), Ok(input.clone()), "{content:?}");
+        }
+
+        let large = "fn generated() {}\n".repeat(2_000);
+        let mut input = graph(&large, NodeKind::SourceFile);
+        input.nodes[0].protected = true;
+        assert_eq!(segment_graph(&input), Ok(input.clone()));
+    }
+
+    #[test]
+    fn test_inherently_protected_kind_is_never_segmented_even_if_flag_is_false() {
+        for content in SPLITTABLE_CONTENTS {
+            let mut input = graph(content, NodeKind::SystemInstruction);
+            input.nodes[0].protected = false;
+
+            assert_eq!(segment_graph(&input), Ok(input.clone()), "{content:?}");
+        }
+    }
+
+    #[test]
+    fn test_budget_protected_kind_is_never_segmented() {
+        let input = graph("a\n\nN", NodeKind::ToolResponse);
+
+        assert_eq!(
+            segment_graph_with_protected_kinds(&input, &[NodeKind::ToolResponse]),
+            Ok(input.clone())
+        );
+        let unprotected = segment_graph_with_protected_kinds(&input, &[NodeKind::Summary]).unwrap();
+        assert_eq!(unprotected.nodes.len(), 2);
+        assert_eq!(joined(&unprotected), "a\n\nN");
     }
 }

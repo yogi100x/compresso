@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 8a6390fcc38bb3adf1dcb48aef9e460e8ca2a3bd034d9216354d7de7b9e5bd84 # shrinks to input = ContextGraph { schema_version: 1, nodes: [ContextNode { id: "node-0", kind: SystemInstruction, content: "a\n\nN", source: Tool { name: "generated-tool-1" }, token_count: 1, token_provider: Heuristic, priority: 0.989, protected: true, recency: None, metadata: {}, provider_turn: None }], edges: [] }, budget = CompressionBudget { max_tokens: 59777, max_latency_ms: 2000, allowed_lossiness: Structural, protected_kinds: [ToolResponse] }
