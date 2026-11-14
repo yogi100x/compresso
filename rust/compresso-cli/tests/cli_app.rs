@@ -32,6 +32,8 @@ fn test_canonical_command_snapshot() {
             "compress",
             "explain",
             "stats",
+            "recall",
+            "decisions",
             "config",
             "mcp",
             "integrations",

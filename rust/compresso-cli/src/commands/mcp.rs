@@ -3,15 +3,28 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use compresso_core::{Config, Engine, StreamError, TokenProvider, counter_for};
-use compresso_mcp::{McpDeps, McpRootError};
+use compresso_mcp::{McpDeps, McpRecallOptions, McpRootError};
+use compresso_recall::{RecallSource, SourceSupport};
 use compresso_store::Store;
 
+use super::recall::system_home_dir;
 use super::{CliExitCode, McpCommand, write_error};
+
+const USAGE: &str =
+    "mcp serve accepts only optional --root PATH and --recall-source SOURCE arguments";
+
+/// Operator-supplied `mcp serve` options.
+#[derive(Debug, Default, Eq, PartialEq)]
+struct ServeOptions {
+    root: Option<PathBuf>,
+    /// Session sources the operator explicitly enabled for `compresso_recall`.
+    recall_sources: Vec<RecallSource>,
+}
 
 pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCode {
     let McpCommand::Serve(arguments) = command;
-    let root = match parse_root_argument(&arguments.arguments) {
-        Ok(root) => root,
+    let options = match parse_serve_arguments(&arguments.arguments) {
+        Ok(options) => options,
         Err(message) => {
             let _ = write_error(errors, "invalid_arguments", message, arguments.output.json);
             return CliExitCode::Failure;
@@ -76,9 +89,33 @@ pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCo
         engine,
         config,
     };
-    let result = match root {
-        Some(root) => runtime.block_on(compresso_mcp::serve_stdio_for_root(deps, root)),
-        None => runtime.block_on(compresso_mcp::serve_stdio(deps)),
+    let ServeOptions {
+        root,
+        recall_sources,
+    } = options;
+    let result = if recall_sources.is_empty() {
+        match root {
+            Some(root) => runtime.block_on(compresso_mcp::serve_stdio_for_root(deps, root)),
+            None => runtime.block_on(compresso_mcp::serve_stdio(deps)),
+        }
+    } else {
+        let Some(home_dir) = system_home_dir() else {
+            let _ = write_error(
+                errors,
+                "environment",
+                "failed to resolve the user home directory for --recall-source",
+                false,
+            );
+            return CliExitCode::Failure;
+        };
+        runtime.block_on(compresso_mcp::serve_stdio_with_recall(
+            deps,
+            root,
+            McpRecallOptions {
+                home_dir,
+                sources: recall_sources,
+            },
+        ))
     };
     match result {
         Ok(()) => CliExitCode::Success,
@@ -98,27 +135,43 @@ pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCo
     }
 }
 
-fn parse_root_argument(arguments: &[OsString]) -> Result<Option<PathBuf>, &'static str> {
-    match arguments {
-        [] => Ok(None),
-        [flag, path] if flag == OsStr::new("--root") && !path.is_empty() => {
-            Ok(Some(PathBuf::from(path)))
-        }
-        [flag] if flag == OsStr::new("--root") => Err("--root requires a repository path"),
-        [argument] => {
-            let Some(argument) = argument.to_str() else {
-                return Err("mcp serve accepts only an optional --root PATH argument");
-            };
-            let Some(root) = argument.strip_prefix("--root=") else {
-                return Err("mcp serve accepts only an optional --root PATH argument");
-            };
-            if root.is_empty() {
-                return Err("--root requires a repository path");
+fn parse_serve_arguments(arguments: &[OsString]) -> Result<ServeOptions, &'static str> {
+    let mut options = ServeOptions::default();
+    let mut arguments = arguments.iter();
+    while let Some(argument) = arguments.next() {
+        let (flag, inline) = match argument.to_str().and_then(|text| text.split_once('=')) {
+            Some((flag, value)) => (OsStr::new(flag), Some(OsString::from(value))),
+            None => (argument.as_os_str(), None),
+        };
+        if flag == OsStr::new("--root") {
+            let path = inline
+                .or_else(|| arguments.next().cloned())
+                .filter(|path| !path.is_empty())
+                .ok_or("--root requires a repository path")?;
+            if options.root.replace(PathBuf::from(path)).is_some() {
+                return Err("--root may be given only once");
             }
-            Ok(Some(PathBuf::from(root)))
+        } else if flag == OsStr::new("--recall-source") {
+            let name = inline
+                .or_else(|| arguments.next().cloned())
+                .ok_or("--recall-source requires claude-code or codex")?;
+            let source = name
+                .to_str()
+                .and_then(RecallSource::parse)
+                .ok_or("--recall-source requires claude-code or codex")?;
+            if source.support() != SourceSupport::Supported {
+                return Err(
+                    "--recall-source supports only claude-code and codex; other transcript formats are unverified",
+                );
+            }
+            if !options.recall_sources.contains(&source) {
+                options.recall_sources.push(source);
+            }
+        } else {
+            return Err(USAGE);
         }
-        _ => Err("mcp serve accepts only an optional --root PATH argument"),
     }
+    Ok(options)
 }
 
 #[cfg(test)]
@@ -128,19 +181,58 @@ mod tests {
 
     use crate::commands::{Cli, RootCommand};
 
+    fn parse(arguments: &[&str]) -> Result<ServeOptions, &'static str> {
+        parse_serve_arguments(&arguments.iter().map(OsString::from).collect::<Vec<_>>())
+    }
+
     #[test]
     fn test_parse_root_argument() {
-        assert_eq!(parse_root_argument(&[]).unwrap(), None);
+        assert_eq!(parse(&[]).unwrap(), ServeOptions::default());
         assert_eq!(
-            parse_root_argument(&[OsString::from("--root"), OsString::from("/repo")]).unwrap(),
+            parse(&["--root", "/repo"]).unwrap().root,
             Some(PathBuf::from("/repo"))
         );
         assert_eq!(
-            parse_root_argument(&[OsString::from("--root=/repo")]).unwrap(),
+            parse(&["--root=/repo"]).unwrap().root,
             Some(PathBuf::from("/repo"))
         );
-        assert!(parse_root_argument(&[OsString::from("--root")]).is_err());
-        assert!(parse_root_argument(&[OsString::from("--other")]).is_err());
+        assert!(parse(&["--root"]).is_err());
+        assert!(parse(&["--root="]).is_err());
+        assert!(parse(&["--root", "/a", "--root", "/b"]).is_err());
+        assert!(parse(&["--other"]).is_err());
+        assert!(parse(&["/repo"]).is_err());
+    }
+
+    #[test]
+    fn test_recall_sources_are_disabled_by_default_and_enabled_only_explicitly() {
+        assert!(
+            parse(&["--root", "/repo"])
+                .unwrap()
+                .recall_sources
+                .is_empty()
+        );
+        assert_eq!(
+            parse(&[
+                "--recall-source",
+                "codex",
+                "--root=/repo",
+                "--recall-source=claude-code",
+                "--recall-source",
+                "codex",
+            ])
+            .unwrap(),
+            ServeOptions {
+                root: Some(PathBuf::from("/repo")),
+                recall_sources: vec![RecallSource::Codex, RecallSource::ClaudeCode],
+            }
+        );
+        assert!(parse(&["--recall-source"]).is_err());
+        assert!(parse(&["--recall-source", "claude-desktop"]).is_err());
+        assert!(
+            parse(&["--recall-source", "cursor"])
+                .unwrap_err()
+                .contains("unverified")
+        );
     }
 
     #[test]
@@ -154,7 +246,7 @@ mod tests {
             panic!("mcp serve should be selected");
         };
         assert_eq!(
-            parse_root_argument(&arguments.arguments).unwrap(),
+            parse_serve_arguments(&arguments.arguments).unwrap().root,
             Some(PathBuf::from("/repo"))
         );
     }

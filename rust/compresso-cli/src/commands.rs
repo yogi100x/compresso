@@ -8,20 +8,26 @@ pub use compresso_eval::cli::CliExitCode;
 use compresso_eval::cli::EvalCommand;
 use compresso_store::Store;
 
+mod decisions;
 mod doctor;
 mod engine;
 mod index;
 mod integrations;
 mod mcp;
+mod recall;
 mod repos;
 mod retrieval;
 mod setup;
 mod transcript_stats;
 
+pub use decisions::{
+    DecisionsArgs, PostError, PullRequestPoster, SystemPullRequestPoster, execute_decisions,
+};
 pub use doctor::{ConfigExplainArgs, ConfigModeArg, DiagnosticEnvironment, DoctorArgs};
 pub use engine::{CompressArgs, ExplainArgs, StatsArgs};
 pub use index::IndexArgs;
 pub use integrations::{IntegrationEnvironment, execute_integrations};
+pub use recall::{RecallArgs, RecallEnvironment, RecallSourceArg, execute_recall};
 pub use repos::{ReposCommand, ReposListArgs, ReposRemoveArgs};
 pub use retrieval::{
     ContextArgs, ImpactArgs, MapArgs, OutlineArgs, ReadArgs, SearchArgs, UnfoldArgs,
@@ -58,6 +64,10 @@ pub enum RootCommand {
     Compress(CompressArgs),
     Explain(ExplainArgs),
     Stats(StatsArgs),
+    /// Search past local session transcripts without a persistent index.
+    Recall(RecallArgs),
+    /// Draft a pull request comment from a session's recorded decisions.
+    Decisions(DecisionsArgs),
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
@@ -276,6 +286,39 @@ fn execute_command(
         RootCommand::Mcp { command } => mcp::execute(command, errors),
         RootCommand::Eval { command } => compresso_eval::cli::execute(command, output, errors),
         RootCommand::Account { command } => execute_account(command, account, output, errors),
+        RootCommand::Decisions(arguments) => {
+            let store = match Store::open_default() {
+                Ok(store) => store,
+                Err(_) => {
+                    let _ = write_error(
+                        errors,
+                        "internal",
+                        "failed to open the local Compresso store",
+                        arguments.output.json,
+                    );
+                    return CliExitCode::Failure;
+                }
+            };
+            execute_decisions(
+                arguments,
+                &store,
+                &SystemPullRequestPoster::from_environment(),
+                output,
+                errors,
+            )
+        }
+        RootCommand::Recall(arguments) => {
+            let Some(environment) = RecallEnvironment::system() else {
+                let _ = write_error(
+                    errors,
+                    "environment",
+                    "failed to resolve the home or current working directory",
+                    arguments.output.json,
+                );
+                return CliExitCode::Failure;
+            };
+            execute_recall(arguments, &environment, output, errors)
+        }
         RootCommand::Setup(arguments) => {
             let json = arguments.output.json;
             let environment = match IntegrationEnvironment::system() {
@@ -480,6 +523,22 @@ pub fn execute_with_store_and_input(
         }
         RootCommand::Eval { command } => compresso_eval::cli::execute(command, output, errors),
         RootCommand::Account { command } => execute_account(command, account, output, errors),
+        RootCommand::Decisions(arguments) => execute_decisions(
+            arguments,
+            store,
+            &SystemPullRequestPoster::from_environment(),
+            output,
+            errors,
+        ),
+        RootCommand::Recall(arguments) => {
+            let _ = write_error(
+                errors,
+                "environment_required",
+                "recall requires an explicit RecallEnvironment at injected boundaries",
+                arguments.output.json,
+            );
+            CliExitCode::Failure
+        }
         RootCommand::Index(arguments) => execute_index(arguments, Some(store), cwd, output, errors),
         RootCommand::Repos { command } => {
             repos::execute(command, store, cwd, input, output, errors)
@@ -762,6 +821,8 @@ impl RootCommand {
             Self::Compress(arguments) => arguments.output.json,
             Self::Explain(arguments) => arguments.output.json,
             Self::Stats(arguments) => arguments.output.json,
+            Self::Recall(arguments) => arguments.output.json,
+            Self::Decisions(arguments) => arguments.output.json,
             Self::Config { command } => match command {
                 ConfigCommand::Explain(arguments) => arguments.output.json,
             },

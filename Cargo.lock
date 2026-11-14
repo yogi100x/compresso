@@ -363,6 +363,7 @@ dependencies = [
  "compresso-eval",
  "compresso-integrations",
  "compresso-mcp",
+ "compresso-recall",
  "compresso-store",
  "serde",
  "serde_json",
@@ -430,6 +431,7 @@ dependencies = [
  "chrono",
  "compresso-atlas",
  "compresso-core",
+ "compresso-recall",
  "compresso-store",
  "criterion",
  "jsonschema",
@@ -442,6 +444,15 @@ dependencies = [
 [[package]]
 name = "compresso-proxy"
 version = "0.1.0"
+
+[[package]]
+name = "compresso-recall"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
 
 [[package]]
 name = "compresso-store"
