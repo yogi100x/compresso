@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use compresso_core::{Config, Engine, StreamError, TokenProvider, counter_for};
-use compresso_mcp::{McpDeps, McpRecallOptions, McpRootError};
+use compresso_mcp::{McpDeps, McpInputError, McpRecallOptions, McpRootError};
 use compresso_recall::{RecallSource, SourceSupport};
 use compresso_store::Store;
 
@@ -133,6 +133,12 @@ pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCo
                 .downcast_ref::<McpRootError>()
                 .copied()
                 .map(|error| (error.code(), error.user_message()))
+                .or_else(|| {
+                    error
+                        .downcast_ref::<McpInputError>()
+                        .copied()
+                        .map(|error| (error.code(), error.user_message()))
+                })
                 .unwrap_or(("internal", "MCP stdio server failed"));
             let _ = write_error(errors, code, message, false);
             CliExitCode::Failure
