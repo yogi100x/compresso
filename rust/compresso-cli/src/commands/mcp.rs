@@ -9,7 +9,12 @@ use compresso_store::Store;
 use super::{CliExitCode, McpCommand, write_error};
 
 pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCode {
-    let McpCommand::Serve(arguments) = command;
+    let McpCommand::Serve(arguments) = command else {
+        // The routing reminder needs no store, config, or runtime and is
+        // dispatched before this server entry point.
+        let _ = write_error(errors, "invalid_arguments", "not a server command", false);
+        return CliExitCode::Failure;
+    };
     let root = match parse_root_argument(&arguments.arguments) {
         Ok(root) => root,
         Err(message) => {

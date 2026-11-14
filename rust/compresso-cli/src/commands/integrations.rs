@@ -6,12 +6,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use compresso_core::RuntimePaths;
 use compresso_integrations::{
-    ClaudeCodeDiscovery, ClaudeCodeIntegration, CodexIntegration, ConfigFormat,
-    CursorApplicationEvidence, CursorCliEvidence, CursorDiscovery, CursorIntegration,
-    DeferredInstallAuthorization, Detection, FileReceiptStore, InstallCtx, InstallReceipt,
-    Integration, IntegrationError, MutationPlan, PlanApproval, PlanClock, PlanManager,
-    ReceiptStore, Scope, VerificationCheck, VerificationReport, read_configured_server,
-    receipt_authenticates_server,
+    ClaudeCodeDiscovery, ClaudeCodeIntegration, CodexIntegration, CompactionHookClient,
+    CompactionHookIntegration, ConfigFormat, CursorApplicationEvidence, CursorCliEvidence,
+    CursorDiscovery, CursorIntegration, DeferredInstallAuthorization, Detection, FileReceiptStore,
+    InstallCtx, InstallReceipt, Integration, IntegrationError, MutationPlan, PlanApproval,
+    PlanClock, PlanManager, ReceiptStore, Scope, VerificationCheck, VerificationReport,
+    read_configured_server, receipt_authenticates_server,
 };
 use compresso_store::{ReceiptRecord, Store};
 
@@ -278,7 +278,7 @@ impl PreparedSetupInstall {
         &self,
         environment: &IntegrationEnvironment,
     ) -> Result<(), IntegrationCliError> {
-        let current = SelectedIntegration::new(self.client, environment, &self.scope)?;
+        let current = SelectedIntegration::new(self.client, environment, &self.scope, false)?;
         if current.config_path != self.selected.config_path {
             return Err(IntegrationCliError::new(
                 "config_drift",
@@ -337,7 +337,7 @@ pub(crate) fn prepare_setup_install(
 ) -> Result<PreparedSetupInstall, IntegrationCliError> {
     let scope = resolve_scope(project, &environment.cwd)?;
     let launcher_path = validate_stable_launcher(environment.compresso_bin.clone())?;
-    let selected = SelectedIntegration::new(client, environment, &scope)?;
+    let selected = SelectedIntegration::new(client, environment, &scope, false)?;
     let manager = PlanManager::with_clock(&environment.session_id, clock)?;
     let receipts = FileReceiptStore::new(environment.receipt_store_path());
     let plan = selected.adapter.plan_install(
@@ -367,7 +367,12 @@ fn execute_mutation(
     errors: &mut impl Write,
 ) -> Result<(), IntegrationCliError> {
     let scope = resolve_scope(arguments.project.as_deref(), &environment.cwd)?;
-    let selected = SelectedIntegration::new(arguments.client, environment, &scope)?;
+    let selected = SelectedIntegration::new(
+        arguments.client,
+        environment,
+        &scope,
+        arguments.compaction_hook,
+    )?;
     let manager = PlanManager::new(&environment.session_id)?;
     let receipts = FileReceiptStore::new(environment.receipt_store_path());
     let launcher_path = match action {
@@ -502,11 +507,25 @@ fn execute_status(
     output: &mut impl Write,
 ) -> Result<(), IntegrationCliError> {
     let scope = resolve_scope(arguments.project.as_deref(), &environment.cwd)?;
-    let selected = SelectedIntegration::new(arguments.client, environment, &scope)?;
+    let selected = SelectedIntegration::new(
+        arguments.client,
+        environment,
+        &scope,
+        arguments.compaction_hook,
+    )?;
     let receipts = FileReceiptStore::new(environment.receipt_store_path());
-    let detection = selected.adapter.detect(&scope);
     let receipt = receipts.active_for(arguments.client.as_str(), &selected.config_path)?;
     let active_receipt = receipt.is_some();
+    if arguments.compaction_hook {
+        return render_hook_status(
+            output,
+            &arguments,
+            &selected,
+            active_receipt,
+            selected.adapter.verify(&scope).verified,
+        );
+    }
+    let detection = selected.adapter.detect(&scope);
     let server = mcp_server_health(
         arguments.client,
         &selected.config_path,
@@ -552,6 +571,51 @@ fn execute_status(
     Ok(())
 }
 
+fn render_hook_status(
+    output: &mut impl Write,
+    arguments: &IntegrationReadArgs,
+    selected: &SelectedIntegration,
+    active_receipt: bool,
+    installed: bool,
+) -> Result<(), IntegrationCliError> {
+    if arguments.output.json {
+        serde_json::to_writer(
+            &mut *output,
+            &serde_json::json!({
+                "schema_version": 1,
+                "data": {
+                    "action": "status",
+                    "surface": "compaction_hook",
+                    "client": arguments.client.as_str(),
+                    "config_path": selected.config_path,
+                    "hook_installed": installed,
+                    "canonical_receipt_active": active_receipt,
+                }
+            }),
+        )?;
+        writeln!(output)?;
+    } else {
+        writeln!(output, "client: {}", arguments.client.as_str())?;
+        writeln!(output, "surface: post-compaction routing-reminder hook")?;
+        writeln!(output, "config: {}", selected.config_path.display())?;
+        writeln!(
+            output,
+            "hook: {}",
+            if installed {
+                "installed"
+            } else {
+                "not installed"
+            }
+        )?;
+        writeln!(
+            output,
+            "canonical receipt: {}",
+            if active_receipt { "active" } else { "none" }
+        )?;
+    }
+    Ok(())
+}
+
 /// Reports whether the server entry in the selected config starts and answers.
 fn mcp_server_health(
     client: IntegrationClientArg,
@@ -593,9 +657,14 @@ fn execute_verify(
     output: &mut impl Write,
 ) -> Result<(), IntegrationCliError> {
     let scope = resolve_scope(arguments.project.as_deref(), &environment.cwd)?;
-    let selected = SelectedIntegration::new(arguments.client, environment, &scope)?;
+    let selected = SelectedIntegration::new(
+        arguments.client,
+        environment,
+        &scope,
+        arguments.compaction_hook,
+    )?;
     let mut report = selected.adapter.verify(&scope);
-    if arguments.client == IntegrationClientArg::ClaudeCode {
+    if arguments.client == IntegrationClientArg::ClaudeCode && !arguments.compaction_hook {
         report.checks.push(VerificationCheck {
             name: "live_client_evidence".to_owned(),
             passed: false,
@@ -625,7 +694,11 @@ impl SelectedIntegration {
         client: IntegrationClientArg,
         environment: &IntegrationEnvironment,
         scope: &Scope,
+        compaction_hook: bool,
     ) -> Result<Self, IntegrationCliError> {
+        if compaction_hook {
+            return Self::compaction_hook(client, environment, scope);
+        }
         match client {
             IntegrationClientArg::ClaudeDesktop => Err(IntegrationCliError::new(
                 "unsupported",
@@ -678,6 +751,38 @@ impl SelectedIntegration {
                 })
             }
         }
+    }
+}
+
+impl SelectedIntegration {
+    /// Selects the post-compaction routing-reminder hook adapter.
+    fn compaction_hook(
+        client: IntegrationClientArg,
+        environment: &IntegrationEnvironment,
+        scope: &Scope,
+    ) -> Result<Self, IntegrationCliError> {
+        let client = match client {
+            IntegrationClientArg::ClaudeCode => CompactionHookClient::ClaudeCode,
+            IntegrationClientArg::Codex => CompactionHookClient::Codex,
+            IntegrationClientArg::Cursor => {
+                return Err(IntegrationCliError::new(
+                    "unsupported",
+                    "Cursor has no post-compaction hook that can add model context (its preCompact hook is observational); Compresso routing guidance there comes only from the MCP server instructions",
+                ));
+            }
+            IntegrationClientArg::ClaudeDesktop => {
+                return Err(IntegrationCliError::new(
+                    "unsupported",
+                    "Claude Desktop integration is excluded by decision D5",
+                ));
+            }
+        };
+        let adapter = CompactionHookIntegration::new(client, environment.home_dir.clone());
+        let config_path = adapter.config_path(scope)?;
+        Ok(Self {
+            adapter: Box::new(adapter),
+            config_path,
+        })
     }
 }
 

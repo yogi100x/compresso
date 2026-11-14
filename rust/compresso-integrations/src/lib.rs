@@ -7,6 +7,7 @@
 
 mod claude_code;
 mod codex;
+mod compaction_hook;
 mod cursor;
 mod plan;
 mod receipt;
@@ -19,6 +20,7 @@ pub use codex::{
     CodexAdapter, CodexIntegration, CodexPlatform, CodexVerificationEvidence,
     CodexVerificationMethod, CodexVersionEvidence,
 };
+pub use compaction_hook::{CompactionHookClient, CompactionHookIntegration};
 pub use cursor::{
     CursorApplicationEvidence, CursorCliEvidence, CursorDiscovery, CursorIntegration,
     CursorLiveProbeEvidence, CursorPlatform,
