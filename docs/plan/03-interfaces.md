@@ -378,7 +378,7 @@ Fastify, JSON, versioned prefix `/v1`. Auth: Better Auth session cookies (web) +
 POST /v1/device/authorize      -> device-code flow start { device_code, user_code, verify_url }
 POST /v1/device/token          -> poll for tokens
 GET  /v1/me                    -> user + orgs + plan
-GET  /v1/entitlements          -> signed entitlement bundle (JWS, 30-day offline validity; local caches; grace per build-doc §18.1)
+GET  /v1/entitlements          -> signed entitlement bundle (JWS; device-bound 21-day machine lease per D65, entitled enterprise orgs may issue 30/60/90-day offline leases; local caches; grace per build-doc §18.1)
 POST /v1/devices               -> register { name, platform, public_key }
 DELETE /v1/devices/:id         -> revoke
 GET  /v1/orgs/:id/policies     -> policy_set JSON (signed)
