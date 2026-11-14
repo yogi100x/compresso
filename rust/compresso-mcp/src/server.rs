@@ -566,6 +566,14 @@ pub const fn server_instructions() -> &'static str {
     INSTRUCTIONS
 }
 
+/// Names of every tool the server advertises, in declaration order.
+pub fn tool_names() -> Vec<String> {
+    tool_declarations()
+        .into_iter()
+        .map(|tool| tool.name.into_owned())
+        .collect()
+}
+
 fn tool_declarations() -> Vec<Tool> {
     vec![
         tool(

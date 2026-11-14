@@ -22,6 +22,14 @@ toml.workspace = true
 criterion.workspace = true
 tempfile.workspace = true
 
+[[bin]]
+name = "compresso-eval"
+path = "src/main.rs"
+
+[[bin]]
+name = "compresso-eval-campaign"
+path = "src/bin/campaign.rs"
+
 [[bench]]
 name = "large_payload_latency"
 harness = false

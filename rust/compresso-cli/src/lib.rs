@@ -1,6 +1,7 @@
 //! Command-line application boundaries shared by the Compresso binary.
 
 pub mod commands;
+pub mod surface;
 
 pub use commands::{
     AccountClient, AccountError, AccountLogin, AccountStatus, Cli, CliExitCode, CompressArgs,
