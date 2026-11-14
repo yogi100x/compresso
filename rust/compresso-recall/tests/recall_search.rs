@@ -501,6 +501,77 @@ fn test_recall_bounds_results_snippets_files_and_time() {
 }
 
 #[test]
+fn test_repository_recall_survives_many_newer_sessions_in_other_repositories() {
+    let home = ScratchHome::new();
+    let repo = home.repo.to_str().expect("repository path should be UTF-8");
+    let other = home
+        .other_repo
+        .to_str()
+        .expect("other repository path should be UTF-8");
+    // Claude Code names a project directory after the session's working
+    // directory, with every non-alphanumeric character replaced by `-`.
+    let project = repo
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let in_scope = format!("{project}/33333333-cccc.jsonl");
+    home.write_claude(
+        &in_scope,
+        &[claude_line(
+            "assistant",
+            repo,
+            "session-claude-3",
+            "2026-02-01T08:00:00.000Z",
+            json!("Decision: the quorum heartbeat interval stays at two seconds."),
+        )],
+    );
+    let old = SystemTime::now() - Duration::from_secs(86_400);
+    fs::File::options()
+        .write(true)
+        .open(home.home().join(".claude/projects").join(&in_scope))
+        .expect("in-scope transcript should open")
+        .set_modified(old)
+        .expect("modification time should be set");
+    for index in 0..6 {
+        home.write_claude(
+            &format!("-work-elsewhere-{index}/44444444-{index}.jsonl"),
+            &[claude_line(
+                "assistant",
+                other,
+                "session-elsewhere",
+                "2026-03-09T08:00:00.000Z",
+                json!("Unrelated notes about a quorum heartbeat elsewhere."),
+            )],
+        );
+    }
+    let limits = RecallLimits {
+        max_files: 2,
+        ..RecallLimits::default()
+    };
+
+    let report = home
+        .recall_with(
+            "quorum heartbeat",
+            &[RecallSource::ClaudeCode],
+            home.repo_scope(),
+            limits,
+        )
+        .expect("recall should succeed");
+
+    assert_eq!(report.hits.len(), 1);
+    assert_eq!(
+        report.hits[0].session_id.as_deref(),
+        Some("session-claude-3")
+    );
+}
+
+#[test]
 fn test_recall_results_are_deterministic() {
     let home = ScratchHome::new();
 
