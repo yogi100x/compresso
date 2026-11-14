@@ -1,6 +1,7 @@
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use compresso_core::ClosedPipeGuard;
@@ -15,6 +16,7 @@ mod index;
 mod integrations;
 mod mcp;
 mod mcp_probe;
+mod quiet_pipe;
 mod recall;
 mod repos;
 mod retrieval;
@@ -262,10 +264,15 @@ impl AccountClient for UnavailableAccountClient {
 
 /// Executes a parsed command line against the system environment.
 ///
-/// Standard output is guarded: when its reader has gone away (a consumer that
-/// exited early, a closed pipe) the command ends with a typed
-/// `output_closed` error on `errors` and a failure exit instead of a panic or
-/// a silently truncated result.
+/// Standard output is guarded. When its reader has gone away (`| head`, a
+/// consumer that exited early) the command stops quietly like a standard Unix
+/// filter: nothing more is written to `errors` and the exit is a success,
+/// never a panic. An error that was already reported before the reader left
+/// keeps the command's own exit code. Any other output failure is reported as
+/// a typed `output_failed` error.
+///
+/// `compresso mcp serve` owns its transport and still reports a closed client
+/// pipe as a typed `output_closed` failure.
 pub fn execute(
     cli: Cli,
     account: &dyn AccountClient,
@@ -273,12 +280,22 @@ pub fn execute(
     errors: &mut impl Write,
 ) -> CliExitCode {
     let json = cli.command.json();
-    let mut guarded = ClosedPipeGuard::new(output, "standard output");
-    let code = execute_command(cli, account, &mut guarded, errors);
+    let reader_gone = AtomicBool::new(false);
+    let mut observed = quiet_pipe::ObservedOutput::new(output, &reader_gone);
+    let mut guarded = ClosedPipeGuard::new(&mut observed, "standard output");
+    let mut errors = quiet_pipe::GatedErrors::new(errors, &reader_gone);
+    let code = execute_command(cli, account, &mut guarded, &mut errors);
     match guarded.finish() {
         Ok(()) => code,
+        Err(error) if error.is_closed() => {
+            if errors.delivered() {
+                code
+            } else {
+                CliExitCode::Success
+            }
+        }
         Err(error) => {
-            let _ = write_error(errors, error.code(), &error.to_string(), json);
+            let _ = write_error(&mut errors, error.code(), &error.to_string(), json);
             CliExitCode::Failure
         }
     }

@@ -65,6 +65,24 @@ starting the configured server once.
   `config_modified`, `not_probed`, `config_unreadable`, `not_configured`,
   `probe_skipped`, and `healthy`, each with its own fix text. `not_probed`
   and `config_modified` point at `compresso integrations install <client>`.
+- **Severity.** Every verdict maps to one of three severities, reported as
+  the additive JSON field `severity` next to the unchanged `state`,
+  `healthy`, `detail`, and `fix` fields:
+  - `ok`: `healthy`, `probe_skipped`, `not_configured`.
+  - `warning`: `not_probed` and `config_modified`. Compresso refused to
+    start the entry, so nothing is known to be broken, and a hand-edited
+    entry is the user's to keep. The fix text is still shown.
+  - `error`: `binary_missing`, `binary_not_executable`, `spawn_failed`,
+    `exited_early`, `handshake_timeout`, `malformed_response`, and
+    `config_unreadable`.
+  `healthy` stays `true` only for `ok`. `compresso doctor` exits non-zero
+  only when a check has severity `error`: its `mcp_server` check reports
+  `passed: true` with `severity: "warning"` and the fix text as `hint`
+  (`[WARN]` in human output) when the worst verdict is a warning.
+  `compresso integrations status` always exits 0 for a readable status and
+  uses the same mapping: `severity` in JSON, and a `warning:` line instead
+  of a `fix:` line in human output. The severity changes reporting only; an
+  untrusted or modified entry is still never executed.
 
 `scripts/check-crate-capabilities.ts` allows process APIs in that one file of
 that one crate. Fixtures prove the allowance does not extend to another
@@ -85,7 +103,10 @@ provide.
   user's private data directory.
 - A hand-written entry that points at a valid Compresso build other than the
   running one is reported as `not_probed` until the user runs
-  `compresso integrations install <client>`.
+  `compresso integrations install <client>`. That is a warning, so `doctor`
+  still exits 0 when nothing else fails. The cost is that a script checking
+  only the exit code no longer notices an unverifiable entry; it must read
+  `severity`.
 - Receipt trust covers the recorded launcher path, not the bytes at that
   path. Whoever can replace the user's installed launcher already controls
   what the coding client executes.

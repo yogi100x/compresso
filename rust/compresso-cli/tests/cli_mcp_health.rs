@@ -276,6 +276,7 @@ fn assert_failure(script: &str, timeout: Duration, state: &str, fix_fragment: &s
     assert_eq!(exit, CliExitCode::Failure);
     let check = mcp_check(&payload);
     assert_eq!(check["passed"], false, "{check}");
+    assert_eq!(check["severity"], "error", "{check}");
     assert!(
         check["detail"]
             .as_str()
@@ -291,12 +292,29 @@ fn assert_failure(script: &str, timeout: Duration, state: &str, fix_fragment: &s
     let server = server(&payload, "claude-code");
     assert_eq!(server["state"], state);
     assert_eq!(server["healthy"], false);
+    assert_eq!(server["severity"], "error");
     fixture
+}
+
+/// Asserts that `doctor` passed with the MCP check downgraded to a warning
+/// that still carries the fix text for `client`.
+fn assert_doctor_warns(exit: CliExitCode, payload: &Value, client: &str) {
+    assert_eq!(exit, CliExitCode::Success, "{payload}");
+    let check = mcp_check(payload);
+    assert_eq!(check["passed"], true, "{check}");
+    assert_eq!(check["severity"], "warning", "{check}");
+    assert!(
+        check["hint"]
+            .as_str()
+            .is_some_and(|hint| hint.contains(&format!("compresso integrations install {client}"))),
+        "{check}"
+    );
 }
 
 fn assert_not_probed(server: &Value, client: &str) {
     assert_eq!(server["state"], "not_probed", "{server}");
     assert_eq!(server["healthy"], false);
+    assert_eq!(server["severity"], "warning", "{server}");
     assert!(
         server["fix"]
             .as_str()
@@ -313,6 +331,7 @@ fn test_doctor_reports_healthy_for_receipt_installed_server() {
 
     assert_eq!(exit, CliExitCode::Success, "{payload}");
     assert_eq!(mcp_check(&payload)["passed"], true);
+    assert_eq!(mcp_check(&payload)["severity"], "ok");
     let server = server(&payload, "claude-code");
     assert_eq!(server["state"], "healthy");
     assert!(
@@ -350,7 +369,7 @@ fn test_unreceipted_command_that_is_not_the_running_executable_is_never_executed
 
     for timeout in [Some(PROBE_TIMEOUT), None] {
         let (exit, payload) = fixture.doctor_as(Some(&fixture.stub), timeout);
-        assert_eq!(exit, CliExitCode::Failure);
+        assert_doctor_warns(exit, &payload, "claude-code");
         assert_not_probed(server(&payload, "claude-code"), "claude-code");
     }
     assert!(!fixture.canary_ran(), "untrusted command must not run");
@@ -401,7 +420,7 @@ fn test_symlink_to_a_non_compresso_binary_is_rejected() {
 
     let (exit, payload) = fixture.doctor_as(Some(&fixture.stub), Some(PROBE_TIMEOUT));
 
-    assert_eq!(exit, CliExitCode::Failure);
+    assert_doctor_warns(exit, &payload, "claude-code");
     assert_not_probed(server(&payload, "claude-code"), "claude-code");
     assert!(!fixture.canary_ran());
 }
@@ -414,7 +433,7 @@ fn test_receipt_does_not_trust_a_command_swapped_after_install() {
     }));
 
     let (exit, payload) = fixture.doctor(Some(PROBE_TIMEOUT));
-    assert_eq!(exit, CliExitCode::Failure);
+    assert_doctor_warns(exit, &payload, "claude-code");
     assert_not_probed(server(&payload, "claude-code"), "claude-code");
 
     let status = fixture.status(&["claude-code"], Some(PROBE_TIMEOUT));
@@ -435,9 +454,11 @@ fn test_modified_args_or_fields_are_rejected_without_execution() {
         fixture.configure_claude(entry);
         // Even the running executable is not started with unexpected input.
         let (exit, payload) = fixture.doctor_as(Some(&fixture.stub), Some(PROBE_TIMEOUT));
-        assert_eq!(exit, CliExitCode::Failure);
+        assert_doctor_warns(exit, &payload, "claude-code");
         let server = server(&payload, "claude-code");
         assert_eq!(server["state"], "config_modified");
+        assert_eq!(server["healthy"], false);
+        assert_eq!(server["severity"], "warning");
         assert!(
             server["fix"]
                 .as_str()
@@ -631,6 +652,72 @@ fn test_doctor_human_output_shows_failure_and_fix_text() {
 }
 
 #[test]
+fn test_doctor_human_output_shows_warning_and_fix_text_for_hand_edited_entry() {
+    let fixture = Fixture::with_installed_stub(HEALTHY_STUB);
+    fixture.configure_claude(json!({
+        "type": "stdio", "command": fixture.stub, "args": ["mcp", "serve", "--extra"]
+    }));
+
+    let human = fixture.doctor_human(Some(PROBE_TIMEOUT));
+
+    assert!(human.contains("[WARN] mcp_server"), "{human}");
+    assert!(!human.contains("[FAIL]"), "{human}");
+    assert!(human.contains("claude-code: config_modified"), "{human}");
+    assert!(
+        human.contains(
+            "hint: claude-code: Restore the entry with `compresso integrations install claude-code`"
+        ),
+        "{human}"
+    );
+    assert_eq!(fixture.stub_runs(), 0, "modified entries must not run");
+}
+
+#[test]
+fn test_doctor_fails_on_real_failure_and_keeps_warning_fix_text() {
+    let fixture = Fixture::with_installed_stub(CRASHING_STUB);
+    fixture.install("codex");
+    // Claude's entry is swapped by hand; Codex still starts the crashing stub.
+    fixture.configure_claude(json!({
+        "type": "stdio", "command": fixture.canary, "args": ["mcp", "serve"]
+    }));
+
+    let (exit, payload) = fixture.doctor(Some(PROBE_TIMEOUT));
+
+    assert_eq!(exit, CliExitCode::Failure, "{payload}");
+    let check = mcp_check(&payload);
+    assert_eq!(check["passed"], false, "{check}");
+    assert_eq!(check["severity"], "error", "{check}");
+    let hint = check["hint"].as_str().expect("hint text");
+    assert!(hint.contains("codex: Run `"), "{hint}");
+    assert!(
+        hint.contains("claude-code: If you trust this configuration"),
+        "{hint}"
+    );
+    assert_not_probed(server(&payload, "claude-code"), "claude-code");
+    assert_eq!(server(&payload, "codex")["state"], "exited_early");
+    assert_eq!(server(&payload, "codex")["severity"], "error");
+    assert!(!fixture.canary_ran(), "untrusted command must not run");
+}
+
+#[test]
+fn test_integration_status_shows_fix_text_for_unverifiable_entry() {
+    let fixture = Fixture::with_installed_stub(HEALTHY_STUB);
+    fixture.configure_claude(json!({
+        "type": "stdio", "command": fixture.canary, "args": ["mcp", "serve"]
+    }));
+
+    let (exit, human) = fixture.integrations(&["status", "claude-code"], Some(PROBE_TIMEOUT));
+
+    assert_eq!(exit, CliExitCode::Success, "{human}");
+    assert!(human.contains("mcp server: not_probed"), "{human}");
+    assert!(
+        human.contains("warning: If you trust this configuration"),
+        "{human}"
+    );
+    assert!(!fixture.canary_ran(), "untrusted command must not run");
+}
+
+#[test]
 fn test_doctor_reports_healthy_for_real_compresso_server() {
     let fixture = Fixture::new();
     let real = fs::canonicalize(env!("CARGO_BIN_EXE_compresso")).expect("compresso binary");
@@ -681,10 +768,13 @@ fn test_integration_status_reports_healthy_and_stale_servers() {
     let server = fixture.status(&["claude-code"], Some(PROBE_TIMEOUT));
     assert_eq!(server["state"], "healthy");
     assert_eq!(server["healthy"], true);
+    assert_eq!(server["severity"], "ok");
 
     fs::remove_file(&fixture.stub).expect("stub removed");
     let server = fixture.status(&["claude-code"], Some(PROBE_TIMEOUT));
     assert_eq!(server["state"], "binary_missing");
+    assert_eq!(server["healthy"], false);
+    assert_eq!(server["severity"], "error");
 }
 
 #[test]

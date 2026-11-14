@@ -4,7 +4,9 @@
 //! console) surfaces as `EPIPE` on Unix and as `ERROR_BROKEN_PIPE`,
 //! `ERROR_NO_DATA`, or `ERROR_PIPE_NOT_CONNECTED` on Windows. None of these
 //! may panic or abort a Compresso process: writers classify them into
-//! [`StreamError::Closed`] and report that typed error instead.
+//! [`StreamError::Closed`]. The MCP server and `compresso-eval` report that
+//! typed error; the `compresso` CLI uses it to stop quietly, like a standard
+//! Unix filter whose reader went away.
 
 use std::error::Error as StdError;
 use std::fmt;

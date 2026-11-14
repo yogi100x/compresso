@@ -15,7 +15,7 @@ use compresso_integrations::{
 };
 use compresso_store::{ReceiptRecord, Store};
 
-use super::mcp_probe::{self, LauncherTrust, McpServerHealth};
+use super::mcp_probe::{self, LauncherTrust, McpServerHealth, Severity};
 use super::{
     CliExitCode, IntegrationClientArg, IntegrationMutationArgs, IntegrationReadArgs,
     IntegrationsCommand, write_error,
@@ -564,8 +564,10 @@ fn execute_status(
             server.state.code(),
             server.detail
         )?;
-        if server.state.is_failure() {
-            writeln!(output, "fix: {}", server.fix)?;
+        match server.state.severity() {
+            Severity::Ok => {}
+            Severity::Warning => writeln!(output, "warning: {}", server.fix)?,
+            Severity::Error => writeln!(output, "fix: {}", server.fix)?,
         }
     }
     Ok(())

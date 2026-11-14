@@ -15,7 +15,7 @@ use compresso_integrations::{
 };
 use compresso_store::Store;
 
-use super::mcp_probe::{self, LauncherTrust, McpServerHealth};
+use super::mcp_probe::{self, LauncherTrust, McpServerHealth, Severity};
 use super::{ConfigCommand, OutputArgs, RootCommand};
 
 const CONFIG_ENVIRONMENT: [&str; 5] = [
@@ -203,7 +203,7 @@ fn explain_config(
 #[derive(Debug)]
 struct DiagnosticCheck {
     name: &'static str,
-    passed: bool,
+    severity: Severity,
     detail: String,
     hint: String,
 }
@@ -212,19 +212,34 @@ impl DiagnosticCheck {
     fn passed(name: &'static str, detail: impl Into<String>) -> Self {
         Self {
             name,
-            passed: true,
+            severity: Severity::Ok,
             detail: detail.into(),
             hint: "No action required.".to_owned(),
+        }
+    }
+
+    /// A check that passes but leaves the operator something to look at.
+    fn warning(name: &'static str, detail: impl Into<String>, hint: impl Into<String>) -> Self {
+        Self {
+            name,
+            severity: Severity::Warning,
+            detail: detail.into(),
+            hint: hint.into(),
         }
     }
 
     fn failed(name: &'static str, detail: impl Into<String>, hint: impl Into<String>) -> Self {
         Self {
             name,
-            passed: false,
+            severity: Severity::Error,
             detail: detail.into(),
             hint: hint.into(),
         }
+    }
+
+    /// Warnings pass: only an error fails the check and the command.
+    fn is_passed(&self) -> bool {
+        self.severity != Severity::Error
     }
 }
 
@@ -239,13 +254,14 @@ fn run_doctor(environment: &DiagnosticEnvironment) -> Rendered {
         check_grammars(),
         check_mcp_server(environment, &servers),
     ];
-    let success = checks.iter().all(|check| check.passed);
+    let success = checks.iter().all(DiagnosticCheck::is_passed);
     let json_checks = checks
         .iter()
         .map(|check| {
             serde_json::json!({
                 "name": check.name,
-                "passed": check.passed,
+                "passed": check.is_passed(),
+                "severity": check.severity.code(),
                 "detail": check.detail,
                 "hint": check.hint,
             })
@@ -253,16 +269,16 @@ fn run_doctor(environment: &DiagnosticEnvironment) -> Rendered {
         .collect::<Vec<_>>();
     let human = checks
         .iter()
-        .map(|check| {
-            let status = if check.passed { "PASS" } else { "FAIL" };
-            if check.passed {
-                format!("[{status}] {}: {}", check.name, check.detail)
-            } else {
-                format!(
-                    "[{status}] {}: {}\n       hint: {}",
-                    check.name, check.detail, check.hint
-                )
-            }
+        .map(|check| match check.severity {
+            Severity::Ok => format!("[PASS] {}: {}", check.name, check.detail),
+            Severity::Warning => format!(
+                "[WARN] {}: {}\n       hint: {}",
+                check.name, check.detail, check.hint
+            ),
+            Severity::Error => format!(
+                "[FAIL] {}: {}\n       hint: {}",
+                check.name, check.detail, check.hint
+            ),
         })
         .collect::<Vec<_>>()
         .join("\n");
@@ -387,15 +403,23 @@ fn check_mcp_server(
         })
         .collect::<Vec<_>>()
         .join("; ");
+    let severity_of = |server: &McpServerReport| server.health.state.severity();
+    // Errors and warnings both keep their fix text; only an error fails.
     let fixes = servers
         .iter()
-        .filter(|server| server.health.state.is_failure())
+        .filter(|server| severity_of(server) != Severity::Ok)
         .map(|server| format!("{}: {}", server.client, server.health.fix))
-        .collect::<Vec<_>>();
-    if fixes.is_empty() {
+        .collect::<Vec<_>>()
+        .join(" ");
+    if servers
+        .iter()
+        .any(|server| severity_of(server) == Severity::Error)
+    {
+        DiagnosticCheck::failed(NAME, detail, fixes)
+    } else if fixes.is_empty() {
         DiagnosticCheck::passed(NAME, detail)
     } else {
-        DiagnosticCheck::failed(NAME, detail, fixes.join(" "))
+        DiagnosticCheck::warning(NAME, detail, fixes)
     }
 }
 
