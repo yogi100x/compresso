@@ -4,7 +4,7 @@ use std::path::{Component, Path};
 use compresso_atlas::{AtlasError, QueryError};
 use compresso_core::{TokenCounter, TokenProvider, counter_for};
 use compresso_store::{FileLanguage, RepoRecord, Store, SymbolKind, SymbolRecord};
-use rmcp::model::{CallToolResult, Content, JsonObject};
+use rmcp::model::{CallToolResult, ContentBlock, JsonObject};
 use serde_json::{Map, Value, json};
 
 pub(crate) const MIN_TOKENS: usize = 100;
@@ -45,7 +45,7 @@ impl ToolFailure {
     }
 
     pub(crate) fn into_result(self) -> CallToolResult {
-        CallToolResult::error(vec![Content::text(format!(
+        CallToolResult::error(vec![ContentBlock::text(format!(
             "[{}] {}",
             self.code, self.message
         ))])
@@ -54,7 +54,7 @@ impl ToolFailure {
 
 pub(crate) fn success(payload: Value) -> CallToolResult {
     match serde_json::to_string(&payload) {
-        Ok(text) => CallToolResult::success(vec![Content::text(text)]),
+        Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
         Err(_) => ToolFailure::internal().into_result(),
     }
 }
