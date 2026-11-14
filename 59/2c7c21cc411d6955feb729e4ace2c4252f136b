@@ -1,0 +1,21 @@
+rust/compresso-store/src/lib.rs
+  s_f3ae5462f697a3::t_e572754ce20cf5 257,298-331,334-335
+  s_f3ae5462f697a3::t_3d541685a93b22 492-547
+  s_f3ae5462f697a3::t_0a17a5c54c1088 336
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "592c7c21cc411d6955feb729e4ace2c4252f136b",
+  "prompts": {},
+  "sessions": {
+    "s_f3ae5462f697a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7cc607c-32b2-4e30-bc4c-55ff6e2d2dd7",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
