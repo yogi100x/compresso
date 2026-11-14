@@ -1,0 +1,25 @@
+.github/workflows/ci.yml
+  s_f3ae5462f697a3::t_027895065b5c37 180,182,184
+AGENTS.md
+  s_f3ae5462f697a3::t_b45a381d758c84 8-9
+compresso-threat-model.md
+  s_f3ae5462f697a3::t_b5ece7e45802f9 211
+impl.md
+  s_f3ae5462f697a3::t_ca86701bc22d94 77
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d0f4a61d67d9090a07be0364b4aecfa73cc112e6",
+  "prompts": {},
+  "sessions": {
+    "s_f3ae5462f697a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7cc607c-32b2-4e30-bc4c-55ff6e2d2dd7",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
