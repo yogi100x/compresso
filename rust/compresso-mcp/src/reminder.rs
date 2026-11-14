@@ -9,7 +9,10 @@
 /// Hard upper bound on the reminder size in bytes.
 pub const ROUTING_REMINDER_MAX_BYTES: usize = 640;
 
-const ROUTING_REMINDER: &str = "Compresso routing reminder: the Compresso MCP tools remain available after context compaction and are still the preferred way to explore this repository. Use one compresso_context call for a broad task and answer from its pack. For precise follow-ups use compresso_search, compresso_outline, compresso_unfold, or compresso_read instead of client-native search or whole-file reads. Use compresso_compress before passing long text onward. If a tool reports the repository is unindexed, run `compresso index` and retry.";
+// The hook is installed in user-level client settings, so this text also
+// reaches sessions in repositories where Compresso is not configured. It must
+// stay conditional on the tools actually being present.
+const ROUTING_REMINDER: &str = "Compresso routing reminder: if Compresso MCP tools (compresso_*) are available in this session, they are still the preferred way to explore the repository after context compaction; if they are not, ignore this note. Use one compresso_context call for a broad task and answer from its pack. For precise follow-ups use compresso_search, compresso_outline, compresso_unfold, or compresso_read instead of client-native search or whole-file reads. Use compresso_compress before passing long text onward. If a tool reports the repository is unindexed, run `compresso index` and retry.";
 
 const _: () = assert!(ROUTING_REMINDER.len() <= ROUTING_REMINDER_MAX_BYTES);
 
@@ -47,6 +50,16 @@ mod tests {
         for tool in tools {
             assert!(instructions.contains(tool), "{tool} is not a served tool");
         }
+    }
+
+    #[test]
+    fn test_routing_reminder_is_conditional_on_tools_being_present() {
+        // User-level hooks fire in repositories without Compresso, so the
+        // reminder must not assert that the tools exist.
+        let reminder = routing_reminder();
+        assert!(reminder.contains("if Compresso MCP tools"));
+        assert!(reminder.contains("if they are not, ignore this note"));
+        assert!(!reminder.contains("remain available"));
     }
 
     #[test]
