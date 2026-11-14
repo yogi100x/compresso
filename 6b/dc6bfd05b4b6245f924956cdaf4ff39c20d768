@@ -1,0 +1,64 @@
+rust/compresso-cli/src/commands/integrations.rs
+  s_e2da226df94350::t_0cde2b36d14d38 747-750,761-762,771-773
+  s_e2da226df94350::t_cdf0cbb89793f8 352-355,361-375,377-584,586-638
+  s_e2da226df94350::t_e69ef8883199cf 1093
+  s_e2da226df94350::t_61e3285bec8d00 1199-1202,1211-1224
+  s_e2da226df94350::t_82b4e417f2b230 834-858,860,862-864,874-875,881-885,890-923,925-932,1225-1226
+  s_e2da226df94350::t_7b0686ce072f20 1277-1279,1296-1313,1318-1320,1331-1333
+  s_e2da226df94350::t_1bede03c7f9206 12-13
+  s_e2da226df94350::t_18ea812d9d6d9d 688-701
+  s_e2da226df94350::t_0c994bde2589cc 786-787
+  s_e2da226df94350::t_ee99927b9262dc 940
+  s_e2da226df94350::t_c83a8e4b6fe934 14
+  s_e2da226df94350::t_05df3136443044 376
+  s_e2da226df94350::t_01980b2b1d81af 585
+  s_e2da226df94350::t_1b283ed5717e14 924
+  s_e2da226df94350::t_c8be6ca9a78d35 1227
+rust/compresso-integrations/src/lib.rs
+  s_e2da226df94350::t_743c26e932a3ac 40
+docs/integrations/compaction-reminder.md
+  s_e2da226df94350::t_a5859acc9bffe1 31-41,62-97,115-118,120-134,140-141,155-157,196-197
+packages/cli-distribution/README.md
+  s_e2da226df94350::t_a5859acc9bffe1 27-29
+docs/plan/04-mcp-and-integrations.md
+  s_e2da226df94350::t_a5859acc9bffe1 585
+docs/plan/03-interfaces.md
+  s_e2da226df94350::t_a5859acc9bffe1 337-339
+README.md
+  s_e2da226df94350::t_a5859acc9bffe1 31-35,39-41
+rust/compresso-cli/tests/cli_setup_compaction_hook.rs
+  s_e2da226df94350::t_3924428345c9df 2-5,17-20,133-137,141-163,243,245-249,251-254,257-258,263-264,558-726,738-789
+  s_e2da226df94350::t_e7c350f0f02f29 727-737
+rust/compresso-cli/tests/cli_compaction_hook.rs
+  s_e2da226df94350::t_3924428345c9df 15-18,82-106,345,349-354,356-372,385-564
+rust/compresso-cli/src/commands.rs
+  s_e2da226df94350::t_e85e5dc7dc98ea 162-164,184-186
+rust/compresso-cli/src/commands/setup.rs
+  s_e2da226df94350::t_a72204f344c0dc 15-16,98-99,193-200,208,249,363,365,368-372,380,391-393,426-428,448-449,478-479,481,486-494,503-505,509,519-523,525,528,613,615-635,637,642,669,674,678,691-693,706,766-770,773,776-778,799-801,845-846
+decisions.md
+  s_e2da226df94350::t_a5859acc9bffe1 104
+rust/compresso-integrations/src/compaction_hook.rs
+  s_e2da226df94350::t_cb8bbf33678ec2 8,12-14
+  s_e2da226df94350::t_4e2ab7dabe26a1 35-36
+  s_e2da226df94350::t_c50fb9f6b3b61b 9-11,15
+  s_e2da226df94350::t_7b0c92a1bcaa79 49,51,55-69
+  s_e2da226df94350::t_a669772e6cc89a 188-228
+  s_e2da226df94350::t_3924428345c9df 777-868
+  s_e2da226df94350::t_b3e02b2bb16186 70-71
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6bdc6bfd05b4b6245f924956cdaf4ff39c20d768",
+  "prompts": {},
+  "sessions": {
+    "s_e2da226df94350": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a4ace18-3be7-440c-984c-7cf6854c84ee",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
