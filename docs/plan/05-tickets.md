@@ -19,7 +19,7 @@ Acceptance criteria:
 - `pnpm install` succeeds; `biome check .` passes on committed TS/JSON files.
 - No crate in core/atlas/mcp/store paths declares a network-I/O dependency (reqwest, hyper, ureq).
 Test cases:
-- test_workspace_builds: CI step `cargo build --workspace` exits 0.
+- `cargo test --workspace --locked --no-fail-fast` step of the `rust` job in `.github/workflows/ci.yml` (a CI step, not a named test): CI step `cargo build --workspace` exits 0.
 - test_no_internal_deps_in_core: parse `rust/compresso-core/Cargo.toml`, assert no `compresso-*` entries under `[dependencies]`.
 - test_store_never_imports_atlas: parse `rust/compresso-store/Cargo.toml`, assert `compresso-atlas` absent.
 
@@ -32,8 +32,8 @@ Acceptance criteria:
 - Clippy runs with `-D warnings` and formatting is enforced via `cargo fmt --check`.
 - Release binary for each platform uploaded as an artifact on main pushes.
 Test cases:
-- test_ci_yaml_valid: `actionlint .github/workflows/ci.yml` exits 0 (run locally and as a CI step).
-- test_matrix_covers_d33: assert ci.yml matrix contains macos-15, macos-15-intel, ubuntu-24.04, windows-2022 (yq assertion in a repo lint script).
+- `Lint CI workflow` actionlint step of the `Workflow lint` job in `.github/workflows/ci.yml` (a CI step, not a named test): `actionlint .github/workflows/ci.yml` exits 0 (run locally and as a CI step).
+- `scripts/ci/check_ci_matrix.rb` (CI step `Assert required runner matrix`, not a named test): assert ci.yml matrix contains macos-15, macos-15-intel, ubuntu-24.04, windows-2022 (yq assertion in a repo lint script).
 
 ### [x] E1-03: Supply-chain and capability-boundary checks
 Owner: I1 · Estimate: 1d · Depends: E1-02
@@ -79,9 +79,9 @@ Acceptance criteria:
 - Each tarball contains exactly one entry (the binary); no fixtures, docs, debug symbols, or source maps (tar listing asserted in the packaging script's self-test).
 - `scripts/package-tarball.sh` is deterministic for a given binary (stable tar metadata: sorted entries, fixed mtime, numeric owners).
 Test cases:
-- test_package_script_single_entry: run package-tarball.sh against a stub binary → `tar -tzf` lists exactly `compresso`.
-- test_sha256sums_verifies: generated SHA256SUMS verifies with `shasum -a 256 -c`; flipping one byte in a tarball makes verification fail.
-- test_package_deterministic: two runs on the same stub binary produce byte-identical tarballs.
+- `scripts/package-tarball.sh --self-test` (CI step `Test deterministic release packaging`, not a named test): run package-tarball.sh against a stub binary → `tar -tzf` lists exactly `compresso`.
+- `scripts/package-tarball.sh --self-test` (same self-test): generated SHA256SUMS verifies with `shasum -a 256 -c`; flipping one byte in a tarball makes verification fail.
+- `scripts/package-tarball.sh --self-test` (same self-test): two runs on the same stub binary produce byte-identical tarballs.
 
 ---
 
@@ -102,7 +102,7 @@ Test cases:
 - test_validate_rejects_dangling_edge: edge from "n1" to "missing" → `Err(GraphError::UnknownEdgeEndpoint { .. })`.
 - test_system_instruction_must_be_protected: node kind `SystemInstruction` with `protected: false` and no trusted-local unprotect → protection-invariant error.
 - test_ingress_forces_protection: external graph with node `sys-1` (`system_instruction`, `protected: false`) → `force_ingress_protection` sets `protected: true`, returns `["protection_forced:sys-1"]`, and `validate()` then passes; adding metadata `"allow_unprotect": true` to the node does not suppress the forcing (D48).
-- test_assistant_reasoning_must_be_protected: `assistant_reasoning` with `protected: false` fails validation; ingress forces it protected and records the note (D53).
+- test_assistant_reasoning_cannot_be_unprotected, test_force_ingress_protection_for_all_protected_kinds: `assistant_reasoning` with `protected: false` fails validation; ingress forces it protected and records the note (D53).
 - test_from_text_counts_tokens: `ContextGraph::from_text("fn main() {}", NodeKind::SourceFile, counter)` yields one node with `token_count == counter.count("fn main() {}")` and `total_tokens()` equal to it.
 
 ### [x] E2-02: TokenCounter providers
@@ -208,7 +208,7 @@ Test cases:
 - test_protected_never_dropped: protected node of 1000 tokens with budget 100 → protected node kept, all unprotected dropped, note records unsatisfiable budget, no error.
 - test_code_never_truncated: `SourceFile` node of 400 tokens with budget 300 and no other nodes → node dropped whole (content never sliced) or budget unsatisfied note; assert no output node has content that is a strict prefix of the input content.
 - test_edges_pruned: edge A→B where B is dropped → edge absent from output and `output.validate()` passes.
-- test_deterministic_tiebreak: two identical-score nodes "n_a" and "n_b" → "n_a" dropped first on two consecutive runs (assert equality of both outputs).
+- test_equal_ratio_tiebreaks_by_id: two identical-score nodes "n_a" and "n_b" → "n_a" dropped first on two consecutive runs (assert equality of both outputs).
 
 ### [x] E2-08: Safety module with eleven mandatory checks
 Owner: R1 · Estimate: 2d · Depends: E2-01, E2-02
@@ -285,7 +285,7 @@ Test cases:
 - test_wal_and_fk_enabled: pragmas assert as above.
 - test_retention_prunes_old_operations: insert operation with `created_at` 91 days ago and one 89 days ago, reopen → only the recent row remains.
 - test_concurrent_writes_serialized: two threads each record 50 operations through clones of the same `Store` → both complete without `SQLITE_BUSY`, final `operations` count == 100.
-- test_busy_timeout_5s: `PRAGMA busy_timeout` == 5000 after open.
+- test_wal_and_fk_enabled: `PRAGMA busy_timeout` == 5000 after open.
 - test_store_send_sync_clone: `fn assert_bounds<T: Send + Sync + Clone>() {}` instantiated with `Store`.
 
 ### [x] E3-02: Repository, file, and symbol DAOs
@@ -317,10 +317,10 @@ Acceptance criteria:
 Test cases:
 - test_record_operation_rejects_bad_trace: trace_json `{"schema_version":1}` (missing required fields) → `Err(StoreError::InvalidTrace)`, `operations` count 0.
 - test_retrieval_op_null_trace_tokens_served: record `tool = "compresso_read"`, `trace_json = None`, `tokens_served = Some(1874)` → accepted; row has NULL `trace_json` and `tokens_served == 1874`.
-- test_compress_op_requires_trace: `tool = "compresso_compress"` with `trace_json = None` → `Err(StoreError::MissingTrace)`, no row written.
+- test_d47_tool_classification_and_shape: `tool = "compresso_compress"` with `trace_json = None` → `Err(StoreError::MissingTrace)`, no row written.
 - test_record_operation_persists_strategy_results: valid trace with 2 strategy_results → 1 `operations` row + 2 `strategy_results` rows keyed by operation_id.
-- test_stats_vocabulary_math: two ops (observed 1000/applied 700/overhead 50, observed 500/applied 500/overhead 0, second with fallback_used=1) → `observed_tokens == 1500`, `applied_tokens == 1200`, `removed_tokens == 300`, `net_tokens_saved == 250`.
-- test_stats_since_filters: op at t=100 and t=200; `stats(Some(150))` counts only the second.
+- test_stats_vocabulary_math_and_since_filter: two ops (observed 1000/applied 700/overhead 50, observed 500/applied 500/overhead 0, second with fallback_used=1) → `observed_tokens == 1500`, `applied_tokens == 1200`, `removed_tokens == 300`, `net_tokens_saved == 250`.
+- test_stats_vocabulary_math_and_since_filter: op at t=100 and t=200; `stats(Some(150))` counts only the second.
 - test_receipt_roundtrip_and_filter: save claude-code and codex receipts → `receipts(Some("codex"))` returns exactly the codex one with `keys_owned == ["mcp_servers.compresso"]`.
 
 ### [x] E3-04: Repository scanner
@@ -333,8 +333,8 @@ Acceptance criteria:
 - `removed` lists store paths absent on disk; hashes are blake3 hex matching `b3sum` output.
 Test cases:
 - test_gitignore_respected: fixture repo with `ignored.log` listed in .gitignore → not in added, present in skipped with `SkipReason::Ignored`.
-- test_secret_patterns_skipped: fixture containing `.env.local`, `server.pem`, `id_rsa` → all three in skipped with `SkipReason::SecretPattern`.
-- test_binary_and_oversize_skipped: a 3 MB file with max_file_bytes=1 MB and a PNG → skipped with `SkipReason::TooLarge` / `SkipReason::Binary`.
+- test_secret_patterns_skipped_without_opening: fixture containing `.env.local`, `server.pem`, `id_rsa` → all three in skipped with `SkipReason::SecretPattern`.
+- test_binary_and_oversize_skipped_before_oversize_open: a 3 MB file with max_file_bytes=1 MB and a PNG → skipped with `SkipReason::TooLarge` / `SkipReason::Binary`.
 - test_changed_detected_by_hash: index fixture, modify one byte of `src/main.rs`, rescan → exactly `["src/main.rs"]` in changed, nothing in added.
 - test_removed_detected: delete `src/util.rs` after indexing, rescan → `removed == ["src/util.rs"]`.
 - test_blake3_matches_reference: hash of committed file equals precomputed blake3 hex constant in the test.
@@ -364,8 +364,8 @@ Acceptance criteria:
 Test cases:
 - test_ts_extracts_class_and_interface: `sample.ts` with `export interface RetryPolicy` (lines 1–4), `export class HttpClient` with method `async get(url: string): Promise<Response>` and `export const parseUrl = (s: string) => new URL(s)` → symbols `[RetryPolicy (interface), HttpClient (class), HttpClient::get (method), parseUrl (function)]` with correct line ranges.
 - test_ts_imports: `import { z } from "zod"; import fs from "node:fs";` → imports `["zod", "node:fs"]`.
-- test_tsx_component_extracted: `sample.tsx` with `export function UserCard(props: { name: string }): JSX.Element` → symbol `UserCard`, kind `function`, signature containing `props: { name: string }`.
-- test_type_alias_kind: `export type UserId = string;` → symbol `UserId`, kind `type`.
+- test_tsx_component_extracted_with_distinct_dialect: `sample.tsx` with `export function UserCard(props: { name: string }): JSX.Element` → symbol `UserCard`, kind `function`, signature containing `props: { name: string }`.
+- test_type_alias_enum_and_exported_const_kinds: `export type UserId = string;` → symbol `UserId`, kind `type`.
 
 ### [x] E3-07: JavaScript extraction
 Owner: R2 · Estimate: 1d · Depends: E3-05
@@ -377,8 +377,8 @@ Acceptance criteria:
 - Class methods produce `ClassName::method` qualified names.
 Test cases:
 - test_js_functions_and_class: `sample.js` with `function connect(url) {}`, `const retry = async (fn) => {}` and `class Pool { acquire() {} }` → symbols `[connect (function), retry (function), Pool (class), Pool::acquire (method)]`.
-- test_js_cjs_and_esm_imports: `const path = require("path");` plus `import express from "express";` → imports `["path", "express"]`.
-- test_js_dynamic_require_ignored: `require(pluginName)` → not present in imports, extraction succeeds.
+- test_js_cjs_and_esm_imports_in_source_order: `const path = require("path");` plus `import express from "express";` → imports `["path", "express"]`.
+- test_js_dynamic_and_noncanonical_require_ignored: `require(pluginName)` → not present in imports, extraction succeeds.
 
 ### [x] E3-08: Python extraction
 Owner: R2 · Estimate: 1.5d · Depends: E3-05
@@ -390,8 +390,8 @@ Acceptance criteria:
 - All three import forms captured as written source module strings.
 Test cases:
 - test_py_class_and_methods: `sample.py` with `class JobQueue:` containing `def push(self, job):` and `async def drain(self):`, plus module-level `def make_queue():` and `MAX_RETRIES = 3` → symbols `[JobQueue (class), JobQueue::push (method), JobQueue::drain (method), make_queue (function), MAX_RETRIES (const)]`.
-- test_py_imports_three_forms: `import os`, `import numpy as np`, `from typing import Optional` → imports `["os", "numpy", "typing.Optional"]`.
-- test_py_decorated_line_range: `@retry` on the line above `def push` → symbol start_line is the `def` line and signature notes the decorator.
+- test_py_imports_three_forms_and_multiple_names: `import os`, `import numpy as np`, `from typing import Optional` → imports `["os", "numpy", "typing.Optional"]`.
+- test_py_decorated_line_range_and_signature: `@retry` on the line above `def push` → symbol start_line is the `def` line and signature notes the decorator.
 
 ### [x] E3-09: Incremental Indexer
 Owner: R2 · Estimate: 2.5d · Depends: E3-04, E3-05, E3-06, E3-07, E3-08, E2-02
@@ -406,7 +406,7 @@ Test cases:
 - test_full_then_noop_index: index the multi-language fixture repo (rs+ts+js+py, 8 files) → `files_indexed == 8`; rerun → `files_indexed == 0`, symbol count unchanged.
 - test_touch_one_file_reparses_only_it: modify `src/app.ts`, rerun with a progress recorder → parse events `== ["src/app.ts"]`.
 - test_delete_cascades: remove `src/util.py`, rerun → its symbols/edges gone from store, `report` reflects one removed file.
-- test_parser_version_bump_flags_stale: stamp index_versions with "0.0.1", run indexer built as "0.0.2" → `stale == true` and all files reparsed.
+- test_parser_version_bump_flags_stale_and_reparses_all: stamp index_versions with "0.0.1", run indexer built as "0.0.2" → `stale == true` and all files reparsed.
 - test_per_file_transaction_isolation: inject failure while indexing the 3rd of 5 changed files → first two updated, last three untouched, no partial symbol sets.
 
 ### [x] E3-10: Queries — repo_map and outline
@@ -446,9 +446,9 @@ Acceptance criteria:
 Test cases:
 - test_impact_depth_two: fixture edges `a.rs → b.rs → c.rs → d.rs` (imports); `impact(.., "c.rs")` → contains b.rs (depth 1) and a.rs (depth 2); wait — reverse edges: importers of c.rs are b.rs, importers of b.rs are a.rs; d.rs (which c imports) absent.
 - test_impact_edge_kinds_reported: tests edge `tests/a_test.rs → a.rs (tests)` → impact of a.rs lists a_test.rs with kind `tests`.
-- test_plan_context_within_budget: `plan_context(.., "session retry logic", 800)` on fixture → `counter.count(rendered) <= 800` and includes the `SessionManager` outline.
-- test_plan_context_natural_language_recall: one 800-token authentication task recalls OAuth, credentials, login/session/password, and browser-cookie symbols without generic token-processing false positives.
-- test_plan_context_deterministic: two calls with identical inputs → identical rendered output.
+- test_plan_context_within_budget_and_section_order: `plan_context(.., "session retry logic", 800)` on fixture → `counter.count(rendered) <= 800` and includes the `SessionManager` outline.
+- test_plan_context_expands_natural_language_task_and_prioritizes_relevant_symbols: one 800-token authentication task recalls OAuth, credentials, login/session/password, and browser-cookie symbols without generic token-processing false positives.
+- test_plan_context_budget_tight_values_and_deterministic: two calls with identical inputs → identical rendered output.
 
 ### [x] E3-13: Safe shell and generic-text indexing
 Owner: R2 · Estimate: 1d · Depends: E3-04, E3-09, E3-12
@@ -502,10 +502,10 @@ Acceptance criteria:
 - `compresso explain --last --json` returns the stored trace, validating against compression-trace v1.
 - `compresso stats --json` field names match 02-schemas §3 exactly; human output labels modeled savings as "modeled".
 Test cases:
-- test_compress_log_fixture_via_stdin: pipe fixtures/logs/repeated-npm-install/input.txt → JSON `after_tokens < before_tokens`, stdout content contains `"[×500"`.
-- test_passthrough_byte_exact: `--mode passthrough` with arbitrary UTF-8 input → stdout equals stdin.
-- test_explain_last_matches_schema: after a compress, `explain --last --json` → `data.trace` validates against schemas/compression-trace/v1.json and contains no input substring.
-- test_stats_labels_modeled: `stats --json` → keys include `net_tokens_saved` and `modeled_cost_saved`; human mode output contains the word "modeled".
+- test_compress_log_fixture_via_stdin_records_valid_trace: pipe fixtures/logs/repeated-npm-install/input.txt → JSON `after_tokens < before_tokens`, stdout content contains `"[×500"`.
+- test_passthrough_stdin_is_byte_exact: `--mode passthrough` with arbitrary UTF-8 input → stdout equals stdin.
+- test_explain_last_and_id_return_typed_trace_without_raw_content, test_operation_lookup_revalidates_persisted_trace: after a compress, `explain --last --json` → `data.trace` validates against schemas/compression-trace/v1.json and contains no input substring.
+- test_stats_json_uses_exact_savings_vocabulary_and_human_labels_modeled: `stats --json` → keys include `net_tokens_saved` and `modeled_cost_saved`; human mode output contains the word "modeled".
 
 ### [x] E4-04: doctor and config explain
 Owner: D1 · Estimate: 1d · Depends: E4-01, E2-09
@@ -516,10 +516,10 @@ Acceptance criteria:
 - `COMPRESSO_TELEMETRY=true` is accepted, the effective value remains `false`, and explain annotates it "forced off (D6)".
 - `doctor --json` returns a check array; any failure sets exit 1; a corrupted config file yields a failing `config_parses` check, not a crash.
 Test cases:
-- test_config_precedence_env_over_file: file sets mode=safe, env COMPRESSO_MODE=passthrough → effective passthrough with source Env.
-- test_telemetry_forced_false: COMPRESSO_TELEMETRY=true → `Config::load().privacy.telemetry == false`.
-- test_doctor_all_green_on_healthy_tmp: doctor with temp HOME and fresh db → exit 0, all checks `passed == true`.
-- test_doctor_bad_config_fails_gracefully: config.toml containing `mode = [` → exit 1, JSON check `config_parses.passed == false`, hint names the file path.
+- test_config_precedence_env_over_file_and_flag_over_env: file sets mode=safe, env COMPRESSO_MODE=passthrough → effective passthrough with source Env.
+- test_telemetry_forced_false_and_annotated: COMPRESSO_TELEMETRY=true → `Config::load().privacy.telemetry == false`.
+- test_doctor_reports_all_checks_green_for_healthy_runtime: doctor with temp HOME and fresh db → exit 0, all checks `passed == true`.
+- test_doctor_bad_config_fails_gracefully_with_path_hint: config.toml containing `mode = [` → exit 1, JSON check `config_parses.passed == false`, hint names the file path.
 
 ### [x] E4-05: install-local.sh slice installer (D42)
 Owner: I1 · Estimate: 1.5d · Depends: E1-06, E4-04
@@ -531,9 +531,9 @@ Acceptance criteria:
 - Re-run is idempotent; the previous binary is preserved as `compresso.previous`; the installer never touches `~/.config/compresso` or any assistant config.
 Test cases:
 - test_install_clean_home: temp HOME + E1-06 fixture tarball → binary at `~/.local/bin/compresso`, executable, `--version` matches the tarball version.
-- test_checksum_mismatch_aborts: flip one byte in the tarball → non-zero exit, stderr contains `checksum`, `~/.local/bin` unchanged.
-- test_install_idempotent: run twice → working binary plus `compresso.previous` present.
-- test_no_config_writes: directory hash of `~/.config` before/after → identical.
+- test_checksum_mismatch_aborts_before_install_write: flip one byte in the tarball → non-zero exit, stderr contains `checksum`, `~/.local/bin` unchanged.
+- test_install_idempotent_with_previous_backup: run twice → working binary plus `compresso.previous` present.
+- test_no_config_or_assistant_writes: directory hash of `~/.config` before/after → identical.
 
 ---
 
@@ -575,11 +575,11 @@ Acceptance criteria:
 - `compresso_context` treats `max_tokens` as a caller ceiling up to 4000, starts at 800 serialized-response tokens, expands through 1600 and 3200 only while ranked evidence coverage is insufficient, clamps oversized stale-client requests to 4000, distinguishes task-pack-ready, targeted-follow-up, and no-match/stale broad-follow-up results, and requires evidence from every distinct candidate file in the bounded ranked result before declaring the pack ready.
 Test cases:
 - test_read_tool_bounded: read `src/sample.rs` with `max_tokens: 100` → ≤100 tokens, `truncated: true` in structured result.
-- test_read_end_beyond_eof_clamps: read a 73-line file with `start_line:1,end_line:240` → success, `resolved_range.end_line == 73`, `file_lines_total == 73`, `range_clamped:true`.
+- test_read_end_line_beyond_eof_clamps_and_reports_resolved_range: read a 73-line file with `start_line:1,end_line:240` → success, `resolved_range.end_line == 73`, `file_lines_total == 73`, `range_clamped:true`.
 - test_read_gate_mode_no_content: `{"path":"src/sample.rs","gate":true}` → response includes `gate.worth_reading`, `gate.file_tokens_total`, and `gate.recommended_budget` and omits every line of the file (assert a known source line absent).
 - test_read_dotdot_via_mcp: `{"path":"../../etc/passwd"}` → MCP error `outside_root`.
 - test_search_tool_hits: `{"query":"SessionManager"}` → first hit qualified_name `SessionManager` with path and line.
-- test_context_tool_budget: `{"task":"session retry logic","max_tokens":800}` → ≤800 tokens.
+- test_context_tool_budget_and_sections: `{"task":"session retry logic","max_tokens":800}` → ≤800 tokens.
 - test_context_tool_adaptively_expands_to_smallest_sufficient_budget: a twenty-file authentication corpus with `max_tokens:4000` → expands through declared stages, stops at the first stage with complete ranked-file evidence coverage, and returns a complete serialized payload within `budget_applied`.
 - test_context_tool_respects_explicit_800_token_ceiling: the same corpus with `max_tokens:800` → no expansion, `targeted_follow_up_needed`, and complete serialized payload ≤800 tokens.
 - test_context_tool_clamps_oversized_ceiling_but_stops_at_smallest_ready_pack: `{"task":"session retry logic","max_tokens":10000}` → successful response with `budget_ceiling:4000`, `budget_clamped:true`, while `budget_applied` remains the smallest sufficient stage and the complete serialized payload stays within it.
@@ -661,7 +661,7 @@ Test cases:
 - test_verify_fails_on_missing_binary: entry pointing at a nonexistent path → `VerificationReport` failing check `binary_resolves`.
 - test_uninstall_removes_only_owned_key: install then uninstall → config deep-equal to the original file.
 - test_uninstall_skips_user_modified_entry: mutate the compresso entry after install, uninstall → entry retained, RestoreReport warns `key_modified`.
-- test_project_scope_writes_mcp_json: `Scope::Project(dir)` → `.mcp.json` created in dir with the compresso entry, user config untouched.
+- test_project_scope_pins_and_verifies_exact_canonical_root, test_project_scope_is_explicit_and_does_not_touch_user_config: `Scope::Project(dir)` → `.mcp.json` created in dir with the compresso entry, user config untouched.
 
 ### [x] E6-03: Codex integration adapter
 Owner: D1 · Estimate: 2d · Depends: E6-01
@@ -683,7 +683,7 @@ Acceptance criteria:
 Test cases:
 - test_cursor_install_adds_entry: temp `~/.cursor/mcp.json` with one existing server → both present after install.
 - test_cursor_uninstall_restores: uninstall → deep-equal to original JSON.
-- test_cursor_project_scope_isolated: `Scope::Project` install → project file has entry, user file byte-unchanged.
+- test_cursor_project_scope_pins_and_verifies_exact_canonical_root: `Scope::Project` install → project file has entry, user file byte-unchanged.
 
 ### [x] E6-05: Integration parity and restoration suite
 Owner: D1+PQ · Estimate: 2d · Depends: E6-02, E6-03, E6-04
@@ -753,8 +753,8 @@ Acceptance criteria:
 - A deliberate gate regression on a scratch branch (threshold temporarily raised to 0.99) fails the job with the gate name in the log, verified once and documented in the PR.
 - Job runs after the rust build job and reuses its cache (no duplicate cold compile).
 Test cases:
-- test_ci_eval_wiring: actionlint passes; ci.yml contains the eval invocation string with `--gates docs/plan/gates.toml`.
-- test_gate_regression_fails_ci: scratch-branch verification recorded in the PR description with the failing run link.
+- `Lint CI workflow` actionlint step in `.github/workflows/ci.yml` and `scripts/ci/check_ci_matrix.rb` (CI checks, not named tests): actionlint passes; ci.yml contains the eval invocation string with `--gates docs/plan/gates.toml`.
+- test_gate_regression_fails_ci (no covering test found — see review): scratch-branch verification recorded in the PR description with the failing run link.
 
 Evidence:
 
@@ -811,10 +811,10 @@ Acceptance criteria:
 - D46, ADR-0021, and 08 §2 retain the same honest recoverability language; D36 remains OPEN.
 - PB-02..PB-08 are dependency ordered, total 16.5d, and every beta acceptance gate has an owner.
 Test cases:
-- `test_pb01_cross_references_resolve`.
-- `test_pb01_session_root_and_launcher_state_contracts_do_not_conflate`.
-- `test_pb01_trust_claims_include_full_npm_compromise`.
-- `test_pb01_scope_scan_and_d36_remains_open`.
+- `test_pb01_cross_references_resolve` (no covering test found — see review).
+- `test_pb01_session_root_and_launcher_state_contracts_do_not_conflate` (no covering test found — see review).
+- `test_pb01_trust_claims_include_full_npm_compromise` (no covering test found — see review).
+- `test_pb01_scope_scan_and_d36_remains_open` (no covering test found — see review).
 
 ### [x] PB-02: Repository-bound MCP and secret-safe disclosure
 Owner: R2+PQ · Estimate: 3d · Depends: PB-01, E6-05
@@ -826,10 +826,10 @@ Acceptance criteria:
 - Server instructions state that Compresso makes no independent network request while the coding client may send returned MCP content to its configured provider.
 - At minimum `.env*`, `*.pem`, and `id_rsa*` are excluded before file contents are opened or indexed and cannot appear in files, symbols, FTS, traces, or MCP results.
 Test cases:
-- `test_mcp_root_explicit_or_approved_cwd_only_without_sole_repo_fallback`.
-- `test_mcp_tool_root_cannot_switch_to_other_approved_repo`.
-- `test_mcp_provider_disclosure_names_client_provider_path`.
-- `test_secret_exclusions_happen_before_read_and_never_reach_store_or_mcp`.
+- `test_explicit_root_rejects_unapproved_and_invalid_directories`, `test_cwd_binding_selects_longest_approved_ancestor`, `test_omitted_root_does_not_select_sole_approved_repository`.
+- `test_session_bound_to_repo_a_cannot_access_approved_repo_b`, `test_bound_root_retarget_cannot_leak_another_approved_repository`.
+- `test_instructions_word_budget`.
+- `test_secret_patterns_skipped_without_opening`, `test_secret_files_never_reach_store_or_fts`, `test_secret_pattern_content_never_reaches_mcp`.
 
 ### [x] PB-03: Repository lifecycle and one-command client setup
 Owner: D1+R2 · Estimate: 2.5d · Depends: PB-02, E6-05
@@ -842,11 +842,11 @@ Acceptance criteria:
 - `COMPRESSO_LAUNCHER_PATH` is normalized to an absolute lexical path without resolving away the final shim symlink; its resolved target must be an existing executable regular file. Relative, missing, non-regular, or non-executable targets fail closed, while expected npm/pnpm symlinks remain valid. Direct engine use retains a documented safe fallback.
 - Upgrading package contents beneath the same launcher leaves installed client configuration byte-identical and still invokes the new engine.
 Test cases:
-- `test_repos_list_and_remove_are_deterministic_and_never_delete_source`.
-- `test_setup_dry_run_real_install_receipt_and_uninstall_roundtrip`.
-- `test_setup_codex_global_entry_binds_each_session_from_approved_cwd`.
-- `test_setup_project_scoped_clients_may_pin_exact_canonical_root`.
-- `test_launcher_path_preserves_absolute_lexical_shim_and_validates_target`.
+- `test_repos_list_is_deterministic_in_human_and_json_modes`, `test_remove_repo_dry_run_is_write_free_and_never_prefix_matches`, `test_remove_repo_requires_confirmation_and_cascades_when_root_is_missing`, `test_remove_repo_human_confirmation_can_decline_or_approve`.
+- `test_setup_dry_run_renders_both_plans_without_any_writes`, `test_setup_real_install_is_idempotent_and_uninstall_keeps_repository_indexed`.
+- `test_global_codex_setup_binds_each_launched_session_from_its_cwd`.
+- `test_setup_project_clients_pin_exact_canonical_root`.
+- `test_stable_launcher_path_is_not_canonicalized`, `test_stable_launcher_normalizes_dot_and_duplicate_separators_without_resolving_shim`, `test_stable_launcher_rejects_relative_missing_and_directory_paths`, `test_setup_passes_normalized_stable_launcher_path_to_client_config`.
 - `test_package_upgrade_preserves_client_config_and_uses_new_engine`.
 - `test_setup_codex_dry_run_redacts_unrelated_authorization_and_target_document`.
 
