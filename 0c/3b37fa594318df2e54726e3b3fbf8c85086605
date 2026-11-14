@@ -1,0 +1,21 @@
+rust/compresso-cli/tests/cli_store_permissions.rs
+  s_f3ae5462f697a3::t_40710ed5f9ac62 1-51
+security_best_practices_report.md
+  s_f3ae5462f697a3::t_5565dceee30336 23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0c3b37fa594318df2e54726e3b3fbf8c85086605",
+  "prompts": {},
+  "sessions": {
+    "s_f3ae5462f697a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7cc607c-32b2-4e30-bc4c-55ff6e2d2dd7",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
