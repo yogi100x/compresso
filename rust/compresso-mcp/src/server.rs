@@ -11,9 +11,9 @@ use compresso_core::{
 };
 use compresso_store::{OperationRecord, RepoRecord, Store, StoreError};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Content, Implementation, InitializeRequestParams,
-    InitializeResult, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo,
-    Tool, ToolAnnotations,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
+    InitializeRequestParams, InitializeResult, ListToolsResult, PaginatedRequestParams,
+    ProtocolVersion, ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
 };
 use rmcp::service::{
     RequestContext, RoleServer, RxJsonRpcMessage, ServerInitializeError, TxJsonRpcMessage,
@@ -28,6 +28,18 @@ use crate::session::{DiagnosticSink, OperationWriter, SessionRuntime};
 use crate::tools::recall::McpRecallOptions;
 
 const JSON_SCHEMA_VERSION: &str = "https://json-schema.org/draft/2020-12/schema";
+
+/// MCP revisions this server negotiates, oldest first.
+///
+/// The list is pinned rather than inherited from the SDK so an SDK upgrade
+/// cannot change the handshake. Every entry uses the `initialize` lifecycle,
+/// which is what opens the local session ledger; later revisions that carry
+/// the lifecycle in per-request metadata are answered with the newest entry.
+const SUPPORTED_PROTOCOL_VERSIONS: &[ProtocolVersion] = &[
+    ProtocolVersion::V_2024_11_05,
+    ProtocolVersion::V_2025_03_26,
+    ProtocolVersion::V_2025_06_18,
+];
 
 /// A content-free, actionable repository-binding failure raised before MCP starts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -169,10 +181,15 @@ impl CompressoServer {
 }
 
 impl ServerHandler for CompressoServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_protocol_version(ProtocolVersion::V_2025_06_18)
             .with_server_info(Implementation::new("compresso", env!("CARGO_PKG_VERSION")))
             .with_instructions(INSTRUCTIONS)
+    }
+
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(SUPPORTED_PROTOCOL_VERSIONS)
     }
 
     fn list_tools(
@@ -212,17 +229,19 @@ impl ServerHandler for CompressoServer {
         &self,
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> impl Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
+    ) -> impl Future<Output = Result<CallToolResponse, McpError>> + Send + '_ {
         let registered = self.tools.iter().any(|tool| tool.name == request.name);
         let handled = crate::tools::handles(&request.name);
         let deps = Arc::clone(&self.deps);
         let repository_root = self.repository_root.clone();
         let session = self.session.clone();
         let recall = self.recall.clone();
-        async move {
+        // Every Compresso tool completes in one response; none asks the client
+        // for input or creates a task.
+        let completed = async move {
             if handled {
                 let Some(_call_guard) = session.acquire_call().await else {
-                    return Ok(CallToolResult::error(vec![Content::text(
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(
                         "[internal] Compresso MCP session is closing.",
                     )]));
                 };
@@ -244,13 +263,13 @@ impl ServerHandler for CompressoServer {
                 .await
                 {
                     Ok(result) => Ok(result),
-                    Err(_) => Ok(CallToolResult::error(vec![Content::text(
+                    Err(_) => Ok(CallToolResult::error(vec![ContentBlock::text(
                         "[internal] Compresso could not complete the request because of an internal error.",
                     )])),
                 };
             }
             if registered {
-                Ok(CallToolResult::error(vec![Content::text(format!(
+                Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                     "[internal] Tool handler '{}' is not implemented in E5-01.",
                     request.name
                 ))]))
@@ -260,19 +279,20 @@ impl ServerHandler for CompressoServer {
                     None,
                 ))
             }
-        }
+        };
+        async move { completed.await.map(CallToolResponse::Complete) }
     }
 }
 
 /// Starts the MCP server over process stdin/stdout and waits for disconnect.
 pub async fn serve_stdio(deps: McpDeps) -> anyhow::Result<()> {
-    let (reader, writer) = rmcp::transport::stdio();
+    let (reader, writer) = (tokio::io::stdin(), tokio::io::stdout());
     serve_io(deps, reader, writer).await
 }
 
 /// Starts the MCP server over process stdin/stdout, bound to one explicit repository root.
 pub async fn serve_stdio_for_root(deps: McpDeps, root: PathBuf) -> anyhow::Result<()> {
-    let (reader, writer) = rmcp::transport::stdio();
+    let (reader, writer) = (tokio::io::stdin(), tokio::io::stdout());
     serve_io_for_root(deps, root, reader, writer).await
 }
 
@@ -329,7 +349,7 @@ pub async fn serve_stdio_with_recall(
     root: Option<PathBuf>,
     recall: McpRecallOptions,
 ) -> anyhow::Result<()> {
-    let (reader, writer) = rmcp::transport::stdio();
+    let (reader, writer) = (tokio::io::stdin(), tokio::io::stdout());
     serve_io_with_recall(deps, root, reader, writer, recall).await
 }
 

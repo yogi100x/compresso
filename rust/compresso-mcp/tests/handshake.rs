@@ -272,6 +272,112 @@ async fn test_malformed_frame_survives() {
 }
 
 #[tokio::test]
+async fn test_initialize_newer_revision_falls_back_to_pinned_version() {
+    for requested in ["2025-11-25", "2026-07-28"] {
+        let mut harness = Harness::start().await;
+        harness
+            .send(&json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": requested,
+                    "capabilities": {},
+                    "clientInfo": { "name": "compresso-test", "version": "1.0.0" }
+                }
+            }))
+            .await;
+
+        let response = harness.receive().await;
+        assert_eq!(
+            response["result"]["protocolVersion"], "2025-06-18",
+            "a client requesting {requested} must be answered with the pinned revision"
+        );
+
+        harness.close().await;
+    }
+}
+
+#[tokio::test]
+async fn test_tool_call_without_initialize_is_rejected() {
+    let mut harness = Harness::start().await;
+    harness
+        .send(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "compresso_stats",
+                "arguments": {},
+                "_meta": {
+                    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                    "io.modelcontextprotocol/clientCapabilities": {},
+                    "io.modelcontextprotocol/clientInfo": {
+                        "name": "compresso-test",
+                        "version": "1.0.0"
+                    }
+                }
+            }
+        }))
+        .await;
+
+    let response = harness.receive().await;
+    assert_eq!(response["id"], 1);
+    assert!(
+        response.get("result").is_none() && response["error"]["code"].is_i64(),
+        "a tool call must not run before the initialize handshake opens a session: {response}"
+    );
+
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_discover_probe_reports_pinned_versions_then_initializes() {
+    let inline_metadata = json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": { "name": "compresso-test", "version": "1.0.0" }
+    });
+    let mut harness = Harness::start().await;
+    harness
+        .send(&json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "server/discover",
+            "params": { "_meta": inline_metadata }
+        }))
+        .await;
+
+    let discovered = harness.receive().await;
+    assert!(discovered.get("result").is_none(), "{discovered}");
+    assert_eq!(
+        discovered["error"]["data"]["supported"],
+        json!(["2024-11-05", "2025-03-26", "2025-06-18"]),
+        "a discovery probe must be told only the pinned revisions: {discovered}"
+    );
+
+    let initialized = harness.initialize().await;
+    assert_eq!(initialized["result"]["protocolVersion"], PROTOCOL_VERSION);
+
+    harness
+        .send(&json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": { "name": "compresso_stats", "arguments": {} }
+        }))
+        .await;
+    let called = harness.receive().await;
+    assert_eq!(called["result"]["isError"], false, "{called}");
+    assert!(
+        called["result"].get("resultType").is_none(),
+        "an initialized session must keep the handshake-era result shape: {called}"
+    );
+
+    harness.close().await;
+}
+
+#[tokio::test]
 async fn test_eof_before_initialize_exits_cleanly() {
     Harness::start().await.close().await;
 }
