@@ -11,6 +11,7 @@ use std::time::UNIX_EPOCH;
 use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, Value, value};
 
 use crate::plan::{MutationRequest, hash_toml_owned_item};
+use crate::server_entry::{is_adapter_args, with_recall_source};
 use crate::text_fidelity::strip_bom_str;
 use crate::{
     ConfigFormat, Detection, InstallCtx, InstallReceipt, Integration, IntegrationError,
@@ -321,7 +322,7 @@ impl Integration for CodexAdapter {
         let command = resolved_compresso_command(&context.compresso_bin, &self.platform)?;
         let config_path = self.checked_config_path()?;
         let mut document = read_document(&config_path)?;
-        replace_owned_table(&mut document, &command)?;
+        replace_owned_table(&mut document, &command, context.session_recall)?;
         manager.issue(MutationRequest {
             operation: MutationKind::Install,
             client: CLIENT_ID.to_owned(),
@@ -512,7 +513,11 @@ fn read_existing_document(path: &Path) -> Result<DocumentMut, IntegrationError> 
     }
 }
 
-fn replace_owned_table(document: &mut DocumentMut, command: &str) -> Result<(), IntegrationError> {
+fn replace_owned_table(
+    document: &mut DocumentMut,
+    command: &str,
+    session_recall: bool,
+) -> Result<(), IntegrationError> {
     if document.as_table().get("mcp_servers").is_none() {
         let mut parent = Table::new();
         parent.set_implicit(true);
@@ -520,9 +525,14 @@ fn replace_owned_table(document: &mut DocumentMut, command: &str) -> Result<(), 
             .as_table_mut()
             .insert("mcp_servers", Item::Table(parent));
     }
+    let mut arguments = base_server_args();
+    if session_recall {
+        arguments = with_recall_source(arguments, CLIENT_ID);
+    }
     let mut args = Array::new();
-    args.push("mcp");
-    args.push("serve");
+    for argument in arguments {
+        args.push(argument);
+    }
     match document.as_table_mut().get_mut("mcp_servers") {
         Some(Item::Table(parent)) => {
             let mut server = Table::new();
@@ -738,11 +748,17 @@ fn is_exact_server_entry(item: &Item) -> bool {
             .get("command")
             .and_then(Item::as_str)
             .is_some_and(|command| Path::new(command).is_absolute())
-        && args.is_some_and(|args| {
-            args.len() == 2
-                && args.get(0).and_then(Value::as_str) == Some("mcp")
-                && args.get(1).and_then(Value::as_str) == Some("serve")
-        })
+        && args
+            .and_then(|args| {
+                args.iter()
+                    .map(|value| value.as_str().map(str::to_owned))
+                    .collect::<Option<Vec<_>>>()
+            })
+            .is_some_and(|args| is_adapter_args(&args, &base_server_args(), CLIENT_ID))
+}
+
+fn base_server_args() -> Vec<String> {
+    vec!["mcp".to_owned(), "serve".to_owned()]
 }
 
 fn verification_check(
@@ -952,6 +968,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: binary.to_path_buf(),
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect("install plan");
@@ -1056,6 +1073,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: binary.clone(),
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect("reinstall plan");
@@ -1159,6 +1177,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: binary,
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect_err("scalar parent is unsupported");
@@ -1183,6 +1202,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: binary,
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect_err("malformed config rejected");
@@ -1206,6 +1226,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: binary,
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect("install plan");
@@ -1358,6 +1379,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: binary.clone(),
                     scope: Scope::Project(project),
+                    session_recall: false,
                 },
             )
             .expect_err("project scope is unsupported");
@@ -1386,6 +1408,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: binary,
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect_err("platform is unsupported");
@@ -1603,6 +1626,7 @@ mod tests {
                     &InstallCtx {
                         compresso_bin: path,
                         scope: Scope::User,
+                        session_recall: false,
                     },
                 )
                 .expect_err("non-normalized launcher path rejected");
@@ -1626,6 +1650,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: binary,
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect_err("non-executable command rejected");
@@ -1650,6 +1675,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: text_command,
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect_err("non-exe Windows command rejected");
@@ -1717,6 +1743,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: binary,
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect_err("symlinked config directory rejected");
@@ -1748,6 +1775,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: binary.clone(),
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect_err("symlinked config file rejected");
@@ -1766,6 +1794,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: binary,
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect("safe plan");

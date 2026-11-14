@@ -42,6 +42,14 @@ starting the configured server once.
   Paths are compared after canonicalization, so a symbolic link to another
   binary is not trusted. A launcher trusted by path is started through its
   canonical path.
+- **Recall entries (amended for D75).** Since D75 an installed Claude Code or
+  Codex entry may end in `--recall-source <that client>`. This is the only
+  additional argument the exact shape admits: another client's source, a
+  repeated or reordered flag, any recall source in a Cursor entry, or any
+  further argument is `config_modified`. An entry that carries a recall
+  source is started only under the receipt rule in (2); matching the running
+  executable is not enough and yields `not_probed`. A recall argument that an
+  approved install plan did not write is therefore never launched.
 - **How it runs.** Direct `std::process::Command` with a fixed argument
   vector and no shell. The environment is cleared except for an allowlist
   (`PATH`, `HOME`, temp and locale variables, and the XDG and `COMPRESSO_*`

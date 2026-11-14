@@ -42,6 +42,10 @@ pub struct InstallCtx {
     pub compresso_bin: PathBuf,
     /// Selected config scope.
     pub scope: Scope,
+    /// Whether the server entry also enables session recall over this
+    /// client's own transcripts (`--recall-source <client>`). Adapters whose
+    /// client has no supported transcript source ignore it.
+    pub session_recall: bool,
 }
 
 /// Coding-client detection result.
@@ -501,6 +505,18 @@ pub enum IntegrationError {
     #[error("unsupported integration operation: {reason}")]
     Unsupported { reason: String },
     /// Plan approval was never issued by this manager or was altered.
+    /// The client's hook file already defines hooks for an event Compresso
+    /// would own. Compresso never merges into or rewrites them; `entry` is the
+    /// exact group a user can add by hand.
+    #[error(
+        "{key} in {path} already defines hooks that Compresso did not write and will not rewrite; add this entry to that array by hand instead: {entry}"
+    )]
+    UserHooksPresent {
+        path: PathBuf,
+        key: String,
+        entry: String,
+    },
+
     #[error("integration plan approval is forged or unknown")]
     ForgedPlan,
     /// Approval came from another local session.
@@ -2213,7 +2229,17 @@ fn safe_toml_args_value(value: Option<&toml_edit::Array>) -> String {
     safe_args_value(&arguments)
 }
 
-fn safe_args_value(arguments: &[&str]) -> String {
+fn safe_args_value(all_arguments: &[&str]) -> String {
+    // An adapter-written recall suffix is a closed set, so it is safe to show.
+    let arguments = match all_arguments {
+        [base @ .., flag, source]
+            if *flag == crate::server_entry::RECALL_SOURCE_FLAG
+                && crate::server_entry::is_recall_source(source) =>
+        {
+            base
+        }
+        _ => all_arguments,
+    };
     let safe = arguments == ["mcp", "serve"]
         || (arguments.len() == 4
             && arguments[..3] == ["mcp", "serve", "--root"]
@@ -2224,7 +2250,7 @@ fn safe_args_value(arguments: &[&str]) -> String {
     }
     format!(
         "[{}]",
-        arguments
+        all_arguments
             .iter()
             .map(|value| quoted_preview_value(value))
             .collect::<Vec<_>>()

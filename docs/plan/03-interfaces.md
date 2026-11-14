@@ -319,10 +319,10 @@ pub trait Integration {
     fn verify(&self) -> VerificationReport;              // config parses + compresso server entry resolves to existing binary
     fn uninstall(&self, receipt: &InstallReceipt) -> Result<RestoreReport>; // remove owned keys only; restore semantics per adapter spec
 }
-pub struct InstallCtx { pub compresso_bin: PathBuf, pub scope: Scope }  // normalized absolute lexical launcher path; Scope::User | Scope::Project(PathBuf)
+pub struct InstallCtx { pub compresso_bin: PathBuf, pub scope: Scope, pub session_recall: bool }  // normalized absolute lexical launcher path; Scope::User | Scope::Project(PathBuf); recall over the client's own transcripts (D75)
 ```
 
-Per-client config details in `04-mcp-and-integrations.md` §2. User-scoped entries use `mcp serve`; project-scoped Claude Code/Cursor entries pin `--root CANONICAL_ROOT`. Claude Desktop: explicitly no adapter (D5).
+Per-client config details in `04-mcp-and-integrations.md` §2. User-scoped entries use `mcp serve`; project-scoped Claude Code/Cursor entries pin `--root CANONICAL_ROOT`. With `session_recall` (the CLI default; `--no-recall` clears it) Claude Code and Codex entries end in `--recall-source <own client>`; Cursor ignores it. Claude Desktop: explicitly no adapter (D5).
 
 PB-03 CLI orchestration adds deterministic `compresso repos list`, exact and
 confirmable `compresso repos remove ROOT`, and `compresso setup CLIENT ROOT`.
@@ -332,7 +332,11 @@ secret-safe key-level diff, diff hash, backup path, and owned-key effect. Exact
 target bytes stay private inside the manager and remain bound by `result_hash`;
 they are never serialized into CLI or assistant-visible preview output. Before
 indexing setup converts that still-valid plan into an opaque, manager-bound,
-one-use authorization.
+one-use authorization. For Claude Code and Codex setup also previews and,
+after the MCP entry is applied, installs the post-compaction routing-reminder
+hook as a second plan with its own receipt (D76; `--no-compaction-hook` opts
+out). A hook step that cannot be planned or applied is reported as `skipped`
+or `failed` with fix text and never changes setup's exit status.
 Because indexing may outlive the plan TTL, setup renews only `issued_at`,
 `expires_at`, and the derived plan hash afterward; every approved material
 field, including the private target, remains byte-identical. The strict setup apply path refuses any pending

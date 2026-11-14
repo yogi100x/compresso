@@ -162,6 +162,11 @@ pub struct IntegrationMutationArgs {
     /// server entry (Claude Code and Codex only).
     #[arg(long)]
     pub compaction_hook: bool,
+    /// Install the MCP server entry without session recall. By default the
+    /// entry enables the `compresso_recall` tool over this client's own local
+    /// transcripts (Claude Code and Codex only).
+    #[arg(long, conflicts_with = "compaction_hook")]
+    pub no_recall: bool,
 }
 
 #[derive(Args, Debug)]

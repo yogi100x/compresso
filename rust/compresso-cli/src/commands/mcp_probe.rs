@@ -10,6 +10,11 @@
 //! `config_modified` and is never executed. Those two verdicts are warnings:
 //! the entry could not be verified, which is not evidence that it is broken.
 //!
+//! An entry that enables session recall (`--recall-source`) is held to the
+//! stricter of the two: it must name the client's own transcript source and be
+//! covered by an authenticated receipt, so a recall argument added to a
+//! configuration by anyone but an approved install plan is never launched.
+//!
 //! A trusted launch uses the fixed adapter-written arguments, no shell, a
 //! scrubbed environment, a neutral working directory, and its own process
 //! group; one MCP `initialize` plus `tools/list` exchange runs under a hard
@@ -23,7 +28,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use compresso_core::suppress_console_window;
-use compresso_integrations::ConfiguredServer;
+use compresso_integrations::{ConfiguredServer, recall_source_for_client, server_recall_source};
 use serde_json::{Value, json};
 
 /// Handshake deadline used by the real CLI.
@@ -83,9 +88,13 @@ impl LauncherTrust {
     /// canonical path so a symbolic link swapped after the check cannot
     /// redirect the launch. A receipt-authenticated command is started exactly
     /// as the approved install recorded it.
-    fn launch_path(&self, command: &Path) -> Option<PathBuf> {
+    ///
+    /// `enables_recall` entries read private session transcripts once a client
+    /// calls the recall tool, so being the running executable is not enough:
+    /// only a receipt proves an approved install plan wrote that argument.
+    fn launch_path(&self, command: &Path, enables_recall: bool) -> Option<PathBuf> {
         let canonical = std::fs::canonicalize(command).ok()?;
-        if self.running_executable.as_ref() == Some(&canonical) {
+        if !enables_recall && self.running_executable.as_ref() == Some(&canonical) {
             return Some(canonical);
         }
         self.receipt_authenticated.then(|| command.to_path_buf())
@@ -234,6 +243,15 @@ pub(crate) fn assess(
         }
         ConfiguredServer::Exact { command, args } => (command, args),
     };
+    let recall_source = server_recall_source(args);
+    if recall_source.is_some() && recall_source != recall_source_for_client(client) {
+        // Each client may enable only its own transcripts; Cursor has none.
+        return McpServerHealth::new(
+            McpServerState::ConfigModified,
+            "the Compresso entry names a session recall source that Compresso does not install for this client; it was not launched",
+            format!("Restore the entry with `{reinstall}`, then restart the client."),
+        );
+    }
     let shown = command.display();
     match std::fs::metadata(command) {
         Ok(metadata) if metadata.is_file() && is_executable(&metadata) => {}
@@ -256,12 +274,18 @@ pub(crate) fn assess(
             );
         }
     }
-    let Some(launch_path) = trust.launch_path(command) else {
+    let Some(launch_path) = trust.launch_path(command, recall_source.is_some()) else {
         return McpServerHealth::new(
             McpServerState::NotProbed,
-            format!(
-                "configured command {shown} is not a launcher this Compresso installed; it was not launched"
-            ),
+            if recall_source.is_some() {
+                format!(
+                    "the entry for {shown} enables session recall but no Compresso install receipt covers it; it was not launched"
+                )
+            } else {
+                format!(
+                    "configured command {shown} is not a launcher this Compresso installed; it was not launched"
+                )
+            },
             format!(
                 "If you trust this configuration, run `{reinstall}` to write a verified entry, then restart the client. Otherwise remove the entry."
             ),
@@ -588,7 +612,8 @@ fn kill_process_group(process_id: u32) {
 #[cfg(not(unix))]
 fn kill_process_group(_process_id: u32) {}
 
-/// The user-scope argument vector every adapter writes.
+/// The base user-scope argument vector every adapter writes. Claude Code and
+/// Codex entries may additionally end in their own `--recall-source`.
 pub(crate) fn user_scope_args() -> Vec<String> {
     vec!["mcp".to_owned(), "serve".to_owned()]
 }

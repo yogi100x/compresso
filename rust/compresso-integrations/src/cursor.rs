@@ -1134,6 +1134,7 @@ mod tests {
                     &InstallCtx {
                         compresso_bin: self.compresso.clone(),
                         scope,
+                        session_recall: false,
                     },
                 )
                 .expect("install plan");
@@ -1199,6 +1200,7 @@ mod tests {
                     &InstallCtx {
                         compresso_bin: path,
                         scope: Scope::User,
+                        session_recall: false,
                     },
                 )
                 .expect_err("non-normalized launcher path rejected");
@@ -1385,6 +1387,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect_err("malformed config rejected");
@@ -1434,6 +1437,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect("repeat install plan");
@@ -1555,6 +1559,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness_compresso(&directory),
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect_err("unsupported platform cannot mutate");
@@ -1824,6 +1829,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: Scope::Project(harness.project.clone()),
+                    session_recall: false,
                 },
             )
             .expect_err("project symlink rejected");
@@ -1856,6 +1862,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: Scope::Project(harness.project.clone()),
+                    session_recall: false,
                 },
             )
             .expect_err("project file symlink rejected");
@@ -1897,6 +1904,7 @@ mod tests {
                     &InstallCtx {
                         compresso_bin: harness.compresso.clone(),
                         scope: Scope::User,
+                        session_recall: false,
                     },
                 )
                 .expect_err("user symlink rejected");
@@ -1937,6 +1945,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: Scope::Project(harness.project.clone()),
+                    session_recall: false,
                 },
             )
             .expect("project plan does not need user home");

@@ -13,6 +13,64 @@ use std::path::{Path, PathBuf};
 use crate::text_fidelity::{strip_bom, strip_bom_str};
 use crate::{ConfigFormat, InstallReceipt};
 
+/// Flag that enables the `compresso_recall` tool for one transcript source.
+pub(crate) const RECALL_SOURCE_FLAG: &str = "--recall-source";
+const CLAUDE_CODE_CLIENT: &str = "claude-code";
+const CODEX_CLIENT: &str = "codex";
+
+/// The transcript source a client's server entry may enable, if any.
+///
+/// A client is only ever given its own transcripts. Cursor has no supported
+/// transcript format, so its entry never carries a recall source.
+pub fn recall_source_for_client(client: &str) -> Option<&'static str> {
+    match client {
+        CLAUDE_CODE_CLIENT => Some(CLAUDE_CODE_CLIENT),
+        CODEX_CLIENT => Some(CODEX_CLIENT),
+        _ => None,
+    }
+}
+
+/// The recall source named by adapter-shaped server arguments, if any.
+///
+/// Returns `Some` only when the arguments end in a
+/// `--recall-source <known source>` pair.
+pub fn server_recall_source(args: &[String]) -> Option<&str> {
+    match args {
+        [.., flag, source] if flag == RECALL_SOURCE_FLAG && is_recall_source(source) => {
+            Some(source.as_str())
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn is_recall_source(source: &str) -> bool {
+    matches!(source, CLAUDE_CODE_CLIENT | CODEX_CLIENT)
+}
+
+/// Appends the client's own recall source to adapter-written base arguments.
+pub(crate) fn with_recall_source(mut args: Vec<String>, client: &str) -> Vec<String> {
+    if let Some(source) = recall_source_for_client(client) {
+        args.extend([RECALL_SOURCE_FLAG.to_owned(), source.to_owned()]);
+    }
+    args
+}
+
+/// Whether `args` is `base`, or `base` followed by `client`'s own recall
+/// source. Another client's source, a repeated flag, or any other argument
+/// never matches.
+pub(crate) fn is_adapter_args(args: &[String], base: &[String], client: &str) -> bool {
+    args == base || args == with_recall_source(base.to_vec(), client).as_slice()
+}
+
+/// The only client whose recall source an entry in a `format` configuration
+/// may carry.
+const fn format_recall_client(format: ConfigFormat) -> &'static str {
+    match format {
+        ConfigFormat::Json => CLAUDE_CODE_CLIENT,
+        ConfigFormat::Toml => CODEX_CLIENT,
+    }
+}
+
 /// Largest client configuration file inspected for a server entry.
 const MAX_CONFIG_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -36,9 +94,15 @@ pub enum ConfiguredServer {
 
 /// Reads the Compresso server entry from `config_path` without mutation.
 ///
-/// `expected_args` is the exact argument vector the adapter writes for the
-/// selected scope. Any other argument vector, a relative command, or an
-/// unexpected field is reported as [`ConfiguredServer::Modified`].
+/// `expected_args` is the exact base argument vector the adapter writes for
+/// the selected scope. The entry may additionally end in the one recall
+/// source an adapter writes into that configuration format
+/// (`--recall-source claude-code` for JSON, `--recall-source codex` for TOML).
+/// Cursor shares the JSON format and never carries a recall source, so a
+/// caller that knows the client must still compare [`server_recall_source`]
+/// with [`recall_source_for_client`]. Any other argument vector, a relative
+/// command, or an unexpected field is reported as
+/// [`ConfiguredServer::Modified`].
 pub fn read_configured_server(
     format: ConfigFormat,
     config_path: &Path,
@@ -56,8 +120,8 @@ pub fn read_configured_server(
         Err(_) => return ConfiguredServer::Unreadable,
     };
     match format {
-        ConfigFormat::Json => read_json_entry(&bytes, expected_args),
-        ConfigFormat::Toml => read_toml_entry(&bytes, expected_args),
+        ConfigFormat::Json => read_json_entry(&bytes, expected_args, format),
+        ConfigFormat::Toml => read_toml_entry(&bytes, expected_args, format),
     }
 }
 
@@ -112,9 +176,12 @@ fn current_toml_hash(config_path: &Path) -> Option<String> {
     Some(crate::plan::hash_toml_owned_item(entry))
 }
 
-fn read_json_entry(bytes: &[u8], expected_args: &[String]) -> ConfiguredServer {
-    // The adapters accept and preserve a byte order mark, so the read-only
-    // view must accept it too.
+fn read_json_entry(
+    bytes: &[u8],
+    expected_args: &[String],
+    format: ConfigFormat,
+) -> ConfiguredServer {
+    // Adapters keep an existing byte-order mark, so it is not a modification.
     let Ok(document) = serde_json::from_slice::<serde_json::Value>(strip_bom(bytes)) else {
         return ConfiguredServer::Unreadable;
     };
@@ -148,10 +215,15 @@ fn read_json_entry(bytes: &[u8], expected_args: &[String]) -> ConfiguredServer {
         entry.get("command").and_then(serde_json::Value::as_str),
         args,
         expected_args,
+        format,
     )
 }
 
-fn read_toml_entry(bytes: &[u8], expected_args: &[String]) -> ConfiguredServer {
+fn read_toml_entry(
+    bytes: &[u8],
+    expected_args: &[String],
+    format: ConfigFormat,
+) -> ConfiguredServer {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return ConfiguredServer::Unreadable;
     };
@@ -184,6 +256,7 @@ fn read_toml_entry(bytes: &[u8], expected_args: &[String]) -> ConfiguredServer {
         table.get("command").and_then(toml_edit::Item::as_str),
         args,
         expected_args,
+        format,
     )
 }
 
@@ -192,10 +265,13 @@ fn exact_entry(
     command: Option<&str>,
     args: Option<Vec<String>>,
     expected_args: &[String],
+    format: ConfigFormat,
 ) -> ConfiguredServer {
     match (command, args) {
         (Some(command), Some(args))
-            if shape_ok && Path::new(command).is_absolute() && args == expected_args =>
+            if shape_ok
+                && Path::new(command).is_absolute()
+                && is_adapter_args(&args, expected_args, format_recall_client(format)) =>
         {
             ConfiguredServer::Exact {
                 command: PathBuf::from(command),
@@ -296,31 +372,136 @@ mod tests {
     }
 
     #[test]
-    fn test_byte_order_mark_does_not_hide_an_exact_entry() {
+    fn test_own_recall_source_suffix_is_exact_for_each_format() {
         let directory = tempdir().expect("temp directory");
         let json = directory.path().join("config.json");
         fs::write(
             &json,
-            "\u{feff}{\"mcpServers\":{\"compresso\":{\"type\":\"stdio\",\"command\":\"/opt/compresso\",\"args\":[\"mcp\",\"serve\"]}}}",
+            "{\"mcpServers\":{\"compresso\":{\"type\":\"stdio\",\"command\":\"/opt/compresso\",\"args\":[\"mcp\",\"serve\",\"--recall-source\",\"claude-code\"]}}}",
         )
         .expect("json written");
         let toml = directory.path().join("config.toml");
         fs::write(
             &toml,
-            "\u{feff}[mcp_servers.compresso]\ncommand = \"/opt/compresso\"\nargs = [\"mcp\", \"serve\"]\n",
+            "[mcp_servers.compresso]\ncommand = \"/opt/compresso\"\nargs = [\"mcp\", \"serve\", \"--recall-source\", \"codex\"]\n",
         )
         .expect("toml written");
-        let expected = ConfiguredServer::Exact {
-            command: PathBuf::from("/opt/compresso"),
-            args: serve_args(),
+        let ConfiguredServer::Exact { args, .. } =
+            read_configured_server(ConfigFormat::Json, &json, &serve_args())
+        else {
+            panic!("JSON entry with its own recall source should be exact");
         };
+        assert_eq!(server_recall_source(&args), Some("claude-code"));
+        let ConfiguredServer::Exact { args, .. } =
+            read_configured_server(ConfigFormat::Toml, &toml, &serve_args())
+        else {
+            panic!("TOML entry with its own recall source should be exact");
+        };
+        assert_eq!(server_recall_source(&args), Some("codex"));
+        assert_eq!(server_recall_source(&serve_args()), None);
+    }
+
+    #[test]
+    fn test_foreign_repeated_or_trailing_recall_arguments_are_modified() {
+        let directory = tempdir().expect("temp directory");
+        let json = directory.path().join("config.json");
+        for args in [
+            "[\"mcp\",\"serve\",\"--recall-source\",\"codex\"]",
+            "[\"mcp\",\"serve\",\"--recall-source\",\"cursor\"]",
+            "[\"mcp\",\"serve\",\"--recall-source\"]",
+            "[\"mcp\",\"serve\",\"--recall-source=claude-code\"]",
+            "[\"mcp\",\"serve\",\"--recall-source\",\"claude-code\",\"--recall-source\",\"codex\"]",
+            "[\"mcp\",\"serve\",\"--recall-source\",\"claude-code\",\"--recall-source\",\"claude-code\"]",
+            "[\"mcp\",\"serve\",\"--recall-source\",\"claude-code\",\"--extra\"]",
+            "[\"--recall-source\",\"claude-code\",\"mcp\",\"serve\"]",
+        ] {
+            fs::write(
+                &json,
+                format!(
+                    "{{\"mcpServers\":{{\"compresso\":{{\"command\":\"/opt/compresso\",\"args\":{args}}}}}}}"
+                ),
+            )
+            .expect("json written");
+            assert_eq!(
+                read_configured_server(ConfigFormat::Json, &json, &serve_args()),
+                ConfiguredServer::Modified,
+                "{args}"
+            );
+        }
+        let toml = directory.path().join("config.toml");
+        fs::write(
+            &toml,
+            "[mcp_servers.compresso]\ncommand = \"/opt/compresso\"\nargs = [\"mcp\", \"serve\", \"--recall-source\", \"claude-code\"]\n",
+        )
+        .expect("toml written");
+        assert_eq!(
+            read_configured_server(ConfigFormat::Toml, &toml, &serve_args()),
+            ConfiguredServer::Modified
+        );
+    }
+
+    #[test]
+    fn test_recall_source_mapping_gives_each_client_only_its_own_transcripts() {
+        assert_eq!(recall_source_for_client("claude-code"), Some("claude-code"));
+        assert_eq!(recall_source_for_client("codex"), Some("codex"));
+        assert_eq!(recall_source_for_client("cursor"), None);
+        assert_eq!(
+            with_recall_source(serve_args(), "cursor"),
+            serve_args(),
+            "Cursor never gains a recall source"
+        );
+        assert!(is_adapter_args(
+            &with_recall_source(serve_args(), "codex"),
+            &serve_args(),
+            "codex"
+        ));
+        assert!(!is_adapter_args(
+            &with_recall_source(serve_args(), "codex"),
+            &serve_args(),
+            "claude-code"
+        ));
+    }
+
+    #[test]
+    fn test_byte_order_mark_does_not_hide_an_exact_entry() {
+        let directory = tempdir().expect("temp directory");
+        let json = directory.path().join("config.json");
+        fs::write(
+            &json,
+            "\u{feff}{\"mcpServers\":{\"compresso\":{\"command\":\"/opt/compresso\",\"args\":[\"mcp\",\"serve\"]}}}",
+        )
+        .expect("json written");
+        let toml = directory.path().join("config.toml");
+        fs::write(
+            &toml,
+            "\u{feff}[mcp_servers.compresso]\r\ncommand = \"/opt/compresso\"\r\nargs = [\"mcp\", \"serve\"]\r\n",
+        )
+        .expect("toml written");
+        for (format, path) in [(ConfigFormat::Json, &json), (ConfigFormat::Toml, &toml)] {
+            assert!(
+                matches!(
+                    read_configured_server(format, path, &serve_args()),
+                    ConfiguredServer::Exact { .. }
+                ),
+                "{format:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_malformed_config_is_unreadable() {
+        let directory = tempdir().expect("temp directory");
+        let json = directory.path().join("config.json");
+        fs::write(&json, "{").expect("json written");
+        let toml = directory.path().join("config.toml");
+        fs::write(&toml, "mcp_servers = [").expect("toml written");
         assert_eq!(
             read_configured_server(ConfigFormat::Json, &json, &serve_args()),
-            expected
+            ConfiguredServer::Unreadable
         );
         assert_eq!(
             read_configured_server(ConfigFormat::Toml, &toml, &serve_args()),
-            expected
+            ConfiguredServer::Unreadable
         );
     }
 
@@ -345,22 +526,5 @@ mod tests {
         let toml_hash = current_toml_hash(&plain_toml);
         assert!(toml_hash.is_some());
         assert_eq!(current_toml_hash(&marked_toml), toml_hash);
-    }
-
-    #[test]
-    fn test_malformed_config_is_unreadable() {
-        let directory = tempdir().expect("temp directory");
-        let json = directory.path().join("config.json");
-        fs::write(&json, "{").expect("json written");
-        let toml = directory.path().join("config.toml");
-        fs::write(&toml, "mcp_servers = [").expect("toml written");
-        assert_eq!(
-            read_configured_server(ConfigFormat::Json, &json, &serve_args()),
-            ConfiguredServer::Unreadable
-        );
-        assert_eq!(
-            read_configured_server(ConfigFormat::Toml, &toml, &serve_args()),
-            ConfiguredServer::Unreadable
-        );
     }
 }

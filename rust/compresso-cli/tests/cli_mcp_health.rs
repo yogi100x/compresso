@@ -613,8 +613,16 @@ fn test_doctor_without_probe_timeout_checks_paths_but_starts_nothing() {
 
 #[test]
 fn test_doctor_probes_a_shared_launcher_once_and_reports_every_client() {
-    let fixture = Fixture::with_installed_stub(CRASHING_STUB);
-    fixture.install("codex");
+    // Without recall both clients record the identical command line, which
+    // is started once. (Default installs differ by recall source; see
+    // `test_doctor_probes_each_distinct_default_entry_once`.)
+    let fixture = Fixture::new();
+    write_executable(&fixture.stub, CRASHING_STUB);
+    for client in ["claude-code", "codex"] {
+        let (exit, output) =
+            fixture.integrations(&["install", client, "--no-recall", "--yes", "--json"], None);
+        assert_eq!(exit, CliExitCode::Success, "{output}");
+    }
 
     let (exit, payload) = fixture.doctor(Some(PROBE_TIMEOUT));
 
@@ -785,4 +793,231 @@ fn test_integration_status_default_environment_starts_no_process() {
 
     assert_eq!(server["state"], "probe_skipped");
     assert_eq!(fixture.stub_runs(), 0);
+}
+
+/// Records the arguments it was started with, then answers like a server
+/// that also declares the recall tool.
+const RECALL_STUB: &str = r#"#!/bin/sh
+here="$(dirname "$0")"
+echo ran >> "$here/ran"
+echo "$*" > "$here/args"
+while IFS= read -r line; do
+  case "$line" in
+    *'"id":1'*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"compresso","version":"0.0.0"}}}' ;;
+    *'"id":2'*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"compresso_context"},{"name":"compresso_read"},{"name":"compresso_recall"}]}}' ;;
+  esac
+done
+"#;
+
+#[test]
+fn test_receipt_installed_recall_entry_is_trusted_and_probed_with_its_recall_argument() {
+    let fixture = Fixture::with_installed_stub(RECALL_STUB);
+    let config: Value =
+        serde_json::from_slice(&fs::read(fixture.home.join(".claude.json")).expect("config"))
+            .expect("config JSON");
+    assert_eq!(
+        config["mcpServers"]["compresso"]["args"],
+        json!(["mcp", "serve", "--recall-source", "claude-code"]),
+        "install enables recall over the client's own transcripts by default"
+    );
+
+    let (exit, payload) = fixture.doctor(Some(PROBE_TIMEOUT));
+    assert_eq!(exit, CliExitCode::Success, "{payload}");
+    let server = server(&payload, "claude-code");
+    assert_eq!(server["state"], "healthy", "{payload}");
+    assert!(
+        server["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("3 tools"))
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.stub.with_file_name("args"))
+            .expect("recorded arguments")
+            .trim(),
+        "mcp serve --recall-source claude-code"
+    );
+
+    let status = fixture.status(&["claude-code"], Some(PROBE_TIMEOUT));
+    assert_eq!(status["state"], "healthy", "{status}");
+
+    let (exit, verify) = fixture.integrations(&["verify", "claude-code", "--json"], None);
+    let verify: Value = serde_json::from_str(&verify).expect("verify JSON");
+    let checks = verify["data"]["checks"].as_array().expect("checks");
+    let server_entry = checks
+        .iter()
+        .find(|check| check["name"] == "server_entry")
+        .expect("server_entry check");
+    assert_eq!(server_entry["passed"], true, "{verify} ({exit:?})");
+}
+
+#[test]
+fn test_recall_argument_added_after_install_is_never_executed() {
+    // The receipt covers the entry without recall; someone then adds the flag.
+    let fixture = Fixture::new();
+    write_executable(&fixture.stub, RECALL_STUB);
+    let (exit, output) = fixture.integrations(
+        &["install", "claude-code", "--no-recall", "--yes", "--json"],
+        None,
+    );
+    assert_eq!(exit, CliExitCode::Success, "{output}");
+    fixture.configure_claude(json!({
+        "type": "stdio",
+        "command": fixture.stub,
+        "args": ["mcp", "serve", "--recall-source", "claude-code"]
+    }));
+
+    // Even as the running executable, a recall entry needs a matching receipt.
+    for timeout in [Some(PROBE_TIMEOUT), None] {
+        let (exit, payload) = fixture.doctor_as(Some(&fixture.stub), timeout);
+        assert_doctor_warns(exit, &payload, "claude-code");
+        let server = server(&payload, "claude-code");
+        assert_not_probed(server, "claude-code");
+        assert!(
+            server["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("session recall")),
+            "{server}"
+        );
+    }
+    assert_not_probed(
+        &fixture.status(&["claude-code"], Some(PROBE_TIMEOUT)),
+        "claude-code",
+    );
+    assert_eq!(
+        fixture.stub_runs(),
+        0,
+        "an unreceipted recall entry must not run"
+    );
+}
+
+#[test]
+fn test_unreceipted_recall_entry_on_the_running_executable_is_never_executed() {
+    let fixture = Fixture::new();
+    write_executable(&fixture.stub, RECALL_STUB);
+    let project = fixture.project.to_str().expect("project path");
+    fixture.configure_claude(json!({
+        "type": "stdio",
+        "command": fixture.stub,
+        "args": ["mcp", "serve", "--recall-source", "claude-code"]
+    }));
+    // A repository can ship this file; it must not turn recall on by itself.
+    write_json(
+        &fixture.project.join(".mcp.json"),
+        &json!({ "mcpServers": { "compresso": {
+            "type": "stdio",
+            "command": fixture.stub,
+            "args": ["mcp", "serve", "--root", project, "--recall-source", "claude-code"]
+        } } }),
+    );
+
+    let (exit, payload) = fixture.doctor_as(Some(&fixture.stub), Some(PROBE_TIMEOUT));
+    assert_doctor_warns(exit, &payload, "claude-code");
+    assert_not_probed(server(&payload, "claude-code"), "claude-code");
+    assert_not_probed(
+        &fixture.status(&["claude-code", "--project", project], Some(PROBE_TIMEOUT)),
+        "claude-code",
+    );
+    assert_eq!(fixture.stub_runs(), 0);
+}
+
+#[test]
+fn test_foreign_repeated_or_extended_recall_arguments_are_rejected_without_execution() {
+    let fixture = Fixture::with_installed_stub(RECALL_STUB);
+    for args in [
+        json!(["mcp", "serve", "--recall-source", "codex"]),
+        json!(["mcp", "serve", "--recall-source", "cursor"]),
+        json!(["mcp", "serve", "--recall-source"]),
+        json!(["mcp", "serve", "--recall-source=claude-code"]),
+        json!([
+            "mcp",
+            "serve",
+            "--recall-source",
+            "claude-code",
+            "--recall-source",
+            "codex"
+        ]),
+        json!([
+            "mcp",
+            "serve",
+            "--recall-source",
+            "claude-code",
+            "--all-repositories"
+        ]),
+        json!([
+            "mcp",
+            "serve",
+            "--recall-source",
+            "claude-code",
+            "--root",
+            "/"
+        ]),
+    ] {
+        fixture.configure_claude(json!({
+            "type": "stdio", "command": fixture.stub, "args": args
+        }));
+        let (exit, payload) = fixture.doctor_as(Some(&fixture.stub), Some(PROBE_TIMEOUT));
+        assert_doctor_warns(exit, &payload, "claude-code");
+        assert_eq!(
+            server(&payload, "claude-code")["state"],
+            "config_modified",
+            "{payload}"
+        );
+        assert_eq!(
+            fixture.status(&["claude-code"], Some(PROBE_TIMEOUT))["state"],
+            "config_modified"
+        );
+    }
+    assert_eq!(fixture.stub_runs(), 0, "modified entries must not run");
+}
+
+#[test]
+fn test_cursor_entry_never_gains_recall_and_a_recall_argument_there_is_not_executed() {
+    let fixture = Fixture::new();
+    write_executable(&fixture.stub, RECALL_STUB);
+    fixture.install("cursor");
+    let cursor_config = fixture.home.join(".cursor/mcp.json");
+    let installed: Value =
+        serde_json::from_slice(&fs::read(&cursor_config).expect("Cursor config")).expect("JSON");
+    assert_eq!(
+        installed["mcpServers"]["compresso"]["args"],
+        json!(["mcp", "serve"]),
+        "Cursor transcripts are unsupported, so install writes no recall source"
+    );
+
+    write_json(
+        &cursor_config,
+        &json!({ "mcpServers": { "compresso": {
+            "command": fixture.stub,
+            "args": ["mcp", "serve", "--recall-source", "claude-code"]
+        } } }),
+    );
+    let (exit, payload) = fixture.doctor_as(Some(&fixture.stub), Some(PROBE_TIMEOUT));
+    assert_doctor_warns(exit, &payload, "cursor");
+    assert_eq!(
+        server(&payload, "cursor")["state"],
+        "config_modified",
+        "{payload}"
+    );
+    assert_eq!(
+        fixture.status(&["cursor"], Some(PROBE_TIMEOUT))["state"],
+        "config_modified"
+    );
+    assert_eq!(fixture.stub_runs(), 0);
+}
+
+#[test]
+fn test_doctor_probes_each_distinct_default_entry_once() {
+    let fixture = Fixture::with_installed_stub(RECALL_STUB);
+    fixture.install("codex");
+    fixture.install("cursor");
+
+    let (exit, payload) = fixture.doctor(Some(PROBE_TIMEOUT));
+
+    assert_eq!(exit, CliExitCode::Success, "{payload}");
+    for client in ["claude-code", "codex", "cursor"] {
+        assert_eq!(server(&payload, client)["state"], "healthy", "{payload}");
+    }
+    // Claude Code and Codex name different recall sources and Cursor names
+    // none, so each entry is a distinct command line started exactly once.
+    assert_eq!(fixture.stub_runs(), 3);
 }

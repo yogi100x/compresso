@@ -52,7 +52,10 @@ pub use receipt::{
     CREATED_FILE_BACKUP_SENTINEL, FileReceiptStore, InstallReceipt, MemoryReceiptStore,
     RECEIPT_SCHEMA_VERSION, ReceiptError, ReceiptStore,
 };
-pub use server_entry::{ConfiguredServer, read_configured_server, receipt_authenticates_server};
+pub use server_entry::{
+    ConfiguredServer, read_configured_server, recall_source_for_client,
+    receipt_authenticates_server, server_recall_source,
+};
 
 /// Adapter contract shared by Claude Code, Codex, and Cursor.
 ///
