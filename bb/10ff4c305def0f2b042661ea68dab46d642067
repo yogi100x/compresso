@@ -1,0 +1,19 @@
+rust/compresso-recall/src/redact.rs
+  s_e2da226df94350::t_6819feeff0be9a 302,304-309,325,327-332,335-339,342-345
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bb10ff4c305def0f2b042661ea68dab46d642067",
+  "prompts": {},
+  "sessions": {
+    "s_e2da226df94350": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a4ace18-3be7-440c-984c-7cf6854c84ee",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
