@@ -1,0 +1,31 @@
+Cargo.lock
+  s_e0fbad52509c45::t_86a6ac57af4c4e 699-704,869,877-879,883,885,887,1165,1167,1590,1592
+Cargo.toml
+  s_87d7c30a5e4fd4::t_9d180101269657 33
+docs/plan/01-stack-and-workspace.md
+  s_87d7c30a5e4fd4::t_ba627627f63591 16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "abd58c709634d1e2ddcdbcac5d8cfffeee2b0a98",
+  "prompts": {},
+  "sessions": {
+    "s_87d7c30a5e4fd4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-aea127db5b0d1c3d9",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_e0fbad52509c45": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "818f78e1-a0e8-4caa-ba80-970087e90a68",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
