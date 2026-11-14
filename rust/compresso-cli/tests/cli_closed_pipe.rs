@@ -1,4 +1,9 @@
-//! A closed or broken stdio pipe must become a typed, reported error.
+//! A closed or broken stdio pipe must never panic a Compresso process.
+//!
+//! The `compresso` CLI behaves like a standard Unix filter: when the reader
+//! of its standard output goes away it stops quietly, with no message and a
+//! success exit. The long-running MCP server instead reports the typed
+//! `output_closed` error, because a server that lost its client is a failure.
 //!
 //! These tests launch the real binary so the failure crosses a real OS pipe:
 //! `EPIPE` on Unix and `ERROR_BROKEN_PIPE` / `ERROR_NO_DATA` on Windows.
@@ -76,8 +81,23 @@ fn assert_reported_closed_output(status: ExitStatus, stderr: &str) {
     assert!(!stderr.contains("panicked"), "process panicked: {stderr}");
 }
 
+/// Enough output to overflow any pipe buffer, so a write must observe the
+/// closed reader instead of completing into kernel memory.
+fn large_input() -> Vec<u8> {
+    b"a line of ordinary text that passes through unchanged\n".repeat(40_000)
+}
+
+/// Feeds `input` to the child from another thread so a full pipe never
+/// deadlocks the test, tolerating a child that stops reading.
+fn feed(child: &mut Child, input: Vec<u8>) -> thread::JoinHandle<()> {
+    let mut stdin = child.stdin.take().expect("stdin should be piped");
+    thread::spawn(move || {
+        let _ = stdin.write_all(&input);
+    })
+}
+
 #[test]
-fn test_cli_reports_typed_error_when_stdout_reader_closed_early() {
+fn test_cli_exits_silently_when_stdout_reader_closed_early() {
     let home = tempdir().expect("temporary home");
     let mut child = compresso(&home)
         .args(["compress", "--mode", "passthrough"])
@@ -89,15 +109,114 @@ fn test_cli_reports_typed_error_when_stdout_reader_closed_early() {
 
     // Close the reader first; the command cannot write until stdin ends.
     drop(child.stdout.take());
-    let mut input = child.stdin.take().expect("stdin should be piped");
-    input
-        .write_all(b"line one\nline two\nline three\n")
-        .expect("input should be written");
-    drop(input);
+    let feeder = feed(&mut child, large_input());
 
     let status = wait_for_exit(&mut child);
     let stderr = read_stderr(&mut child);
-    assert_reported_closed_output(status, &stderr);
+    feeder.join().expect("input feeder should finish");
+    assert_eq!(status.code(), Some(0), "stderr: {stderr}");
+    assert_eq!(stderr, "", "a closed reader must not be reported");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_cli_piped_into_head_exits_zero_without_stderr_output() {
+    let home = tempdir().expect("temporary home");
+    let input = home.path().join("input.txt");
+    std::fs::write(&input, large_input()).expect("input file should be written");
+    let mut shell = Command::new("/bin/sh");
+    shell
+        .arg("-c")
+        .arg(
+            "{ \"$COMPRESSO_BIN\" compress --mode passthrough --file \"$INPUT\"; \
+             echo \"status=$?\" >&2; } | head -c1 >/dev/null",
+        )
+        .env("COMPRESSO_BIN", env!("CARGO_BIN_EXE_compresso"))
+        .env("INPUT", &input)
+        .env("HOME", home.path())
+        .env("XDG_DATA_HOME", home.path().join("data"))
+        .env("XDG_CONFIG_HOME", home.path().join("config"))
+        .current_dir(home.path());
+
+    let output = shell.output().expect("shell pipeline should run");
+
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "status=0\n",
+        "`compresso ... | head -c1` must be silent and exit 0"
+    );
+}
+
+#[test]
+fn test_cli_reports_real_error_even_when_stdout_reader_is_closed() {
+    let home = tempdir().expect("temporary home");
+    let mut child = compresso(&home)
+        .args(["compress", "--file", "does-not-exist.txt"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("compresso should launch");
+    drop(child.stdout.take());
+
+    let status = wait_for_exit(&mut child);
+    let stderr = read_stderr(&mut child);
+
+    assert_eq!(status.code(), Some(1), "stderr: {stderr}");
+    assert!(
+        stderr.contains("error[invalid_arguments]"),
+        "an error raised before any output must still be reported: {stderr}"
+    );
+}
+
+#[test]
+fn test_cli_failure_with_closed_stderr_exits_without_panicking() {
+    let home = tempdir().expect("temporary home");
+    let mut child = compresso(&home)
+        .args(["compress", "--file", "does-not-exist.txt"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("compresso should launch");
+    drop(child.stderr.take());
+
+    // A panic would exit 101 and a signal would report no code at all.
+    assert_eq!(wait_for_exit(&mut child).code(), Some(1));
+}
+
+#[test]
+fn test_cli_usage_error_with_closed_stderr_exits_without_panicking() {
+    let home = tempdir().expect("temporary home");
+    let mut child = compresso(&home)
+        .args(["compress", "--mode", "no-such-mode"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("compresso should launch");
+    drop(child.stderr.take());
+
+    assert_eq!(wait_for_exit(&mut child).code(), Some(2));
+}
+
+#[test]
+fn test_cli_exits_zero_when_both_output_streams_are_closed() {
+    let home = tempdir().expect("temporary home");
+    let mut child = compresso(&home)
+        .args(["compress", "--mode", "passthrough"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("compresso should launch");
+    drop(child.stdout.take());
+    drop(child.stderr.take());
+    let feeder = feed(&mut child, large_input());
+
+    let status = wait_for_exit(&mut child);
+    feeder.join().expect("input feeder should finish");
+    assert_eq!(status.code(), Some(0));
 }
 
 #[test]

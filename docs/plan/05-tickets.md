@@ -2782,19 +2782,23 @@ Test cases:
 ### [x] E17-05: Windows hardening — line endings, console windows, broken pipes
 Owner: D1 · Estimate: 2d · Depends: E6-05, E5-01, E4-02
 Files: rust/compresso-integrations/src/{text_fidelity,plan,lib,claude_code,codex,cursor}.rs, rust/compresso-integrations/tests/text_fidelity.rs, rust/compresso-core/src/{stdio,background_spawn}.rs, rust/compresso-mcp/src/{server,session}.rs, rust/compresso-mcp/tests/closed_pipe.rs, rust/compresso-cli/src/commands.rs, rust/compresso-cli/tests/cli_closed_pipe.rs, rust/compresso-eval/src/cli.rs
-Description: Preserve BOM and line endings in every client-config mutation, provide the CREATE_NO_WINDOW policy for background launches, and turn closed stdio pipes into typed reported errors.
+Description: Preserve BOM and line endings in every client-config mutation, provide the CREATE_NO_WINDOW policy for background launches, and classify closed stdio pipes as a typed error instead of a panic. By owner decision the `compresso` CLI then exits quietly like a standard Unix filter, while the MCP server and `compresso-eval` report the typed error.
 Acceptance criteria:
 - BOM kept, never added; untouched lines keep exact terminators; written lines use the dominant ending (tie → LF); created files are LF without BOM.
 - Uninstall of a config untouched since install is byte-identical; later user edits are never reverted.
 - Launch sites route through `suppress_console_window`; no production spawn exists.
-- EPIPE / ERROR_BROKEN_PIPE / ERROR_NO_DATA never panic; CLI, eval and MCP report `output_closed`.
+- EPIPE / ERROR_BROKEN_PIPE / ERROR_NO_DATA never panic; the MCP server and `compresso-eval` report `output_closed`.
+- The `compresso` CLI is silent when its stdout reader closes early (`compresso ... | head -c1`): no stderr output and exit 0. An error reported before the reader left keeps its message and exit code, and a closed stderr never panics.
 Test cases:
 - test_install_then_uninstall_restores_byte_identical_original_for_every_encoding
 - test_install_preserves_bom_untouched_terminators_and_inserts_dominant_ending
 - test_uninstall_restores_non_canonical_json_formatting_byte_for_byte
 - test_uninstall_never_reverts_a_whitespace_only_user_edit_to_the_backup
 - test_windows_builder_receives_create_no_window
-- test_cli_reports_typed_error_when_stdout_reader_closed_early
+- test_cli_exits_silently_when_stdout_reader_closed_early
+- test_cli_piped_into_head_exits_zero_without_stderr_output
+- test_cli_reports_real_error_even_when_stdout_reader_is_closed
+- test_cli_failure_with_closed_stderr_exits_without_panicking
 - test_mcp_server_exits_with_typed_error_when_stdout_reader_closed_early
 - test_writing_to_child_that_exited_early_is_typed_closed_error
 - test_output_closed_during_session_is_typed_error
