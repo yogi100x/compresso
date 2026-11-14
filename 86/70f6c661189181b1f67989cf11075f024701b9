@@ -1,0 +1,19 @@
+security_best_practices_report.md
+  s_f3ae5462f697a3::t_43094835a39074 23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8670f6c661189181b1f67989cf11075f024701b9",
+  "prompts": {},
+  "sessions": {
+    "s_f3ae5462f697a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7cc607c-32b2-4e30-bc4c-55ff6e2d2dd7",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
