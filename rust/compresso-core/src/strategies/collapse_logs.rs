@@ -47,29 +47,29 @@ impl CompressionStrategy for CollapseLogs {
     }
 
     fn supports(&self, input: &ContextGraph) -> bool {
-        !collapse_plan(input).changes.is_empty()
+        !collapse_plan(input, &[]).changes.is_empty()
     }
 
     fn estimate(&self, input: &ContextGraph) -> Estimate {
-        let plan = collapse_plan(input);
+        let plan = collapse_plan(input, &[]);
         estimate_for_plan(&plan)
     }
 
     fn execute(
         &self,
         input: &ContextGraph,
-        _budget: &CompressionBudget,
+        budget: &CompressionBudget,
     ) -> Result<StrategyOutput, StrategyError> {
-        let plan = collapse_plan(input);
+        let plan = collapse_plan(input, &budget.protected_kinds);
         Ok(execute_plan(input, plan))
     }
 
     fn execute_if_supported(
         &self,
         input: &ContextGraph,
-        _budget: &CompressionBudget,
+        budget: &CompressionBudget,
     ) -> StrategyExecution {
-        let plan = collapse_plan(input);
+        let plan = collapse_plan(input, &budget.protected_kinds);
         if plan.changes.is_empty() {
             StrategyExecution::NotSupported
         } else {
@@ -117,14 +117,15 @@ fn execute_plan(input: &ContextGraph, plan: CollapsePlan) -> StrategyOutput {
     }
 }
 
-fn collapse_plan(input: &ContextGraph) -> CollapsePlan {
+fn collapse_plan(input: &ContextGraph, protected_kinds: &[NodeKind]) -> CollapsePlan {
     let mut changes = Vec::new();
     let mut notes = Vec::new();
     let mut tokens_saved = 0_usize;
     let duplicate_group_nodes = duplicate_group_node_ids(input);
 
     for (index, node) in input.nodes.iter().enumerate() {
-        if node.protected || node.kind.requires_protection() {
+        if node.protected || node.kind.requires_protection() || protected_kinds.contains(&node.kind)
+        {
             notes.push(format!("skipped node: {} is protected", node.id));
             continue;
         }
@@ -884,5 +885,28 @@ mod tests {
         assert_eq!(collapse.id(), "collapse_logs");
         assert!(collapse.supports(&graph));
         assert!(collapse.execute(&graph, &budget()).is_ok());
+    }
+
+    #[test]
+    fn test_budget_protected_kind_log_untouched() {
+        let graph = graph_with(node(
+            "budget-protected-log",
+            NodeKind::ToolResponse,
+            FIVE_HUNDRED_LINES,
+            false,
+        ));
+        let mut protected_budget = budget();
+        protected_budget
+            .protected_kinds
+            .push(NodeKind::ToolResponse);
+
+        assert!(CollapseLogs.execute(&graph, &budget()).unwrap().graph != graph);
+        let output = CollapseLogs.execute(&graph, &protected_budget).unwrap();
+        assert_eq!(output.graph, graph);
+        assert!(output.removals.is_empty());
+        assert!(matches!(
+            CollapseLogs.execute_if_supported(&graph, &protected_budget),
+            StrategyExecution::NotSupported
+        ));
     }
 }

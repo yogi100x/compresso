@@ -40,29 +40,29 @@ impl CompressionStrategy for CompactJson {
     }
 
     fn supports(&self, input: &ContextGraph) -> bool {
-        !compact_plan(input).changes.is_empty()
+        !compact_plan(input, &[]).changes.is_empty()
     }
 
     fn estimate(&self, input: &ContextGraph) -> Estimate {
-        let plan = compact_plan(input);
+        let plan = compact_plan(input, &[]);
         estimate_for_plan(&plan)
     }
 
     fn execute(
         &self,
         input: &ContextGraph,
-        _budget: &CompressionBudget,
+        budget: &CompressionBudget,
     ) -> Result<StrategyOutput, StrategyError> {
-        let plan = compact_plan(input);
+        let plan = compact_plan(input, &budget.protected_kinds);
         Ok(execute_plan(input, plan))
     }
 
     fn execute_if_supported(
         &self,
         input: &ContextGraph,
-        _budget: &CompressionBudget,
+        budget: &CompressionBudget,
     ) -> StrategyExecution {
-        let plan = compact_plan(input);
+        let plan = compact_plan(input, &budget.protected_kinds);
         if plan.changes.is_empty() {
             StrategyExecution::NotSupported
         } else {
@@ -107,14 +107,15 @@ fn execute_plan(input: &ContextGraph, plan: CompactPlan) -> StrategyOutput {
     }
 }
 
-fn compact_plan(input: &ContextGraph) -> CompactPlan {
+fn compact_plan(input: &ContextGraph, protected_kinds: &[NodeKind]) -> CompactPlan {
     let mut changes = Vec::new();
     let mut notes = Vec::new();
     let mut tokens_saved = 0_usize;
     let duplicate_group_nodes = duplicate_group_node_ids(input);
 
     for (index, node) in input.nodes.iter().enumerate() {
-        if node.protected || node.kind.requires_protection() {
+        if node.protected || node.kind.requires_protection() || protected_kinds.contains(&node.kind)
+        {
             notes.push(format!("skipped_reason: node {} is protected", node.id));
             continue;
         }
@@ -932,5 +933,24 @@ mod tests {
         assert_eq!(strategy.id(), "compact_json");
         assert!(strategy.supports(&graph));
         assert!(strategy.execute(&graph, &budget()).is_ok());
+    }
+
+    #[test]
+    fn test_budget_protected_kind_json_untouched() {
+        let content = format!(r#"{{"value":"{}"}}"#, "x".repeat(2_000));
+        let graph = graph_with(node("payload", NodeKind::ToolResponse, &content, false));
+        let mut protected_budget = budget();
+        protected_budget
+            .protected_kinds
+            .push(NodeKind::ToolResponse);
+
+        assert!(CompactJson.execute(&graph, &budget()).unwrap().graph != graph);
+        let output = CompactJson.execute(&graph, &protected_budget).unwrap();
+        assert_eq!(output.graph, graph);
+        assert!(output.removals.is_empty());
+        assert!(matches!(
+            CompactJson.execute_if_supported(&graph, &protected_budget),
+            StrategyExecution::NotSupported
+        ));
     }
 }
