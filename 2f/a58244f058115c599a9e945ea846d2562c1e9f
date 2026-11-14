@@ -1,0 +1,22 @@
+rust/compresso-cli/src/commands/mcp_probe.rs
+  s_f3ae5462f697a3::t_44814b8e31fdb6 24,334-343,504-505,507-511,514-520,606
+  s_f3ae5462f697a3::t_893bd04196ba81 17,598-605,607
+docs/adr/0028-bounded-mcp-health-probe.md
+  s_f3ae5462f697a3::t_44814b8e31fdb6 49-51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2fa58244f058115c599a9e945ea846d2562c1e9f",
+  "prompts": {},
+  "sessions": {
+    "s_f3ae5462f697a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7cc607c-32b2-4e30-bc4c-55ff6e2d2dd7",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
