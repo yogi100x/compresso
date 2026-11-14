@@ -463,17 +463,8 @@ fn test_trusted_launch_scrubs_environment_and_uses_neutral_directory() {
         !environment.contains("CARGO_"),
         "unlisted variables leaked: {environment}"
     );
-    let cwd = PathBuf::from(
-        fs::read_to_string(fixture.stub.with_file_name("cwd"))
-            .expect("recorded directory")
-            .trim(),
-    );
-    let cwd = fs::canonicalize(cwd).expect("working directory");
-    assert_eq!(
-        cwd,
-        fs::canonicalize(std::env::temp_dir()).expect("temp directory")
-    );
-    assert!(!cwd.starts_with(&fixture.root));
+    let cwd = fs::read_to_string(fixture.stub.with_file_name("cwd")).expect("recorded directory");
+    assert_eq!(cwd.trim(), "/");
 }
 
 #[test]

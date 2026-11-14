@@ -475,16 +475,17 @@ fn reap(child: &mut Child) -> Option<i32> {
     child.wait().ok().and_then(|status| status.code())
 }
 
-/// A working directory that is never the repository being inspected.
+/// A working directory that is never the repository being inspected. The
+/// temporary directory is not used on Unix because `TMPDIR` can point inside
+/// a repository.
+#[cfg(unix)]
 fn neutral_directory() -> PathBuf {
-    let temporary = std::env::temp_dir();
-    if temporary.is_dir() {
-        temporary
-    } else if cfg!(windows) {
-        PathBuf::from("C:\\")
-    } else {
-        PathBuf::from("/")
-    }
+    PathBuf::from("/")
+}
+
+#[cfg(not(unix))]
+fn neutral_directory() -> PathBuf {
+    std::env::temp_dir()
 }
 
 #[cfg(unix)]
