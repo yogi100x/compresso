@@ -2,7 +2,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::path::PathBuf;
 
-use compresso_core::{Config, Engine, TokenProvider, counter_for};
+use compresso_core::{Config, Engine, StreamError, TokenProvider, counter_for};
 use compresso_mcp::{McpDeps, McpRootError};
 use compresso_store::Store;
 
@@ -83,6 +83,10 @@ pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCo
     match result {
         Ok(()) => CliExitCode::Success,
         Err(error) => {
+            if let Some(stream) = error.downcast_ref::<StreamError>() {
+                let _ = write_error(errors, stream.code(), &stream.to_string(), false);
+                return CliExitCode::Failure;
+            }
             let (code, message) = error
                 .downcast_ref::<McpRootError>()
                 .copied()

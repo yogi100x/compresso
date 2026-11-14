@@ -3,6 +3,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use compresso_core::ClosedPipeGuard;
 pub use compresso_eval::cli::CliExitCode;
 use compresso_eval::cli::EvalCommand;
 use compresso_store::Store;
@@ -228,7 +229,31 @@ impl AccountClient for UnavailableAccountClient {
     }
 }
 
+/// Executes a parsed command line against the system environment.
+///
+/// Standard output is guarded: when its reader has gone away (a consumer that
+/// exited early, a closed pipe) the command ends with a typed
+/// `output_closed` error on `errors` and a failure exit instead of a panic or
+/// a silently truncated result.
 pub fn execute(
+    cli: Cli,
+    account: &dyn AccountClient,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> CliExitCode {
+    let json = cli.command.json();
+    let mut guarded = ClosedPipeGuard::new(output, "standard output");
+    let code = execute_command(cli, account, &mut guarded, errors);
+    match guarded.finish() {
+        Ok(()) => code,
+        Err(error) => {
+            let _ = write_error(errors, error.code(), &error.to_string(), json);
+            CliExitCode::Failure
+        }
+    }
+}
+
+fn execute_command(
     cli: Cli,
     account: &dyn AccountClient,
     output: &mut impl Write,
