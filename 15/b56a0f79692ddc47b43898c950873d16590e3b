@@ -1,0 +1,47 @@
+rust/compresso-core/tests/proptest_engine.proptest-regressions
+  s_e2da226df94350::t_055ef22137e97a 1-7
+rust/compresso-core/src/engine.rs
+  s_f364f0cbf01ca0::t_13f69077d3c64f 9,17,151-171,499-519,661-693,1064,2249-2290
+rust/compresso-core/src/segment.rs
+  s_f364f0cbf01ca0::t_27c15d6b41bedf 5,46-49,51-59,66-70,93-97,129,584,728-774
+rust/compresso-core/src/strategies/collapse_logs.rs
+  s_f364f0cbf01ca0::t_2784cc9c0de5da 50,54,61,63,70,72,120,127-128,889-911
+rust/compresso-core/src/strategies/compact_json.rs
+  s_f364f0cbf01ca0::t_4f64f8f7cf5e4c 43,47,54,56,63,65,110,117-118,937-955
+rust/compresso-core/src/strategies/dedup_exact.rs
+  s_02d19ef61d3306::t_2d4d30d0d43ba1 3,26,30,52,54,114,126,499-510
+rust/compresso-core/tests/protected_generic_text.rs
+  s_f364f0cbf01ca0::t_773b42b0fb7fe5 1-163
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "15b56a0f79692ddc47b43898c950873d16590e3b",
+  "prompts": {},
+  "sessions": {
+    "s_02d19ef61d3306": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a15bb497a8598d6cd",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_e2da226df94350": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a4ace18-3be7-440c-984c-7cf6854c84ee",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_f364f0cbf01ca0": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a3ea8a24efe1d8b60",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
