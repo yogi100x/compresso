@@ -1,0 +1,22 @@
+rust/compresso-cli/src/commands/quiet_pipe.rs
+  s_e2da226df94350::t_e32d1f193f0506 76-79
+  s_e2da226df94350::t_279aed798dd203 64
+  s_e2da226df94350::t_41d67f92b556f9 120-130
+  s_e2da226df94350::t_71d4913fce07c4 119
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "fcbb1dfd0ad89263c6f2e764c5f7cf02754f55c8",
+  "prompts": {},
+  "sessions": {
+    "s_e2da226df94350": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a4ace18-3be7-440c-984c-7cf6854c84ee",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
