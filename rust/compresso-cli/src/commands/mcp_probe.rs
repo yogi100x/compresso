@@ -15,13 +15,14 @@
 //! group; one MCP `initialize` plus `tools/list` exchange runs under a hard
 //! deadline, after which the whole process group is killed and reaped.
 
-use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use compresso_core::suppress_console_window;
 use compresso_integrations::ConfiguredServer;
 use serde_json::{Value, json};
 
@@ -366,6 +367,16 @@ fn probe(command: &Path, args: &[String], timeout: Duration) -> ProbeOutcome {
         }
     }
     isolate_process_group(&mut launch);
+    // A doctor run from a windowless parent must not flash a console.
+    suppress_console_window(|flags| {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt as _;
+            launch.creation_flags(flags);
+        }
+        #[cfg(not(windows))]
+        let _ = flags;
+    });
     let mut child = match launch
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -526,16 +537,23 @@ fn reap(child: &mut Child) -> Option<i32> {
 }
 
 /// A working directory that is never the repository being inspected. The
-/// temporary directory is not used on Unix because `TMPDIR` can point inside
-/// a repository.
-#[cfg(unix)]
+/// temporary directory itself is not used because it can be redirected inside
+/// a repository; the root of its volume cannot be one.
 fn neutral_directory() -> PathBuf {
-    PathBuf::from("/")
+    if cfg!(unix) {
+        PathBuf::from("/")
+    } else {
+        volume_root(&std::env::temp_dir())
+    }
 }
 
-#[cfg(not(unix))]
-fn neutral_directory() -> PathBuf {
-    std::env::temp_dir()
+/// The top of the volume that holds an absolute `path`. A relative path has
+/// no volume root and is returned unchanged.
+fn volume_root(path: &Path) -> PathBuf {
+    match path.ancestors().last() {
+        Some(root) if root.has_root() => root.to_path_buf(),
+        _ => path.to_path_buf(),
+    }
 }
 
 #[cfg(unix)]
@@ -611,6 +629,16 @@ mod tests {
     fn exchange_for(output: impl std::io::Read + Send + 'static) -> Exchange {
         let lines = spawn_line_reader(output);
         await_response(&lines, 1, Instant::now() + Duration::from_secs(10))
+    }
+
+    #[test]
+    fn test_volume_root_is_the_top_of_an_absolute_path_only() {
+        let root = Path::new(std::path::MAIN_SEPARATOR_STR);
+        let nested = root.join("repo").join("tmp").join("probe");
+        assert_eq!(volume_root(&nested), root);
+        assert_eq!(volume_root(root), root);
+        let relative = Path::new("repo").join("tmp");
+        assert_eq!(volume_root(&relative), relative);
     }
 
     #[test]
