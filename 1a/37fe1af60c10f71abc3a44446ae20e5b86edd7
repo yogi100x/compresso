@@ -1,0 +1,24 @@
+security_best_practices_report.md
+  s_f3ae5462f697a3::t_771b13fe94be38 22
+rust/compresso-store/src/lib.rs
+  s_f3ae5462f697a3::t_8fe032aa15aff0 236-239
+  s_f3ae5462f697a3::t_6ab42c65634823 341-347,349-378
+  s_f3ae5462f697a3::t_365007d0cdfa82 348,379-382
+  s_f3ae5462f697a3::t_bfe3e046324b7b 594-679
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1a37fe1af60c10f71abc3a44446ae20e5b86edd7",
+  "prompts": {},
+  "sessions": {
+    "s_f3ae5462f697a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7cc607c-32b2-4e30-bc4c-55ff6e2d2dd7",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
