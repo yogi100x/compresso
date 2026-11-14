@@ -1,0 +1,62 @@
+rust/compresso-eval/src/lib.rs
+  s_e2da226df94350::t_f1252170bf773a 4
+rust/compresso-eval/Cargo.toml
+  s_e2da226df94350::t_ff0da879ea18a6 25-32
+rust/compresso-eval/src/campaign/runner.rs
+  s_e2da226df94350::t_9887cf4f362bd4 1-359
+rust/compresso-eval/tests/data/campaign-smoke/suite.json
+  s_e2da226df94350::t_c2d0e933753c8e 1-40
+rust/compresso-eval/src/campaign/mod.rs
+  s_e2da226df94350::t_98dacdc04f521c 1-25
+rust/compresso-eval/src/campaign/checkpoint.rs
+  s_e2da226df94350::t_89e16829078ab8 1-307
+docs/architecture/benchmark-campaigns.md
+  s_e2da226df94350::t_9e75fe6871bcc6 1-144
+  s_431f9036f52a4a::t_b5a227078af3b8 145-149
+rust/compresso-eval/src/bin/campaign.rs
+  s_e2da226df94350::t_fa1c45c9d5454e 1-13
+rust/compresso-eval/src/campaign/state.rs
+  s_e2da226df94350::t_2ebc107ccb0ca0 1-137
+rust/compresso-eval/src/campaign/fixture_adapter.rs
+  s_e2da226df94350::t_82513ad374bbfd 1-188
+rust/compresso-eval/src/runner.rs
+  s_e2da226df94350::t_4e6bfe0cf636e3 16
+  s_e2da226df94350::t_5f8b67eb987226 546-553,556
+  s_e2da226df94350::t_7dc63d22fc9559 537
+  s_e2da226df94350::t_8d9bd3bd073537 35-36,42
+  s_e2da226df94350::t_4dc5d29332605e 124-127
+rust/compresso-eval/src/campaign/adapter.rs
+  s_e2da226df94350::t_855600dc294edf 1-146
+rust/compresso-eval/tests/campaign.rs
+  s_e2da226df94350::t_9b9b747351bfcb 1-79,84-736
+  s_e2da226df94350::t_0d5eaab707345a 80-83
+  s_e2da226df94350::t_91305b7689486f 737-769
+rust/compresso-eval/src/campaign/cli.rs
+  s_e2da226df94350::t_bdca40a03fc81b 1-181
+rust/compresso-eval/src/campaign/report.rs
+  s_e2da226df94350::t_b199cafb40b2f3 1-154
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "075a4cf08f902d0f45e57ff4a780d1a89894453f",
+  "prompts": {},
+  "sessions": {
+    "s_431f9036f52a4a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "40a919f0-900b-4a17-914f-e88a974777a0",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_e2da226df94350": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a4ace18-3be7-440c-984c-7cf6854c84ee",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
