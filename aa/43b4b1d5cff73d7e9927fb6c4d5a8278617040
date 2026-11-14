@@ -1,0 +1,19 @@
+docs/plan/05-tickets.md
+  s_bca3b0bdd99d4a::t_67da0e0d6d335f 22,35-36,82-84,105,211,288,320,322-323,336-337,367-368,380-381,393-394,409,449-451,505-508,519-522,534-536,578,582,664,686,756-757,814-817,829-832,845-849
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "aa43b4b1d5cff73d7e9927fb6c4d5a8278617040",
+  "prompts": {},
+  "sessions": {
+    "s_bca3b0bdd99d4a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-afee0f9502ca6d9fb",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
