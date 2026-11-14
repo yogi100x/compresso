@@ -735,7 +735,7 @@ fn classify_tool(tool: &str) -> Result<OperationKind, StoreError> {
         "compresso_compress" | "engine_compress" => Ok(OperationKind::Compression),
         "compresso_repo_map" | "compresso_search" | "compresso_outline" | "compresso_unfold"
         | "compresso_read" | "compresso_context" | "compresso_impact" | "compresso_stats"
-        | "compresso_explain" => Ok(OperationKind::Retrieval),
+        | "compresso_explain" | "compresso_recall" => Ok(OperationKind::Retrieval),
         _ => Err(StoreError::UnknownOperationTool(tool.to_owned())),
     }
 }

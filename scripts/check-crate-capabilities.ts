@@ -573,6 +573,13 @@ function isPathWithin(parent: string, candidate: string) {
   );
 }
 
+// ADR-0028: the CLI's bounded MCP health probe is the only production source
+// in a bounded-local crate that may start a child process. The allowance is
+// one exact file in one exact crate; it grants no process-capable dependency.
+const sanctionedProcessSources = new Map<string, string[]>([
+  ["compresso-cli", ["src/commands/mcp_probe.rs"]],
+]);
+
 function boundedLocalTestProcessSources(
   pkg: CargoPackage,
   className: CapabilityClassName,
@@ -581,6 +588,9 @@ function boundedLocalTestProcessSources(
   const sources = new Set<string>();
   if (className !== "bounded-local") {
     return sources;
+  }
+  for (const relativePath of sanctionedProcessSources.get(pkg.name) ?? []) {
+    sources.add(resolve(crateRoot, relativePath));
   }
 
   const testsRoot = resolve(crateRoot, "tests");

@@ -16,6 +16,8 @@ fn environment(directory: &tempfile::TempDir) -> DiagnosticEnvironment {
         executable_path: std::env::current_exe()
             .unwrap_or_else(|_| PathBuf::from(env!("CARGO_PKG_NAME"))),
         environment: BTreeMap::new(),
+        home_dir: None,
+        mcp_probe_timeout: None,
     }
 }
 
@@ -51,8 +53,9 @@ fn test_doctor_reports_all_checks_green_for_healthy_runtime() {
     let checks = payload["data"]["checks"]
         .as_array()
         .expect("checks should be an array");
-    assert_eq!(checks.len(), 6);
+    assert_eq!(checks.len(), 7);
     assert!(checks.iter().all(|check| check["passed"] == true));
+    assert!(checks.iter().all(|check| check["severity"] == "ok"));
 }
 
 #[test]
@@ -72,6 +75,7 @@ fn test_doctor_bad_config_fails_gracefully_with_path_hint() {
         .and_then(|checks| checks.iter().find(|check| check["name"] == "config_parses"))
         .expect("config diagnostic should exist");
     assert_eq!(check["passed"], false);
+    assert_eq!(check["severity"], "error");
     assert!(
         check["hint"]
             .as_str()

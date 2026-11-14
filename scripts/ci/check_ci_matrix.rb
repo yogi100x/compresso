@@ -4,10 +4,10 @@
 require "yaml"
 
 workflow_path = File.expand_path("../../.github/workflows/ci.yml", __dir__)
-expected = %w[macos-14 macos-15-intel ubuntu-24.04 windows-2022].sort.freeze
+expected = %w[macos-15 macos-15-intel ubuntu-24.04 windows-2022].sort.freeze
 expected_eval = [
   { "os" => "ubuntu-24.04", "enforce_latency" => false },
-  { "os" => "macos-14", "enforce_latency" => true }
+  { "os" => "macos-15", "enforce_latency" => true }
 ].freeze
 shared_cache_key = 'ci-${{ matrix.os }}'
 
@@ -27,13 +27,15 @@ forbidden_warning_suppression.each do |value|
   exit 1
 end
 
+# Steps are matched by action name: the ref is a pinned commit.
+action_name = ->(step) { step["uses"].to_s.split("@").first }
 targeted_warning_suppression = {
-  "Swatinem/rust-cache@v2" => "--disable-warning=DEP0040",
-  "actions/download-artifact@v8" => "--disable-warning=DEP0005"
+  "Swatinem/rust-cache" => "--disable-warning=DEP0040",
+  "actions/download-artifact" => "--disable-warning=DEP0005"
 }.freeze
 workflow_steps = jobs.values.flat_map { |job| job.fetch("steps", []) }
 targeted_warning_suppression.each do |action, expected_node_options|
-  matching_steps = workflow_steps.select { |step| step["uses"] == action }
+  matching_steps = workflow_steps.select { |step| action_name.call(step) == action }
   invalid_steps = matching_steps.reject do |step|
     step.dig("env", "NODE_OPTIONS") == expected_node_options
   end
@@ -68,13 +70,13 @@ end
 
 actual_eval = eval_job.fetch("strategy").fetch("matrix").fetch("include")
 unless actual_eval == expected_eval
-  warn "CI eval matrix must use ubuntu-24.04 without latency and macos-14 with latency"
+  warn "CI eval matrix must use ubuntu-24.04 without latency and macos-15 with latency"
   exit 1
 end
 
-rust_cache = rust_job.fetch("steps").find { |step| step["uses"] == "Swatinem/rust-cache@v2" }
+rust_cache = rust_job.fetch("steps").find { |step| action_name.call(step) == "Swatinem/rust-cache" }
 eval_steps = eval_job.fetch("steps")
-eval_cache = eval_steps.find { |step| step["uses"] == "Swatinem/rust-cache@v2" }
+eval_cache = eval_steps.find { |step| action_name.call(step) == "Swatinem/rust-cache" }
 unless rust_cache&.dig("with", "shared-key") == shared_cache_key &&
        eval_cache&.dig("with", "shared-key") == shared_cache_key
   warn "CI rust and eval jobs must reuse the same OS-specific Rust cache"
@@ -101,11 +103,11 @@ required_large_payload_invocation =
 unless large_payload_gate &&
        large_payload_gate["if"] == "${{ matrix.enforce_latency }}" &&
        large_payload_gate.fetch("run", "").include?(required_large_payload_invocation)
-  warn "CI eval job must enforce the optimized large-payload benchmark on macos-14"
+  warn "CI eval job must enforce the optimized large-payload benchmark on macos-15"
   exit 1
 end
 
-upload = eval_steps.find { |step| step["uses"] == "actions/upload-artifact@v7" }
+upload = eval_steps.find { |step| action_name.call(step) == "actions/upload-artifact" }
 unless upload && upload["if"] == "always()" &&
        upload.dig("with", "path") == 'eval-report-${{ matrix.os }}.json' &&
        upload.dig("with", "if-no-files-found") == "error"
@@ -129,3 +131,22 @@ unless calibration_workflows.empty?
 end
 
 puts "CI workflows do not invoke maintainer-only Anthropic calibration"
+
+# A tag can be moved to different code after review; a commit cannot. Every
+# third-party action is pinned to a full commit SHA, with the release it was
+# taken from in a trailing comment.
+unpinned = Dir[File.expand_path("../../.github/workflows/*.yml", __dir__)].sort.flat_map do |path|
+  File.readlines(path).each_with_index.map do |line, index|
+    reference = line[/^\s*(?:-\s*)?uses:\s*(\S+)/, 1]
+    next if reference.nil? || reference.start_with?("docker://", "./")
+    next if reference.match?(/@\h{40}\z/) && line.match?(/#\s*v\d/)
+
+    "#{File.basename(path)}:#{index + 1} #{reference}"
+  end.compact
+end
+unless unpinned.empty?
+  warn "workflow actions must be pinned to a commit SHA with a version comment: #{unpinned.join(", ")}"
+  exit 1
+end
+
+puts "CI workflow actions are pinned to commit SHAs"

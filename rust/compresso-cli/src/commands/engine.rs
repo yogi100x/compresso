@@ -4,12 +4,16 @@ use std::path::{Path, PathBuf};
 
 use clap::{ArgGroup, Args, ValueEnum};
 use compresso_core::{
-    CompressionBudget, ContextGraph, Engine, Lossiness, Mode, NodeKind, TokenProvider, Trace,
-    counter_for,
+    CompressionBudget, ContextGraph, Engine, Lossiness, Mode, NodeKind, PriceTable, TokenProvider,
+    Trace, counter_for, is_plain_model_id,
 };
 use compresso_store::{DetailedStatsSummary, OperationRecord, StatsFilter, Store};
 use serde_json::{Value, json};
 
+use super::transcript_stats::{
+    cost_basis_json, printable, transcript_savings, transcript_savings_human,
+    transcript_savings_json,
+};
 use super::{OutputArgs, RootCommand};
 
 const DEFAULT_TARGET_TOKENS: usize = 4_000;
@@ -91,6 +95,14 @@ pub struct StatsArgs {
     /// Maximum number of newest per-operation rows to display.
     #[arg(long, default_value_t = 20)]
     pub limit: usize,
+    /// Derive savings from a client transcript (JSON Lines) of Compresso tool
+    /// calls, for example a saved headless run. Read locally; never uploaded.
+    #[arg(long, value_name = "PATH")]
+    pub transcript: Option<PathBuf>,
+    /// Price ledger savings at this model's input rate from the local price
+    /// table. An unknown model reports tokens only.
+    #[arg(long, value_name = "MODEL")]
+    pub model: Option<String>,
     #[command(flatten)]
     pub output: OutputArgs,
 }
@@ -230,10 +242,41 @@ fn execute_stats(store: &Store, arguments: StatsArgs) -> Result<Rendered, Engine
             operation_limit: Some(arguments.limit),
         })
         .map_err(|_| EngineCommandError::internal())?;
+    if arguments
+        .model
+        .as_deref()
+        .is_some_and(|model| !is_plain_model_id(model))
+    {
+        return Err(EngineCommandError::invalid(
+            "stats model must be 1 to 128 printable ASCII characters without spaces",
+        ));
+    }
+    let prices = PriceTable::embedded().map_err(|_| EngineCommandError::internal())?;
     let summary = &stats.summary;
-    let data = stats_json(&stats);
+    let cost_basis = prices.cost_basis(summary.total_effective_savings, arguments.model.as_deref());
+    let transcript = arguments
+        .transcript
+        .as_deref()
+        .map(|path| transcript_savings(store, path, prices))
+        .transpose()?;
+    let mut data = stats_json(&stats);
+    data["modeled_cost_saved"]["amount_usd"] = json!(cost_basis.amount_usd);
+    data["cost_basis"] = cost_basis_json(&cost_basis);
+    data["transcript_savings"] = transcript
+        .as_ref()
+        .map_or(Value::Null, transcript_savings_json);
+    let cost_note = match (&cost_basis.model, cost_basis.priced) {
+        (Some(model), true) => format!(
+            "; {} input rate, price table {} effective {}",
+            printable(model),
+            printable(&cost_basis.table_version),
+            printable(&cost_basis.effective_date)
+        ),
+        (Some(model), false) => format!("; no price on file for {}, tokens only", printable(model)),
+        (None, _) => "; pass --model or --transcript to price savings".to_owned(),
+    };
     let mut human = format!(
-        "operations: {}\n\ncompression savings (applied):\n  observed tokens: {}\n  applied tokens: {}\n  removed tokens: {}\n  compression overhead: {}\n  net compression savings: {}\n  fallback rate: {:.2}%\n\nretrieval savings (modeled baseline):\n  retrieval pack tokens: {}\n  estimated raw-source tokens: {}\n  retrieval tokens avoided: {}\n  follow-up calls avoided: {}\n\ntotal effective savings: {} (applied compression + modeled retrieval)\nmodeled cost saved: ${:.6} ({})\n",
+        "operations: {}\n\ncompression savings (applied):\n  observed tokens: {}\n  applied tokens: {}\n  removed tokens: {}\n  compression overhead: {}\n  net compression savings: {}\n  fallback rate: {:.2}%\n\nretrieval savings (modeled baseline):\n  retrieval pack tokens: {}\n  estimated raw-source tokens: {}\n  retrieval tokens avoided: {}\n  follow-up calls avoided: {}\n\ntotal effective savings: {} (applied compression + modeled retrieval)\nmodeled cost saved: ${:.6} ({}{cost_note})\n",
         summary.operations,
         summary.observed_tokens,
         summary.applied_tokens,
@@ -246,9 +289,12 @@ fn execute_stats(store: &Store, arguments: StatsArgs) -> Result<Rendered, Engine
         summary.retrieval_tokens_avoided,
         summary.follow_up_calls_avoided,
         summary.total_effective_savings,
-        summary.modeled_cost_saved.amount_usd,
+        cost_basis.amount_usd,
         summary.modeled_cost_saved.label,
     );
+    if let Some(transcript) = &transcript {
+        human.push_str(&transcript_savings_human(transcript, prices));
+    }
     human.push_str("\nper repository:\n");
     if stats.by_repository.is_empty() {
         human.push_str("  none recorded\n");
@@ -409,7 +455,7 @@ impl CliNodeKind {
 }
 
 impl EngineCommandError {
-    fn invalid(message: &str) -> Self {
+    pub(super) fn invalid(message: &str) -> Self {
         Self {
             code: "invalid_arguments",
             message: message.to_owned(),
@@ -423,7 +469,7 @@ impl EngineCommandError {
         }
     }
 
-    fn internal() -> Self {
+    pub(super) fn internal() -> Self {
         Self {
             code: "internal",
             message: "local compression command failed".to_owned(),

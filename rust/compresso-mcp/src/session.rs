@@ -28,11 +28,12 @@ pub(crate) trait DiagnosticSink: Send + Sync {
     fn warn(&self, message: &str);
 }
 
-struct StderrDiagnosticSink;
+/// Production sink: one content-free line on standard error.
+pub(crate) struct StderrDiagnosticSink;
 
 impl DiagnosticSink for StderrDiagnosticSink {
     fn warn(&self, message: &str) {
-        eprintln!("{message}");
+        compresso_core::report_diagnostic(format_args!("{message}"));
     }
 }
 

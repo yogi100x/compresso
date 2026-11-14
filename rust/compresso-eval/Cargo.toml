@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 repository.workspace = true
+default-run = "compresso-eval"
 
 [dependencies]
 clap.workspace = true
@@ -21,6 +22,14 @@ toml.workspace = true
 [dev-dependencies]
 criterion.workspace = true
 tempfile.workspace = true
+
+[[bin]]
+name = "compresso-eval"
+path = "src/main.rs"
+
+[[bin]]
+name = "compresso-eval-campaign"
+path = "src/bin/campaign.rs"
 
 [[bench]]
 name = "large_payload_latency"

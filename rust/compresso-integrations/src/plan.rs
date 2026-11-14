@@ -17,6 +17,9 @@ use crate::receipt::{
     CREATED_FILE_BACKUP_SENTINEL, InstallReceipt, RECEIPT_SCHEMA_VERSION, ReceiptError,
     ReceiptStore,
 };
+use crate::text_fidelity::{
+    preserve_text_fidelity, pristine_json_backup, strip_bom, strip_bom_str,
+};
 
 /// Mutation plan schema version.
 pub const PLAN_SCHEMA_VERSION: u32 = 1;
@@ -39,6 +42,10 @@ pub struct InstallCtx {
     pub compresso_bin: PathBuf,
     /// Selected config scope.
     pub scope: Scope,
+    /// Whether the server entry also enables session recall over this
+    /// client's own transcripts (`--recall-source <client>`). Adapters whose
+    /// client has no supported transcript source ignore it.
+    pub session_recall: bool,
 }
 
 /// Coding-client detection result.
@@ -498,6 +505,18 @@ pub enum IntegrationError {
     #[error("unsupported integration operation: {reason}")]
     Unsupported { reason: String },
     /// Plan approval was never issued by this manager or was altered.
+    /// The client's hook file already defines hooks for an event Compresso
+    /// would own. Compresso never merges into or rewrites them; `entry` is the
+    /// exact group a user can add by hand.
+    #[error(
+        "{key} in {path} already defines hooks that Compresso did not write and will not rewrite; add this entry to that array by hand instead: {entry}"
+    )]
+    UserHooksPresent {
+        path: PathBuf,
+        key: String,
+        entry: String,
+    },
+
     #[error("integration plan approval is forged or unknown")]
     ForgedPlan,
     /// Approval came from another local session.
@@ -609,6 +628,14 @@ impl PlanManager {
         request.warnings.dedup();
 
         let base = read_target(&request.config_path)?;
+        if let TargetState::Present(bytes) = &base {
+            // Bind the plan to bytes that keep the file's byte-order mark and
+            // line endings; every hash below covers this final shaping.
+            request.target_contents = preserve_text_fidelity(bytes, &request.target_contents);
+        }
+        if let Some(original) = pristine_uninstall_target(&request, &base) {
+            request.target_contents = original;
+        }
         let owned_keys = derive_owned_mutations(
             request.operation,
             request.config_format,
@@ -1637,6 +1664,28 @@ fn ensure_backup(commit: &PendingCommit) -> Result<(), IntegrationError> {
     sync_parent(&path).map_err(|source| IntegrationError::Io { path, source })
 }
 
+/// Returns the exact pre-install bytes when a JSON uninstall of a file left
+/// untouched since its install would otherwise rewrite an equivalent document
+/// with different insignificant bytes.
+fn pristine_uninstall_target(request: &MutationRequest, base: &TargetState) -> Option<String> {
+    if request.operation != MutationKind::Uninstall || request.config_format != ConfigFormat::Json {
+        return None;
+    }
+    let TargetState::Present(current) = base else {
+        return None;
+    };
+    let receipt = request.prior_receipt.as_ref()?;
+    if receipt.backup_path == CREATED_FILE_BACKUP_SENTINEL {
+        return None;
+    }
+    pristine_json_backup(
+        &request.config_path,
+        Path::new(&receipt.backup_path),
+        current,
+        &request.target_contents,
+    )
+}
+
 fn validate_request(request: &MutationRequest) -> Result<(), IntegrationError> {
     if !matches!(request.client.as_str(), "claude-code" | "codex" | "cursor") {
         return Err(invalid("client must be claude-code, codex, or cursor"));
@@ -1767,8 +1816,8 @@ fn derive_json_owned_mutations(
     owned_paths: &[String],
 ) -> Result<Vec<OwnedKeyMutation>, IntegrationError> {
     let mut base_document = parse_json_target(base, "base")?;
-    let mut target_document: serde_json::Value =
-        serde_json::from_str(target).map_err(|error| IntegrationError::InvalidRequest {
+    let mut target_document: serde_json::Value = serde_json::from_str(strip_bom_str(target))
+        .map_err(|error| IntegrationError::InvalidRequest {
             reason: format!("target JSON is malformed: {error}"),
         })?;
     if !target_document.is_object() {
@@ -1814,8 +1863,10 @@ fn parse_json_target(
     let document = match target {
         TargetState::Missing => serde_json::json!({}),
         TargetState::Present(bytes) => {
-            serde_json::from_slice(bytes).map_err(|error| IntegrationError::InvalidRequest {
-                reason: format!("{label} JSON is malformed: {error}"),
+            serde_json::from_slice(strip_bom(bytes)).map_err(|error| {
+                IntegrationError::InvalidRequest {
+                    reason: format!("{label} JSON is malformed: {error}"),
+                }
             })?
         }
     };
@@ -1871,12 +1922,11 @@ fn derive_toml_owned_mutations(
     owned_paths: &[String],
 ) -> Result<Vec<OwnedKeyMutation>, IntegrationError> {
     let mut base_document = parse_toml_target(base, "base")?;
-    let mut target_document =
-        target
-            .parse::<DocumentMut>()
-            .map_err(|_| IntegrationError::InvalidRequest {
-                reason: "target TOML is malformed".to_owned(),
-            })?;
+    let mut target_document = strip_bom_str(target).parse::<DocumentMut>().map_err(|_| {
+        IntegrationError::InvalidRequest {
+            reason: "target TOML is malformed".to_owned(),
+        }
+    })?;
     let mut changes = Vec::with_capacity(owned_paths.len());
     for path in owned_paths {
         let segments = path.split('.').collect::<Vec<_>>();
@@ -1909,7 +1959,7 @@ fn derive_toml_owned_mutations(
 fn parse_toml_target(target: &TargetState, label: &str) -> Result<DocumentMut, IntegrationError> {
     match target {
         TargetState::Missing => Ok(DocumentMut::new()),
-        TargetState::Present(bytes) => std::str::from_utf8(bytes)
+        TargetState::Present(bytes) => std::str::from_utf8(strip_bom(bytes))
             .map_err(|_| invalid("TOML configuration must be UTF-8"))?
             .parse::<DocumentMut>()
             .map_err(|_| IntegrationError::InvalidRequest {
@@ -2046,8 +2096,10 @@ fn safe_owned_projections(
         ConfigFormat::Json => {
             let base = parse_json_target(base, "base")?;
             let target: serde_json::Value =
-                serde_json::from_str(target).map_err(|error| IntegrationError::InvalidRequest {
-                    reason: format!("target JSON is malformed: {error}"),
+                serde_json::from_str(strip_bom_str(target)).map_err(|error| {
+                    IntegrationError::InvalidRequest {
+                        reason: format!("target JSON is malformed: {error}"),
+                    }
                 })?;
             Ok((
                 safe_json_projection(json_value_at(&base, &segments)),
@@ -2056,12 +2108,11 @@ fn safe_owned_projections(
         }
         ConfigFormat::Toml => {
             let base = parse_toml_target(base, "base")?;
-            let target =
-                target
-                    .parse::<DocumentMut>()
-                    .map_err(|_| IntegrationError::InvalidRequest {
-                        reason: "target TOML is malformed".to_owned(),
-                    })?;
+            let target = strip_bom_str(target).parse::<DocumentMut>().map_err(|_| {
+                IntegrationError::InvalidRequest {
+                    reason: "target TOML is malformed".to_owned(),
+                }
+            })?;
             Ok((
                 safe_toml_projection(toml_item_at(base.as_item(), &segments)),
                 safe_toml_projection(toml_item_at(target.as_item(), &segments)),
@@ -2178,7 +2229,17 @@ fn safe_toml_args_value(value: Option<&toml_edit::Array>) -> String {
     safe_args_value(&arguments)
 }
 
-fn safe_args_value(arguments: &[&str]) -> String {
+fn safe_args_value(all_arguments: &[&str]) -> String {
+    // An adapter-written recall suffix is a closed set, so it is safe to show.
+    let arguments = match all_arguments {
+        [base @ .., flag, source]
+            if *flag == crate::server_entry::RECALL_SOURCE_FLAG
+                && crate::server_entry::is_recall_source(source) =>
+        {
+            base
+        }
+        _ => all_arguments,
+    };
     let safe = arguments == ["mcp", "serve"]
         || (arguments.len() == 4
             && arguments[..3] == ["mcp", "serve", "--root"]
@@ -2189,7 +2250,7 @@ fn safe_args_value(arguments: &[&str]) -> String {
     }
     format!(
         "[{}]",
-        arguments
+        all_arguments
             .iter()
             .map(|value| quoted_preview_value(value))
             .collect::<Vec<_>>()

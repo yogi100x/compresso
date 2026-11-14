@@ -378,8 +378,8 @@ fn test_uninstall_retains_user_modified_owned_table_with_content_free_warning() 
     fs::write(
         &config,
         original.replace(
-            "args = [\"mcp\", \"serve\"]",
-            "args = [\"mcp\", \"serve\", \"user-edit\"]",
+            "args = [\"mcp\", \"serve\", \"--recall-source\", \"codex\"]",
+            "args = [\"mcp\", \"serve\", \"--recall-source\", \"codex\", \"user-edit\"]",
         ),
     )
     .expect("user edit");
@@ -565,6 +565,7 @@ fn test_codex_recovery_rejects_config_directory_replaced_by_symlink() {
             &InstallCtx {
                 compresso_bin: fixture.environment.compresso_bin.clone(),
                 scope: Scope::User,
+                session_recall: false,
             },
         )
         .expect("install plan");
@@ -671,4 +672,171 @@ fn snapshot(root: &Path) -> Vec<PathBuf> {
     let mut files = Vec::new();
     walk(root, root, &mut files);
     files
+}
+
+#[test]
+fn test_install_previews_recall_by_default_and_no_recall_opts_out() {
+    let fixture = Fixture::new();
+    let before = snapshot(fixture._directory.path());
+
+    for (client, source) in [("claude-code", "claude-code"), ("codex", "codex")] {
+        let (exit, output, errors) = fixture.run(
+            &["integrations", "install", client, "--dry-run", "--json"],
+            "",
+        );
+        assert_eq!(exit, CliExitCode::Success, "{errors}");
+        let diff = output["data"]["plan"]["unified_diff"]
+            .as_str()
+            .expect("diff");
+        assert!(diff.contains("--recall-source"), "{client}: {diff}");
+        assert!(diff.contains(&format!("\"{source}\"")), "{client}: {diff}");
+        let other = if source == "codex" {
+            "claude-code"
+        } else {
+            "\"codex\""
+        };
+        assert!(
+            !diff.contains(other),
+            "{client} must not name another client's transcripts: {diff}"
+        );
+        assert!(!diff.contains("<redacted>"), "{client}: {diff}");
+
+        let (exit, output, errors) = fixture.run(
+            &[
+                "integrations",
+                "install",
+                client,
+                "--no-recall",
+                "--dry-run",
+                "--json",
+            ],
+            "",
+        );
+        assert_eq!(exit, CliExitCode::Success, "{errors}");
+        let diff = output["data"]["plan"]["unified_diff"]
+            .as_str()
+            .expect("diff");
+        assert!(!diff.contains("--recall-source"), "{client}: {diff}");
+    }
+
+    let (exit, output, errors) = fixture.run(
+        &["integrations", "install", "cursor", "--dry-run", "--json"],
+        "",
+    );
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert!(
+        !output["data"]["plan"]["unified_diff"]
+            .as_str()
+            .expect("diff")
+            .contains("--recall-source"),
+        "Cursor transcripts are unsupported"
+    );
+    assert_eq!(
+        snapshot(fixture._directory.path()),
+        before,
+        "dry runs write nothing"
+    );
+}
+
+#[test]
+fn test_reinstall_over_a_no_recall_entry_upgrades_idempotently_and_uninstalls() {
+    let fixture = Fixture::new();
+    // What the previous release wrote: an entry without a recall source.
+    let (exit, _, errors) = fixture.run(
+        &[
+            "integrations",
+            "install",
+            "codex",
+            "--no-recall",
+            "--yes",
+            "--json",
+        ],
+        "",
+    );
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    let config = fixture.codex_config();
+    assert!(
+        fs::read_to_string(&config)
+            .expect("config")
+            .contains("args = [\"mcp\", \"serve\"]\n")
+    );
+
+    let (exit, upgraded, errors) =
+        fixture.run(&["integrations", "install", "codex", "--yes", "--json"], "");
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert!(
+        upgraded["data"]["plan"]["unified_diff"]
+            .as_str()
+            .expect("diff")
+            .contains("--recall-source")
+    );
+    let upgraded_text = fs::read_to_string(&config).expect("config");
+    assert!(upgraded_text.contains("args = [\"mcp\", \"serve\", \"--recall-source\", \"codex\"]"));
+
+    let (exit, repeated, errors) =
+        fixture.run(&["integrations", "install", "codex", "--yes", "--json"], "");
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert_eq!(
+        repeated["data"]["plan"]["base_hash"], repeated["data"]["plan"]["result_hash"],
+        "a repeated install is a no-op plan"
+    );
+    assert_eq!(
+        repeated["data"]["result"]["plan_hash"], upgraded["data"]["result"]["plan_hash"],
+        "the upgraded receipt stays the active one"
+    );
+    assert_eq!(fs::read_to_string(&config).expect("config"), upgraded_text);
+
+    let (exit, status, errors) = fixture.run(&["integrations", "status", "codex", "--json"], "");
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert_eq!(status["data"]["canonical_receipt_active"], true);
+    assert_ne!(
+        status["data"]["mcp_server"]["state"], "config_modified",
+        "the upgraded entry is not reported as drift"
+    );
+
+    let (exit, removed, errors) = fixture.run(
+        &["integrations", "uninstall", "codex", "--yes", "--json"],
+        "",
+    );
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert_eq!(
+        removed["data"]["result"]["removed_keys"][0],
+        "mcp_servers.compresso"
+    );
+    assert!(
+        !fs::read_to_string(&config)
+            .expect("config")
+            .contains("compresso")
+    );
+}
+
+#[test]
+fn test_no_recall_is_rejected_where_it_has_no_meaning() {
+    let fixture = Fixture::new();
+    let (exit, _, errors) = fixture.run(
+        &[
+            "integrations",
+            "uninstall",
+            "codex",
+            "--no-recall",
+            "--yes",
+            "--json",
+        ],
+        "",
+    );
+    assert_eq!(exit, CliExitCode::Failure);
+    assert_eq!(errors["error"]["code"], "invalid_arguments", "{errors}");
+
+    assert!(
+        Cli::try_parse_from([
+            "compresso",
+            "integrations",
+            "install",
+            "codex",
+            "--compaction-hook",
+            "--no-recall",
+        ])
+        .is_err(),
+        "the hook surface has no recall setting"
+    );
 }

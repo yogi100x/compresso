@@ -13,6 +13,7 @@ use compresso_core::{
 use compresso_store::{EdgeKind, ResolvedEdgeRecord, Store};
 use serde::{Deserialize, Serialize};
 
+use crate::campaign::TaskState;
 use crate::fixtures::{AtlasExpectations, Fixture, FixtureInput, FixtureSet};
 use crate::recall::{EvalRunError, RecallReport, evaluate_corpus, validate_passthrough};
 
@@ -31,12 +32,14 @@ pub struct EvalReport {
     pub recall: RecallReport,
 }
 
-/// Whether a fixture exercises compression or repository indexing.
+/// Whether a row exercises compression, repository indexing, or one task of
+/// an external benchmark campaign.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvaluationKind {
     Compression,
     Atlas,
+    Campaign,
 }
 
 /// The stable report row for one fixture.
@@ -118,6 +121,10 @@ pub enum ExpectationFailure {
         stage: RunnerStage,
     },
     RunnerPanic,
+    /// A benchmark campaign task that did not end in `passed`.
+    CampaignTask {
+        state: TaskState,
+    },
 }
 
 /// Stable execution stages used in reports without leaking random temporary paths.
@@ -527,7 +534,7 @@ fn concatenated_output(graph: &ContextGraph) -> String {
         .join("\n")
 }
 
-fn reduction_percent(before_tokens: usize, after_tokens: usize) -> f64 {
+pub(crate) fn reduction_percent(before_tokens: usize, after_tokens: usize) -> f64 {
     if before_tokens == 0 {
         return 0.0;
     }
@@ -536,9 +543,17 @@ fn reduction_percent(before_tokens: usize, after_tokens: usize) -> f64 {
 }
 
 fn aggregate_metrics(fixtures: &[FixtureOutcome]) -> AggregateMetrics {
+    aggregate_metrics_for(fixtures, EvaluationKind::Compression)
+}
+
+/// Aggregates the rows of `kind`; safety counters always cover every row.
+pub(crate) fn aggregate_metrics_for(
+    fixtures: &[FixtureOutcome],
+    kind: EvaluationKind,
+) -> AggregateMetrics {
     let compression = fixtures
         .iter()
-        .filter(|outcome| outcome.kind == EvaluationKind::Compression)
+        .filter(|outcome| outcome.kind == kind)
         .collect::<Vec<_>>();
     let mut eligible_reductions = compression
         .iter()

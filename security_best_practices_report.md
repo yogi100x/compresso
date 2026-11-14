@@ -10,6 +10,20 @@ Distribution status: private repository; no releases or uploaded Actions artifac
 
 Remediation update: **2026-07-23. SEC-003 is fixed in the current working tree, pending commit/release.** Public plan serialization and CLI output now expose only a secret-safe, key-level preview; exact target bytes remain private to integrity hashing and authenticated crash recovery. This prevents future preview disclosure but cannot invalidate any credential exposed before the fix, which must still be revoked or rotated separately. The finding counts below describe the original 2026-07-22 assessment snapshot.
 
+Remediation update: **2026-11-14.** Status of the findings below after the E17 review fixes. The finding sections keep their original 2026-07-22 text.
+
+| Finding | Status | Note |
+|---|---|---|
+| SEC-001 | Fixed for excluded content | `compresso_read` refuses a file the scanner excludes (repository `.gitignore`, built-in excluded directories, secret patterns) unless it is indexed, judged on the resolved path so links and casing cannot bypass it. A file the scanner would accept stays readable before it is indexed. The built-in secret pattern list is unchanged. |
+| SEC-002 | Fixed | Each MCP server is bound to one repository root at startup; `test_bound_root_retarget_cannot_leak_another_approved_repository` covers it. |
+| SEC-004 | Fixed | Turbo upgraded to 2.9.14; CI installs the locked TypeScript dependencies, runs the workspace checks, and audits them on every pull request. |
+| SEC-005 | Partly fixed | Transport framing is bounded: each incoming MCP message is capped at 64 MiB (`MAX_INCOMING_MESSAGE_BYTES`, `rust/compresso-mcp/src/framing.rs`). A longer line is discarded as it streams, answered with JSON-RPC `-32600`, and the session continues. The other evidence items in the finding (compression graph built before the 8 MiB check, whole-file reads before truncation, unlimited internal read budgets) are unchanged, and `compresso compress` still reads all of stdin or `--file` into memory. |
+| SEC-007 | Partly fixed | The installer accepts only `https://` sources and does not leave HTTPS on a redirect. `SHA256SUMS` still comes from the same origin as the archive; publisher authenticity needs signed releases. |
+| SEC-008 | Fixed for new installs | On Unix the store creates its directories 0700 and its database 0600. Directories and databases that already exist are not changed. |
+| SEC-009 | Partly fixed | Every third-party action is pinned to a commit SHA and the CI matrix checker enforces it. The actionlint container image is still referenced by tag. |
+
+Findings not listed in this table were not re-assessed in this update.
+
 ## Executive summary
 
 Compresso has a strong local-first foundation, and the audit found no evidence that the implemented E1-E7 runtime sends telemetry or performs network I/O. Sentry and PostHog should **not** be added to this delivery slice: doing so would conflict with the locked decision that remote telemetry is neither built nor enabled. Local structured logs, content-free operation traces, and local statistics are the appropriate observability controls for the current scope.
@@ -213,6 +227,8 @@ Recommended remediation:
 - use bounded/streamed file reads and enforce the scanner's maximum file size at retrieval time;
 - add per-request CPU/time limits and bounded operation retention; and
 - test no-newline, deeply nested JSON, oversized strings, huge single-line files, and decompression-style pathological inputs.
+
+Remediation update (2026-11-14, transport framing only): the stdio transport now reads through a bounded line reader. A message may be at most `MAX_INCOMING_MESSAGE_BYTES` (64 MiB) before its newline. Once a line passes the cap the buffered prefix is released and the rest of the line is discarded as it arrives, so the framing buffer never holds more than the cap whatever the line length; parsing an accepted message still allocates in addition to that buffer. The client receives a JSON-RPC `-32600` error carrying `max_message_bytes` and no message content. The error names the request `id` only when a top-level integer or short string id is complete within the first 4 KiB of the line; otherwise `id` is `null`. The session then continues with the next line. If input ends inside an oversized line, the error is still sent, the session is closed in the ledger, and the server returns the typed `McpInputError::UnterminatedOversizedMessage` (CLI code `message_too_large`). Each rejection writes one content-free diagnostic line to stderr; it is not a ledger row, because the operations table accepts only the fixed tool vocabulary. Tests: `rust/compresso-mcp/tests/message_cap.rs`, plus the `framing` and `server` unit tests, including a streamed 200 MiB line. The remaining evidence items above are still open.
 
 ### 6. [SEC-006] Prompt-injection containment and privacy language stop at the Compresso process boundary
 

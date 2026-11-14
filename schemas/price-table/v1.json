@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Compresso local price table v1",
+  "description": "Checked-in, versioned model price table. Compresso never fetches prices over the network.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "table_version",
+    "effective_date",
+    "currency",
+    "unit",
+    "source",
+    "models"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "table_version": { "type": "string", "minLength": 1 },
+    "effective_date": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "currency": { "const": "USD" },
+    "unit": { "const": "per_million_tokens" },
+    "source": { "type": "string", "minLength": 1 },
+    "models": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["model", "input_usd_per_mtok", "output_usd_per_mtok"],
+        "properties": {
+          "model": { "type": "string", "minLength": 1 },
+          "aliases": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "input_usd_per_mtok": { "type": "number", "minimum": 0 },
+          "output_usd_per_mtok": { "type": "number", "minimum": 0 },
+          "cache_write_5m_usd_per_mtok": {
+            "type": ["number", "null"],
+            "minimum": 0
+          },
+          "cache_write_1h_usd_per_mtok": {
+            "type": ["number", "null"],
+            "minimum": 0
+          },
+          "cache_read_usd_per_mtok": {
+            "type": ["number", "null"],
+            "minimum": 0
+          }
+        }
+      }
+    }
+  }
+}

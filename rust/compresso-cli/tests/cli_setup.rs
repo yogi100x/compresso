@@ -46,7 +46,8 @@ fn test_setup_dry_run_renders_both_plans_without_any_writes() {
         .as_str()
         .expect("integration diff should be present");
     assert!(diff.contains("mcp_servers.compresso"));
-    assert!(diff.contains("args = [\"mcp\", \"serve\"]"));
+    assert!(diff.contains("args = [\"mcp\", \"serve\", \"--recall-source\", \"codex\"]"));
+    assert!(!diff.contains("claude-code"));
     assert!(!diff.contains("--root"));
     assert!(output["data"]["result"].is_null());
     assert_eq!(snapshot(fixture.directory.path()), before);
@@ -251,7 +252,7 @@ fn test_setup_real_install_is_idempotent_and_uninstall_keeps_repository_indexed(
     );
     let first_config = fs::read(fixture.codex_config()).expect("Codex config should exist");
     let first_text = String::from_utf8(first_config.clone()).expect("config should be UTF-8");
-    assert!(first_text.contains("args = [\"mcp\", \"serve\"]"));
+    assert!(first_text.contains("args = [\"mcp\", \"serve\", \"--recall-source\", \"codex\"]"));
     assert!(!first_text.contains("--root"));
     assert!(fixture.receipt_store().is_dir());
 
@@ -567,9 +568,20 @@ fn test_setup_project_clients_pin_exact_canonical_root() {
             &fs::read(fixture.root.join(config_relative)).expect("project config should exist"),
         )
         .expect("project config should be JSON");
+        let mut expected = vec![
+            "mcp".to_owned(),
+            "serve".to_owned(),
+            "--root".to_owned(),
+            canonical_text(&fixture.root),
+        ];
+        if client == "claude-code" {
+            // Recall is on by default, and only over the client's own
+            // transcripts. Cursor transcripts are unsupported.
+            expected.extend(["--recall-source".to_owned(), "claude-code".to_owned()]);
+        }
         assert_eq!(
             config["mcpServers"]["compresso"]["args"],
-            serde_json::json!(["mcp", "serve", "--root", canonical_text(&fixture.root)]),
+            serde_json::json!(expected),
             "{client}"
         );
     }
@@ -1152,6 +1164,7 @@ fn authenticated_install_journal(fixture: &Fixture) -> (PathBuf, Vec<u8>) {
             &InstallCtx {
                 compresso_bin: fixture.environment.compresso_bin.clone(),
                 scope: Scope::User,
+                session_recall: false,
             },
         )
         .expect("internal journal plan should be issued");
@@ -1378,4 +1391,74 @@ fn parse_or_null(value: &str) -> Value {
     } else {
         serde_json::from_str(value).expect("command output should be JSON")
     }
+}
+
+#[test]
+fn test_setup_partial_failure_recovery_command_keeps_the_no_recall_opt_out() {
+    let fixture = Fixture::new();
+    let runtime = TestSetupRuntime::new(
+        fixture.environment.data_dir.join("compresso.db"),
+        Arc::new(SequenceClock::new([1_000, 1_000, 1_600])),
+    )
+    .with_open_write(
+        fixture.codex_config(),
+        b"[mcp_servers.other]\ncommand = \"/opt/other\"\n".to_vec(),
+    );
+
+    let (exit, _, errors) = fixture.run_setup_json_with_runtime(
+        &[
+            "setup",
+            "codex",
+            fixture.root_str(),
+            "--no-recall",
+            "--yes",
+            "--json",
+        ],
+        None,
+        &runtime,
+        &mut std::io::empty(),
+    );
+
+    assert_eq!(exit, CliExitCode::Failure);
+    assert_eq!(errors["error"]["code"], "setup_partial_failure");
+    assert!(
+        errors["error"]["message"]
+            .as_str()
+            .expect("error message should be text")
+            .contains("compresso integrations install codex --yes --no-recall"),
+        "recovery must not silently enable recall: {errors}"
+    );
+    // The hook command is a POSIX shell line, so setup plans no hook step on
+    // Windows and the recovery must not name one there.
+    let names_hook_step = errors["error"]["message"]
+        .as_str()
+        .expect("error message should be text")
+        .contains("compresso integrations install codex --compaction-hook --yes");
+    assert_eq!(
+        names_hook_step,
+        !cfg!(windows),
+        "recovery names the hook step only where setup planned one: {errors}"
+    );
+}
+
+#[test]
+fn test_setup_no_recall_writes_the_entry_without_a_recall_source() {
+    let fixture = Fixture::new();
+    let (exit, output, errors) = fixture.run_setup_json(
+        &[
+            "setup",
+            "codex",
+            fixture.root_str(),
+            "--no-recall",
+            "--yes",
+            "--json",
+        ],
+        Some(&fixture.store),
+        &mut std::io::empty(),
+    );
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert_eq!(output["data"]["result"]["status"], "complete");
+    let text = fs::read_to_string(fixture.codex_config()).expect("Codex config should exist");
+    assert!(text.contains("args = [\"mcp\", \"serve\"]\n"), "{text}");
+    assert!(!text.contains("--recall-source"));
 }

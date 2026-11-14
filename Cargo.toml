@@ -21,6 +21,7 @@ compresso-eval = { path = "rust/compresso-eval" }
 compresso-agent = { path = "rust/compresso-agent" }
 compresso-proxy = { path = "rust/compresso-proxy" }
 compresso-updater = { path = "rust/compresso-updater" }
+compresso-recall = { path = "rust/compresso-recall" }
 
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -28,8 +29,8 @@ thiserror = "2.0"
 anyhow = "1.0"
 clap = { version = "=4.6.1", features = ["derive"] }
 tokio = { version = "1.45", features = ["rt-multi-thread", "macros", "io-std"] }
-rmcp = { version = "=1.4.0", default-features = false, features = ["server", "transport-io"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rmcp = { version = "=3.9.0", default-features = false, features = ["server"] }
+rusqlite = { version = "0.41", default-features = false, features = ["bundled", "cache"] }
 tiktoken-rs = "0.6"
 tree-sitter = "0.25"
 tree-sitter-rust = "0.24"

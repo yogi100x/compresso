@@ -208,7 +208,7 @@ Present likelihood is low because distribution is not occurring. The path become
 
 | ID | Threat | Preconditions / actor | Affected assets | Likelihood | Impact | Risk | Existing controls and gap |
 |---|---|---|---|---|---|---|---|
-| TM-001 | Read of scanner-excluded secret or ignored file | Malicious repo/prompt-influenced client knows or guesses path | Credentials, source confidentiality | High | High | **High** | Canonical root containment exists; no shared read policy/index-membership requirement |
+| TM-001 | Read of scanner-excluded secret or ignored file | Malicious repo/prompt-influenced client knows or guesses path | Credentials, source confidentiality | High | High | **High** | Canonical root containment exists. Since 2026-11-14 `compresso_read` also refuses a file the scanner excludes unless it is indexed, judged on the resolved path; there is still no single shared read policy object |
 | TM-002 | Cross-project content retrieval | Two repos previously indexed; client supplies explicit root | Project isolation, proprietary source | Medium | High | **High** | Global approval lookup is treated as authority; process not root-bound |
 | TM-003 | Secret leakage in integration preview/JSON | Assistant config contains unrelated token; preview output captured | Assistant config credentials | Low after fix | High | **Mitigated in working tree (pending release)** | Public serialization/CLI output is key-level and secret-safe; exact bytes remain privately hash-bound; synthetic bearer canaries cover output and error paths |
 | TM-004 | Developer code execution through vulnerable Turbo | Malicious checkout and routine Turbo command | Host account, source, credentials | Medium | High | **High** | Lockfile pins vulnerable 2.5.6; no JS advisory gate in CI |
@@ -222,6 +222,7 @@ Present likelihood is low because distribution is not occurring. The path become
 | TM-012 | Capability lint misses a new network/process path | New dependency/FFI/generated code bypasses finite list | Local-only invariant | Low | High | **Low-Medium** | Source/tree lint is strong but denylist-based, not a sandbox |
 | TM-013 | Mandatory local plugin is compromised or unexpectedly upgraded | Contributor follows tracked agent instructions | Source, network, development session | Low | High | **Low-Medium** | Installed context-mode showed no telemetry; version/trust is not pinned by repository |
 | TM-014 | Future telemetry erodes offline guarantee | Scope change without explicit consent/design review | Repository metadata and user privacy | Low | High | **Low currently** | Config forces telemetry off and D6 requires a new owner decision |
+| TM-015 | Health probe starts an attacker-chosen command | A cloned repository ships a project MCP config naming its own binary, or a local writer edits a client config; the user runs `compresso doctor` or `integrations status` | Local code execution as the user | Low | High | **Low** | Config is untrusted: the probe starts a command only when its canonical path is the running Compresso executable or an authenticated install receipt matches the entry exactly; exact `mcp serve` argv, no shell, scrubbed environment, neutral working directory, process-group kill; anything else is `not_probed`/`config_modified` and never executed (ADR-0028) |
 
 ## Criticality calibration
 

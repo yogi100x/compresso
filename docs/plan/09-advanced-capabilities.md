@@ -19,7 +19,7 @@ E15 adds `compresso-search`, `compresso-edit`, `compresso-sql`, `compresso-recal
 | Class | Examples | Enforcement |
 |---|---|---|
 | Read | search, importers, schema inspection | approved roots/targets and hard bounds |
-| Private read | recall, knowledge | explicit feature and source opt-in |
+| Private read | recall, knowledge | explicit feature and source opt-in; exception (D75): index-free E17-02 recall of a client's own transcripts is enabled when that client's integration is installed, and `--no-recall` opts out |
 | Plan | edit plan, SQL mutation preview | no side effects; content-hashed result |
 | Write | edit apply, remember, review apply | plan hash, base-version check, approval |
 | Destructive | rollback, forget, SQL mutation | elevated approval and audit |

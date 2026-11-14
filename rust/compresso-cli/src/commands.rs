@@ -1,25 +1,36 @@
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use compresso_core::ClosedPipeGuard;
 pub use compresso_eval::cli::CliExitCode;
 use compresso_eval::cli::EvalCommand;
 use compresso_store::Store;
 
+mod decisions;
 mod doctor;
 mod engine;
 mod index;
 mod integrations;
 mod mcp;
+mod mcp_probe;
+mod quiet_pipe;
+mod recall;
 mod repos;
 mod retrieval;
 mod setup;
+mod transcript_stats;
 
+pub use decisions::{
+    DecisionsArgs, PostError, PullRequestPoster, SystemPullRequestPoster, execute_decisions,
+};
 pub use doctor::{ConfigExplainArgs, ConfigModeArg, DiagnosticEnvironment, DoctorArgs};
 pub use engine::{CompressArgs, ExplainArgs, StatsArgs};
 pub use index::IndexArgs;
 pub use integrations::{IntegrationEnvironment, execute_integrations};
+pub use recall::{RecallArgs, RecallEnvironment, RecallSourceArg, execute_recall};
 pub use repos::{ReposCommand, ReposListArgs, ReposRemoveArgs};
 pub use retrieval::{
     ContextArgs, ImpactArgs, MapArgs, OutlineArgs, ReadArgs, SearchArgs, UnfoldArgs,
@@ -56,6 +67,10 @@ pub enum RootCommand {
     Compress(CompressArgs),
     Explain(ExplainArgs),
     Stats(StatsArgs),
+    /// Search past local session transcripts without a persistent index.
+    Recall(RecallArgs),
+    /// Draft a pull request comment from a session's recorded decisions.
+    Decisions(DecisionsArgs),
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
@@ -80,6 +95,15 @@ pub enum RootCommand {
         #[command(subcommand)]
         command: EvalCommand,
     },
+}
+
+/// Arguments for the constant tool-routing reminder.
+#[derive(Args, Debug, Default)]
+pub struct RoutingReminderArgs {
+    /// Emit the `SessionStart` hook JSON envelope that Claude Code and Codex
+    /// add to model context after compaction, instead of plain text.
+    #[arg(long)]
+    pub session_start_hook: bool,
 }
 
 #[derive(Args, Debug, Default)]
@@ -134,6 +158,17 @@ pub struct IntegrationMutationArgs {
     /// Use this repository's project-local MCP config instead of user scope.
     #[arg(long, value_name = "DIR")]
     pub project: Option<PathBuf>,
+    /// Manage the post-compaction routing-reminder hook instead of the MCP
+    /// server entry (Claude Code and Codex only). The hook is installed in
+    /// user-level settings only; with `--project`, install and uninstall
+    /// remove a hook an earlier version wrote into that repository.
+    #[arg(long)]
+    pub compaction_hook: bool,
+    /// Install the MCP server entry without session recall. By default the
+    /// entry enables the `compresso_recall` tool over this client's own local
+    /// transcripts (Claude Code and Codex only).
+    #[arg(long, conflicts_with = "compaction_hook")]
+    pub no_recall: bool,
 }
 
 #[derive(Args, Debug)]
@@ -146,6 +181,11 @@ pub struct IntegrationReadArgs {
     /// Inspect this repository's project-local MCP config instead of user scope.
     #[arg(long, value_name = "DIR")]
     pub project: Option<PathBuf>,
+    /// Inspect the post-compaction routing-reminder hook in user-level
+    /// settings instead of the MCP server entry (Claude Code and Codex only;
+    /// not combined with `--project`).
+    #[arg(long)]
+    pub compaction_hook: bool,
 }
 
 #[derive(Args, Debug, Default)]
@@ -170,6 +210,8 @@ pub enum ConfigCommand {
 #[derive(Debug, Subcommand)]
 pub enum McpCommand {
     Serve(DeferredArgs),
+    /// Print the bounded Compresso tool-routing reminder.
+    RoutingReminder(RoutingReminderArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -228,7 +270,46 @@ impl AccountClient for UnavailableAccountClient {
     }
 }
 
+/// Executes a parsed command line against the system environment.
+///
+/// Standard output is guarded. When its reader has gone away (`| head`, a
+/// consumer that exited early) the command stops quietly like a standard Unix
+/// filter: nothing more is written to `errors` and the exit is a success,
+/// never a panic. An error that was already reported before the reader left
+/// keeps the command's own exit code. Any other output failure is reported as
+/// a typed `output_failed` error.
+///
+/// `compresso mcp serve` owns its transport and still reports a closed client
+/// pipe as a typed `output_closed` failure.
 pub fn execute(
+    cli: Cli,
+    account: &dyn AccountClient,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> CliExitCode {
+    let json = cli.command.json();
+    let reader_gone = AtomicBool::new(false);
+    let mut observed = quiet_pipe::ObservedOutput::new(output, &reader_gone);
+    let mut guarded = ClosedPipeGuard::new(&mut observed, "standard output");
+    let mut errors = quiet_pipe::GatedErrors::new(errors, &reader_gone);
+    let code = execute_command(cli, account, &mut guarded, &mut errors);
+    match guarded.finish() {
+        Ok(()) => code,
+        Err(error) if error.is_closed() => {
+            if errors.delivered() {
+                code
+            } else {
+                CliExitCode::Success
+            }
+        }
+        Err(error) => {
+            let _ = write_error(&mut errors, error.code(), &error.to_string(), json);
+            CliExitCode::Failure
+        }
+    }
+}
+
+fn execute_command(
     cli: Cli,
     account: &dyn AccountClient,
     output: &mut impl Write,
@@ -247,9 +328,45 @@ pub fn execute(
             let stdin = std::io::stdin();
             integrations::execute(command, &environment, &mut stdin.lock(), output, errors)
         }
+        RootCommand::Mcp {
+            command: McpCommand::RoutingReminder(arguments),
+        } => execute_routing_reminder(&arguments, output),
         RootCommand::Mcp { command } => mcp::execute(command, errors),
         RootCommand::Eval { command } => compresso_eval::cli::execute(command, output, errors),
         RootCommand::Account { command } => execute_account(command, account, output, errors),
+        RootCommand::Decisions(arguments) => {
+            let store = match Store::open_default() {
+                Ok(store) => store,
+                Err(_) => {
+                    let _ = write_error(
+                        errors,
+                        "internal",
+                        "failed to open the local Compresso store",
+                        arguments.output.json,
+                    );
+                    return CliExitCode::Failure;
+                }
+            };
+            execute_decisions(
+                arguments,
+                &store,
+                &SystemPullRequestPoster::from_environment(),
+                output,
+                errors,
+            )
+        }
+        RootCommand::Recall(arguments) => {
+            let Some(environment) = RecallEnvironment::system() else {
+                let _ = write_error(
+                    errors,
+                    "environment",
+                    "failed to resolve the home or current working directory",
+                    arguments.output.json,
+                );
+                return CliExitCode::Failure;
+            };
+            execute_recall(arguments, &environment, output, errors)
+        }
         RootCommand::Setup(arguments) => {
             let json = arguments.output.json;
             let environment = match IntegrationEnvironment::system() {
@@ -454,6 +571,22 @@ pub fn execute_with_store_and_input(
         }
         RootCommand::Eval { command } => compresso_eval::cli::execute(command, output, errors),
         RootCommand::Account { command } => execute_account(command, account, output, errors),
+        RootCommand::Decisions(arguments) => execute_decisions(
+            arguments,
+            store,
+            &SystemPullRequestPoster::from_environment(),
+            output,
+            errors,
+        ),
+        RootCommand::Recall(arguments) => {
+            let _ = write_error(
+                errors,
+                "environment_required",
+                "recall requires an explicit RecallEnvironment at injected boundaries",
+                arguments.output.json,
+            );
+            CliExitCode::Failure
+        }
         RootCommand::Index(arguments) => execute_index(arguments, Some(store), cwd, output, errors),
         RootCommand::Repos { command } => {
             repos::execute(command, store, cwd, input, output, errors)
@@ -629,6 +762,34 @@ fn execute_index(
     }
 }
 
+/// Prints the constant routing reminder. It reads no input, opens no store,
+/// and touches no network, so a client hook can run it after every compaction.
+fn execute_routing_reminder(
+    arguments: &RoutingReminderArgs,
+    output: &mut impl Write,
+) -> CliExitCode {
+    let reminder = compresso_mcp::routing_reminder();
+    let result = if arguments.session_start_hook {
+        serde_json::to_writer(
+            &mut *output,
+            &serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": reminder,
+                }
+            }),
+        )
+        .map_err(std::io::Error::other)
+        .and_then(|()| writeln!(output))
+    } else {
+        writeln!(output, "{reminder}")
+    };
+    match result {
+        Ok(()) => CliExitCode::Success,
+        Err(_) => CliExitCode::Failure,
+    }
+}
+
 fn execute_account(
     command: AccountCommand,
     account: &dyn AccountClient,
@@ -736,11 +897,14 @@ impl RootCommand {
             Self::Compress(arguments) => arguments.output.json,
             Self::Explain(arguments) => arguments.output.json,
             Self::Stats(arguments) => arguments.output.json,
+            Self::Recall(arguments) => arguments.output.json,
+            Self::Decisions(arguments) => arguments.output.json,
             Self::Config { command } => match command {
                 ConfigCommand::Explain(arguments) => arguments.output.json,
             },
             Self::Mcp { command } => match command {
                 McpCommand::Serve(arguments) => arguments.output.json,
+                McpCommand::RoutingReminder(_) => false,
             },
             Self::Integrations { command } => match command {
                 IntegrationsCommand::Install(arguments)

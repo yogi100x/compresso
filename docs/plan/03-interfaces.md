@@ -215,7 +215,8 @@ impl Store {
     pub fn indexed_file(&self, repo: RepoId, path: &str) -> Result<Option<FileRecord>>;
     pub fn replace_symbols(&self, file: FileId, symbols: &[SymbolRecord], edges: &[EdgeRecord]) -> Result<()>; // single transaction
     pub fn delete_files(&self, repo: RepoId, paths: &[String]) -> Result<()>;
-    pub fn search_symbols(&self, repo: RepoId, query: &str, limit: usize) -> Result<Vec<SymbolHit>>; // FTS5, bm25-ranked
+    pub fn search_symbols(&self, repo: RepoId, query: &str, limit: usize) -> Result<Vec<SymbolHit>>; // FTS5, bm25-ranked; whole query is one literal contiguous phrase
+    pub fn search_symbols_all_terms(&self, repo: RepoId, query: &str, limit: usize) -> Result<Vec<SymbolHit>>; // multi-word: every whitespace-separated term (any order/case, edge punctuation stripped, terms under 3 chars dropped); exact-phrase hits first, then all-terms hits, each bm25-ordered; one word == search_symbols
     pub fn search_symbols_excluding_language(&self, repo: RepoId, query: &str, limit: usize, excluded: FileLanguage) -> Result<Vec<SymbolHit>>; // exclusion occurs in SQL before bm25 limit
     pub fn symbols_in_file(&self, repo: RepoId, path: &str) -> Result<Vec<SymbolRecord>>;
     pub fn resolved_edges(&self, repo: RepoId) -> Result<Vec<ResolvedEdgeRecord>>; // deterministic, resolved rows only
@@ -244,6 +245,8 @@ pub struct ScanResult { pub added: Vec<PathBuf>, pub changed: Vec<PathBuf>, pub 
 pub struct ScanOptions { pub max_file_bytes: u64 }
 pub fn scan(store: &Store, repo: RepoId, root: &Path) -> Result<ScanResult, AtlasError>; // safe default: max_file_bytes = 1_000_000
 pub fn scan_with_options(store: &Store, repo: RepoId, root: &Path, options: ScanOptions) -> Result<ScanResult, AtlasError>;
+pub struct Concurrency { /* jobs clamped to 1..=available CPUs; memory_budget_bytes (default 64 MiB) */ } // Concurrency::default(), ::serial(), ::bounded(jobs, memory_budget_bytes)
+pub fn scan_with_concurrency(store: &Store, repo: RepoId, root: &Path, options: ScanOptions, concurrency: Concurrency) -> Result<ScanResult, AtlasError>; // identical ScanResult at every concurrency; scan/scan_with_options use Concurrency::default()
 // respects .gitignore + built-in exclusions (binaries, >max_file_bytes, node_modules/target/dist/.git, secret-file patterns: .env*, *.pem, id_rsa*)
 // ignored and built-in excluded directories are reported once in skipped and pruned before descent; descendants are intentionally not enumerated
 
@@ -263,6 +266,7 @@ pub struct Extraction { pub symbols: Vec<SymbolRecord>, pub imports: Vec<ImportR
 // indexer.rs
 pub struct Indexer<'a> { /* store, registry, counter */ }
 impl Indexer<'_> {
+    pub fn with_concurrency(self, concurrency: Concurrency) -> Self; // workers read/hash/parse; Store writes stay on the calling thread in candidate order
     pub fn index(&self, root: &Path, progress: impl FnMut(IndexProgress)) -> Result<IndexReport, AtlasError>;
     // pipeline: canonicalize+approve root -> scan -> parse ONLY added/changed -> replace_indexed_file per file transaction -> delete removed -> stamp index_versions
 }
@@ -279,7 +283,14 @@ pub struct BoundedRead { pub path: String, pub content: String, pub start_line: 
 pub fn repo_map(store: &Store, repo: RepoId, budget_tokens: usize) -> Result<RepoMap>;      // dir tree + top symbols per file, PageRank-ish by edge in-degree
 pub fn outline(store: &Store, repo: RepoId, path: &str) -> Result<Outline>;                  // symbol skeleton with line ranges + token estimates
 pub fn unfold(store: &Store, repo: RepoId, selector: &SymbolSelector) -> Result<UnfoldResult>; // multiple matches return typed Ambiguous candidates
-pub fn search(store: &Store, repo: RepoId, query: &str, limit: usize) -> Result<Vec<SearchHit>>;
+pub fn search(store: &Store, repo: RepoId, query: &str, limit: usize) -> Result<Vec<SearchHit>>; // Store::search_symbols_all_terms semantics; plan_context keeps literal per-concept queries
+// search.rs — diagnostics are informational data on a successful result, never errors
+pub struct SearchOptions<'a> { pub limit: usize, pub path: Option<&'a str> } // path: repo-relative file or directory scope, applied before the hit limit
+pub enum SearchDiagnosticCode { PathNotFound, QueryTooShort, PathScopeWindowCapped } // as_str(): path_not_found, query_too_short, path_scope_window_capped
+pub struct SearchDiagnostic { pub code: SearchDiagnosticCode, pub message: String }
+pub struct SearchReport { pub hits: Vec<SearchHit>, pub diagnostics: Vec<SearchDiagnostic> }
+pub fn validate_search_query(query: &str) -> Result<(), QueryError>; // QueryError::InvalidSearchQuery { position /* byte offset */, reason }
+pub fn search_with_diagnostics(store: &Store, repo: RepoId, query: &str, options: SearchOptions<'_>) -> Result<SearchReport>; // errors only for InvalidSearchQuery / InvalidSearchPath
 pub fn read_bounded(root: &Path, path: &str, range: Option<(u32, u32)>, budget_tokens: usize, counter: &dyn TokenCounter) -> Result<BoundedRead>; // path canonicalized, MUST be under approved root (symlink-resolved)
 pub fn impact(store: &Store, repo: RepoId, path: &str) -> Result<ImpactReport>;              // reverse-edge closure, depth 2
 pub fn plan_context(store: &Store, repo: RepoId, task: &str, budget_tokens: usize) -> Result<ContextPlan>; // search-driven pack: focused map + file-diverse evidence excerpts within budget
@@ -308,10 +319,10 @@ pub trait Integration {
     fn verify(&self) -> VerificationReport;              // config parses + compresso server entry resolves to existing binary
     fn uninstall(&self, receipt: &InstallReceipt) -> Result<RestoreReport>; // remove owned keys only; restore semantics per adapter spec
 }
-pub struct InstallCtx { pub compresso_bin: PathBuf, pub scope: Scope }  // normalized absolute lexical launcher path; Scope::User | Scope::Project(PathBuf)
+pub struct InstallCtx { pub compresso_bin: PathBuf, pub scope: Scope, pub session_recall: bool }  // normalized absolute lexical launcher path; Scope::User | Scope::Project(PathBuf); recall over the client's own transcripts (D75)
 ```
 
-Per-client config details in `04-mcp-and-integrations.md` §2. User-scoped entries use `mcp serve`; project-scoped Claude Code/Cursor entries pin `--root CANONICAL_ROOT`. Claude Desktop: explicitly no adapter (D5).
+Per-client config details in `04-mcp-and-integrations.md` §2. User-scoped entries use `mcp serve`; project-scoped Claude Code/Cursor entries pin `--root CANONICAL_ROOT`. With `session_recall` (the CLI default; `--no-recall` clears it) Claude Code and Codex entries end in `--recall-source <own client>`; Cursor ignores it. Claude Desktop: explicitly no adapter (D5).
 
 PB-03 CLI orchestration adds deterministic `compresso repos list`, exact and
 confirmable `compresso repos remove ROOT`, and `compresso setup CLIENT ROOT`.
@@ -321,7 +332,12 @@ secret-safe key-level diff, diff hash, backup path, and owned-key effect. Exact
 target bytes stay private inside the manager and remain bound by `result_hash`;
 they are never serialized into CLI or assistant-visible preview output. Before
 indexing setup converts that still-valid plan into an opaque, manager-bound,
-one-use authorization.
+one-use authorization. For Claude Code and Codex setup also previews and,
+after the MCP entry is applied, installs the post-compaction routing-reminder
+hook in the client's user-level hook file as a second plan with its own
+receipt (D76; `--no-compaction-hook` opts out), and removes by its receipt a
+hook an earlier build wrote into the repository's own hook file. A hook step that cannot be planned or applied is reported as `skipped`
+or `failed` with fix text and never changes setup's exit status.
 Because indexing may outlive the plan TTL, setup renews only `issued_at`,
 `expires_at`, and the derived plan hash afterward; every approved material
 field, including the private target, remains byte-identical. The strict setup apply path refuses any pending
@@ -363,7 +379,7 @@ Fastify, JSON, versioned prefix `/v1`. Auth: Better Auth session cookies (web) +
 POST /v1/device/authorize      -> device-code flow start { device_code, user_code, verify_url }
 POST /v1/device/token          -> poll for tokens
 GET  /v1/me                    -> user + orgs + plan
-GET  /v1/entitlements          -> signed entitlement bundle (JWS, 30-day offline validity; local caches; grace per build-doc §18.1)
+GET  /v1/entitlements          -> signed entitlement bundle (JWS; device-bound 21-day machine lease per D65, entitled enterprise orgs may issue 30/60/90-day offline leases; local caches; grace per build-doc §18.1)
 POST /v1/devices               -> register { name, platform, public_key }
 DELETE /v1/devices/:id         -> revoke
 GET  /v1/orgs/:id/policies     -> policy_set JSON (signed)
@@ -426,3 +442,17 @@ impl EntitlementCache<'_> {
 ## 10. E15 capability interfaces
 
 Authoritative E15 state machines are in `09-advanced-capabilities.md`. Public surfaces are `CombinedSearch`, `EditPlanner`/`EditApplier`, `SqlInspector`/`SqlExecutor`, `RecallIndex`, `KnowledgeStore`, `ReviewOrchestrator`, and `ClientCapabilityNegotiator`. Read and apply interfaces are separate types; apply requires an unexpired content-hashed plan and `ApprovalGrant` issued by the permission engine.
+
+## 11. E17 interfaces (delivered 2026-11-14)
+
+Public surfaces added by E17. Every one is local: none opens a network connection, and none uploads anything.
+
+- **`compresso-core::pricing`** (E17-03, ADR-0029): `PriceTable::embedded() / parse() / lookup(model) / cost_basis(tokens_saved, model)`, `ModelPrice`, `PriceTableError`, and `is_plain_model_id` (printable ASCII, no spaces, at most `MAX_MODEL_ID_BYTES` = 128). Savings are priced at `SAVINGS_RATE_APPLIED = "input"` only. The table is `rust/compresso-core/data/price-table-v1.json`, validated by `schemas/price-table/v1.json`.
+- **`compresso-core::transcript`** (E17-03): `scan_transcript(text)`, the streaming `TranscriptScanner::{new, push_line, finish}`, `TranscriptScan` (including `model_ids_rejected`), `TranscriptCall`, `TranscriptCallKind`, `COMPRESSO_TOOL_NAMES`, `MAX_TRANSCRIPT_TOOL_CALLS`, and `UNKNOWN_MODEL`. Scanning retains no transcript text.
+- **`compresso-core::stdio`** (E17-05): `StreamError::{classify, is_closed, code}`, `is_closed_pipe`, `ClosedPipeGuard<W>`, `write_diagnostic_line`, and `report_diagnostic`. Closed pipes are typed errors and never panic.
+- **`compresso-core::background_spawn`** (E17-05): `CREATE_NO_WINDOW`, `background_creation_flags()`, and `suppress_console_window(set_flags)`. Every child-process launch routes through it. The only permitted launch site is `compresso-cli::commands::mcp_probe` (ADR-0028).
+- **`compresso-recall`** (E17-02, new crate, `bounded-local`): `recall(&RecallRequest) -> Result<RecallReport, RecallError>`, plus `RecallRequest`, `RecallScope`, `RecallLimits`, `RecallHit`, `SourceReport`, `SourceStatus`, `RecallSource`, `SourceSupport`, `redact`, and `Redaction`. It reads transcripts read-only, keeps no index, and redacts before matching. E15-14's indexed recall extends this crate instead of creating a new one.
+- **`compresso-atlas::search`** (E17-07): `search_with_diagnostics(SearchOptions) -> SearchReport`, `SearchDiagnostic`, `SearchDiagnosticCode`, `validate_search_query`, and `SEARCH_MIN_QUERY_CHARS`. Multi-word queries match every term, with exact-phrase hits ranked first.
+- **`compresso-mcp`**: `tool_names()` (the served tool list, used by the drift-lint inventory) and `reminder::routing_reminder()` with `ROUTING_REMINDER_MAX_BYTES` = 640 (E17-01). The `compresso_recall` tool is served only when the server starts with `--recall-source`.
+- **`compresso-cli::surface`** (E17-08): `surface_inventory() -> serde_json::Value` (`SURFACE_SCHEMA_VERSION` = 1). It generates the CLI/MCP/config inventory consumed by `scripts/doc-drift-lint.ts`.
+- **`compresso-eval::campaign`** (E17-10): `CampaignRunner`, `CampaignPolicy`, `CampaignOutcome`, `StartMode`, `Checkpoint`, `TaskState`, `SuiteAdapter`, `SuiteDescriptor`, `TaskSpec`, `TaskContext`, `AdapterKind`, `resolve_adapter`, `FixtureSuiteAdapter`, and `CampaignReport`, exposed by the separate `compresso-eval-campaign` binary. Adapters for external suites are opt-in and not built in.

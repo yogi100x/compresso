@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "docs": {
+    "include": ["README.md", "AGENTS.md", "docs/**/*.md"],
+    "exclude": ["docs/plan/**"]
+  },
+  "completed_tickets": ["docs/plan/05-tickets.md"],
+  "mention_only_docs": [
+    "docs/plan/03-interfaces.md",
+    "docs/plan/04-mcp-and-integrations.md"
+  ],
+  "path_roots": [
+    ".github",
+    "apps",
+    "docs",
+    "fixtures",
+    "infra",
+    "installers",
+    "packages",
+    "rust",
+    "schemas",
+    "scripts"
+  ],
+  "require_documented_binaries": ["compresso"],
+  "cargo_packages": {
+    "compresso-cli": "compresso"
+  },
+  "allow": [
+    {
+      "kind": "undocumented_cli_command",
+      "reference": "compresso account",
+      "reason": "Documentation gap that predates the drift linter; remove this entry when the command is documented."
+    },
+    {
+      "kind": "undocumented_cli_command",
+      "reference": "compresso account login",
+      "reason": "Documentation gap that predates the drift linter; remove this entry when the command is documented."
+    },
+    {
+      "kind": "undocumented_cli_command",
+      "reference": "compresso account logout",
+      "reason": "Documentation gap that predates the drift linter; remove this entry when the command is documented."
+    },
+    {
+      "kind": "undocumented_cli_command",
+      "reference": "compresso account status",
+      "reason": "Documentation gap that predates the drift linter; remove this entry when the command is documented."
+    },
+    {
+      "kind": "undocumented_cli_command",
+      "reference": "compresso compress",
+      "reason": "Documentation gap that predates the drift linter; remove this entry when the command is documented."
+    },
+    {
+      "kind": "undocumented_cli_command",
+      "reference": "compresso context",
+      "reason": "Documentation gap that predates the drift linter; remove this entry when the command is documented."
+    },
+    {
+      "kind": "undocumented_cli_command",
+      "reference": "compresso explain",
+      "reason": "Documentation gap that predates the drift linter; remove this entry when the command is documented."
+    },
+    {
+      "kind": "undocumented_cli_command",
+      "reference": "compresso impact",
+      "reason": "Documentation gap that predates the drift linter; remove this entry when the command is documented."
+    },
+    {
+      "kind": "undocumented_cli_command",
+      "reference": "compresso init",
+      "reason": "Documentation gap that predates the drift linter; remove this entry when the command is documented."
+    },
+    {
+      "kind": "undocumented_cli_command",
+      "reference": "compresso map",
+      "reason": "Documentation gap that predates the drift linter; remove this entry when the command is documented."
+    },
+    {
+      "kind": "undocumented_cli_command",
+      "reference": "compresso outline",
+      "reason": "Documentation gap that predates the drift linter; remove this entry when the command is documented."
+    },
+    {
+      "kind": "undocumented_cli_command",
+      "reference": "compresso search",
+      "reason": "Documentation gap that predates the drift linter; remove this entry when the command is documented."
+    },
+    {
+      "kind": "undocumented_cli_command",
+      "reference": "compresso unfold",
+      "reason": "Documentation gap that predates the drift linter; remove this entry when the command is documented."
+    },
+    {
+      "kind": "missing_path",
+      "reference": "schemas/cloud-api/v1.json",
+      "doc": "docs/adr/0002-typescript-modular-cloud-monolith.md",
+      "reason": "Planned cloud API schema (E10); the ADR describes the future contract."
+    },
+    {
+      "kind": "missing_path",
+      "reference": "schemas/model-profile/v1.json",
+      "doc": "docs/adr/0020-profile-first-provider-integration.md",
+      "reason": "Planned model profile schema (E13); the ADR describes the future contract."
+    },
+    {
+      "kind": "missing_ticket_file",
+      "reference": "E2-12:fixtures/conversations/provider-tool-loop/",
+      "doc": "docs/plan/05-tickets.md",
+      "reason": "Delivered as rust/compresso-core/tests/fixtures/provider-tool-loop; the ticket Files line needs a plan correction."
+    },
+    {
+      "kind": "missing_ticket_file",
+      "reference": "E2-13:fixtures/conversations/single-oversize-text/",
+      "doc": "docs/plan/05-tickets.md",
+      "reason": "Delivered as rust/compresso-core/tests/fixtures/generic-text/single-oversize-text.txt; the ticket Files line needs a plan correction."
+    },
+    {
+      "kind": "missing_ticket_file",
+      "reference": "E2-13:rust/compresso-mcp/src/tools/compress.rs",
+      "doc": "docs/plan/05-tickets.md",
+      "reason": "Delivered in rust/compresso-mcp/src/tools/engine_tools.rs; the ticket Files line needs a plan correction."
+    },
+    {
+      "kind": "missing_ticket_file",
+      "reference": "E2-15:fixtures/logs/mib-rebuild-stream/",
+      "doc": "docs/plan/05-tickets.md",
+      "reason": "Delivered as fixtures/benchmarks/mib-rebuild-stream; the ticket Files line needs a plan correction."
+    }
+  ]
+}

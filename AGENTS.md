@@ -3,9 +3,11 @@
 ## Scope
 
 Compresso is a local-first context intelligence layer for AI coding tools. The
-current delivery target is the offline vertical slice defined by E1-E7 plus
-the separately authorized PB-01..PB-08 public package-manager beta lane. Do
-not start E8-E16, licensing, cloud, or desktop work unless the user explicitly
+current delivery target is the offline vertical slice defined by E1-E7, the
+separately authorized PB-01..PB-08 public package-manager beta lane, and the
+E17 local follow-ups the owner authorized (D70, including E17-11..14; see the E17
+tickets in `docs/plan/05-tickets.md`). Do not
+start E8-E16, licensing, cloud, or desktop work unless the user explicitly
 changes the scope. PB tickets may pull only the release-hardening and signing
 subsets of E12/E14 named in ADR-0025; that exception does not authorize either
 epic generally.

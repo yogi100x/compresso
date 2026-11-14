@@ -13,6 +13,7 @@ use std::path::{Component, Path, PathBuf};
 use serde_json::{Map, Value, json};
 
 use crate::plan::MutationRequest;
+use crate::text_fidelity::strip_bom;
 use crate::{
     ConfigFormat, Detection, InstallCtx, InstallReceipt, Integration, IntegrationError,
     MutationKind, MutationPlan, PlanManager, Scope, VerificationCheck, VerificationReport,
@@ -615,7 +616,7 @@ fn read_existing_json_object_for_verify(path: &Path) -> Result<Map<String, Value
 }
 
 fn parse_json_object(bytes: &[u8]) -> Result<Map<String, Value>, IntegrationError> {
-    serde_json::from_slice::<Value>(bytes)
+    serde_json::from_slice::<Value>(strip_bom(bytes))
         .map_err(|error| {
             invalid_request(format!("Cursor configuration is malformed JSON: {error}"))
         })?
@@ -1133,6 +1134,7 @@ mod tests {
                     &InstallCtx {
                         compresso_bin: self.compresso.clone(),
                         scope,
+                        session_recall: false,
                     },
                 )
                 .expect("install plan");
@@ -1198,6 +1200,7 @@ mod tests {
                     &InstallCtx {
                         compresso_bin: path,
                         scope: Scope::User,
+                        session_recall: false,
                     },
                 )
                 .expect_err("non-normalized launcher path rejected");
@@ -1384,6 +1387,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect_err("malformed config rejected");
@@ -1433,6 +1437,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect("repeat install plan");
@@ -1554,6 +1559,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness_compresso(&directory),
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect_err("unsupported platform cannot mutate");
@@ -1823,6 +1829,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: Scope::Project(harness.project.clone()),
+                    session_recall: false,
                 },
             )
             .expect_err("project symlink rejected");
@@ -1855,6 +1862,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: Scope::Project(harness.project.clone()),
+                    session_recall: false,
                 },
             )
             .expect_err("project file symlink rejected");
@@ -1896,6 +1904,7 @@ mod tests {
                     &InstallCtx {
                         compresso_bin: harness.compresso.clone(),
                         scope: Scope::User,
+                        session_recall: false,
                     },
                 )
                 .expect_err("user symlink rejected");
@@ -1936,6 +1945,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: Scope::Project(harness.project.clone()),
+                    session_recall: false,
                 },
             )
             .expect("project plan does not need user home");

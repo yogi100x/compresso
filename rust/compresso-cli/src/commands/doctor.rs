@@ -2,15 +2,20 @@ use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::{Args, ValueEnum};
 use compresso_atlas::parsers::{Language, ParserRegistry};
 use compresso_core::{
     Config, ConfigOverrides, ConfigSource, Mode, RuntimePaths, TokenProvider, counter_for,
 };
+use compresso_integrations::{
+    ConfiguredServer, FileReceiptStore, ReceiptStore as _, read_configured_server,
+    receipt_authenticates_server,
+};
 use compresso_store::Store;
 
+use super::mcp_probe::{self, LauncherTrust, McpServerHealth, Severity};
 use super::{ConfigCommand, OutputArgs, RootCommand};
 
 const CONFIG_ENVIRONMENT: [&str; 5] = [
@@ -69,6 +74,12 @@ pub struct DiagnosticEnvironment {
     pub database_path: PathBuf,
     pub executable_path: PathBuf,
     pub environment: BTreeMap<String, String>,
+    /// Home directory whose user-scope client configs name the MCP server to
+    /// check. `None` skips the MCP server check.
+    pub home_dir: Option<PathBuf>,
+    /// Deadline for the live MCP handshake. `None` keeps the check
+    /// process-free: launcher paths are validated but nothing is started.
+    pub mcp_probe_timeout: Option<Duration>,
 }
 
 impl DiagnosticEnvironment {
@@ -95,6 +106,8 @@ impl DiagnosticEnvironment {
             database_path: paths.database_file,
             executable_path,
             environment,
+            home_dir: super::integrations::system_home_dir().ok(),
+            mcp_probe_timeout: Some(mcp_probe::DEFAULT_PROBE_TIMEOUT),
         })
     }
 }
@@ -190,7 +203,7 @@ fn explain_config(
 #[derive(Debug)]
 struct DiagnosticCheck {
     name: &'static str,
-    passed: bool,
+    severity: Severity,
     detail: String,
     hint: String,
 }
@@ -199,23 +212,39 @@ impl DiagnosticCheck {
     fn passed(name: &'static str, detail: impl Into<String>) -> Self {
         Self {
             name,
-            passed: true,
+            severity: Severity::Ok,
             detail: detail.into(),
             hint: "No action required.".to_owned(),
+        }
+    }
+
+    /// A check that passes but leaves the operator something to look at.
+    fn warning(name: &'static str, detail: impl Into<String>, hint: impl Into<String>) -> Self {
+        Self {
+            name,
+            severity: Severity::Warning,
+            detail: detail.into(),
+            hint: hint.into(),
         }
     }
 
     fn failed(name: &'static str, detail: impl Into<String>, hint: impl Into<String>) -> Self {
         Self {
             name,
-            passed: false,
+            severity: Severity::Error,
             detail: detail.into(),
             hint: hint.into(),
         }
     }
+
+    /// Warnings pass: only an error fails the check and the command.
+    fn is_passed(&self) -> bool {
+        self.severity != Severity::Error
+    }
 }
 
 fn run_doctor(environment: &DiagnosticEnvironment) -> Rendered {
+    let servers = configured_mcp_servers(environment);
     let checks = [
         check_binary(environment),
         check_data_directory(environment),
@@ -223,14 +252,16 @@ fn run_doctor(environment: &DiagnosticEnvironment) -> Rendered {
         check_config(environment),
         check_tokenizers(),
         check_grammars(),
+        check_mcp_server(environment, &servers),
     ];
-    let success = checks.iter().all(|check| check.passed);
+    let success = checks.iter().all(DiagnosticCheck::is_passed);
     let json_checks = checks
         .iter()
         .map(|check| {
             serde_json::json!({
                 "name": check.name,
-                "passed": check.passed,
+                "passed": check.is_passed(),
+                "severity": check.severity.code(),
                 "detail": check.detail,
                 "hint": check.hint,
             })
@@ -238,26 +269,157 @@ fn run_doctor(environment: &DiagnosticEnvironment) -> Rendered {
         .collect::<Vec<_>>();
     let human = checks
         .iter()
-        .map(|check| {
-            let status = if check.passed { "PASS" } else { "FAIL" };
-            if check.passed {
-                format!("[{status}] {}: {}", check.name, check.detail)
-            } else {
-                format!(
-                    "[{status}] {}: {}\n       hint: {}",
-                    check.name, check.detail, check.hint
-                )
-            }
+        .map(|check| match check.severity {
+            Severity::Ok => format!("[PASS] {}: {}", check.name, check.detail),
+            Severity::Warning => format!(
+                "[WARN] {}: {}\n       hint: {}",
+                check.name, check.detail, check.hint
+            ),
+            Severity::Error => format!(
+                "[FAIL] {}: {}\n       hint: {}",
+                check.name, check.detail, check.hint
+            ),
         })
         .collect::<Vec<_>>()
         .join("\n");
     Rendered {
         json: serde_json::json!({
             "schema_version": 1,
-            "data": { "checks": json_checks },
+            "data": {
+                "checks": json_checks,
+                "mcp_servers": servers.iter().map(McpServerReport::to_json).collect::<Vec<_>>(),
+            },
         }),
         human: format!("{human}\n"),
         success,
+    }
+}
+
+/// Health of the Compresso MCP server one coding client is configured to start.
+struct McpServerReport {
+    client: &'static str,
+    config_path: PathBuf,
+    health: McpServerHealth,
+}
+
+impl McpServerReport {
+    fn to_json(&self) -> serde_json::Value {
+        let mut value = self.health.to_json();
+        value["client"] = self.client.into();
+        value["config_path"] = self.config_path.display().to_string().into();
+        value
+    }
+}
+
+/// Assesses every user-scope client entry, starting each distinct launcher at
+/// most once so the whole check stays bounded by one deadline per launcher.
+fn configured_mcp_servers(environment: &DiagnosticEnvironment) -> Vec<McpServerReport> {
+    let Some(home) = environment.home_dir.as_deref() else {
+        return Vec::new();
+    };
+    // Receipts record the canonical configuration path, so resolve the home
+    // directory the same way the adapters do before looking one up.
+    let home = fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    let receipts = FileReceiptStore::new(super::integrations::receipt_store_path(
+        &environment.data_dir,
+    ));
+    let args = mcp_probe::user_scope_args();
+    let mut reports: Vec<McpServerReport> = Vec::new();
+    let mut assessed: Vec<(ConfiguredServer, LauncherTrust, McpServerHealth)> = Vec::new();
+    for config in mcp_probe::user_client_configs(&home) {
+        let server = read_configured_server(config.format, &config.path, &args);
+        if server == ConfiguredServer::NotConfigured {
+            continue;
+        }
+        let receipt_authenticated = receipts
+            .active_for(config.client, &config.path)
+            .ok()
+            .flatten()
+            .is_some_and(|receipt| {
+                receipt_authenticates_server(&receipt, config.format, &config.path)
+            });
+        let trust = LauncherTrust::new(Some(&environment.executable_path), receipt_authenticated);
+        let health = match assessed
+            .iter()
+            .find(|(seen, seen_trust, _)| *seen == server && *seen_trust == trust)
+        {
+            Some((_, _, health)) => relabel(health, config.client),
+            None => {
+                let health = mcp_probe::assess(
+                    &server,
+                    config.client,
+                    &trust,
+                    environment.mcp_probe_timeout,
+                );
+                assessed.push((server, trust, health.clone()));
+                health
+            }
+        };
+        reports.push(McpServerReport {
+            client: config.client,
+            config_path: config.path,
+            health,
+        });
+    }
+    reports
+}
+
+/// Reuses a probe verdict for another client that starts the same launcher,
+/// pointing its fix text at that client's own install command.
+fn relabel(health: &McpServerHealth, client: &str) -> McpServerHealth {
+    let mut health = health.clone();
+    for known in ["claude-code", "codex", "cursor"] {
+        health.fix = health.fix.replace(
+            &format!("compresso integrations install {known}"),
+            &format!("compresso integrations install {client}"),
+        );
+    }
+    health
+}
+
+fn check_mcp_server(
+    environment: &DiagnosticEnvironment,
+    servers: &[McpServerReport],
+) -> DiagnosticCheck {
+    const NAME: &str = "mcp_server";
+    if environment.home_dir.is_none() {
+        return DiagnosticCheck::passed(NAME, "skipped: no home directory is available");
+    }
+    if servers.is_empty() {
+        return DiagnosticCheck::passed(
+            NAME,
+            "no coding client is configured to start Compresso; run `compresso setup` to add one",
+        );
+    }
+    let detail = servers
+        .iter()
+        .map(|server| {
+            format!(
+                "{}: {} ({})",
+                server.client,
+                server.health.state.code(),
+                server.health.detail
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let severity_of = |server: &McpServerReport| server.health.state.severity();
+    // Errors and warnings both keep their fix text; only an error fails.
+    let fixes = servers
+        .iter()
+        .filter(|server| severity_of(server) != Severity::Ok)
+        .map(|server| format!("{}: {}", server.client, server.health.fix))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if servers
+        .iter()
+        .any(|server| severity_of(server) == Severity::Error)
+    {
+        DiagnosticCheck::failed(NAME, detail, fixes)
+    } else if fixes.is_empty() {
+        DiagnosticCheck::passed(NAME, detail)
+    } else {
+        DiagnosticCheck::warning(NAME, detail, fixes)
     }
 }
 

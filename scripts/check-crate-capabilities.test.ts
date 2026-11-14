@@ -59,6 +59,38 @@ test("test_bounded_local_production_process_still_fails", async () => {
   assert.doesNotMatch(violations, /tests\/e2e\.rs/u);
 });
 
+test("test_cli_mcp_probe_module_process_passes", async () => {
+  const result = await checkWorkspace(fixture("allowed-cli-mcp-probe-process"));
+
+  assert.deepEqual(result, { ok: true, checkedCrates: 1, violations: [] });
+});
+
+test("test_mcp_probe_allowance_is_bound_to_the_cli_crate", async () => {
+  const result = await checkWorkspace(
+    fixture("denied-integrations-mcp-probe-process"),
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(
+    result.violations.join("\n"),
+    /compresso-integrations.*process API.*src\/commands\/mcp_probe\.rs/u,
+  );
+});
+
+test("test_mcp_probe_allowance_does_not_cover_other_cli_modules", async () => {
+  const result = await checkWorkspace(
+    fixture("denied-cli-mcp-probe-sibling-process"),
+  );
+  const violations = result.violations.join("\n");
+
+  assert.equal(result.ok, false);
+  assert.match(
+    violations,
+    /compresso-cli.*process API.*src\/commands\/doctor\.rs/u,
+  );
+  assert.doesNotMatch(violations, /mcp_probe\.rs/u);
+});
+
 test("test_bounded_local_integration_test_network_still_fails", async () => {
   const result = await checkWorkspace(
     fixture("denied-bounded-local-test-network"),

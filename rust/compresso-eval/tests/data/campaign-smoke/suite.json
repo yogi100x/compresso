@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "suite": "campaign-smoke",
+  "version": "2026.11",
+  "mode": "balanced",
+  "tasks": [
+    {
+      "id": "task-01-resolved",
+      "resolved": true,
+      "baseline_tokens": 12000,
+      "compressed_tokens": 6000
+    },
+    {
+      "id": "task-02-unresolved",
+      "resolved": false,
+      "baseline_tokens": 8000,
+      "compressed_tokens": 6000
+    },
+    {
+      "id": "task-03-flaky",
+      "resolved": true,
+      "baseline_tokens": 10000,
+      "compressed_tokens": 7000,
+      "transient_failures": 1
+    },
+    {
+      "id": "task-04-broken",
+      "resolved": true,
+      "baseline_tokens": 9000,
+      "compressed_tokens": 4000,
+      "transient_failures": 99
+    },
+    {
+      "id": "task-05-resolved",
+      "resolved": true,
+      "baseline_tokens": 20000,
+      "compressed_tokens": 5000
+    }
+  ]
+}

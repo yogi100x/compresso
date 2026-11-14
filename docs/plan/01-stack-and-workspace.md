@@ -12,8 +12,8 @@ Versions are floors, pinned by `Cargo.lock` at first build.
 | anyhow | 1.0 | binaries only | Error context at edges |
 | clap (derive) | 4.5 | cli | CLI parsing |
 | tokio (rt-multi-thread, macros, io-std) | 1.45 | mcp, agent | Async runtime (rmcp requirement) |
-| rmcp (server, transport-io; default features off) | =1.4.0 | mcp | Official MCP SDK, stdio transport; minimum patched line for RUSTSEC-2026-0189 |
-| rusqlite (bundled) | 0.32 | store | SQLite + FTS5 |
+| rmcp (server; default features off) | =3.9.0 | mcp | Official MCP SDK; minimum patched line for RUSTSEC-2026-0462. Stdio comes from tokio `io-std` directly because the SDK's `transport-io` feature now enables `tokio/net`. The server pins negotiation to MCP revisions 2024-11-05 through 2025-06-18 |
+| rusqlite (bundled, cache; default features off) | 0.41 | store | SQLite + FTS5; bundles SQLite 3.54.1 through libsqlite3-sys 0.39.1, the minimum patched line for RUSTSEC-2026-0459 |
 | tiktoken-rs | 0.6 | core | o200k_base / cl100k_base exact counts |
 | tree-sitter | 0.25 | atlas | Parsing runtime |
 | tree-sitter-rust | 0.24 | atlas | Rust grammar |
@@ -94,7 +94,7 @@ Crate dependency rule: `core` has no internal dependencies; `store → core type
 | Crate group | Outbound network | Process execution | Additional boundary |
 |---|---|---|---|
 | core, atlas, store, mcp, search, edit, recall, knowledge, review, router, model-protocol | none | none | Pure local processing |
-| integrations, cli, eval | none; maintainer calibration binary may call only the configured counting endpoint | no arbitrary child process; detection uses bounded executable lookup | Config paths and approved repositories only |
+| integrations, cli, eval | none; maintainer calibration binary may call only the configured counting endpoint | no arbitrary child process; detection uses bounded executable lookup; the CLI's `commands/mcp_probe.rs` alone may start a trusted Compresso launcher (the running executable or a receipt-authenticated entry) for one bounded MCP handshake, and the system `kill` utility to end that server's process group (ADR-0028) | Config paths and approved repositories only |
 | proxy | Explicit configured provider hosts | none | TLS, signed/profile host allowlist, redirect/private-IP/body/time limits |
 | providers | Explicit configured provider hosts | none | Keychain credentials and the same host controls |
 | agent | Compresso account/entitlement control-plane origin only | supervisor-owned child lifecycle only | No arbitrary destination or command |
@@ -112,9 +112,9 @@ A `bounded-local` crate's exact Cargo integration-test target under `tests/` may
 
 Triggers: push to main, PRs. Jobs:
 
-1. `rust` matrix: `macos-14` (ARM64), `macos-15-intel` (x86_64), `ubuntu-24.04` (x86_64), `windows-2022` — `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo build --release -p compresso-cli`.
+1. `rust` matrix: `macos-15` (ARM64), `macos-15-intel` (x86_64), `ubuntu-24.04` (x86_64), `windows-2022` — `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo build --release -p compresso-cli`.
 2. `ts` (activates Phase 6): `pnpm install --frozen-lockfile`, `pnpm turbo lint typecheck test`.
-3. `eval` (ubuntu + macos-14): `cargo run -p compresso-eval -- run fixtures/ --gates docs/plan/gates.toml` — fails CI when release gates regress.
+3. `eval` (ubuntu + macos-15): `cargo run -p compresso-eval -- run fixtures/ --gates docs/plan/gates.toml` — fails CI when release gates regress.
 4. `security`: `cargo audit` (advisories), `cargo deny check licenses bans` (added E1; secret scanning via gitleaks action).
 
 Caching: `Swatinem/rust-cache@v2`. Artifacts: per-platform release tarball (`compresso-<version>-<target>.tar.gz`) + `SHA256SUMS` uploaded on main; `installers/install-local.sh` downloads/copies and verifies the checksum before installing to `~/.local/bin/compresso` (slice-level install path, D42; signing is Phase 8).

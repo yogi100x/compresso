@@ -21,6 +21,13 @@ After installation, run:
 compresso setup codex .
 ```
 
+Setup previews every change before writing. For Claude Code and Codex the
+server entry enables session recall over that client's own local transcripts
+(`--recall-source`); add `--no-recall` to leave it off. Setup also installs
+one post-compaction reminder hook for those two clients in your user-level
+settings, never in a repository file and never over hooks you already
+defined; add `--no-compaction-hook` to leave it out.
+
 This package has no install, postinstall, or prepare lifecycle scripts. The
 launcher selects and verifies the vendored artifact locally before replacing
 itself with the native process.

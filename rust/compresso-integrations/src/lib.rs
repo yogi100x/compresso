@@ -4,12 +4,31 @@
 //! [`PlanManager`] retains the exact plan it issued, so apply never trusts a
 //! caller-supplied replacement document. Plans expire after ten minutes and
 //! are bound to the session that created them.
+//!
+//! # Line endings and byte-order marks
+//!
+//! A mutation never changes how a user-owned file is encoded. An existing
+//! UTF-8 byte-order mark is kept and none is ever added. Every line Compresso
+//! does not change keeps its exact terminator (`\r\n`, `\n`, or none for a
+//! final line without a trailing newline). Lines Compresso writes use the
+//! file's dominant ending: `\r\n` when the file has strictly more `\r\n`
+//! than bare `\n` terminators, otherwise `\n`; so in a mixed file the majority
+//! wins, a tie is `\n`, and existing lines are never normalized. A file
+//! Compresso creates uses `\n` and no byte-order mark on every platform.
+//!
+//! Uninstalling a config that is untouched since its install returns the
+//! pre-install bytes exactly, including indentation and mixed line endings.
+//! After any later user edit the uninstall removes only the owned entry and
+//! applies the rules above instead, so that edit is never reverted.
 
 mod claude_code;
 mod codex;
+mod compaction_hook;
 mod cursor;
 mod plan;
 mod receipt;
+mod server_entry;
+mod text_fidelity;
 
 use std::path::PathBuf;
 
@@ -18,6 +37,7 @@ pub use codex::{
     CodexAdapter, CodexIntegration, CodexPlatform, CodexVerificationEvidence,
     CodexVerificationMethod, CodexVersionEvidence,
 };
+pub use compaction_hook::{CompactionHookClient, CompactionHookIntegration, LegacyProjectHook};
 pub use cursor::{
     CursorApplicationEvidence, CursorCliEvidence, CursorDiscovery, CursorIntegration,
     CursorLiveProbeEvidence, CursorPlatform,
@@ -31,6 +51,10 @@ pub use plan::{
 pub use receipt::{
     CREATED_FILE_BACKUP_SENTINEL, FileReceiptStore, InstallReceipt, MemoryReceiptStore,
     RECEIPT_SCHEMA_VERSION, ReceiptError, ReceiptStore,
+};
+pub use server_entry::{
+    ConfiguredServer, read_configured_server, recall_source_for_client,
+    receipt_authenticates_server, server_recall_source,
 };
 
 /// Adapter contract shared by Claude Code, Codex, and Cursor.

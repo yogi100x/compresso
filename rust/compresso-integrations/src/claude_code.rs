@@ -10,6 +10,8 @@ use std::path::{Component, Path, PathBuf};
 use serde_json::{Map, Value, json};
 
 use crate::plan::MutationRequest;
+use crate::server_entry::{is_adapter_args, with_recall_source};
+use crate::text_fidelity::strip_bom;
 use crate::{
     ConfigFormat, Detection, InstallCtx, InstallReceipt, Integration, IntegrationError,
     MutationKind, MutationPlan, PlanManager, Scope, VerificationCheck, VerificationReport,
@@ -170,7 +172,10 @@ impl Integration for ClaudeCodeIntegration {
     ) -> Result<MutationPlan, IntegrationError> {
         let config_path = self.mutation_config_path(&context.scope)?;
         let command = resolved_compresso_command(&context.compresso_bin)?;
-        let args = expected_server_args(&context.scope)?;
+        let mut args = expected_server_args(&context.scope)?;
+        if context.session_recall {
+            args = with_recall_source(args, CLIENT_ID);
+        }
         let mut document = read_json_object(&config_path)?;
         let servers = object_at_or_insert(&mut document, "mcpServers")?;
         servers.insert(
@@ -365,7 +370,7 @@ fn checked_config_child(
     }
 }
 
-fn read_json_object(path: &Path) -> Result<Map<String, Value>, IntegrationError> {
+pub(crate) fn read_json_object(path: &Path) -> Result<Map<String, Value>, IntegrationError> {
     match fs::read(path) {
         Ok(bytes) => parse_json_object(&bytes),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
@@ -376,7 +381,9 @@ fn read_json_object(path: &Path) -> Result<Map<String, Value>, IntegrationError>
     }
 }
 
-fn read_existing_json_object(path: &Path) -> Result<Map<String, Value>, IntegrationError> {
+pub(crate) fn read_existing_json_object(
+    path: &Path,
+) -> Result<Map<String, Value>, IntegrationError> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -394,14 +401,14 @@ fn read_existing_json_object(path: &Path) -> Result<Map<String, Value>, Integrat
     parse_json_object(&bytes)
 }
 
-fn read_existing_json_object_for_verify(path: &Path) -> Result<Map<String, Value>, ()> {
+pub(crate) fn read_existing_json_object_for_verify(path: &Path) -> Result<Map<String, Value>, ()> {
     fs::read(path)
         .map_err(|_| ())
         .and_then(|bytes| parse_json_object(&bytes).map_err(|_| ()))
 }
 
 fn parse_json_object(bytes: &[u8]) -> Result<Map<String, Value>, IntegrationError> {
-    serde_json::from_slice::<Value>(bytes)
+    serde_json::from_slice::<Value>(strip_bom(bytes))
         .map_err(|error| invalid_request(format!("configuration JSON is malformed: {error}")))?
         .as_object()
         .cloned()
@@ -419,7 +426,7 @@ fn object_at_or_insert<'a>(
         .ok_or_else(|| invalid_request(format!("{key} must be a JSON object")))
 }
 
-fn render_json(document: &Map<String, Value>) -> Result<String, IntegrationError> {
+pub(crate) fn render_json(document: &Map<String, Value>) -> Result<String, IntegrationError> {
     let mut rendered =
         serde_json::to_string_pretty(&Value::Object(document.clone())).map_err(|error| {
             invalid_request(format!("configuration JSON cannot be rendered: {error}"))
@@ -428,14 +435,14 @@ fn render_json(document: &Map<String, Value>) -> Result<String, IntegrationError
     Ok(rendered)
 }
 
-fn canonical_json_hash(value: &Value) -> Result<String, IntegrationError> {
+pub(crate) fn canonical_json_hash(value: &Value) -> Result<String, IntegrationError> {
     let bytes = serde_json::to_vec(value).map_err(|error| {
         invalid_request(format!("owned JSON value cannot be canonicalized: {error}"))
     })?;
     Ok(blake3::hash(&bytes).to_hex().to_string())
 }
 
-fn resolved_compresso_command(path: &Path) -> Result<String, IntegrationError> {
+pub(crate) fn resolved_compresso_command(path: &Path) -> Result<String, IntegrationError> {
     if !is_normalized_absolute_path(path) {
         return Err(invalid_request(
             "compresso binary path must be normalized and absolute",
@@ -483,6 +490,8 @@ fn expected_server_args(scope: &Scope) -> Result<Vec<String>, IntegrationError> 
     Ok(args)
 }
 
+/// `expected_args` is the base vector for the scope. The entry may also end
+/// in this client's own recall source, which install writes unless disabled.
 fn is_exact_server_entry(value: &Value, expected_args: &[String]) -> bool {
     let Some(entry) = value.as_object() else {
         return false;
@@ -492,10 +501,13 @@ fn is_exact_server_entry(value: &Value, expected_args: &[String]) -> bool {
             .get("command")
             .and_then(Value::as_str)
             .is_some_and(|command| Path::new(command).is_absolute())
-        && entry.get("args") == Some(&json!(expected_args))
+        && entry
+            .get("args")
+            .and_then(|args| serde_json::from_value::<Vec<String>>(args.clone()).ok())
+            .is_some_and(|args| is_adapter_args(&args, expected_args, CLIENT_ID))
 }
 
-fn is_executable_file(path: &Path) -> bool {
+pub(crate) fn is_executable_file(path: &Path) -> bool {
     let Ok(metadata) = fs::metadata(path) else {
         return false;
     };
@@ -645,6 +657,7 @@ mod tests {
                     &InstallCtx {
                         compresso_bin: self.compresso.clone(),
                         scope,
+                        session_recall: false,
                     },
                 )
                 .expect("install plan");
@@ -707,6 +720,7 @@ mod tests {
                     &InstallCtx {
                         compresso_bin: path,
                         scope: Scope::User,
+                        session_recall: false,
                     },
                 )
                 .expect_err("non-normalized launcher path rejected");
@@ -900,6 +914,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect_err("user config symlink rejected before planning");
@@ -961,6 +976,7 @@ mod tests {
                     &InstallCtx {
                         compresso_bin: harness.compresso.clone(),
                         scope: Scope::User,
+                        session_recall: false,
                     },
                 )
                 .expect_err("unsafe user home rejected");
@@ -1047,6 +1063,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: Scope::Project(harness.project.clone()),
+                    session_recall: false,
                 },
             )
             .expect_err("project config symlink rejected before planning");
@@ -1184,6 +1201,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: Scope::Project(missing_root.clone()),
+                    session_recall: false,
                 },
             )
             .expect_err("missing project rejected");
@@ -1221,6 +1239,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: scope.clone(),
+                    session_recall: false,
                 },
             )
             .expect("project install plan does not inspect user home");
@@ -1364,6 +1383,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect_err("malformed config rejected");
@@ -1389,6 +1409,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect("install plan");
@@ -1469,6 +1490,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect("repeat install plan");
