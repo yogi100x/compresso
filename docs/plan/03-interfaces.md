@@ -334,8 +334,9 @@ they are never serialized into CLI or assistant-visible preview output. Before
 indexing setup converts that still-valid plan into an opaque, manager-bound,
 one-use authorization. For Claude Code and Codex setup also previews and,
 after the MCP entry is applied, installs the post-compaction routing-reminder
-hook as a second plan with its own receipt (D76; `--no-compaction-hook` opts
-out). A hook step that cannot be planned or applied is reported as `skipped`
+hook in the client's user-level hook file as a second plan with its own
+receipt (D76; `--no-compaction-hook` opts out), and removes by its receipt a
+hook an earlier build wrote into the repository's own hook file. A hook step that cannot be planned or applied is reported as `skipped`
 or `failed` with fix text and never changes setup's exit status.
 Because indexing may outlive the plan TTL, setup renews only `issued_at`,
 `expires_at`, and the derived plan hash afterward; every approved material

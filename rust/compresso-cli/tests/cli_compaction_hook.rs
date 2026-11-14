@@ -12,6 +12,10 @@ use compresso_cli::{
     Cli, CliExitCode, IntegrationEnvironment, RootCommand, UnavailableAccountClient, execute,
     execute_integrations,
 };
+use compresso_integrations::{
+    CompactionHookClient, CompactionHookIntegration, FileReceiptStore, InstallCtx, Integration,
+    PlanApproval, PlanManager, Scope,
+};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -73,6 +77,31 @@ impl Fixture {
 
     fn claude_settings(&self) -> PathBuf {
         self.home.join(".claude/settings.json")
+    }
+
+    fn legacy_claude_settings(&self) -> PathBuf {
+        self.project.join(".claude/settings.json")
+    }
+
+    /// Reproduces a receipted project-level hook install by an earlier version.
+    fn install_legacy_project_hook(&self) {
+        let adapter =
+            CompactionHookIntegration::new(CompactionHookClient::ClaudeCode, self.home.clone());
+        let manager = PlanManager::new("legacy-install").expect("manager");
+        let receipts = FileReceiptStore::new(self.root.join("data/integration-receipts.json"));
+        let plan = adapter
+            .plan_install(
+                &manager,
+                &InstallCtx {
+                    compresso_bin: self.environment.compresso_bin.clone(),
+                    scope: Scope::Project(self.project.clone()),
+                    session_recall: false,
+                },
+            )
+            .expect("legacy plan");
+        adapter
+            .install(&manager, &PlanApproval::from(&plan), &receipts)
+            .expect("legacy install");
     }
 
     fn snapshot(&self) -> Vec<PathBuf> {
@@ -305,29 +334,42 @@ fn test_existing_user_session_start_hooks_are_refused_untouched() {
 #[test]
 fn test_installed_hook_command_emits_the_reminder_when_run_by_a_shell() {
     let fixture = Fixture::new();
-    let project = fixture.project.to_str().expect("project path");
     let (exit, _, errors) = fixture.run(&[
         "install",
         "claude-code",
         "--compaction-hook",
-        "--project",
-        project,
         "--yes",
         "--json",
     ]);
     assert_eq!(exit, CliExitCode::Success, "{errors}");
-    let settings = read(&fixture.project.join(".claude/settings.json"));
+    let settings = read(&fixture.claude_settings());
     let command = settings["hooks"]["SessionStart"][0]["hooks"][0]["command"]
         .as_str()
         .expect("hook command");
+    for repository_path in [&fixture.project, &fixture.root] {
+        assert!(
+            !command.contains(repository_path.join("").to_str().expect("UTF-8")),
+            "the user-level hook command names no repository: {command}"
+        );
+    }
 
-    // Clients hand the command string to a shell, with the hook event on stdin.
-    let output = Command::new("/bin/sh")
-        .args(["-c", command])
-        .env_clear()
-        .current_dir(&fixture.root)
-        .output()
-        .expect("hook command should run");
+    // Clients hand the command string to a shell, with the hook event on
+    // stdin. The hook is user-level, so it runs from whichever repository the
+    // session is in and must not depend on that directory or the environment.
+    let run_from = |directory: &std::path::Path| {
+        Command::new("/bin/sh")
+            .args(["-c", command])
+            .env_clear()
+            .current_dir(directory)
+            .output()
+            .expect("hook command should run")
+    };
+    let output = run_from(&fixture.root);
+    let elsewhere = run_from(&fixture.project);
+    let filesystem_root = run_from(std::path::Path::new("/"));
+    assert!(elsewhere.status.success() && filesystem_root.status.success());
+    assert_eq!(output.stdout, elsewhere.stdout);
+    assert_eq!(output.stdout, filesystem_root.stdout);
 
     assert!(output.status.success());
     let envelope: Value = serde_json::from_slice(&output.stdout).expect("hook JSON");
@@ -340,4 +382,184 @@ fn test_installed_hook_command_emits_the_reminder_when_run_by_a_shell() {
         compresso_mcp::routing_reminder()
     );
     assert_eq!(fs::read_dir(&fixture.root).expect("root").count(), 3);
+    assert_eq!(fs::read_dir(&fixture.project).expect("project").count(), 0);
+}
+
+#[test]
+fn test_hook_install_with_project_still_writes_only_user_level_settings() {
+    let fixture = Fixture::new();
+    let project = fixture.project.to_str().expect("project path");
+
+    for client in ["claude-code", "codex"] {
+        let (exit, output, errors) = fixture.run(&[
+            "install",
+            client,
+            "--compaction-hook",
+            "--project",
+            project,
+            "--yes",
+            "--json",
+        ]);
+        assert_eq!(exit, CliExitCode::Success, "{client}: {errors}");
+        assert!(
+            output["data"]["plan"]["config_path"]
+                .as_str()
+                .is_some_and(|path| path.starts_with(fixture.home.to_str().expect("UTF-8"))),
+            "{client}: {output}"
+        );
+        assert!(output["data"].get("legacy_project_hook").is_none());
+    }
+
+    assert_eq!(
+        read(&fixture.claude_settings())["hooks"]["SessionStart"][0]["matcher"],
+        "compact"
+    );
+    assert!(fixture.home.join(".codex/hooks.json").exists());
+    assert_eq!(
+        fs::read_dir(&fixture.project).expect("project").count(),
+        0,
+        "no hook file is ever written into a repository"
+    );
+
+    // Status and verify inspect the user-level file only.
+    for action in ["status", "verify"] {
+        let (exit, _, errors) = fixture.run(&[
+            action,
+            "claude-code",
+            "--compaction-hook",
+            "--project",
+            project,
+            "--json",
+        ]);
+        assert_eq!(exit, CliExitCode::Failure);
+        assert_eq!(errors["error"]["code"], "invalid_arguments", "{errors}");
+    }
+}
+
+#[test]
+fn test_hook_install_migrates_a_receipted_legacy_project_hook() {
+    let fixture = Fixture::new();
+    fixture.install_legacy_project_hook();
+    let legacy_before = fs::read(fixture.legacy_claude_settings()).expect("legacy settings");
+
+    // The working directory is the repository, so no --project is needed.
+    let (exit, preview, errors) = fixture.run(&[
+        "install",
+        "claude-code",
+        "--compaction-hook",
+        "--dry-run",
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    let legacy = &preview["data"]["legacy_project_hook"];
+    assert_eq!(legacy["plan"]["status"], "planned", "{preview}");
+    assert_eq!(
+        legacy["plan"]["config_path"],
+        json!(fixture.legacy_claude_settings())
+    );
+    assert!(legacy["result"].is_null());
+    assert_eq!(
+        fs::read(fixture.legacy_claude_settings()).expect("legacy settings"),
+        legacy_before,
+        "dry run writes nothing"
+    );
+    assert!(!fixture.claude_settings().exists());
+
+    let (exit, output, errors) = fixture.run(&[
+        "install",
+        "claude-code",
+        "--compaction-hook",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert_eq!(
+        output["data"]["legacy_project_hook"]["result"]["status"], "removed",
+        "{output}"
+    );
+    assert_eq!(
+        read(&fixture.claude_settings())["hooks"]["SessionStart"][0]["matcher"],
+        "compact"
+    );
+    assert_eq!(
+        read(&fixture.legacy_claude_settings()),
+        json!({ "hooks": {} })
+    );
+    let backup = output["data"]["legacy_project_hook"]["result"]["backup_path"]
+        .as_str()
+        .expect("fresh backup");
+    assert_eq!(fs::read(backup).expect("backup"), legacy_before);
+}
+
+#[test]
+fn test_legacy_project_hook_can_be_removed_explicitly_without_touching_the_user_hook() {
+    let fixture = Fixture::new();
+    let project = fixture.project.to_str().expect("project path");
+    fixture.install_legacy_project_hook();
+    fs::create_dir_all(fixture.home.join(".claude")).expect("config directory");
+    fs::write(
+        fixture.claude_settings(),
+        "{\"hooks\":{\"Stop\":[{\"hooks\":[]}]}}\n",
+    )
+    .expect("user settings");
+    let (exit, _, errors) = fixture.run(&[
+        "install",
+        "claude-code",
+        "--compaction-hook",
+        "--project",
+        fixture.home.to_str().expect("UTF-8"),
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    let user = fs::read(fixture.claude_settings()).expect("user settings");
+
+    let (exit, output, errors) = fixture.run(&[
+        "uninstall",
+        "claude-code",
+        "--compaction-hook",
+        "--project",
+        project,
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert_eq!(
+        output["data"]["plan"]["config_path"],
+        json!(fixture.legacy_claude_settings())
+    );
+    assert_eq!(
+        read(&fixture.legacy_claude_settings()),
+        json!({ "hooks": {} })
+    );
+    assert_eq!(
+        fs::read(fixture.claude_settings()).expect("user settings"),
+        user,
+        "the user-level hook is untouched"
+    );
+
+    // Removing the user-level hook is explicit, says it is user-wide, and
+    // leaves the user's other hooks in place.
+    let (exit, output, errors) = fixture.run(&[
+        "uninstall",
+        "claude-code",
+        "--compaction-hook",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert!(
+        output["data"]["warnings"]
+            .as_array()
+            .expect("warnings")
+            .iter()
+            .any(|warning| warning
+                .as_str()
+                .is_some_and(|warning| warning.contains("every repository"))),
+        "{output}"
+    );
+    assert_eq!(
+        read(&fixture.claude_settings()),
+        json!({ "hooks": { "Stop": [{ "hooks": [] }] } })
+    );
 }

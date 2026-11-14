@@ -37,7 +37,7 @@ pub use codex::{
     CodexAdapter, CodexIntegration, CodexPlatform, CodexVerificationEvidence,
     CodexVerificationMethod, CodexVersionEvidence,
 };
-pub use compaction_hook::{CompactionHookClient, CompactionHookIntegration};
+pub use compaction_hook::{CompactionHookClient, CompactionHookIntegration, LegacyProjectHook};
 pub use cursor::{
     CursorApplicationEvidence, CursorCliEvidence, CursorDiscovery, CursorIntegration,
     CursorLiveProbeEvidence, CursorPlatform,
