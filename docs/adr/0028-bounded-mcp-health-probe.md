@@ -46,7 +46,9 @@ starting the configured server once.
   vector and no shell. The environment is cleared except for an allowlist
   (`PATH`, `HOME`, temp and locale variables, and the XDG and `COMPRESSO_*`
   variables Compresso reads). The working directory is the filesystem root
-  on Unix, never the inspected repository. The server runs in its own
+  on Unix and the root of the temporary directory's volume elsewhere, never
+  the inspected repository. On Windows the child is created without a
+  console window. The server runs in its own
   process group. No `tokio` process feature and no new dependency.
 - **What it does.** One MCP `initialize`, `notifications/initialized`, and
   `tools/list` exchange over stdio. No tool is called and no repository

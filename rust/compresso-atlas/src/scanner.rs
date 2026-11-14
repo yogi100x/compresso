@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use compresso_store::{RepoId, Store, StoreError};
+use ignore::gitignore::Gitignore;
 use ignore::{DirEntry, WalkBuilder, WalkState};
 
 use crate::concurrency::Concurrency;
@@ -598,15 +599,91 @@ fn configure_ignore_filters(builder: &mut WalkBuilder, respect_gitignore: bool) 
         .sort_by_file_path(Path::cmp);
 }
 
+/// Whether the scanner's own exclusion rules skip `relative` under `root`.
+///
+/// This applies the same policy a scan does to one path, without walking the
+/// tree: a secret-pattern name, a built-in excluded directory, or a match in
+/// a `.gitignore` inside the repository. A direct read can use it to refuse
+/// content the index was never allowed to hold. Like the scanner, it ignores
+/// rules outside the repository (global and parent ignore files).
+pub fn is_scanner_excluded(root: &Path, relative: &Path) -> bool {
+    if is_excluded_by_policy(root, relative) {
+        return true;
+    }
+    // The request may reach an excluded file through a symbolic link or, on a
+    // case-insensitive file system, different casing. The resolved path is the
+    // one the scanner would have judged.
+    let (Ok(real_root), Ok(real_path)) = (
+        fs::canonicalize(root),
+        fs::canonicalize(root.join(relative)),
+    ) else {
+        return false;
+    };
+    real_path
+        .strip_prefix(&real_root)
+        .is_ok_and(|real_relative| is_excluded_by_policy(&real_root, real_relative))
+}
+
+fn is_excluded_by_policy(root: &Path, relative: &Path) -> bool {
+    if is_secret_path(relative) {
+        return true;
+    }
+    let Some(parent) = relative.parent() else {
+        return false;
+    };
+    if parent
+        .components()
+        .any(|component| is_builtin_excluded_name(component.as_os_str()))
+    {
+        return true;
+    }
+    // Git never re-includes a path below an excluded directory, so every
+    // containing directory is judged first, outermost first.
+    let mut directories = parent
+        .ancestors()
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .collect::<Vec<_>>();
+    directories.reverse();
+    directories
+        .into_iter()
+        .any(|directory| is_gitignored(root, directory, true))
+        || is_gitignored(root, relative, false)
+}
+
+/// Whether the `.gitignore` files above `relative` ignore it. The deepest
+/// file with a matching rule decides, so a nested file can re-include a path
+/// an outer one ignores.
+fn is_gitignored(root: &Path, relative: &Path, is_directory: bool) -> bool {
+    for directory in relative.ancestors().skip(1) {
+        let ignore_file = root.join(directory).join(".gitignore");
+        if !ignore_file.is_file() {
+            continue;
+        }
+        let (matcher, _) = Gitignore::new(&ignore_file);
+        let Ok(within) = relative.strip_prefix(directory) else {
+            continue;
+        };
+        let matched = matcher.matched(within, is_directory);
+        if matched.is_ignore() {
+            return true;
+        }
+        if matched.is_whitelist() {
+            return false;
+        }
+    }
+    false
+}
+
+fn is_builtin_excluded_name(name: &OsStr) -> bool {
+    name == OsStr::new("node_modules")
+        || name == OsStr::new("target")
+        || name == OsStr::new("dist")
+        || name == OsStr::new(".git")
+}
+
 fn is_builtin_excluded_directory(entry: &DirEntry) -> bool {
     entry.file_type().is_some_and(|kind| kind.is_dir())
-        && matches!(
-            entry.file_name(),
-            name if name == OsStr::new("node_modules")
-                || name == OsStr::new("target")
-                || name == OsStr::new("dist")
-                || name == OsStr::new(".git")
-        )
+        && is_builtin_excluded_name(entry.file_name())
 }
 
 fn is_secret_pattern(relative: &str) -> bool {
@@ -822,6 +899,57 @@ mod tests {
     use super::*;
 
     const EMPTY_BLAKE3: &str = "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262";
+
+    #[test]
+    fn test_single_path_exclusion_matches_the_scan_policy() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let root = directory.path();
+        fs::create_dir_all(root.join("nested/deep")).expect("directories should be created");
+        fs::write(root.join(".gitignore"), "*.log\nprivate/\n").expect("ignore file written");
+        fs::write(root.join("nested/.gitignore"), "!keep.log\n*.tmp\n")
+            .expect("nested ignore file written");
+        let excluded = |path: &str| is_scanner_excluded(root, Path::new(path));
+
+        assert!(excluded("build.log"));
+        assert!(excluded("private/notes.txt"));
+        assert!(excluded("nested/deep/trace.log"));
+        assert!(excluded("nested/deep/scratch.tmp"));
+        assert!(excluded("node_modules/pkg/index.js"));
+        assert!(excluded("crates/target/debug/out.rs"));
+        assert!(excluded(".env"));
+        assert!(!excluded("nested/keep.log"));
+        assert!(!excluded("scratch.tmp"));
+        assert!(!excluded("src/lib.rs"));
+        assert!(!excluded("target"));
+    }
+
+    #[test]
+    fn test_single_path_exclusion_cannot_be_bypassed() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let root = directory.path();
+        fs::create_dir_all(root.join("private/inner")).expect("directories should be created");
+        fs::create_dir_all(root.join("node_modules/pkg")).expect("directories should be created");
+        fs::write(root.join(".gitignore"), "private/\n").expect("ignore file written");
+        // Git never re-includes a file whose parent directory is excluded.
+        fs::write(root.join("private/inner/.gitignore"), "!notes.txt\n")
+            .expect("nested ignore file written");
+        fs::write(root.join("private/inner/notes.txt"), "x").expect("file written");
+        fs::write(root.join("node_modules/pkg/index.js"), "x").expect("file written");
+        let excluded = |path: &str| is_scanner_excluded(root, Path::new(path));
+
+        assert!(excluded("private/inner/notes.txt"));
+        // A case-insensitive file system resolves a differently-cased request
+        // to the excluded file; a case-sensitive one has no such file.
+        for path in ["Node_Modules/pkg/index.js", "PRIVATE/inner/notes.txt"] {
+            assert!(!root.join(path).exists() || excluded(path));
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("private"), root.join("alias"))
+                .expect("symlink should be created");
+            assert!(excluded("alias/inner/notes.txt"));
+        }
+    }
 
     #[test]
     fn test_gitignore_respected() {

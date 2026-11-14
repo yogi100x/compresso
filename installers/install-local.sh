@@ -14,7 +14,7 @@ Usage: installers/install-local.sh <source>
 <source> is one of:
   - a local directory containing one matching tarball and SHA256SUMS
   - a local compresso-<version>-<target>.tar.gz path
-  - an HTTP(S) URL to an immutable versioned tarball
+  - an https:// URL to an immutable versioned tarball
 EOF
 }
 
@@ -46,10 +46,14 @@ download() {
   url=$1
   output=$2
   if command -v curl >/dev/null 2>&1; then
-    curl --fail --silent --show-error --location --output "$output" "$url" ||
+    # Redirects may not leave HTTPS either.
+    curl --fail --silent --show-error --location \
+      --proto '=https' --proto-redir '=https' --output "$output" "$url" ||
       fail "download failed: $url"
   elif command -v wget >/dev/null 2>&1; then
-    wget -q -O "$output" "$url" || fail "download failed: $url"
+    # wget cannot restrict a redirect to HTTPS (--https-only only governs
+    # recursive retrieval), so it follows none.
+    wget -q --max-redirect=0 -O "$output" "$url" || fail "download failed: $url"
   else
     fail "URL source requires curl or wget"
   fi
@@ -75,7 +79,10 @@ cleanup() {
 trap cleanup 0 1 2 3 15
 
 case "$source" in
-  http://* | https://*)
+  http://*)
+    fail "plain HTTP sources are not accepted; use an https:// URL or a local path"
+    ;;
+  https://*)
     case "$source" in
       *\?* | *\#*) fail "artifact URL must not contain a query or fragment" ;;
     esac

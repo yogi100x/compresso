@@ -10,6 +10,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::text_fidelity::{strip_bom, strip_bom_str};
 use crate::{ConfigFormat, InstallReceipt};
 
 /// Largest client configuration file inspected for a server entry.
@@ -95,7 +96,8 @@ fn read_bounded(config_path: &Path) -> Option<Vec<u8>> {
 }
 
 fn current_json_hash(config_path: &Path) -> Option<String> {
-    let document: serde_json::Value = serde_json::from_slice(&read_bounded(config_path)?).ok()?;
+    let bytes = read_bounded(config_path)?;
+    let document: serde_json::Value = serde_json::from_slice(strip_bom(&bytes)).ok()?;
     let entry = document.get("mcpServers")?.get("compresso")?;
     let bytes = serde_json::to_vec(entry).ok()?;
     Some(blake3::hash(&bytes).to_hex().to_string())
@@ -103,8 +105,7 @@ fn current_json_hash(config_path: &Path) -> Option<String> {
 
 fn current_toml_hash(config_path: &Path) -> Option<String> {
     let bytes = read_bounded(config_path)?;
-    let document = std::str::from_utf8(&bytes)
-        .ok()?
+    let document = strip_bom_str(std::str::from_utf8(&bytes).ok()?)
         .parse::<toml_edit::DocumentMut>()
         .ok()?;
     let entry = document.as_item().get("mcp_servers")?.get("compresso")?;
@@ -112,7 +113,9 @@ fn current_toml_hash(config_path: &Path) -> Option<String> {
 }
 
 fn read_json_entry(bytes: &[u8], expected_args: &[String]) -> ConfiguredServer {
-    let Ok(document) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+    // The adapters accept and preserve a byte order mark, so the read-only
+    // view must accept it too.
+    let Ok(document) = serde_json::from_slice::<serde_json::Value>(strip_bom(bytes)) else {
         return ConfiguredServer::Unreadable;
     };
     let Some(document) = document.as_object() else {
@@ -152,7 +155,7 @@ fn read_toml_entry(bytes: &[u8], expected_args: &[String]) -> ConfiguredServer {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return ConfiguredServer::Unreadable;
     };
-    let Ok(document) = text.parse::<toml_edit::DocumentMut>() else {
+    let Ok(document) = strip_bom_str(text).parse::<toml_edit::DocumentMut>() else {
         return ConfiguredServer::Unreadable;
     };
     let Some(entry) = document
@@ -290,6 +293,58 @@ mod tests {
             read_configured_server(ConfigFormat::Toml, &toml, &serve_args()),
             ConfiguredServer::Modified
         );
+    }
+
+    #[test]
+    fn test_byte_order_mark_does_not_hide_an_exact_entry() {
+        let directory = tempdir().expect("temp directory");
+        let json = directory.path().join("config.json");
+        fs::write(
+            &json,
+            "\u{feff}{\"mcpServers\":{\"compresso\":{\"type\":\"stdio\",\"command\":\"/opt/compresso\",\"args\":[\"mcp\",\"serve\"]}}}",
+        )
+        .expect("json written");
+        let toml = directory.path().join("config.toml");
+        fs::write(
+            &toml,
+            "\u{feff}[mcp_servers.compresso]\ncommand = \"/opt/compresso\"\nargs = [\"mcp\", \"serve\"]\n",
+        )
+        .expect("toml written");
+        let expected = ConfiguredServer::Exact {
+            command: PathBuf::from("/opt/compresso"),
+            args: serve_args(),
+        };
+        assert_eq!(
+            read_configured_server(ConfigFormat::Json, &json, &serve_args()),
+            expected
+        );
+        assert_eq!(
+            read_configured_server(ConfigFormat::Toml, &toml, &serve_args()),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_byte_order_mark_does_not_change_the_owned_entry_hash() {
+        let directory = tempdir().expect("temp directory");
+        let json = "{\"mcpServers\":{\"compresso\":{\"command\":\"/opt/compresso\",\"args\":[\"mcp\",\"serve\"]}}}";
+        let toml =
+            "[mcp_servers.compresso]\ncommand = \"/opt/compresso\"\nargs = [\"mcp\", \"serve\"]\n";
+        let plain_json = directory.path().join("plain.json");
+        let marked_json = directory.path().join("marked.json");
+        let plain_toml = directory.path().join("plain.toml");
+        let marked_toml = directory.path().join("marked.toml");
+        fs::write(&plain_json, json).expect("json written");
+        fs::write(&marked_json, format!("\u{feff}{json}")).expect("json written");
+        fs::write(&plain_toml, toml).expect("toml written");
+        fs::write(&marked_toml, format!("\u{feff}{toml}")).expect("toml written");
+
+        let json_hash = current_json_hash(&plain_json);
+        assert!(json_hash.is_some());
+        assert_eq!(current_json_hash(&marked_json), json_hash);
+        let toml_hash = current_toml_hash(&plain_toml);
+        assert!(toml_hash.is_some());
+        assert_eq!(current_toml_hash(&marked_toml), toml_hash);
     }
 
     #[test]

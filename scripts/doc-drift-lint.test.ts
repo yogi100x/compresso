@@ -190,6 +190,20 @@ test("test_drift_lint_reports_unknown_mcp_tool_but_not_crate_identifiers", async
   ]);
 });
 
+test("test_drift_lint_counts_a_tool_that_shares_a_crate_identifier", async (t) => {
+  const repo = await repository(t, {
+    "rust/compresso-search/Cargo.toml": "[package]\n",
+    "README.md": [
+      everything,
+      "Rust path `compresso_search::run` is a crate.",
+    ].join("\n"),
+  });
+
+  const report = await lintRepository(repo.root, inventory, config());
+
+  assert.deepEqual(summarize(report.findings), []);
+});
+
 test("test_drift_lint_reports_unknown_config_key_only_in_known_sections", async (t) => {
   const repo = await repository(t, {
     "README.md": [

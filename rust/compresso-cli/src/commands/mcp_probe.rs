@@ -15,13 +15,14 @@
 //! group; one MCP `initialize` plus `tools/list` exchange runs under a hard
 //! deadline, after which the whole process group is killed and reaped.
 
-use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use compresso_core::suppress_console_window;
 use compresso_integrations::ConfiguredServer;
 use serde_json::{Value, json};
 
@@ -340,6 +341,13 @@ enum ProbeOutcome {
     MalformedResponse,
 }
 
+/// One unit of server output from the reader thread.
+enum Frame {
+    Line(String),
+    /// The output was not valid UTF-8 or could not be read.
+    Unreadable,
+}
+
 enum Exchange {
     Response(Value),
     Closed,
@@ -359,6 +367,16 @@ fn probe(command: &Path, args: &[String], timeout: Duration) -> ProbeOutcome {
         }
     }
     isolate_process_group(&mut launch);
+    // A doctor run from a windowless parent must not flash a console.
+    suppress_console_window(|flags| {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt as _;
+            launch.creation_flags(flags);
+        }
+        #[cfg(not(windows))]
+        let _ = flags;
+    });
     let mut child = match launch
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -386,7 +404,7 @@ fn probe(command: &Path, args: &[String], timeout: Duration) -> ProbeOutcome {
 /// caller then reports the reaped exit status.
 fn handshake(
     stdin: &mut ChildStdin,
-    lines: &Receiver<String>,
+    lines: &Receiver<Frame>,
     deadline: Instant,
 ) -> Option<ProbeOutcome> {
     let initialize = json!({
@@ -449,11 +467,12 @@ fn send(stdin: &mut ChildStdin, message: &Value) -> std::io::Result<()> {
     stdin.flush()
 }
 
-fn await_response(lines: &Receiver<String>, id: u64, deadline: Instant) -> Exchange {
+fn await_response(lines: &Receiver<Frame>, id: u64, deadline: Instant) -> Exchange {
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         match lines.recv_timeout(remaining) {
-            Ok(line) => {
+            Ok(Frame::Unreadable) => return Exchange::Malformed,
+            Ok(Frame::Line(line)) => {
                 if line.trim().is_empty() {
                     continue;
                 }
@@ -473,7 +492,7 @@ fn await_response(lines: &Receiver<String>, id: u64, deadline: Instant) -> Excha
     }
 }
 
-fn spawn_line_reader(stdout: std::process::ChildStdout) -> Receiver<String> {
+fn spawn_line_reader(stdout: impl std::io::Read + Send + 'static) -> Receiver<Frame> {
     let (sender, receiver) = mpsc::channel();
     // Detached on purpose: the thread ends at EOF, at the byte cap, or when
     // the receiver is dropped, and never outlives a reaped child's pipe.
@@ -482,11 +501,17 @@ fn spawn_line_reader(stdout: std::process::ChildStdout) -> Receiver<String> {
         loop {
             let mut line = String::new();
             match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
+                Ok(0) => break,
                 Ok(_) => {
-                    if sender.send(line).is_err() {
+                    if sender.send(Frame::Line(line)).is_err() {
                         break;
                     }
+                }
+                // Output that cannot be read as text came from a live server,
+                // so it must not look like the server closing its pipe.
+                Err(_) => {
+                    let _ = sender.send(Frame::Unreadable);
+                    break;
                 }
             }
         }
@@ -512,16 +537,23 @@ fn reap(child: &mut Child) -> Option<i32> {
 }
 
 /// A working directory that is never the repository being inspected. The
-/// temporary directory is not used on Unix because `TMPDIR` can point inside
-/// a repository.
-#[cfg(unix)]
+/// temporary directory itself is not used because it can be redirected inside
+/// a repository; the root of its volume cannot be one.
 fn neutral_directory() -> PathBuf {
-    PathBuf::from("/")
+    if cfg!(unix) {
+        PathBuf::from("/")
+    } else {
+        volume_root(&std::env::temp_dir())
+    }
 }
 
-#[cfg(not(unix))]
-fn neutral_directory() -> PathBuf {
-    std::env::temp_dir()
+/// The top of the volume that holds an absolute `path`. A relative path has
+/// no volume root and is returned unchanged.
+fn volume_root(path: &Path) -> PathBuf {
+    match path.ancestors().last() {
+        Some(root) if root.has_root() => root.to_path_buf(),
+        _ => path.to_path_buf(),
+    }
 }
 
 #[cfg(unix)]
@@ -588,4 +620,45 @@ pub(crate) fn user_client_configs(home: &Path) -> [ClientConfig; 3] {
             path: home.join(".cursor/mcp.json"),
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn exchange_for(output: impl std::io::Read + Send + 'static) -> Exchange {
+        let lines = spawn_line_reader(output);
+        await_response(&lines, 1, Instant::now() + Duration::from_secs(10))
+    }
+
+    #[test]
+    fn test_volume_root_is_the_top_of_an_absolute_path_only() {
+        let root = Path::new(std::path::MAIN_SEPARATOR_STR);
+        let nested = root.join("repo").join("tmp").join("probe");
+        assert_eq!(volume_root(&nested), root);
+        assert_eq!(volume_root(root), root);
+        let relative = Path::new("repo").join("tmp");
+        assert_eq!(volume_root(&relative), relative);
+    }
+
+    #[test]
+    fn test_invalid_utf8_output_is_malformed_not_an_early_exit() {
+        let output = std::io::Cursor::new(vec![0xff, 0xfe, b'\n']);
+        assert!(matches!(exchange_for(output), Exchange::Malformed));
+    }
+
+    #[test]
+    fn test_output_past_the_byte_cap_is_malformed_not_an_early_exit() {
+        // Well-formed notifications that never answer, past the byte cap.
+        let line = b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n";
+        let repeats = usize::try_from(MAX_RESPONSE_BYTES).expect("cap fits usize") / line.len() + 2;
+        let output = std::io::Cursor::new(line.repeat(repeats));
+        assert!(matches!(exchange_for(output), Exchange::Malformed));
+    }
+
+    #[test]
+    fn test_output_that_ends_without_a_response_is_closed() {
+        let output = std::io::Cursor::new(b"{\"jsonrpc\":\"2.0\",\"id\":7}\n".to_vec());
+        assert!(matches!(exchange_for(output), Exchange::Closed));
+    }
 }

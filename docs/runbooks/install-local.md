@@ -35,8 +35,9 @@ the current platform.
 
 ## Install from a URL
 
-Pass an immutable, versioned HTTP(S) tarball URL. The installer fetches `SHA256SUMS` from the same
-directory:
+Pass an immutable, versioned `https://` tarball URL. Plain HTTP is rejected, redirects may not
+leave HTTPS with `curl`, and the `wget` fallback follows no redirect at all. The installer fetches `SHA256SUMS` from the same directory, so the checksum guards
+against corruption, not against a compromised origin:
 
 ```sh
 installers/install-local.sh \

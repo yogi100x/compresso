@@ -254,6 +254,7 @@ impl Store {
         migrations: &[Migration],
     ) -> Result<Self, StoreError> {
         create_parent_directory(path)?;
+        create_private_database_file(path);
         let mut connection = Connection::open(path).map_err(|source| StoreError::Open {
             path: path.to_path_buf(),
             source,
@@ -294,11 +295,44 @@ fn create_parent_directory(path: &Path) -> Result<(), StoreError> {
     else {
         return Ok(());
     };
-    fs::create_dir_all(parent).map_err(|source| StoreError::CreateDirectory {
-        path: parent.to_path_buf(),
-        source,
-    })
+    // Directories this call creates are owner-only; a directory that already
+    // exists keeps the permissions its owner chose.
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        builder.mode(0o700);
+    }
+    builder
+        .create(parent)
+        .map_err(|source| StoreError::CreateDirectory {
+            path: parent.to_path_buf(),
+            source,
+        })
 }
+
+/// Creates a missing database file owner-only before SQLite opens it, so the
+/// ledger is never briefly readable by other local users. SQLite gives the
+/// WAL and shared-memory files the database file's permissions. An existing
+/// file is left as it is, and any failure here is reported by the open that
+/// follows.
+#[cfg(unix)]
+fn create_private_database_file(path: &Path) {
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    if path == Path::new(":memory:") {
+        return;
+    }
+    let _ = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path);
+}
+
+#[cfg(not(unix))]
+fn create_private_database_file(_path: &Path) {}
 
 fn configure_connection(connection: &Connection) -> Result<(), StoreError> {
     connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -453,6 +487,62 @@ mod tests {
         let directory = tempdir().expect("temp directory should be created");
         let path = directory.path().join("compresso.db");
         (directory, path)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_created_data_directory_and_database_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempdir().expect("temp directory should be created");
+        let data = directory.path().join("share").join("compresso");
+        let path = data.join("compresso.db");
+        let _store = Store::open(&path).expect("store should open");
+        let mode = |path: &Path| {
+            fs::metadata(path)
+                .expect("metadata should load")
+                .permissions()
+                .mode()
+                & 0o777
+        };
+
+        assert_eq!(mode(&data), 0o700);
+        assert_eq!(mode(&directory.path().join("share")), 0o700);
+        assert_eq!(mode(&path), 0o600);
+        for suffix in ["-wal", "-shm"] {
+            let sidecar = data.join(format!("compresso.db{suffix}"));
+            if sidecar.exists() {
+                assert_eq!(mode(&sidecar), 0o600);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_existing_directory_and_database_permissions_are_left_alone() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempdir().expect("temp directory should be created");
+        let data = directory.path().join("shared");
+        fs::create_dir(&data).expect("data directory should be created");
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o755))
+            .expect("directory mode should be set");
+        let path = data.join("compresso.db");
+        drop(Store::open(&path).expect("store should open"));
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640))
+            .expect("database mode should be set");
+
+        let _store = Store::open(&path).expect("store should reopen");
+
+        let mode = |path: &Path| {
+            fs::metadata(path)
+                .expect("metadata should load")
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode(&data), 0o755);
+        assert_eq!(mode(&path), 0o640);
     }
 
     #[test]

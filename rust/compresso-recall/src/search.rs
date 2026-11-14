@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use crate::parse::{ParsedLine, parse_line};
 use crate::redact::redact;
-use crate::sources::{RecallSource, SourceSupport, discover};
+use crate::sources::{RecallSource, SourceSupport, claude_code_project_name, discover};
 
 /// Largest result count a caller may request.
 pub const MAX_RESULTS: usize = 50;
@@ -260,6 +260,15 @@ impl Scope {
         Self { roots }
     }
 
+    /// Claude Code project directory names for the scoped repository roots.
+    fn claude_code_projects(&self) -> Vec<String> {
+        self.roots
+            .iter()
+            .flatten()
+            .map(|root| claude_code_project_name(root))
+            .collect()
+    }
+
     /// A session without a recorded working directory is never in a
     /// repository scope.
     fn admits(&self, cwd: Option<&str>) -> bool {
@@ -306,7 +315,12 @@ impl Search<'_> {
                 detail: Some(reason),
             };
         }
-        let discovery = discover(source, self.home_dir, self.limits.max_files);
+        let discovery = discover(
+            source,
+            self.home_dir,
+            self.limits.max_files,
+            &self.scope.claude_code_projects(),
+        );
         let mut report = SourceReport {
             source,
             status: if discovery.root_exists {

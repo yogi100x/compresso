@@ -75,8 +75,36 @@ pub(crate) struct Discovery {
     pub(crate) capped: bool,
 }
 
+/// The directory name Claude Code derives from a session's working directory:
+/// every character that is not ASCII alphanumeric becomes `-`.
+pub(crate) fn claude_code_project_name(working_directory: &Path) -> String {
+    working_directory
+        .to_string_lossy()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
 /// Lists transcript files for `source` without following symbolic links.
-pub(crate) fn discover(source: RecallSource, home: &Path, max_files: usize) -> Discovery {
+///
+/// `preferred_projects` names Claude Code project directories that are likely
+/// to hold in-scope sessions. Their transcripts are listed before the
+/// `max_files` cap applies, so a busy home full of other repositories' newer
+/// sessions cannot crowd them out. The preference only orders candidates; the
+/// caller still decides scope from each transcript's recorded working
+/// directory.
+pub(crate) fn discover(
+    source: RecallSource,
+    home: &Path,
+    max_files: usize,
+    preferred_projects: &[String],
+) -> Discovery {
     let Some(root) = source.transcript_root(home) else {
         return Discovery {
             root_exists: false,
@@ -110,7 +138,25 @@ pub(crate) fn discover(source: RecallSource, home: &Path, max_files: usize) -> D
         mut capped,
         ..
     } = walk;
-    candidates.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    let preferred = |path: &Path| {
+        source == RecallSource::ClaudeCode
+            && path
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    preferred_projects.iter().any(|project| {
+                        name.strip_prefix(project.as_str())
+                            .is_some_and(|rest| rest.is_empty() || rest.starts_with('-'))
+                    })
+                })
+    };
+    candidates.sort_by(|left, right| {
+        preferred(&right.1)
+            .cmp(&preferred(&left.1))
+            .then_with(|| right.0.cmp(&left.0))
+            .then_with(|| left.1.cmp(&right.1))
+    });
     if candidates.len() > max_files {
         candidates.truncate(max_files);
         capped = true;
@@ -200,9 +246,9 @@ mod tests {
             .expect("rollout should be written");
         fs::write(day.join("history.jsonl"), "{}\n").expect("other jsonl should be written");
 
-        let claude = discover(RecallSource::ClaudeCode, home.path(), 10);
-        let codex = discover(RecallSource::Codex, home.path(), 10);
-        let cursor = discover(RecallSource::Cursor, home.path(), 10);
+        let claude = discover(RecallSource::ClaudeCode, home.path(), 10, &[]);
+        let codex = discover(RecallSource::Codex, home.path(), 10, &[]);
+        let cursor = discover(RecallSource::Cursor, home.path(), 10, &[]);
 
         assert_eq!(claude.files, vec![project.join("a.jsonl")]);
         assert_eq!(
@@ -223,7 +269,7 @@ mod tests {
                 .expect("transcript should be written");
         }
 
-        let discovery = discover(RecallSource::ClaudeCode, home.path(), 2);
+        let discovery = discover(RecallSource::ClaudeCode, home.path(), 2, &[]);
 
         assert_eq!(discovery.files.len(), 2);
         assert!(discovery.capped);
@@ -245,7 +291,7 @@ mod tests {
         )
         .expect("file link should be created");
 
-        let discovery = discover(RecallSource::ClaudeCode, home.path(), 10);
+        let discovery = discover(RecallSource::ClaudeCode, home.path(), 10, &[]);
 
         assert!(discovery.files.is_empty());
     }

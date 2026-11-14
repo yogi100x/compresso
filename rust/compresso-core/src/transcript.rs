@@ -13,8 +13,8 @@ use serde_json::Value;
 
 use crate::pricing::{PriceTable, is_plain_model_id};
 
-/// The Compresso MCP tools whose results carry accounting fields.
-pub const COMPRESSO_TOOL_NAMES: [&str; 10] = [
+/// The Compresso MCP tools whose results carry an operation id.
+pub const COMPRESSO_TOOL_NAMES: [&str; 11] = [
     "compresso_repo_map",
     "compresso_search",
     "compresso_outline",
@@ -25,6 +25,7 @@ pub const COMPRESSO_TOOL_NAMES: [&str; 10] = [
     "compresso_compress",
     "compresso_stats",
     "compresso_explain",
+    "compresso_recall",
 ];
 /// Upper bound on distinct tool calls tracked from one transcript.
 pub const MAX_TRANSCRIPT_TOOL_CALLS: usize = 100_000;
@@ -32,6 +33,8 @@ pub const MAX_TRANSCRIPT_TOOL_CALLS: usize = 100_000;
 pub const UNKNOWN_MODEL: &str = "unknown";
 
 const COMPRESSION_TOOL: &str = "compresso_compress";
+/// Recall returns historical session text, not a token-counted pack.
+const RECALL_TOOL: &str = "compresso_recall";
 const MCP_TOOL_PREFIX: &str = "mcp__";
 const SYNTHETIC_MODEL: &str = "<synthetic>";
 const ULID_LENGTH: usize = 26;
@@ -272,9 +275,12 @@ fn accounting_fields(tool: &str, payload: &Value) -> Option<(String, TranscriptC
             fallback_used: payload.get("fallback_used").and_then(Value::as_bool)?,
         }
     } else {
-        TranscriptCallKind::Retrieval {
-            pack_tokens: payload.get("tokens_used").and_then(Value::as_u64)?,
-        }
+        let pack_tokens = match payload.get("tokens_used").and_then(Value::as_u64) {
+            Some(pack_tokens) => pack_tokens,
+            None if tool == RECALL_TOOL => 0,
+            None => return None,
+        };
+        TranscriptCallKind::Retrieval { pack_tokens }
     };
     Some((operation_id.to_owned(), kind))
 }
@@ -764,6 +770,28 @@ mod tests {
         let (scan, savings) = hostile_model_savings("synthetic-large");
         assert_eq!(scan.model_ids_rejected, 0);
         assert_eq!(savings.by_model[0].estimated_cost_saved_usd, Some(2.0));
+    }
+
+    #[test]
+    fn test_recall_call_is_counted_without_claiming_savings() {
+        let transcript = [
+            tool_use("t1", "mcp__compresso__compresso_recall", "synthetic-large"),
+            tool_result(
+                "t1",
+                &json!({ "schema_version": 1, "operation_id": OP_A, "hits": [] }),
+            ),
+        ]
+        .join("\n");
+
+        let scan = scan_transcript(&transcript);
+
+        assert_eq!(scan.results_unparsed, 0);
+        assert_eq!(scan.calls.len(), 1);
+        assert_eq!(scan.calls[0].tool, "compresso_recall");
+        assert_eq!(
+            scan.calls[0].kind,
+            TranscriptCallKind::Retrieval { pack_tokens: 0 }
+        );
     }
 
     #[test]
