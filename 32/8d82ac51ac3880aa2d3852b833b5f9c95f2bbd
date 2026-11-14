@@ -1,0 +1,82 @@
+rust/compresso-cli/src/commands.rs
+  s_e2da226df94350::t_9ae61623e4c957 18
+rust/compresso-mcp/src/server.rs
+  s_e2da226df94350::t_0278c4dd71d56b 588-589
+rust/compresso-cli/tests/cli_engine.rs
+  s_e2da226df94350::t_31cc48a1e29b01 228,231-234
+  s_e2da226df94350::t_c0292054d63bf3 219
+  s_e2da226df94350::t_665c891f0c9fb7 9
+  s_e2da226df94350::t_2aa085c31cd9a2 249-439,443,450
+  s_e2da226df94350::t_6ca60595d58a90 440-442
+  s_e2da226df94350::t_76858ea385b590 444-449
+  s_e2da226df94350::t_a1220fc8cd0188 451-452
+rust/compresso-mcp/src/tools/engine_tools.rs
+  s_e2da226df94350::t_5da2be91d88789 7
+  s_e2da226df94350::t_65e8fc8db6b19d 251-253
+  s_e2da226df94350::t_cf711c90b45d87 280,283-288
+  s_e2da226df94350::t_ac1352dffdd59f 220,222-230
+  s_e2da226df94350::t_c1ccd50ad49fa8 22
+  s_e2da226df94350::t_4c4df4b890a91a 289
+docs/plan/02-schemas.md
+  s_e2da226df94350::t_726b3a65cf304f 177-178,181
+  s_e2da226df94350::t_cf8851ee2c5d23 182
+rust/compresso-cli/src/commands/transcript_stats.rs
+  s_e2da226df94350::t_a7681cad64cd3c 1-177
+schemas/price-table/v1.json
+  s_e2da226df94350::t_83810bdd81d7a1 1-57
+docs/adr/0028-transcript-savings-and-local-price-table.md
+  s_e2da226df94350::t_962739fb3f0330 1-81
+rust/compresso-core/data/price-table-v1.json
+  s_e2da226df94350::t_47a4ecf1cba236 1-145
+rust/compresso-core/src/pricing.rs
+  s_e2da226df94350::t_50c9ea8fadda34 1-309
+rust/compresso-core/src/lib.rs
+  s_e2da226df94350::t_5ff44bd90011bb 6
+  s_e2da226df94350::t_f305dfd1f6eda8 44-48
+  s_e2da226df94350::t_0be35b62d2dde3 25-28
+  s_e2da226df94350::t_62235c3449c926 14
+rust/compresso-cli/src/commands/engine.rs
+  s_e2da226df94350::t_f4abc2974b3e15 98-105
+  s_e2da226df94350::t_c4a183bc817dbe 290,293-295
+  s_e2da226df94350::t_9ae61623e4c957 456,470
+  s_e2da226df94350::t_2b6b0f468ea950 245-254,256-275,277
+  s_e2da226df94350::t_ac60d4efa39384 7-8,13-15,18
+rust/compresso-core/src/transcript.rs
+  s_e2da226df94350::t_f2eafc9e38d8f9 1-680
+  s_e2da226df94350::t_3f40684b52a212 681-683
+  s_3774ad6e0dea65::t_04e7b98fac8494 684-687
+rust/compresso-mcp/tests/tools_engine.rs
+  s_e2da226df94350::t_9334485ce0c241 5,7-10
+  s_e2da226df94350::t_3310367ad8eacd 341-408
+  s_e2da226df94350::t_0c6e92065b8bc5 409-410
+rust/compresso-core/tests/price_table.rs
+  s_e2da226df94350::t_8ca5f9bea28a57 1-57
+docs/plan/04-mcp-and-integrations.md
+  s_e2da226df94350::t_4f28dc727561cd 403-404
+  s_e2da226df94350::t_95499f8f87ffc7 383-384
+  s_e2da226df94350::t_c61fc81cf997de 413-415
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "328d82ac51ac3880aa2d3852b833b5f9c95f2bbd",
+  "prompts": {},
+  "sessions": {
+    "s_3774ad6e0dea65": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a604f2422217daabe",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_e2da226df94350": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a4ace18-3be7-440c-984c-7cf6854c84ee",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
