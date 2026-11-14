@@ -143,7 +143,7 @@ The model does not attempt to defend against root/administrator compromise, mali
 | SQLite path/environment | XDG/home values, pre-created paths, umask | Normal SQLite semantics and migrations | Permissions/owner/symlink policy not enforced consistently |
 | Local project scripts | Checkout-controlled Yarn config/dependencies | Lockfile and pinned package version | Vulnerable Turbo executes repository-selected Yarn path |
 | GitHub Actions | Workflow inputs, third-party action tags/images | Read-only token; no `pull_request_target` | Mutable third-party references; noisy secret gate |
-| Installer source URL | URL, redirects, archive, checksum | Filename validation, HTTPS only, SHA-256, keyless Sigstore signature on the checksum manifest from the pinned CI identity (ADR-0030), single-file tar, atomic rollback | Unsigned local artifacts are accepted with a warning; no protection against rollback to an older signed release; trust rests on the `ci.yml` workflow on `main` |
+| Installer source URL | URL, redirects, archive, checksum | Filename validation, HTTPS only, SHA-256, keyless Sigstore signature on the checksum manifest from the pinned CI identity (ADR-0030), single-file tar, atomic rollback | Unsigned local artifacts are accepted only with `--allow-unsigned`; no protection against rollback to an older signed release; trust rests on the `ci.yml` workflow on `main` |
 | Tracked `CLAUDE.md` | Agent-routing instructions | Human review of repository | Mandatory unpinned plugin capability boundary |
 
 ## Top abuse paths

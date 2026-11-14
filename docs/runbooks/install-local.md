@@ -35,10 +35,16 @@ installers/install-local.sh /path/to/compresso-0.1.0-aarch64-apple-darwin.tar.gz
 The sibling `SHA256SUMS` remains required. A directory must contain exactly one tarball matching
 the current platform.
 
-When `SHA256SUMS.sigstore.json` sits beside `SHA256SUMS`, the installer verifies it and stops if
-`cosign` is missing or rejects it. Without that file a local install proceeds on the checksum alone
-and prints a warning that the publisher signature was not verified. That is the expected path for
-artifacts built on this machine.
+`SHA256SUMS.sigstore.json` must sit beside `SHA256SUMS`. The installer verifies it and stops if
+the file is absent, `cosign` is missing, or `cosign` rejects it.
+
+For artifacts you built on this machine there is no CI signature. Pass `--allow-unsigned` to
+install them on the checksum alone; the installer prints a warning that the publisher signature was
+not verified. The flag is refused for a URL source.
+
+```sh
+installers/install-local.sh --allow-unsigned /path/to/locally-built-artifacts
+```
 
 ## Install from a URL
 
@@ -48,8 +54,9 @@ leave HTTPS with `curl`, and the `wget` fallback follows no redirect at all. The
 corruption; the signature guards against a substituted release, because it must come from the
 Compresso `ci.yml` workflow on `main` and that identity is fixed inside the installer.
 
-A URL install requires [`cosign`](https://docs.sigstore.dev/cosign/system_config/installation/) on
-`PATH`. A missing signature file, a missing `cosign`, or a rejected signature stops the install
+Signature verification requires [`cosign`](https://docs.sigstore.dev/cosign/system_config/installation/)
+3.0 or newer on `PATH`; CI signs with cosign 3, whose bundle format older releases do not read by
+default. A missing signature file, a missing `cosign`, or a rejected signature stops the install
 before anything is written. `cosign` contacts Sigstore's public infrastructure to refresh its
 trust root unless it is configured for offline verification.
 

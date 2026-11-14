@@ -202,13 +202,46 @@ test_local_install_verifies_a_signature_when_present() {
     fail "signed local install version mismatch"
 }
 
+test_unsigned_local_install_is_refused_without_the_explicit_opt_out() {
+  case_root="$test_root/local-refused"
+  home="$case_root/home"
+  mkdir -p "$home"
+  create_release "$case_root/release" 6.2.0 localrefused >/dev/null
+
+  if HOME="$home" PATH="/usr/bin:/bin" "$installer" "$case_root/release" \
+    > "$case_root/out" 2> "$case_root/err"; then
+    fail "unsigned local install was accepted without --allow-unsigned"
+  fi
+  assert_contains "$(cat "$case_root/err")" '--allow-unsigned'
+  [ ! -e "$home/.local" ] || fail "refused unsigned install wrote under ~/.local"
+}
+
+test_allow_unsigned_never_applies_to_a_url_source() {
+  case_root="$test_root/url-opt-out"
+  create_release "$case_root/release" 6.0.0 urloptout >/dev/null
+  fake_curl "$case_root/bin"
+  fake_cosign "$case_root/bin" 0
+  home="$case_root/home"
+  mkdir -p "$home"
+  target=$(host_target)
+
+  if HOME="$home" FIXTURE_SOURCE="$case_root/release" PATH="$case_root/bin:/usr/bin:/bin" \
+    "$installer" --allow-unsigned \
+    "https://fixtures.invalid/releases/compresso-6.0.0-$target.tar.gz" \
+    > "$case_root/out" 2> "$case_root/err"; then
+    fail "--allow-unsigned was accepted for a URL source"
+  fi
+  assert_contains "$(cat "$case_root/err")" 'local'
+  [ ! -e "$home/.local" ] || fail "URL opt-out wrote under ~/.local"
+}
+
 test_unsigned_local_install_warns_that_only_the_checksum_was_checked() {
   case_root="$test_root/local-unsigned"
   home="$case_root/home"
   mkdir -p "$home"
   create_release "$case_root/release" 6.2.0 localunsigned >/dev/null
 
-  HOME="$home" PATH="/usr/bin:/bin" "$installer" "$case_root/release" \
+  HOME="$home" PATH="/usr/bin:/bin" "$installer" --allow-unsigned "$case_root/release" \
     > "$case_root/out" 2> "$case_root/err" || fail "unsigned local install failed"
 
   assert_contains "$(cat "$case_root/err")" 'publisher signature was not verified'
@@ -223,7 +256,7 @@ test_install_clean_home() {
   mkdir -p "$home"
   create_release "$release" 1.2.3 clean >/dev/null
 
-  output=$(HOME="$home" PATH="/usr/bin:/bin" "$installer" "$release")
+  output=$(HOME="$home" PATH="/usr/bin:/bin" "$installer" --allow-unsigned "$release")
   binary="$home/.local/bin/compresso"
 
   [ -x "$binary" ] || fail "clean install did not create an executable"
@@ -240,7 +273,7 @@ test_install_from_direct_local_tarball() {
   mkdir -p "$home"
   archive=$(create_release "$release" 1.3.0 direct)
 
-  HOME="$home" "$installer" "$archive" >/dev/null
+  HOME="$home" "$installer" --allow-unsigned "$archive" >/dev/null
 
   [ "$("$home/.local/bin/compresso" --version)" = 'compresso 1.3.0' ] ||
     fail "direct local tarball install version mismatch"
@@ -255,7 +288,7 @@ test_checksum_mismatch_aborts_before_install_write() {
   archive=$(create_release "$release" 2.0.0 checksum)
   printf 'tampered' >> "$archive"
 
-  if HOME="$home" "$installer" "$release" >"$case_root/stdout" 2>"$case_root/stderr"; then
+  if HOME="$home" "$installer" --allow-unsigned "$release" >"$case_root/stdout" 2>"$case_root/stderr"; then
     fail "checksum mismatch unexpectedly installed"
   fi
 
@@ -277,8 +310,8 @@ test_install_idempotent_with_previous_backup() {
   create_release "$first" 3.0.0 first >/dev/null
   create_release "$second" 3.1.0 second >/dev/null
 
-  HOME="$home" "$installer" "$first" >/dev/null
-  HOME="$home" "$installer" "$second" >/dev/null
+  HOME="$home" "$installer" --allow-unsigned "$first" >/dev/null
+  HOME="$home" "$installer" --allow-unsigned "$second" >/dev/null
 
   binary="$home/.local/bin/compresso"
   previous="$home/.local/bin/compresso.previous"
@@ -302,7 +335,7 @@ test_multiple_payload_archive_rejected() {
   tar -czf "$archive" -C "$stage" compresso extra
   "$packager" --checksums "$release/SHA256SUMS" "$archive" >/dev/null
 
-  if HOME="$home" "$installer" "$release" >"$case_root/stdout" 2>"$case_root/stderr"; then
+  if HOME="$home" "$installer" --allow-unsigned "$release" >"$case_root/stdout" 2>"$case_root/stderr"; then
     fail "multiple-payload archive unexpectedly installed"
   fi
 
@@ -321,7 +354,7 @@ test_no_config_or_assistant_writes() {
   before=$(find "$home/.config" "$home/.claude" "$home/.codex" -type f -exec shasum -a 256 {} \; | LC_ALL=C sort)
   create_release "$release" 4.0.0 config >/dev/null
 
-  HOME="$home" "$installer" "$release" >/dev/null
+  HOME="$home" "$installer" --allow-unsigned "$release" >/dev/null
 
   after=$(find "$home/.config" "$home/.claude" "$home/.codex" -type f -exec shasum -a 256 {} \; | LC_ALL=C sort)
   [ "$after" = "$before" ] || fail "installer mutated configuration"
@@ -477,5 +510,7 @@ test_url_install_without_a_signature_fails_closed
 test_url_install_without_cosign_fails_closed
 test_rejected_signature_aborts_before_install_write
 test_local_install_verifies_a_signature_when_present
+test_unsigned_local_install_is_refused_without_the_explicit_opt_out
+test_allow_unsigned_never_applies_to_a_url_source
 test_unsigned_local_install_warns_that_only_the_checksum_was_checked
 printf '%s\n' 'install_local_test: all tests passed'

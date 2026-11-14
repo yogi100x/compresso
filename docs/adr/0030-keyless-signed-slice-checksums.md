@@ -41,10 +41,21 @@ Verification rules:
 - An `https://` source must serve `SHA256SUMS.sigstore.json`. A missing bundle,
   a missing `cosign` binary, or a rejected signature stops the install before
   anything is written under `~/.local`.
-- A local source is verified the same way when the bundle sits beside
-  `SHA256SUMS`. Without a bundle the installer proceeds on the checksum alone
-  and prints a warning: a locally built or hand-carried artifact has no CI
-  signature, and the person running the installer chose that directory.
+- A local source is verified the same way. Without a bundle the install is
+  refused unless the caller passes `--allow-unsigned`, which exists for a
+  build made on the same machine: it installs on the checksum alone and prints
+  a warning. The flag is rejected for a URL source.
+- Verification needs cosign 3.0 or newer. CI signs with the cosign 3 release
+  the pinned installer action provides, and its default bundle format is not
+  read by cosign 2 without extra flags.
+
+The owner chose the signing scheme. The local opt-out and the minimum cosign
+version are implementation decisions made with it.
+
+This is consistent with the bootstrap trust chain in
+`docs/plan/08-ip-and-secure-deployment.md` §3.4, which already lists
+"verify signature and digest" as an installer step and had exempted only the
+unsigned slice installer.
 
 ## Consequences
 
@@ -58,8 +69,9 @@ Verification rules:
   transparency log together with the repository name, workflow path, and
   commit. For a private repository this makes those three facts public. The
   private-beta workflow already has the same property.
-- A URL install now needs `cosign`; machines without it must install it or use
-  a local directory.
+- Installing a CI release now needs `cosign`; a machine without it cannot
+  install one. Existing local workflows that install a self-built tarball must
+  add `--allow-unsigned`.
 - Trust is anchored in GitHub's OIDC issuer, the Sigstore root, and the
   integrity of the `ci.yml` workflow on `main`. A change to that workflow that
   reaches `main` can sign any manifest; branch protection is the control.
