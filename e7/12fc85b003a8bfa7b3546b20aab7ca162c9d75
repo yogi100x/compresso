@@ -1,0 +1,47 @@
+docs/plan/01-stack-and-workspace.md
+  s_f3ae5462f697a3::t_ea5140550b0479 15
+Cargo.lock
+  s_f3ae5462f697a3::t_1947628d24b625 179-187,471-476,563-582,924-932,1601,1603,1607-1608,1614,1619,1784-1794,1871,2101-2106,2143
+rust/compresso-mcp/src/server.rs
+  s_f3ae5462f697a3::t_bfd2438752cbba 14-16,32-43,184-186,191-194,232,239-241,244,266,272,282-283,289,295,352
+Cargo.toml
+  s_87d7c30a5e4fd4::t_81554790575d3a 32
+rust/compresso-mcp/tests/handshake.rs
+  s_e2da226df94350::t_bfdc0cc1be83f7 352,354,356
+  s_e2da226df94350::t_7ea76ff6f5e0b7 274-334
+  s_e2da226df94350::t_d0a03b2171463c 335-351,353,355,357-379
+rust/compresso-mcp/src/tools/common.rs
+  s_f3ae5462f697a3::t_7be89fd1660e37 7,48,57
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e712fc85b003a8bfa7b3546b20aab7ca162c9d75",
+  "prompts": {},
+  "sessions": {
+    "s_87d7c30a5e4fd4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-aea127db5b0d1c3d9",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_e2da226df94350": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a4ace18-3be7-440c-984c-7cf6854c84ee",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_f3ae5462f697a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7cc607c-32b2-4e30-bc4c-55ff6e2d2dd7",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
