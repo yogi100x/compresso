@@ -617,7 +617,7 @@ impl PlanManager {
             // line endings; every hash below covers this final shaping.
             request.target_contents = preserve_text_fidelity(bytes, &request.target_contents);
         }
-        if let Some(original) = pristine_uninstall_target(&request) {
+        if let Some(original) = pristine_uninstall_target(&request, &base) {
             request.target_contents = original;
         }
         let owned_keys = derive_owned_mutations(
@@ -1648,12 +1648,16 @@ fn ensure_backup(commit: &PendingCommit) -> Result<(), IntegrationError> {
     sync_parent(&path).map_err(|source| IntegrationError::Io { path, source })
 }
 
-/// Returns the exact pre-install bytes when a JSON uninstall would otherwise
-/// rewrite an equivalent document with different insignificant bytes.
-fn pristine_uninstall_target(request: &MutationRequest) -> Option<String> {
+/// Returns the exact pre-install bytes when a JSON uninstall of a file left
+/// untouched since its install would otherwise rewrite an equivalent document
+/// with different insignificant bytes.
+fn pristine_uninstall_target(request: &MutationRequest, base: &TargetState) -> Option<String> {
     if request.operation != MutationKind::Uninstall || request.config_format != ConfigFormat::Json {
         return None;
     }
+    let TargetState::Present(current) = base else {
+        return None;
+    };
     let receipt = request.prior_receipt.as_ref()?;
     if receipt.backup_path == CREATED_FILE_BACKUP_SENTINEL {
         return None;
@@ -1661,6 +1665,7 @@ fn pristine_uninstall_target(request: &MutationRequest) -> Option<String> {
     pristine_json_backup(
         &request.config_path,
         Path::new(&receipt.backup_path),
+        current,
         &request.target_contents,
     )
 }

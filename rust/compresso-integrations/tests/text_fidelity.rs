@@ -410,6 +410,34 @@ fn test_uninstall_restores_non_canonical_json_formatting_byte_for_byte() {
 }
 
 #[test]
+fn test_uninstall_never_reverts_a_whitespace_only_user_edit_to_the_backup() {
+    let original = b"{\r\n\t\"theme\": \"night\"\r\n}\r\n";
+    for client in [Client::ClaudeCode, Client::Cursor] {
+        let harness = Harness::with_config(client, original);
+        let receipt = harness.install();
+        let installed = String::from_utf8(harness.config()).expect("installed UTF-8");
+        let reformatted = installed.replace("  \"theme\"", "      \"theme\"");
+        assert_ne!(reformatted, installed, "{client:?} user reformat");
+        fs::write(&harness.config_path, &reformatted).expect("user reformat written");
+
+        harness.uninstall(&receipt);
+
+        let restored = harness.config();
+        assert_ne!(restored, original, "{client:?} backup must not be restored");
+        assert!(
+            split_lines(&restored)
+                .iter()
+                .all(|(_, terminator)| *terminator == "\r\n"),
+            "{client:?} line endings"
+        );
+        assert!(
+            !String::from_utf8_lossy(&restored).contains("compresso"),
+            "{client:?} owned entry removed"
+        );
+    }
+}
+
+#[test]
 fn test_uninstall_after_unrelated_user_edit_keeps_bom_and_line_endings() {
     for client in Client::ALL {
         let original = encode(
