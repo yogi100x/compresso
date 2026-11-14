@@ -10,6 +10,20 @@ Distribution status: private repository; no releases or uploaded Actions artifac
 
 Remediation update: **2026-07-23. SEC-003 is fixed in the current working tree, pending commit/release.** Public plan serialization and CLI output now expose only a secret-safe, key-level preview; exact target bytes remain private to integrity hashing and authenticated crash recovery. This prevents future preview disclosure but cannot invalidate any credential exposed before the fix, which must still be revoked or rotated separately. The finding counts below describe the original 2026-07-22 assessment snapshot.
 
+Remediation update: **2026-11-14.** Status of the findings below after the E17 review fixes. The finding sections keep their original 2026-07-22 text.
+
+| Finding | Status | Note |
+|---|---|---|
+| SEC-001 | Fixed for excluded content | `compresso_read` refuses a file the scanner excludes (repository `.gitignore`, built-in excluded directories, secret patterns) unless it is indexed, judged on the resolved path so links and casing cannot bypass it. A file the scanner would accept stays readable before it is indexed. The built-in secret pattern list is unchanged. |
+| SEC-002 | Fixed | Each MCP server is bound to one repository root at startup; `test_bound_root_retarget_cannot_leak_another_approved_repository` covers it. |
+| SEC-004 | Fixed | Turbo upgraded to 2.9.14; CI installs the locked TypeScript dependencies, runs the workspace checks, and audits them on every pull request. |
+| SEC-005 | Open | Incoming MCP frames are still read into an unbounded buffer (`rust/compresso-mcp/src/server.rs`, `receive`). |
+| SEC-007 | Partly fixed | The installer accepts only `https://` sources and does not leave HTTPS on a redirect. `SHA256SUMS` still comes from the same origin as the archive; publisher authenticity needs signed releases. |
+| SEC-008 | Fixed for new installs | On Unix the store creates its directories 0700 and its database 0600. Directories and databases that already exist are not changed. |
+| SEC-009 | Partly fixed | Every third-party action is pinned to a commit SHA and the CI matrix checker enforces it. The actionlint container image is still referenced by tag. |
+
+Findings not listed in this table were not re-assessed in this update.
+
 ## Executive summary
 
 Compresso has a strong local-first foundation, and the audit found no evidence that the implemented E1-E7 runtime sends telemetry or performs network I/O. Sentry and PostHog should **not** be added to this delivery slice: doing so would conflict with the locked decision that remote telemetry is neither built nor enabled. Local structured logs, content-free operation traces, and local statistics are the appropriate observability controls for the current scope.
