@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::io;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, mpsc};
@@ -422,9 +423,33 @@ fn prepare_in_parallel<C>(
     candidates: &[PathBuf],
     workers: usize,
     memory_budget_bytes: u64,
+    commit: C,
+) -> Result<(), AtlasError>
+where
+    C: FnMut(usize, Result<PreparedFile, PrepareFailure>) -> Result<(), AtlasError>,
+{
+    prepare_in_parallel_with(
+        context.root,
+        candidates,
+        workers,
+        memory_budget_bytes,
+        |candidate| prepare_file(context, candidate),
+        commit,
+    )
+}
+
+/// [`prepare_in_parallel`] with the per-file preparation step supplied by the
+/// caller.
+fn prepare_in_parallel_with<P, C>(
+    root: &Path,
+    candidates: &[PathBuf],
+    workers: usize,
+    memory_budget_bytes: u64,
+    prepare: P,
     mut commit: C,
 ) -> Result<(), AtlasError>
 where
+    P: Fn(&Path) -> Result<PreparedFile, PrepareFailure> + Sync,
     C: FnMut(usize, Result<PreparedFile, PrepareFailure>) -> Result<(), AtlasError>,
 {
     let (job_sender, job_receiver) = mpsc::channel::<usize>();
@@ -437,6 +462,7 @@ where
             let result_sender = result_sender.clone();
             let job_receiver = &job_receiver;
             let cancelled = &cancelled;
+            let prepare = &prepare;
             scope.spawn(move || {
                 loop {
                     let job = match job_receiver.lock() {
@@ -447,7 +473,11 @@ where
                     if cancelled.load(Ordering::Relaxed) {
                         break;
                     }
-                    let outcome = prepare_file(context, &candidates[index]);
+                    // A panic is forwarded rather than left to end this worker
+                    // silently: the committing thread would otherwise wait
+                    // forever for a result that never arrives.
+                    let outcome =
+                        panic::catch_unwind(AssertUnwindSafe(|| prepare(&candidates[index])));
                     if result_sender.send((index, outcome)).is_err() {
                         break;
                     }
@@ -463,10 +493,11 @@ where
         let mut ready = BTreeMap::new();
         let mut next_dispatch = 0_usize;
         let mut next_commit = 0_usize;
+        let mut worker_panic = None;
         let outcome = (|| {
             while next_commit < candidates.len() {
                 while next_dispatch < candidates.len() {
-                    let cost_bytes = fs::metadata(context.root.join(&candidates[next_dispatch]))
+                    let cost_bytes = fs::metadata(root.join(&candidates[next_dispatch]))
                         .map_or(0, |metadata| metadata.len());
                     if !read_ahead.try_admit(cost_bytes) {
                         break;
@@ -481,12 +512,17 @@ where
                     // Every worker stopped early. Finish on this thread so the
                     // run still completes with the serial result.
                     for (index, candidate) in candidates.iter().enumerate().skip(next_commit) {
-                        let prepared = ready
-                            .remove(&index)
-                            .unwrap_or_else(|| prepare_file(context, candidate));
+                        let prepared = ready.remove(&index).unwrap_or_else(|| prepare(candidate));
                         commit(index, prepared)?;
                     }
                     return Ok(());
+                };
+                let prepared = match prepared {
+                    Ok(prepared) => prepared,
+                    Err(payload) => {
+                        worker_panic = Some(payload);
+                        return Ok(());
+                    }
                 };
                 ready.insert(index, prepared);
                 while let Some(prepared) = ready.remove(&next_commit) {
@@ -498,7 +534,12 @@ where
             Ok(())
         })();
         cancelled.store(true, Ordering::Relaxed);
+        // The workers must be released before the panic resumes, because the
+        // scope joins them while unwinding.
         drop(job_sender);
+        if let Some(payload) = worker_panic {
+            panic::resume_unwind(payload);
+        }
         outcome
     })
 }
@@ -929,6 +970,37 @@ mod tests {
 
         let expected = paths.into_iter().enumerate().collect::<Vec<_>>();
         assert_eq!(committed, expected);
+    }
+
+    #[test]
+    fn test_parallel_preparation_propagates_a_worker_panic_instead_of_hanging() {
+        let candidates = (0..40)
+            .map(|index| PathBuf::from(format!("src/file_{index:02}.rs")))
+            .collect::<Vec<_>>();
+        let (finished_sender, finished_receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                prepare_in_parallel_with(
+                    Path::new("missing-root"),
+                    &candidates,
+                    4,
+                    1 << 30,
+                    |candidate| {
+                        assert!(!candidate.ends_with("file_05.rs"), "injected worker panic");
+                        Err(PrepareFailure::before_parse(IndexError::InjectedFailure {
+                            path: candidate.to_path_buf(),
+                        }))
+                    },
+                    |_, _| Ok(()),
+                )
+            }));
+            let _ = finished_sender.send(run.is_err());
+        });
+
+        let panicked = finished_receiver
+            .recv_timeout(std::time::Duration::from_secs(20))
+            .expect("a worker panic must not hang the run");
+        assert!(panicked, "the worker panic must reach the caller");
     }
 
     #[test]
