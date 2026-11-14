@@ -89,9 +89,28 @@ pub(crate) fn transcript_savings(
     ))
 }
 
+/// Renders untrusted text for a terminal or a JSON string.
+///
+/// Printable ASCII passes through. Every other character, including C0 and
+/// C1 controls, DEL, escape-sequence introducers, and invisible or
+/// bidirectional Unicode, becomes a visible `\u{..}` escape, so the result
+/// can never drive the terminal. The scanner already discards such model
+/// identifiers; this is the second, independent barrier at the output edge.
+pub(crate) fn printable(text: &str) -> String {
+    let mut rendered = String::with_capacity(text.len());
+    for character in text.chars() {
+        if character.is_ascii_graphic() || character == ' ' {
+            rendered.push(character);
+        } else {
+            rendered.extend(character.escape_unicode());
+        }
+    }
+    rendered
+}
+
 pub(crate) fn cost_basis_json(basis: &CostBasis) -> Value {
     json!({
-        "model": basis.model,
+        "model": basis.model.as_deref().map(printable),
         "priced": basis.priced,
         "rate": basis.rate,
         "price_table_version": basis.table_version,
@@ -113,6 +132,7 @@ pub(crate) fn transcript_savings_json(savings: &TranscriptSavings) -> Value {
         "results_missing": savings.results_missing,
         "lines_skipped": savings.lines_skipped,
         "tool_calls_dropped": savings.tool_calls_dropped,
+        "model_ids_rejected": savings.model_ids_rejected,
         "net_tokens_saved": savings.net_tokens_saved,
         "retrieval_pack_tokens": savings.retrieval_pack_tokens,
         "estimated_raw_source_tokens": savings.estimated_raw_source_tokens,
@@ -125,7 +145,7 @@ pub(crate) fn transcript_savings_json(savings: &TranscriptSavings) -> Value {
         },
         "unpriced_tokens_saved": savings.unpriced_tokens_saved,
         "by_model": savings.by_model.iter().map(|row| json!({
-            "model": row.model,
+            "model": printable(&row.model),
             "tool_calls": row.tool_calls,
             "net_tokens_saved": row.net_tokens_saved,
             "retrieval_tokens_avoided": row.retrieval_tokens_avoided,
@@ -156,9 +176,15 @@ pub(crate) fn transcript_savings_human(savings: &TranscriptSavings, prices: &Pri
         savings.baseline_missing,
         savings.total_effective_savings,
         savings.estimated_cost_saved_usd,
-        prices.table_version,
-        prices.effective_date,
+        printable(&prices.table_version),
+        printable(&prices.effective_date),
     );
+    if savings.model_ids_rejected > 0 {
+        human.push_str(&format!(
+            "  model ids rejected as unsafe: {} (counted under unknown, never priced)\n",
+            savings.model_ids_rejected
+        ));
+    }
     human.push_str("  per model:\n");
     if savings.by_model.is_empty() {
         human.push_str("    none recorded\n");
@@ -170,8 +196,61 @@ pub(crate) fn transcript_savings_human(savings: &TranscriptSavings, prices: &Pri
         };
         human.push_str(&format!(
             "    {}: calls {}, effective {}, cost saved {}\n",
-            row.model, row.tool_calls, row.total_effective_savings, cost
+            printable(&row.model),
+            row.tool_calls,
+            row.total_effective_savings,
+            cost
         ));
     }
     human
+}
+
+#[cfg(test)]
+mod tests {
+    use compresso_core::{ModelSavings, PriceTable, TranscriptSavings};
+
+    use super::*;
+
+    fn is_terminal_safe(text: &str) -> bool {
+        text.chars()
+            .all(|character| character.is_ascii_graphic() || matches!(character, ' ' | '\n'))
+    }
+
+    #[test]
+    fn test_printable_escapes_every_control_byte_and_invisible_character() {
+        let controls = (0x00_u32..=0x1f).chain([0x7f]).chain(0x80..=0x9f);
+        for code in controls.chain([0x200b, 0x202e, 0xfffd, 0xe9]) {
+            let character = char::from_u32(code).expect("code point should be a scalar value");
+            let rendered = printable(&format!("a{character}b"));
+            assert_eq!(rendered, format!("a\\u{{{code:x}}}b"));
+            assert!(is_terminal_safe(&rendered));
+        }
+        assert_eq!(printable("claude-sonnet-5-5 [x]"), "claude-sonnet-5-5 [x]");
+    }
+
+    #[test]
+    fn test_renderers_escape_unsafe_model_even_if_scanner_is_bypassed() {
+        let hostile = "evil\u{1b}]52;c;AAAA\u{07}\u{9b}2J\0\u{7f}";
+        let savings = TranscriptSavings {
+            by_model: vec![ModelSavings {
+                model: hostile.to_owned(),
+                tool_calls: 1,
+                net_tokens_saved: 1,
+                retrieval_tokens_avoided: 0,
+                total_effective_savings: 1,
+                estimated_cost_saved_usd: None,
+            }],
+            ..TranscriptSavings::default()
+        };
+        let prices = PriceTable::embedded().expect("embedded table should validate");
+
+        let human = transcript_savings_human(&savings, prices);
+        assert!(is_terminal_safe(&human));
+        assert!(human.contains("evil\\u{1b}]52;c;AAAA\\u{7}\\u{9b}2J\\u{0}\\u{7f}"));
+
+        let json = transcript_savings_json(&savings).to_string();
+        assert!(is_terminal_safe(&json));
+        let basis = prices.cost_basis(1, Some(hostile));
+        assert!(is_terminal_safe(&cost_basis_json(&basis).to_string()));
+    }
 }

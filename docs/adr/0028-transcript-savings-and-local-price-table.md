@@ -49,6 +49,17 @@ accounting fields are read; the model comes from the assistant message that
 issued the call. No transcript text is retained, persisted, or transmitted,
 and scanning writes nothing to the ledger.
 
+**Untrusted model identifiers.** A model identifier from a transcript or a
+caller is kept only when it is 1 to 128 bytes of printable ASCII without
+spaces. Anything else (C0 or C1 controls, DEL, escape sequences, invalid
+UTF-8, invisible or bidirectional Unicode, oversized values) is discarded at
+parse time, counted in `model_ids_rejected`, attributed to the unknown model,
+and never priced or echoed. Caller-supplied `model` arguments failing the same
+rule are rejected as `invalid_arguments` with a fixed message. As a second
+barrier, every transcript- or caller-derived string the CLI renders is passed
+through an escaper that turns non-printable characters into visible `\u{..}`
+text, so stats output cannot carry terminal control sequences.
+
 **Semantics.** Each distinct `operation_id` counts once. When the local
 ledger holds that operation, the ledger row is authoritative and transcript
 numbers are ignored. Otherwise:

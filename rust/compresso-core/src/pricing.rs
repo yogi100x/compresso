@@ -13,6 +13,21 @@ use thiserror::Error;
 pub const PRICE_TABLE_SCHEMA_VERSION: u32 = 1;
 /// The only rate applied to avoided tokens: base uncached input.
 pub const SAVINGS_RATE_APPLIED: &str = "input";
+/// Longest model identifier accepted from a transcript or a caller.
+pub const MAX_MODEL_ID_BYTES: usize = 128;
+
+/// Whether `model` is safe to store, price, and print.
+///
+/// Model identifiers arrive from untrusted transcripts and tool arguments and
+/// end up on a terminal. Only non-empty printable ASCII without spaces, at
+/// most [`MAX_MODEL_ID_BYTES`] long, is accepted: that excludes C0 and C1
+/// controls, DEL, escape sequences, replacement characters from invalid
+/// UTF-8, and bidirectional or other invisible Unicode formatting.
+pub fn is_plain_model_id(model: &str) -> bool {
+    !model.is_empty()
+        && model.len() <= MAX_MODEL_ID_BYTES
+        && model.bytes().all(|byte| byte.is_ascii_graphic())
+}
 
 const EMBEDDED_PRICE_TABLE: &str = include_str!("../data/price-table-v1.json");
 const TOKENS_PER_MTOK: f64 = 1_000_000.0;

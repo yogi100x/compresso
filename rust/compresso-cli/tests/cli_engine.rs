@@ -450,6 +450,118 @@ fn test_stats_rejects_unreadable_transcript_and_empty_model() {
     }
 }
 
+fn is_terminal_safe(bytes: &[u8]) -> bool {
+    bytes
+        .iter()
+        .all(|byte| byte.is_ascii_graphic() || matches!(byte, b' ' | b'\n'))
+}
+
+#[test]
+fn test_stats_transcript_hostile_model_ids_never_reach_terminal_or_pricing() {
+    let fixture = Fixture::new();
+    let oversized = format!("claude-sonnet-5-5{}", "-".repeat(183));
+    assert_eq!(oversized.len(), 200);
+    let hostile_models = [
+        "\u{1b}]52;c;c3ludGhldGlj\u{07}".to_owned(),
+        "claude-sonnet-5-5\u{1b}[2J".to_owned(),
+        "\u{1b}]8;;https://example.invalid\u{1b}\\claude-sonnet-5-5\u{1b}]8;;\u{1b}\\".to_owned(),
+        "claude-sonnet-5-5\u{9b}2J".to_owned(),
+        "claude-sonnet-5-5\0".to_owned(),
+        "claude-sonnet-5-5\u{7f}".to_owned(),
+        "claude-sonnet-5-5\u{202e}".to_owned(),
+        oversized,
+    ];
+    let suffixes = ["A", "B", "C", "D", "E", "F", "G", "H", "J"];
+    let mut transcript = Vec::new();
+    for (index, model) in hostile_models.iter().enumerate() {
+        let operation_id = format!("01J2X3Y4Z5A6B7C8D9E0F1G2H{}", suffixes[index]);
+        transcript.extend_from_slice(
+            transcript_call(
+                &format!("toolu_{index}"),
+                "mcp__compresso__compresso_compress",
+                model,
+                &compress_result(&operation_id, 1_000_500, 500),
+            )
+            .as_bytes(),
+        );
+    }
+    // A raw 0x9b byte that is not valid UTF-8, spliced into a model id.
+    let raw = transcript_call(
+        "toolu_raw",
+        "mcp__compresso__compresso_compress",
+        "claude-sonnet-5-5RAWBYTE",
+        &compress_result("01J2X3Y4Z5A6B7C8D9E0F1G2HJ", 1_000_500, 500),
+    );
+    let (before, after) = raw
+        .split_once("RAWBYTE")
+        .expect("placeholder should be present");
+    transcript.extend_from_slice(before.as_bytes());
+    transcript.extend_from_slice(&[0x9b, b'2', b'J']);
+    transcript.extend_from_slice(after.as_bytes());
+    let path = fixture.directory.path().join("hostile.jsonl");
+    fs::write(&path, transcript).expect("synthetic transcript should be written");
+    let path = path.to_str().expect("temporary path should be UTF-8");
+    let rejected = hostile_models.len() as u64 + 1;
+
+    let (human_exit, human, human_errors) = fixture.run_raw(&["stats", "--transcript", path], b"");
+    assert_eq!(human_exit, CliExitCode::Success);
+    assert!(human_errors.is_empty());
+    assert!(is_terminal_safe(&human));
+    let human = String::from_utf8(human).expect("human stats should be UTF-8");
+    assert!(human.contains(&format!("model ids rejected as unsafe: {rejected}")));
+    assert!(human.contains("    unknown: calls 9,"));
+    assert!(human.contains("no price on file, tokens only"));
+    assert!(!human.contains("claude-sonnet-5-5"));
+    assert!(!human.contains("]52;"));
+
+    let (json_exit, raw_json, json_errors) =
+        fixture.run_raw(&["stats", "--transcript", path, "--json"], b"");
+    assert_eq!(json_exit, CliExitCode::Success);
+    assert!(json_errors.is_empty());
+    assert!(is_terminal_safe(&raw_json));
+    let output: Value = serde_json::from_slice(&raw_json).expect("stats output should be JSON");
+    let savings = &output["data"]["transcript_savings"];
+    assert_eq!(savings["operations"], rejected);
+    assert_eq!(savings["model_ids_rejected"], rejected);
+    assert_eq!(savings["total_effective_savings"], 9_000_000);
+    assert_eq!(savings["unpriced_tokens_saved"], 9_000_000);
+    assert_eq!(savings["modeled_cost_saved"]["amount_usd"], 0.0);
+    let by_model = savings["by_model"]
+        .as_array()
+        .expect("per-model rows should be an array");
+    assert_eq!(by_model.len(), 1);
+    assert_eq!(by_model[0]["model"], "unknown");
+    assert_eq!(by_model[0]["priced"], false);
+    assert!(by_model[0]["modeled_cost_saved"]["amount_usd"].is_null());
+}
+
+#[test]
+fn test_stats_rejects_unsafe_model_argument_without_echoing_it() {
+    let fixture = Fixture::new();
+
+    for model in [
+        "\u{1b}[2J",
+        "claude-sonnet-5-5\u{1b}]52;c;AAAA\u{07}",
+        "claude-sonnet-5-5\u{9b}",
+        "claude-sonnet-5-5\u{7f}",
+        "claude sonnet",
+    ] {
+        for json_flag in [&["--json"][..], &[][..]] {
+            let mut arguments = vec!["stats", "--model", model];
+            arguments.extend_from_slice(json_flag);
+            let (exit, output, errors) = fixture.run_raw(&arguments, b"");
+            assert_eq!(exit, CliExitCode::Failure);
+            assert!(output.is_empty());
+            assert!(is_terminal_safe(&errors));
+            assert!(
+                String::from_utf8(errors)
+                    .expect("error output should be UTF-8")
+                    .contains("printable ASCII")
+            );
+        }
+    }
+}
+
 struct Fixture {
     directory: TempDir,
     store: Store,

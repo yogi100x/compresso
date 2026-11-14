@@ -5,7 +5,7 @@ use compresso_atlas::{ImpactOptions, impact_with_options, repository_stale};
 use compresso_core::{
     CompressionBudget, Config, ContextGraph, Engine, Lossiness, MAX_COMPRESSION_INPUT_BYTES, Mode,
     NodeKind, PriceTable, TokenCounter, TokenProvider, anthropic_calibrated_count, counter_for,
-    operation_identity,
+    is_plain_model_id, operation_identity,
 };
 use compresso_store::{EdgeKind, OperationRecord, SessionId, StatsFilter, Store};
 use rmcp::model::JsonObject;
@@ -19,7 +19,6 @@ use super::common::{
 };
 
 const DEFAULT_MAX_LATENCY_MS: usize = 200;
-const MAX_MODEL_ID_BYTES: usize = 128;
 
 pub(crate) fn handles(name: &str) -> bool {
     matches!(
@@ -222,10 +221,10 @@ fn stats_tool(
     let model = optional_string(&mut arguments, "model", false)?;
     if model
         .as_deref()
-        .is_some_and(|model| model.len() > MAX_MODEL_ID_BYTES)
+        .is_some_and(|model| !is_plain_model_id(model))
     {
         return Err(ToolFailure::invalid(
-            "argument 'model' must be at most 128 bytes.",
+            "argument 'model' must be 1 to 128 printable ASCII characters without spaces.",
         ));
     }
     let session_id = optional_string(&mut arguments, "session_id", false)?

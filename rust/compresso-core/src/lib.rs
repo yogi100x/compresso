@@ -23,8 +23,8 @@ pub use graph::{
     ProviderIdentifierError, ProviderTurn, ProviderTurnId, Source, ToolCallId,
 };
 pub use pricing::{
-    CostBasis, ModelPrice, PRICE_TABLE_SCHEMA_VERSION, PriceTable, PriceTableError,
-    SAVINGS_RATE_APPLIED,
+    CostBasis, MAX_MODEL_ID_BYTES, ModelPrice, PRICE_TABLE_SCHEMA_VERSION, PriceTable,
+    PriceTableError, SAVINGS_RATE_APPLIED, is_plain_model_id,
 };
 pub use provider_conversation::{
     DefaultProviderConversationValidator, ProviderConversationError, ProviderConversationValidator,

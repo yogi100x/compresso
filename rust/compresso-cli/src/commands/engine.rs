@@ -5,17 +5,17 @@ use std::path::{Path, PathBuf};
 use clap::{ArgGroup, Args, ValueEnum};
 use compresso_core::{
     CompressionBudget, ContextGraph, Engine, Lossiness, Mode, NodeKind, PriceTable, TokenProvider,
-    Trace, counter_for,
+    Trace, counter_for, is_plain_model_id,
 };
 use compresso_store::{DetailedStatsSummary, OperationRecord, StatsFilter, Store};
 use serde_json::{Value, json};
 
 use super::transcript_stats::{
-    cost_basis_json, transcript_savings, transcript_savings_human, transcript_savings_json,
+    cost_basis_json, printable, transcript_savings, transcript_savings_human,
+    transcript_savings_json,
 };
 use super::{OutputArgs, RootCommand};
 
-const MAX_MODEL_ID_BYTES: usize = 128;
 const DEFAULT_TARGET_TOKENS: usize = 4_000;
 const MAX_TARGET_TOKENS: usize = 100_000;
 const DEFAULT_MAX_LATENCY_MS: u64 = 200;
@@ -245,10 +245,10 @@ fn execute_stats(store: &Store, arguments: StatsArgs) -> Result<Rendered, Engine
     if arguments
         .model
         .as_deref()
-        .is_some_and(|model| model.is_empty() || model.len() > MAX_MODEL_ID_BYTES)
+        .is_some_and(|model| !is_plain_model_id(model))
     {
         return Err(EngineCommandError::invalid(
-            "stats model must be between 1 and 128 bytes",
+            "stats model must be 1 to 128 printable ASCII characters without spaces",
         ));
     }
     let prices = PriceTable::embedded().map_err(|_| EngineCommandError::internal())?;
@@ -267,10 +267,12 @@ fn execute_stats(store: &Store, arguments: StatsArgs) -> Result<Rendered, Engine
         .map_or(Value::Null, transcript_savings_json);
     let cost_note = match (&cost_basis.model, cost_basis.priced) {
         (Some(model), true) => format!(
-            "; {model} input rate, price table {} effective {}",
-            cost_basis.table_version, cost_basis.effective_date
+            "; {} input rate, price table {} effective {}",
+            printable(model),
+            printable(&cost_basis.table_version),
+            printable(&cost_basis.effective_date)
         ),
-        (Some(model), false) => format!("; no price on file for {model}, tokens only"),
+        (Some(model), false) => format!("; no price on file for {}, tokens only", printable(model)),
         (None, _) => "; pass --model or --transcript to price savings".to_owned(),
     };
     let mut human = format!(

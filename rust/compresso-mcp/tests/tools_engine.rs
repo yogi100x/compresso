@@ -400,6 +400,10 @@ async fn test_stats_prices_modeled_savings_only_for_models_in_price_table() {
         json!({ "model": "" }),
         json!({ "model": "m".repeat(129) }),
         json!({ "model": 5 }),
+        json!({ "model": "claude-sonnet-5-5\u{1b}[2J" }),
+        json!({ "model": "claude-sonnet-5-5\u{9b}" }),
+        json!({ "model": "claude-sonnet-5-5\u{0}" }),
+        json!({ "model": "claude sonnet" }),
         json!({ "transcript": "/tmp/any.jsonl" }),
     ] {
         let response = harness.call("compresso_stats", arguments).await;

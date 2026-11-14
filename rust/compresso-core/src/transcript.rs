@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde_json::Value;
 
-use crate::pricing::PriceTable;
+use crate::pricing::{PriceTable, is_plain_model_id};
 
 /// The Compresso MCP tools whose results carry accounting fields.
 pub const COMPRESSO_TOOL_NAMES: [&str; 10] = [
@@ -75,6 +75,10 @@ pub struct TranscriptScan {
     pub lines_skipped: u64,
     /// Tool calls dropped after reaching [`MAX_TRANSCRIPT_TOOL_CALLS`].
     pub tool_calls_dropped: u64,
+    /// Tool calls whose model identifier was not plain printable ASCII of
+    /// bounded length. The identifier is discarded, never stored or echoed,
+    /// and the call is attributed to the unknown model.
+    pub model_ids_rejected: u64,
 }
 
 impl TranscriptScan {
@@ -124,10 +128,7 @@ impl TranscriptScanner {
         let Some(blocks) = message.get("content").and_then(Value::as_array) else {
             return;
         };
-        let model = message
-            .get("model")
-            .and_then(Value::as_str)
-            .filter(|model| !model.is_empty() && *model != SYNTHETIC_MODEL);
+        let model = message.get("model").and_then(Value::as_str);
         for block in blocks {
             match block.get("type").and_then(Value::as_str) {
                 Some("tool_use") => self.push_tool_use(block, model),
@@ -155,11 +156,19 @@ impl TranscriptScanner {
             return;
         }
         self.scan.tool_calls = self.scan.tool_calls.saturating_add(1);
+        let model = match model {
+            None | Some("" | SYNTHETIC_MODEL) => None,
+            Some(model) if is_plain_model_id(model) => Some(model.to_owned()),
+            Some(_) => {
+                self.scan.model_ids_rejected = self.scan.model_ids_rejected.saturating_add(1);
+                None
+            }
+        };
         self.pending.insert(
             id.to_owned(),
             PendingCall {
                 tool,
-                model: model.map(str::to_owned),
+                model,
                 resolved: false,
             },
         );
@@ -316,6 +325,8 @@ pub struct TranscriptSavings {
     pub results_missing: u64,
     pub lines_skipped: u64,
     pub tool_calls_dropped: u64,
+    /// Tool calls whose unsafe model identifier was discarded.
+    pub model_ids_rejected: u64,
     pub net_tokens_saved: i64,
     pub retrieval_pack_tokens: u64,
     pub estimated_raw_source_tokens: u64,
@@ -350,6 +361,7 @@ pub fn summarize_transcript(
         results_missing: scan.results_missing(),
         lines_skipped: scan.lines_skipped,
         tool_calls_dropped: scan.tool_calls_dropped,
+        model_ids_rejected: scan.model_ids_rejected,
         ..TranscriptSavings::default()
     };
     let mut by_model = BTreeMap::<String, (u64, i64, u64)>::new();
@@ -449,6 +461,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::pricing::MAX_MODEL_ID_BYTES;
 
     const OP_A: &str = "01J2X3Y4Z5A6B7C8D9E0F1G2H3";
     const OP_B: &str = "01J2X3Y4Z5A6B7C8D9E0F1G2H4";
@@ -666,6 +679,91 @@ mod tests {
         assert_eq!(savings.results_unparsed, 3);
         assert_eq!(savings.results_missing, 1);
         assert_eq!(savings.total_effective_savings, 600);
+    }
+
+    fn hostile_model_savings(model: &str) -> (TranscriptScan, TranscriptSavings) {
+        let transcript = [
+            tool_use("t1", "compresso_compress", model),
+            tool_result("t1", &compress_payload(OP_A, 1_000_100, 100, false)),
+        ]
+        .join("\n");
+        let scan = scan_transcript(&transcript);
+        let savings = summarize_transcript(&scan, |_| None, &prices());
+        (scan, savings)
+    }
+
+    fn assert_bucketed_as_unknown(model: &str) {
+        let (scan, savings) = hostile_model_savings(model);
+        let label = model.escape_debug();
+        assert_eq!(scan.model_ids_rejected, 1, "{label}");
+        assert_eq!(scan.calls[0].model, None, "{label}");
+        assert_eq!(savings.model_ids_rejected, 1, "{label}");
+        assert_eq!(savings.by_model.len(), 1, "{label}");
+        assert_eq!(savings.by_model[0].model, UNKNOWN_MODEL, "{label}");
+        assert_eq!(
+            savings.by_model[0].estimated_cost_saved_usd, None,
+            "{label}"
+        );
+        assert_eq!(savings.estimated_cost_saved_usd, 0.0, "{label}");
+        assert_eq!(savings.unpriced_tokens_saved, 1_000_000, "{label}");
+        let rendered = format!("{scan:?}{savings:?}");
+        assert!(
+            rendered
+                .chars()
+                .all(|character| character.is_ascii_graphic() || character == ' '),
+            "{label}"
+        );
+    }
+
+    #[test]
+    fn test_every_control_byte_in_model_id_is_rejected_and_unpriced() {
+        let control_bytes = (0x00_u32..=0x1f).chain([0x7f]).chain(0x80..=0x9f);
+        for byte in control_bytes {
+            let control = char::from_u32(byte).expect("control code points are scalar values");
+            // Appending to a priced id proves the price is not applied.
+            for model in [
+                format!("synthetic-large{control}"),
+                format!("{control}synthetic-large"),
+                format!("synthetic{control}-large"),
+                control.to_string(),
+            ] {
+                assert_bucketed_as_unknown(&model);
+            }
+        }
+    }
+
+    #[test]
+    fn test_escape_sequences_oversized_and_invisible_model_ids_are_rejected() {
+        let oversized = "m".repeat(200);
+        let padded_priced = format!("synthetic-large{}", "-".repeat(MAX_MODEL_ID_BYTES));
+        for model in [
+            "\u{1b}]52;c;c3ludGhldGlj\u{07}",
+            "\u{1b}[2Jsynthetic-large",
+            "synthetic-large\u{1b}]8;;https://example.invalid\u{1b}\\link\u{1b}]8;;\u{1b}\\",
+            "\u{9b}2Jsynthetic-large",
+            "synthetic-large\0",
+            "synthetic-large\u{fffd}",
+            "synthetic-large\u{202e}",
+            "synthetic-large\u{200b}",
+            "synthetic large",
+            "synthétic-large",
+            oversized.as_str(),
+            padded_priced.as_str(),
+        ] {
+            assert_bucketed_as_unknown(model);
+        }
+    }
+
+    #[test]
+    fn test_plain_model_id_at_length_limit_is_kept() {
+        let longest = "m".repeat(MAX_MODEL_ID_BYTES);
+        let (scan, savings) = hostile_model_savings(&longest);
+        assert_eq!(scan.model_ids_rejected, 0);
+        assert_eq!(savings.by_model[0].model, longest);
+
+        let (scan, savings) = hostile_model_savings("synthetic-large");
+        assert_eq!(scan.model_ids_rejected, 0);
+        assert_eq!(savings.by_model[0].estimated_cost_saved_usd, Some(2.0));
     }
 
     #[test]
