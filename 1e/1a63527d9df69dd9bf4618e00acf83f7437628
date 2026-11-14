@@ -1,0 +1,49 @@
+rust/compresso-cli/src/lib.rs
+  s_e2da226df94350::t_cc97832ad0ceb6 4
+rust/compresso-cli/examples/surface_inventory.rs
+  s_e2da226df94350::t_fc2c0760a43c2c 1-20
+rust/compresso-cli/src/surface.rs
+  s_e2da226df94350::t_fa55beeb0e1cf4 1-178,180-189
+  s_e2da226df94350::t_508acd978a3105 179
+  s_e2da226df94350::t_668f1043acb8f0 190
+rust/compresso-mcp/src/lib.rs
+  s_e2da226df94350::t_491a4c61bbad0a 10
+rust/compresso-mcp/src/server.rs
+  s_e2da226df94350::t_e97a6b8a90c847 490-497
+scripts/doc-drift-lint.config.json
+  s_e2da226df94350::t_0a5141bf043298 1-7,12-151
+  s_e2da226df94350::t_1900175d8645d1 8-11
+scripts/doc-drift-lint.test.ts
+  s_e2da226df94350::t_889f755262066d 74,76,81
+  s_e2da226df94350::t_b741660dca2ef9 1-4,6-73,75,77-80,82-87,90-112,115-141,143-147,150-169,172-192,195-209,212-233,236-273,276-303,306-378,380-389,392-431,433-456
+  s_e2da226df94350::t_0153f89ceaea79 142,432
+  s_e2da226df94350::t_164efd238a8c96 5,88-89,113-114,148-149,170-171,193-194,210-211,234-235,274-275,304-305,379,390-391
+scripts/doc-drift-lint.ts
+  s_e2da226df94350::t_b0ed5c314be951 852-862
+  s_e2da226df94350::t_1900175d8645d1 88-89,291
+  s_e2da226df94350::t_ed068d184cca29 1-87,90-114,116-290,292-451,453,474-711,755-777,786-851,863-1064
+  s_e2da226df94350::t_13d81d8d5c97b9 712-754
+  s_e2da226df94350::t_bb208a762515c1 778-785
+  s_e2da226df94350::t_09802d0c1b3878 452,454-473
+  s_e2da226df94350::t_8eeb56d70f12ec 115
+docs/architecture/doc-drift-lint.md
+  s_e2da226df94350::t_2d5d04e4f31019 1-78
+.github/workflows/ci.yml
+  s_e2da226df94350::t_bdd4c0ded49e3e 52-58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1e1a63527d9df69dd9bf4618e00acf83f7437628",
+  "prompts": {},
+  "sessions": {
+    "s_e2da226df94350": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a4ace18-3be7-440c-984c-7cf6854c84ee",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
