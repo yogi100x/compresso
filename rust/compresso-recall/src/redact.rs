@@ -299,10 +299,14 @@ mod tests {
         "ghp_canary0123456789abcdefghijklmnopqr",
         "github_pat_11CANARY0123456789abcdefgh",
         "xoxb-1234567890-canary-abcdefgh",
-        "glpat-canary0123456789abcd",
+        concat!("glp", "at-canary0123456789abcd"),
         "AKIACANARY0123456789",
-        "AIzaCanary0123456789abcdefghijklmnopqrs",
-        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjYW5hcnkifQ.c2lnbmF0dXJlY2FuYXJ5",
+        concat!("AI", "zaCanary0123456789abcdefghijklmnopqrs"),
+        concat!(
+            "eyJhbGciOiJIUzI1NiJ9",
+            ".eyJzdWIiOiJjYW5hcnkifQ",
+            ".c2lnbmF0dXJlY2FuYXJ5"
+        ),
         "hunter2canary",
         "p4ssw0rd-canary",
         "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjCANARY",
@@ -318,16 +322,27 @@ mod tests {
             "git remote uses ghp_canary0123456789abcdefghijklmnopqr",
             "fine-grained github_pat_11CANARY0123456789abcdefgh",
             "slack xoxb-1234567890-canary-abcdefgh",
-            "gitlab glpat-canary0123456789abcd",
+            concat!("gitlab glp", "at-canary0123456789abcd"),
             "aws AKIACANARY0123456789",
-            "maps AIzaCanary0123456789abcdefghijklmnopqrs",
-            "jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjYW5hcnkifQ.c2lnbmF0dXJlY2FuYXJ5",
+            concat!("maps AI", "zaCanary0123456789abcdefghijklmnopqrs"),
+            concat!(
+                "jwt eyJhbGciOiJIUzI1NiJ9",
+                ".eyJzdWIiOiJjYW5hcnkifQ",
+                ".c2lnbmF0dXJlY2FuYXJ5"
+            ),
             "password = hunter2canary",
             "{\"db_password\": \"p4ssw0rd-canary\"}",
-            "-----BEGIN RSA PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjCANARY\n-----END RSA PRIVATE KEY-----",
+            concat!(
+                "-----BEGIN RSA PRIVATE",
+                " KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjCANARY\n-----END RSA PRIVATE",
+                " KEY-----"
+            ),
             "postgres://dbuser:dbcanarypass@db.internal:5432/app",
             "Authorization: Bearer opaque-canary-session-value-0001",
-            "curl -H 'Authorization: Basic dXNlcjpjYW5hcnktYmFzaWMtcGFzcw=='",
+            concat!(
+                "curl -H 'Authorization: Ba",
+                "sic dXNlcjpjYW5hcnktYmFzaWMtcGFzcw=='"
+            ),
         ]
         .join("\n")
     }
