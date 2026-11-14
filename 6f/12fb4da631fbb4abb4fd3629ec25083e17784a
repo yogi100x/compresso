@@ -1,0 +1,29 @@
+rust/compresso-mcp/src/server.rs
+  s_f3ae5462f697a3::t_8351f0bfa3aae6 569-571,575,878-888
+scripts/doc-drift-lint.test.ts
+  s_e0fbad52509c45::t_3d830fec62fbae 193-205
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6f12fb4da631fbb4abb4fd3629ec25083e17784a",
+  "prompts": {},
+  "sessions": {
+    "s_e0fbad52509c45": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "818f78e1-a0e8-4caa-ba80-970087e90a68",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_f3ae5462f697a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7cc607c-32b2-4e30-bc4c-55ff6e2d2dd7",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}

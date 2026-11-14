@@ -1,0 +1,23 @@
+installers/tests/install_local_test.sh
+  s_f3ae5462f697a3::t_f9845294133ff3 274-310,320
+docs/runbooks/install-local.md
+  s_f3ae5462f697a3::t_82da057965c1d3 38-39
+installers/install-local.sh
+  s_f3ae5462f697a3::t_8cf43f57f48679 54-56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cc08683309249d7aec0f61ce36fe97cbbf53433e",
+  "prompts": {},
+  "sessions": {
+    "s_f3ae5462f697a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7cc607c-32b2-4e30-bc4c-55ff6e2d2dd7",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}

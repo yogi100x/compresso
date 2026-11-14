@@ -1,0 +1,31 @@
+rust/compresso-recall/src/search.rs
+  s_3a7f400bc8e448::t_a0f4cb850be2da 11,263-271,318-323
+rust/compresso-recall/src/sources.rs
+  s_3a7f400bc8e448::t_075070f8f22256 78-93,95-107,141-159,249-251,272,294
+rust/compresso-recall/tests/recall_search.rs
+  s_1be76dfb38fcd9::t_953f952a2013ff 503-573
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "664cd75dfa6eec8ee7fe72561f0a7ceca30c6a82",
+  "prompts": {},
+  "sessions": {
+    "s_1be76dfb38fcd9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "16d10747-b9ab-4709-91f1-e6b74cd6fa42",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_3a7f400bc8e448": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7e88250-1293-4180-b9fb-7d8f1a0b2ec1",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
