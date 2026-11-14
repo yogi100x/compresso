@@ -234,7 +234,7 @@ impl<'a> Indexer<'a> {
                             path: relative.to_path_buf(),
                         });
                     }
-                    return Err(failure.error);
+                    return Err(*failure.error);
                 }
             };
             if prepared.parsed {
@@ -322,21 +322,23 @@ struct PreparedFile {
 /// A preparation failure plus whether parsing had begun, so the committing
 /// thread can replay the same progress events a serial run would emit.
 struct PrepareFailure {
-    error: AtlasError,
+    // Boxed: `AtlasError` carries paths, which push the `Err` variant past
+    // clippy's `result_large_err` threshold on Windows.
+    error: Box<AtlasError>,
     parsing_started: bool,
 }
 
 impl PrepareFailure {
     fn before_parse(error: impl Into<AtlasError>) -> Self {
         Self {
-            error: error.into(),
+            error: Box::new(error.into()),
             parsing_started: false,
         }
     }
 
     fn during_parse(error: impl Into<AtlasError>) -> Self {
         Self {
-            error: error.into(),
+            error: Box::new(error.into()),
             parsing_started: true,
         }
     }
@@ -919,7 +921,7 @@ mod tests {
         // release the budget before the next file can be dispatched.
         let mut committed = Vec::new();
         prepare_in_parallel(&context, &candidates, 4, 1, |index, outcome| {
-            let prepared = outcome.map_err(|failure| failure.error)?;
+            let prepared = outcome.map_err(|failure| *failure.error)?;
             committed.push((index, prepared.record.path));
             Ok(())
         })
