@@ -7,6 +7,7 @@ pub use compresso_eval::cli::CliExitCode;
 use compresso_eval::cli::EvalCommand;
 use compresso_store::Store;
 
+mod decisions;
 mod doctor;
 mod engine;
 mod index;
@@ -17,6 +18,9 @@ mod repos;
 mod retrieval;
 mod setup;
 
+pub use decisions::{
+    DecisionsArgs, PostError, PullRequestPoster, SystemPullRequestPoster, execute_decisions,
+};
 pub use doctor::{ConfigExplainArgs, ConfigModeArg, DiagnosticEnvironment, DoctorArgs};
 pub use engine::{CompressArgs, ExplainArgs, StatsArgs};
 pub use index::IndexArgs;
@@ -60,6 +64,8 @@ pub enum RootCommand {
     Stats(StatsArgs),
     /// Search past local session transcripts without a persistent index.
     Recall(RecallArgs),
+    /// Draft a pull request comment from a session's recorded decisions.
+    Decisions(DecisionsArgs),
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
@@ -254,6 +260,27 @@ pub fn execute(
         RootCommand::Mcp { command } => mcp::execute(command, errors),
         RootCommand::Eval { command } => compresso_eval::cli::execute(command, output, errors),
         RootCommand::Account { command } => execute_account(command, account, output, errors),
+        RootCommand::Decisions(arguments) => {
+            let store = match Store::open_default() {
+                Ok(store) => store,
+                Err(_) => {
+                    let _ = write_error(
+                        errors,
+                        "internal",
+                        "failed to open the local Compresso store",
+                        arguments.output.json,
+                    );
+                    return CliExitCode::Failure;
+                }
+            };
+            execute_decisions(
+                arguments,
+                &store,
+                &SystemPullRequestPoster::from_environment(),
+                output,
+                errors,
+            )
+        }
         RootCommand::Recall(arguments) => {
             let Some(environment) = RecallEnvironment::system() else {
                 let _ = write_error(
@@ -470,6 +497,13 @@ pub fn execute_with_store_and_input(
         }
         RootCommand::Eval { command } => compresso_eval::cli::execute(command, output, errors),
         RootCommand::Account { command } => execute_account(command, account, output, errors),
+        RootCommand::Decisions(arguments) => execute_decisions(
+            arguments,
+            store,
+            &SystemPullRequestPoster::from_environment(),
+            output,
+            errors,
+        ),
         RootCommand::Recall(arguments) => {
             let _ = write_error(
                 errors,
@@ -762,6 +796,7 @@ impl RootCommand {
             Self::Explain(arguments) => arguments.output.json,
             Self::Stats(arguments) => arguments.output.json,
             Self::Recall(arguments) => arguments.output.json,
+            Self::Decisions(arguments) => arguments.output.json,
             Self::Config { command } => match command {
                 ConfigCommand::Explain(arguments) => arguments.output.json,
             },

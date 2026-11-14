@@ -33,6 +33,7 @@ fn test_canonical_command_snapshot() {
             "explain",
             "stats",
             "recall",
+            "decisions",
             "config",
             "mcp",
             "integrations",
