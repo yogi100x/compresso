@@ -1,0 +1,14 @@
+rust/compresso-atlas/src/indexer.rs
+  h_3f7cbffd44cc1b 4,426-448,452,465,476-480,496,500,515,520-526,537-538,540-542,975-1005
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e600a301b661406545ed02a722f6a624879472ce",
+  "prompts": {},
+  "humans": {
+    "h_3f7cbffd44cc1b": {
+      "author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
