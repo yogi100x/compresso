@@ -454,11 +454,19 @@ async fn test_read_refuses_files_the_scanner_excludes() {
     write_file(&root, "src/added_later.rs", "pub fn added_later() {}\n");
     let mut harness = Harness::start(store).await;
 
-    for path in [
+    // A link inside the repository must not reach excluded content either.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(root.join("private"), root.join("alias"))
+        .expect("symlink should be created");
+    let mut paths = vec![
         "private/notes.txt",
         "settings.local",
         "node_modules/pkg/index.js",
-    ] {
+    ];
+    if cfg!(unix) {
+        paths.push("alias/notes.txt");
+    }
+    for path in paths {
         for arguments in [
             json!({ "path": path, "max_tokens": 800 }),
             json!({ "path": path, "start_line": 1 }),

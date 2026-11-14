@@ -607,6 +607,24 @@ fn configure_ignore_filters(builder: &mut WalkBuilder, respect_gitignore: bool) 
 /// content the index was never allowed to hold. Like the scanner, it ignores
 /// rules outside the repository (global and parent ignore files).
 pub fn is_scanner_excluded(root: &Path, relative: &Path) -> bool {
+    if is_excluded_by_policy(root, relative) {
+        return true;
+    }
+    // The request may reach an excluded file through a symbolic link or, on a
+    // case-insensitive file system, different casing. The resolved path is the
+    // one the scanner would have judged.
+    let (Ok(real_root), Ok(real_path)) = (
+        fs::canonicalize(root),
+        fs::canonicalize(root.join(relative)),
+    ) else {
+        return false;
+    };
+    real_path
+        .strip_prefix(&real_root)
+        .is_ok_and(|real_relative| is_excluded_by_policy(&real_root, real_relative))
+}
+
+fn is_excluded_by_policy(root: &Path, relative: &Path) -> bool {
     if is_secret_path(relative) {
         return true;
     }
@@ -619,9 +637,24 @@ pub fn is_scanner_excluded(root: &Path, relative: &Path) -> bool {
     {
         return true;
     }
-    // The deepest `.gitignore` wins, so a nested file can re-include a path
-    // that an outer one ignores.
-    for directory in parent.ancestors() {
+    // Git never re-includes a path below an excluded directory, so every
+    // containing directory is judged first, outermost first.
+    let mut directories = parent
+        .ancestors()
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .collect::<Vec<_>>();
+    directories.reverse();
+    directories
+        .into_iter()
+        .any(|directory| is_gitignored(root, directory, true))
+        || is_gitignored(root, relative, false)
+}
+
+/// Whether the `.gitignore` files above `relative` ignore it. The deepest
+/// file with a matching rule decides, so a nested file can re-include a path
+/// an outer one ignores.
+fn is_gitignored(root: &Path, relative: &Path, is_directory: bool) -> bool {
+    for directory in relative.ancestors().skip(1) {
         let ignore_file = root.join(directory).join(".gitignore");
         if !ignore_file.is_file() {
             continue;
@@ -630,7 +663,7 @@ pub fn is_scanner_excluded(root: &Path, relative: &Path) -> bool {
         let Ok(within) = relative.strip_prefix(directory) else {
             continue;
         };
-        let matched = matcher.matched_path_or_any_parents(within, false);
+        let matched = matcher.matched(within, is_directory);
         if matched.is_ignore() {
             return true;
         }
@@ -888,6 +921,34 @@ mod tests {
         assert!(!excluded("scratch.tmp"));
         assert!(!excluded("src/lib.rs"));
         assert!(!excluded("target"));
+    }
+
+    #[test]
+    fn test_single_path_exclusion_cannot_be_bypassed() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let root = directory.path();
+        fs::create_dir_all(root.join("private/inner")).expect("directories should be created");
+        fs::create_dir_all(root.join("node_modules/pkg")).expect("directories should be created");
+        fs::write(root.join(".gitignore"), "private/\n").expect("ignore file written");
+        // Git never re-includes a file whose parent directory is excluded.
+        fs::write(root.join("private/inner/.gitignore"), "!notes.txt\n")
+            .expect("nested ignore file written");
+        fs::write(root.join("private/inner/notes.txt"), "x").expect("file written");
+        fs::write(root.join("node_modules/pkg/index.js"), "x").expect("file written");
+        let excluded = |path: &str| is_scanner_excluded(root, Path::new(path));
+
+        assert!(excluded("private/inner/notes.txt"));
+        // A case-insensitive file system resolves a differently-cased request
+        // to the excluded file; a case-sensitive one has no such file.
+        for path in ["Node_Modules/pkg/index.js", "PRIVATE/inner/notes.txt"] {
+            assert!(!root.join(path).exists() || excluded(path));
+        }
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("private"), root.join("alias"))
+                .expect("symlink should be created");
+            assert!(excluded("alias/inner/notes.txt"));
+        }
     }
 
     #[test]
