@@ -25,10 +25,16 @@ README.md
   s_b8d866055f9e9b::t_a63f3c6045f22a 28-40
 docs/integrations/compaction-reminder.md
   s_b8d866055f9e9b::t_79f4385e4be0d3 28-63,73-80,86-88,124-125,139,141-142
+  s_e2da226df94350::t_126e2b79ee2f41 27,140
 docs/plan/03-interfaces.md
   s_b8d866055f9e9b::t_a6b2b0857325c4 335-336,338-339
+  s_e2da226df94350::t_126e2b79ee2f41 337
 packages/cli-distribution/README.md
   s_b8d866055f9e9b::t_cd12464d86de06 26-28
+docs/plan/04-mcp-and-integrations.md
+  s_e2da226df94350::t_126e2b79ee2f41 583
+docs/plan/05-tickets.md
+  s_e2da226df94350::t_126e2b79ee2f41 2711
 ---
 {
   "schema_version": "authorship/3.0.0",
