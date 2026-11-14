@@ -432,6 +432,7 @@ dependencies = [
  "criterion",
  "jsonschema",
  "rmcp",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
