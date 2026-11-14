@@ -319,10 +319,10 @@ pub trait Integration {
     fn verify(&self) -> VerificationReport;              // config parses + compresso server entry resolves to existing binary
     fn uninstall(&self, receipt: &InstallReceipt) -> Result<RestoreReport>; // remove owned keys only; restore semantics per adapter spec
 }
-pub struct InstallCtx { pub compresso_bin: PathBuf, pub scope: Scope }  // normalized absolute lexical launcher path; Scope::User | Scope::Project(PathBuf)
+pub struct InstallCtx { pub compresso_bin: PathBuf, pub scope: Scope, pub session_recall: bool }  // normalized absolute lexical launcher path; Scope::User | Scope::Project(PathBuf); recall over the client's own transcripts (D75)
 ```
 
-Per-client config details in `04-mcp-and-integrations.md` §2. User-scoped entries use `mcp serve`; project-scoped Claude Code/Cursor entries pin `--root CANONICAL_ROOT`. Claude Desktop: explicitly no adapter (D5).
+Per-client config details in `04-mcp-and-integrations.md` §2. User-scoped entries use `mcp serve`; project-scoped Claude Code/Cursor entries pin `--root CANONICAL_ROOT`. With `session_recall` (the CLI default; `--no-recall` clears it) Claude Code and Codex entries end in `--recall-source <own client>`; Cursor ignores it. Claude Desktop: explicitly no adapter (D5).
 
 PB-03 CLI orchestration adds deterministic `compresso repos list`, exact and
 confirmable `compresso repos remove ROOT`, and `compresso setup CLIENT ROOT`.

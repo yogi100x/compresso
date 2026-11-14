@@ -332,6 +332,7 @@ impl PreparedSetupInstall {
 pub(crate) fn prepare_setup_install(
     client: IntegrationClientArg,
     project: Option<&Path>,
+    session_recall: bool,
     environment: &IntegrationEnvironment,
     clock: Arc<dyn PlanClock>,
 ) -> Result<PreparedSetupInstall, IntegrationCliError> {
@@ -345,6 +346,7 @@ pub(crate) fn prepare_setup_install(
         &InstallCtx {
             compresso_bin: launcher_path.clone(),
             scope: scope.clone(),
+            session_recall,
         },
     )?;
     Ok(PreparedSetupInstall {
@@ -366,6 +368,12 @@ fn execute_mutation(
     output: &mut impl Write,
     errors: &mut impl Write,
 ) -> Result<(), IntegrationCliError> {
+    if arguments.no_recall && action == MutationAction::Uninstall {
+        return Err(IntegrationCliError::new(
+            "invalid_arguments",
+            "--no-recall applies only to `integrations install`; uninstall removes the whole Compresso entry",
+        ));
+    }
     let scope = resolve_scope(arguments.project.as_deref(), &environment.cwd)?;
     let selected = SelectedIntegration::new(
         arguments.client,
@@ -396,6 +404,7 @@ fn execute_mutation(
                     .clone()
                     .expect("install actions validate a launcher"),
                 scope: scope.clone(),
+                session_recall: !arguments.no_recall,
             },
         )?,
         MutationAction::Uninstall => {

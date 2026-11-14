@@ -154,6 +154,7 @@ fn install(adapter: &dyn Integration, launcher: &Path, session: &str) {
             &InstallCtx {
                 compresso_bin: launcher.to_path_buf(),
                 scope: Scope::User,
+                session_recall: false,
             },
         )
         .expect("install plan should be created");

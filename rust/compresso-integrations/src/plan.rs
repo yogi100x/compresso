@@ -42,6 +42,10 @@ pub struct InstallCtx {
     pub compresso_bin: PathBuf,
     /// Selected config scope.
     pub scope: Scope,
+    /// Whether the server entry also enables session recall over this
+    /// client's own transcripts (`--recall-source <client>`). Adapters whose
+    /// client has no supported transcript source ignore it.
+    pub session_recall: bool,
 }
 
 /// Coding-client detection result.
@@ -2213,7 +2217,17 @@ fn safe_toml_args_value(value: Option<&toml_edit::Array>) -> String {
     safe_args_value(&arguments)
 }
 
-fn safe_args_value(arguments: &[&str]) -> String {
+fn safe_args_value(all_arguments: &[&str]) -> String {
+    // An adapter-written recall suffix is a closed set, so it is safe to show.
+    let arguments = match all_arguments {
+        [base @ .., flag, source]
+            if *flag == crate::server_entry::RECALL_SOURCE_FLAG
+                && crate::server_entry::is_recall_source(source) =>
+        {
+            base
+        }
+        _ => all_arguments,
+    };
     let safe = arguments == ["mcp", "serve"]
         || (arguments.len() == 4
             && arguments[..3] == ["mcp", "serve", "--root"]
@@ -2224,7 +2238,7 @@ fn safe_args_value(arguments: &[&str]) -> String {
     }
     format!(
         "[{}]",
-        arguments
+        all_arguments
             .iter()
             .map(|value| quoted_preview_value(value))
             .collect::<Vec<_>>()

@@ -81,6 +81,11 @@ pub struct SetupArgs {
     /// Apply the combined displayed plan without an interactive prompt.
     #[arg(long)]
     pub yes: bool,
+    /// Configure the MCP server without session recall. By default the server
+    /// entry enables the `compresso_recall` tool over this client's own local
+    /// transcripts (Claude Code and Codex only).
+    #[arg(long)]
+    pub no_recall: bool,
 }
 
 /// Executes setup against injected local state and integration paths.
@@ -160,6 +165,7 @@ fn execute_inner(
     let prepared = prepare_setup_install(
         arguments.client.integration_client(),
         arguments.client.project(&root),
+        !arguments.no_recall,
         environment,
         Arc::clone(&clock),
     )
@@ -169,6 +175,7 @@ fn execute_inner(
         root,
         repository: index_preview,
         integration: prepared.plan().clone(),
+        session_recall: !arguments.no_recall,
     };
 
     if arguments.dry_run {
@@ -370,6 +377,9 @@ struct SetupPlan {
     root: PathBuf,
     repository: IndexRendered,
     integration: MutationPlan,
+    /// Whether the approved server entry enables session recall, so recovery
+    /// text never re-enables what `--no-recall` turned off.
+    session_recall: bool,
 }
 
 fn render_plan(
@@ -460,7 +470,12 @@ fn fail_after_index(
     json_output: bool,
     failure: IntegrationFailure<'_>,
 ) -> Result<(), SetupCliError> {
-    let recovery = partial_failure_recovery(plan.client, failure.cause_code, failure.cause_message);
+    let recovery = partial_failure_recovery(
+        plan.client,
+        plan.session_recall,
+        failure.cause_code,
+        failure.cause_message,
+    );
     if json_output {
         render_plan(
             output,
@@ -519,13 +534,17 @@ impl IntegrationFailureStage {
 
 fn partial_failure_recovery(
     client: SetupClientArg,
+    session_recall: bool,
     cause_code: &str,
     cause_message: &str,
 ) -> String {
+    // `integrations install` enables recall by default, so the recovery
+    // command repeats an opt-out the user gave to setup.
+    let no_recall = if session_recall { "" } else { " --no-recall" };
     let integration_command = match client {
-        SetupClientArg::Codex => "compresso integrations install codex --yes".to_owned(),
+        SetupClientArg::Codex => format!("compresso integrations install codex --yes{no_recall}"),
         SetupClientArg::ClaudeCode | SetupClientArg::Cursor => format!(
-            "compresso integrations install {} --project <repository-root> --yes",
+            "compresso integrations install {} --project <repository-root> --yes{no_recall}",
             client.as_str()
         ),
     };

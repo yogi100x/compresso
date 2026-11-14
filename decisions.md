@@ -100,6 +100,7 @@ Updated: 2026-11-14. Source: `compresso-build.md` + owner Q&A. Every item here i
 | D72 | Transcript savings and local price table (ADR-0029) | Savings can be derived from client transcripts; cost is priced once at the base input rate from a checked-in, versioned price table that is never fetched; unknown or unsafe model ids are never priced or echoed. Table rows are verified against the published pricing page before each table version |
 | D73 | Public benchmark names in code | `swe-bench-verified` and `terminal-bench` may appear as campaign adapter names in code and docs: they name public benchmark suites, not third-party coding tools, so the product-name neutralization rule does not apply |
 | D74 | One recall crate | E15-14..16 indexed recall extends the `compresso-recall` crate delivered by E17-02 rather than creating a second crate; the index-free path remains the default |
+| D75 | Session recall on by default at install | Owner decision 2026-11-14. `compresso integrations install` and `compresso setup` write `--recall-source <own client>` into the Claude Code and Codex server entries, so `compresso_recall` is served without a manual flag. Each client gets only its own transcripts; Cursor gets none. `--no-recall` opts out. The flag lives inside the receipt-owned entry (previewed, hashed, reversible). Recall stays repository-scoped, read-only, redacted, index-free, and upload-free. The health probe launches a recall-bearing entry only with a matching receipt |
 
 ## 6. Owner hard constraints (never override without new owner decision)
 

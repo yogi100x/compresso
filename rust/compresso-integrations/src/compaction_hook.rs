@@ -424,6 +424,7 @@ mod tests {
             InstallCtx {
                 compresso_bin: self.compresso.clone(),
                 scope,
+                session_recall: false,
             }
         }
 
@@ -565,6 +566,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: moved.clone(),
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect("upgrade plan");

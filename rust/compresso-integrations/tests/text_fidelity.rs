@@ -257,6 +257,7 @@ impl Harness {
                 &InstallCtx {
                     compresso_bin: self.compresso_binary.clone(),
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .unwrap_or_else(|error| panic!("{:?} install plan failed: {error}", self.client));

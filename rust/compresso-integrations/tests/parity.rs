@@ -155,6 +155,7 @@ impl Harness {
         InstallCtx {
             compresso_bin: self.compresso_binary.clone(),
             scope: Scope::User,
+            session_recall: false,
         }
     }
 

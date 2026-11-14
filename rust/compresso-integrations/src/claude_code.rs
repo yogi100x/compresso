@@ -10,6 +10,7 @@ use std::path::{Component, Path, PathBuf};
 use serde_json::{Map, Value, json};
 
 use crate::plan::MutationRequest;
+use crate::server_entry::{is_adapter_args, with_recall_source};
 use crate::text_fidelity::strip_bom;
 use crate::{
     ConfigFormat, Detection, InstallCtx, InstallReceipt, Integration, IntegrationError,
@@ -171,7 +172,10 @@ impl Integration for ClaudeCodeIntegration {
     ) -> Result<MutationPlan, IntegrationError> {
         let config_path = self.mutation_config_path(&context.scope)?;
         let command = resolved_compresso_command(&context.compresso_bin)?;
-        let args = expected_server_args(&context.scope)?;
+        let mut args = expected_server_args(&context.scope)?;
+        if context.session_recall {
+            args = with_recall_source(args, CLIENT_ID);
+        }
         let mut document = read_json_object(&config_path)?;
         let servers = object_at_or_insert(&mut document, "mcpServers")?;
         servers.insert(
@@ -486,6 +490,8 @@ fn expected_server_args(scope: &Scope) -> Result<Vec<String>, IntegrationError> 
     Ok(args)
 }
 
+/// `expected_args` is the base vector for the scope. The entry may also end
+/// in this client's own recall source, which install writes unless disabled.
 fn is_exact_server_entry(value: &Value, expected_args: &[String]) -> bool {
     let Some(entry) = value.as_object() else {
         return false;
@@ -495,7 +501,10 @@ fn is_exact_server_entry(value: &Value, expected_args: &[String]) -> bool {
             .get("command")
             .and_then(Value::as_str)
             .is_some_and(|command| Path::new(command).is_absolute())
-        && entry.get("args") == Some(&json!(expected_args))
+        && entry
+            .get("args")
+            .and_then(|args| serde_json::from_value::<Vec<String>>(args.clone()).ok())
+            .is_some_and(|args| is_adapter_args(&args, expected_args, CLIENT_ID))
 }
 
 pub(crate) fn is_executable_file(path: &Path) -> bool {
@@ -648,6 +657,7 @@ mod tests {
                     &InstallCtx {
                         compresso_bin: self.compresso.clone(),
                         scope,
+                        session_recall: false,
                     },
                 )
                 .expect("install plan");
@@ -710,6 +720,7 @@ mod tests {
                     &InstallCtx {
                         compresso_bin: path,
                         scope: Scope::User,
+                        session_recall: false,
                     },
                 )
                 .expect_err("non-normalized launcher path rejected");
@@ -903,6 +914,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect_err("user config symlink rejected before planning");
@@ -964,6 +976,7 @@ mod tests {
                     &InstallCtx {
                         compresso_bin: harness.compresso.clone(),
                         scope: Scope::User,
+                        session_recall: false,
                     },
                 )
                 .expect_err("unsafe user home rejected");
@@ -1050,6 +1063,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: Scope::Project(harness.project.clone()),
+                    session_recall: false,
                 },
             )
             .expect_err("project config symlink rejected before planning");
@@ -1187,6 +1201,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: Scope::Project(missing_root.clone()),
+                    session_recall: false,
                 },
             )
             .expect_err("missing project rejected");
@@ -1224,6 +1239,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: scope.clone(),
+                    session_recall: false,
                 },
             )
             .expect("project install plan does not inspect user home");
@@ -1367,6 +1383,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect_err("malformed config rejected");
@@ -1392,6 +1409,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect("install plan");
@@ -1472,6 +1490,7 @@ mod tests {
                 &InstallCtx {
                     compresso_bin: harness.compresso.clone(),
                     scope: Scope::User,
+                    session_recall: false,
                 },
             )
             .expect("repeat install plan");

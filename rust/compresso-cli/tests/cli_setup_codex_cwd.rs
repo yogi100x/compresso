@@ -25,7 +25,11 @@ fn test_global_codex_setup_binds_each_launched_session_from_its_cwd() {
     );
 
     let configured = configured_server(&fixture.codex_config);
-    assert_eq!(configured.args, ["mcp", "serve"]);
+    assert_eq!(
+        configured.args,
+        ["mcp", "serve", "--recall-source", "codex"],
+        "setup enables recall over Codex transcripts only, and pins no root"
+    );
     assert!(
         !configured.args.iter().any(|argument| argument == "--root"),
         "the global Codex entry must let each session bind from its own cwd"
