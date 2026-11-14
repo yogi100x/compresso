@@ -16,8 +16,8 @@ pub use queries::{
     repo_map_focused, repository_stale, search, unfold,
 };
 pub use scanner::{
-    AtlasError, ScanError, ScanOptions, ScanResult, SkipReason, scan, scan_with_concurrency,
-    scan_with_options,
+    AtlasError, ScanError, ScanOptions, ScanResult, SkipReason, is_scanner_excluded, scan,
+    scan_with_concurrency, scan_with_options,
 };
 pub use search::{
     SEARCH_MIN_QUERY_CHARS, SearchDiagnostic, SearchDiagnosticCode, SearchOptions, SearchReport,

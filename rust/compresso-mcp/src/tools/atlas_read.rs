@@ -1,5 +1,5 @@
 use compresso_atlas::{
-    SearchHit, SearchOptions, plan_context, read_bounded, repository_stale,
+    SearchHit, SearchOptions, is_scanner_excluded, plan_context, read_bounded, repository_stale,
     search_with_diagnostics, validate_search_query,
 };
 use compresso_core::{TokenCounter, operation_identity};
@@ -150,6 +150,20 @@ fn read_tool(
 
     let repository = resolve_repository(store, repository_root, root.as_deref())?;
     validate_repo_path(&repository.root, &path)?;
+    // A direct read follows the scanner's exclusion policy: content the index
+    // was never allowed to hold is not served either. An indexed file is
+    // always readable, so an index built without ignore rules still works.
+    if is_scanner_excluded(&repository.root, Path::new(&path))
+        && store
+            .indexed_file(repository.id, &path)
+            .map_err(|_| ToolFailure::internal())?
+            .is_none()
+    {
+        return Err(ToolFailure::new(
+            "not_found",
+            "The requested file was not found on disk.",
+        ));
+    }
     let counter = navigation_counter();
     let range = read_range(&repository.root, &path, start_line, end_line, counter)?;
     if gate {

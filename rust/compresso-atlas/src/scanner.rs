@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use compresso_store::{RepoId, Store, StoreError};
+use ignore::gitignore::Gitignore;
 use ignore::{DirEntry, WalkBuilder, WalkState};
 
 use crate::concurrency::Concurrency;
@@ -598,15 +599,58 @@ fn configure_ignore_filters(builder: &mut WalkBuilder, respect_gitignore: bool) 
         .sort_by_file_path(Path::cmp);
 }
 
+/// Whether the scanner's own exclusion rules skip `relative` under `root`.
+///
+/// This applies the same policy a scan does to one path, without walking the
+/// tree: a secret-pattern name, a built-in excluded directory, or a match in
+/// a `.gitignore` inside the repository. A direct read can use it to refuse
+/// content the index was never allowed to hold. Like the scanner, it ignores
+/// rules outside the repository (global and parent ignore files).
+pub fn is_scanner_excluded(root: &Path, relative: &Path) -> bool {
+    if is_secret_path(relative) {
+        return true;
+    }
+    let Some(parent) = relative.parent() else {
+        return false;
+    };
+    if parent
+        .components()
+        .any(|component| is_builtin_excluded_name(component.as_os_str()))
+    {
+        return true;
+    }
+    // The deepest `.gitignore` wins, so a nested file can re-include a path
+    // that an outer one ignores.
+    for directory in parent.ancestors() {
+        let ignore_file = root.join(directory).join(".gitignore");
+        if !ignore_file.is_file() {
+            continue;
+        }
+        let (matcher, _) = Gitignore::new(&ignore_file);
+        let Ok(within) = relative.strip_prefix(directory) else {
+            continue;
+        };
+        let matched = matcher.matched_path_or_any_parents(within, false);
+        if matched.is_ignore() {
+            return true;
+        }
+        if matched.is_whitelist() {
+            return false;
+        }
+    }
+    false
+}
+
+fn is_builtin_excluded_name(name: &OsStr) -> bool {
+    name == OsStr::new("node_modules")
+        || name == OsStr::new("target")
+        || name == OsStr::new("dist")
+        || name == OsStr::new(".git")
+}
+
 fn is_builtin_excluded_directory(entry: &DirEntry) -> bool {
     entry.file_type().is_some_and(|kind| kind.is_dir())
-        && matches!(
-            entry.file_name(),
-            name if name == OsStr::new("node_modules")
-                || name == OsStr::new("target")
-                || name == OsStr::new("dist")
-                || name == OsStr::new(".git")
-        )
+        && is_builtin_excluded_name(entry.file_name())
 }
 
 fn is_secret_pattern(relative: &str) -> bool {
@@ -822,6 +866,29 @@ mod tests {
     use super::*;
 
     const EMPTY_BLAKE3: &str = "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262";
+
+    #[test]
+    fn test_single_path_exclusion_matches_the_scan_policy() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let root = directory.path();
+        fs::create_dir_all(root.join("nested/deep")).expect("directories should be created");
+        fs::write(root.join(".gitignore"), "*.log\nprivate/\n").expect("ignore file written");
+        fs::write(root.join("nested/.gitignore"), "!keep.log\n*.tmp\n")
+            .expect("nested ignore file written");
+        let excluded = |path: &str| is_scanner_excluded(root, Path::new(path));
+
+        assert!(excluded("build.log"));
+        assert!(excluded("private/notes.txt"));
+        assert!(excluded("nested/deep/trace.log"));
+        assert!(excluded("nested/deep/scratch.tmp"));
+        assert!(excluded("node_modules/pkg/index.js"));
+        assert!(excluded("crates/target/debug/out.rs"));
+        assert!(excluded(".env"));
+        assert!(!excluded("nested/keep.log"));
+        assert!(!excluded("scratch.tmp"));
+        assert!(!excluded("src/lib.rs"));
+        assert!(!excluded("target"));
+    }
 
     #[test]
     fn test_gitignore_respected() {

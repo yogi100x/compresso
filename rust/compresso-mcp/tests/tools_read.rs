@@ -433,6 +433,53 @@ async fn test_bound_root_retarget_cannot_leak_another_approved_repository() {
 }
 
 #[tokio::test]
+async fn test_read_refuses_files_the_scanner_excludes() {
+    const IGNORED_CONTENT_CANARY: &str = "mcp_ignored_content_canary_7315";
+    let temp = tempfile::tempdir().expect("temporary directory should be created");
+    let root = temp.path().join("repo");
+    write_file(&root, ".gitignore", "private/\n*.local\n");
+    write_file(
+        &root,
+        "src/visible.rs",
+        "pub fn visible_symbol() -> bool { true }\n",
+    );
+    write_file(&root, "private/notes.txt", IGNORED_CONTENT_CANARY);
+    write_file(&root, "settings.local", IGNORED_CONTENT_CANARY);
+    write_file(&root, "node_modules/pkg/index.js", IGNORED_CONTENT_CANARY);
+    let store = Store::open(&temp.path().join("compresso.db")).expect("store should open");
+    Indexer::new(&store, counter_for(TokenProvider::OpenAiO200k))
+        .index(&root, |_| {})
+        .expect("repository should index");
+    // Created after indexing and not excluded: still readable.
+    write_file(&root, "src/added_later.rs", "pub fn added_later() {}\n");
+    let mut harness = Harness::start(store).await;
+
+    for path in [
+        "private/notes.txt",
+        "settings.local",
+        "node_modules/pkg/index.js",
+    ] {
+        for arguments in [
+            json!({ "path": path, "max_tokens": 800 }),
+            json!({ "path": path, "start_line": 1 }),
+            json!({ "path": path, "gate": true }),
+        ] {
+            let response = harness.call("compresso_read", arguments).await;
+            assert_tool_error(&response, "not_found");
+            assert!(!response.to_string().contains(IGNORED_CONTENT_CANARY));
+        }
+    }
+    let response = harness
+        .call(
+            "compresso_read",
+            json!({ "path": "src/added_later.rs", "max_tokens": 800 }),
+        )
+        .await;
+    assert!(response.to_string().contains("added_later"));
+    harness.close().await;
+}
+
+#[tokio::test]
 async fn test_secret_pattern_content_never_reaches_mcp() {
     const SECRET_CONTENT_CANARY: &str = "mcp_secret_content_canary_4628";
     let temp = tempfile::tempdir().expect("temporary directory should be created");
