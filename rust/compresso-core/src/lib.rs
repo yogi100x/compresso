@@ -7,6 +7,7 @@ pub mod graph;
 pub mod provider_conversation;
 pub mod safety;
 pub mod segment;
+pub mod stdio;
 pub mod strategies;
 pub mod strategy;
 pub mod tokens;
@@ -27,6 +28,9 @@ pub use provider_conversation::{
 };
 pub use safety::{SafetyCheck, run_all, run_all_with_removals};
 pub use segment::{SegmentError, segment_graph};
+pub use stdio::{
+    ClosedPipeGuard, StreamError, is_closed_pipe, report_diagnostic, write_diagnostic_line,
+};
 pub use strategies::{CollapseLogs, CompactJson, DedupExact, PackBudget};
 pub use strategy::{
     CompressionBudget, CompressionStrategy, Estimate, Lossiness, Mode, RemovalKind, RemovalRecord,

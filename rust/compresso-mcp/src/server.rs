@@ -3,11 +3,11 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 
 use compresso_core::{
-    Config, Engine, Mode, TokenProvider, TokenizerInitialization, counter_for,
-    initialize_tokenizers,
+    Config, Engine, Mode, StreamError, TokenProvider, TokenizerInitialization, counter_for,
+    initialize_tokenizers, is_closed_pipe, report_diagnostic,
 };
 use compresso_store::{OperationRecord, RepoRecord, Store, StoreError};
 use rmcp::model::{
@@ -22,7 +22,7 @@ use rmcp::transport::Transport;
 use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 use crate::session::{DiagnosticSink, OperationWriter, SessionRuntime};
 
@@ -409,26 +409,36 @@ where
         ),
         None => SessionRuntime::new(deps.0.store.clone()),
     };
-    let transport = ResilientJsonLineTransport::new(reader, writer);
-    let service_result = CompressoServer::new(deps, repository_root, session.clone())
-        .serve(transport)
-        .await;
-    let service = match service_result {
-        Ok(service) => service,
-        Err(ServerInitializeError::ConnectionClosed(_)) => {
-            close_session_after_calls(&session).await?;
-            return Ok(());
-        }
-        Err(error) => {
-            close_session_after_calls(&session).await?;
-            return Err(error.into());
-        }
-    };
-    let wait_result = service.waiting().await;
-    let close_result = close_session_after_calls(&session).await;
-    wait_result?;
-    close_result?;
-    Ok(())
+    let output = Arc::new(OutputHealth::default());
+    let transport = ResilientJsonLineTransport::new(reader, writer, Arc::clone(&output));
+    let outcome = async {
+        let service_result = CompressoServer::new(deps, repository_root, session.clone())
+            .serve(transport)
+            .await;
+        let service = match service_result {
+            Ok(service) => service,
+            Err(ServerInitializeError::ConnectionClosed(_)) => {
+                close_session_after_calls(&session).await?;
+                return Ok(());
+            }
+            Err(error) => {
+                close_session_after_calls(&session).await?;
+                return Err(error.into());
+            }
+        };
+        let wait_result = service.waiting().await;
+        let close_result = close_session_after_calls(&session).await;
+        wait_result?;
+        close_result?;
+        Ok(())
+    }
+    .await;
+    // A client that stopped reading is the root cause of whatever else the
+    // service reported, so the typed stream error takes precedence.
+    match output.take_closed() {
+        Some(closed) => Err(closed.into()),
+        None => outcome,
+    }
 }
 
 fn bind_repository_root(store: &Store, source: RootSource) -> anyhow::Result<Option<PathBuf>> {
@@ -473,10 +483,10 @@ async fn close_session_after_calls(session: &SessionRuntime) -> anyhow::Result<(
 
 fn prepare_dependencies(mut deps: McpDeps, startup: TokenizerInitialization) -> PreparedMcpDeps {
     if !startup.all_ready() {
-        eprintln!(
+        report_diagnostic(format_args!(
             "compresso MCP tokenizer initialization failed for {:?}; continuing in passthrough mode with heuristic token accounting",
             startup.fallback
-        );
+        ));
         deps.engine = Engine::new(Mode::Passthrough, counter_for(TokenProvider::Heuristic));
     }
     PreparedMcpDeps(deps)
@@ -638,9 +648,44 @@ fn tool(
     )
 }
 
+/// Records the first write that failed because the client stopped reading.
+///
+/// The MCP runtime logs and discards transport send failures, which would
+/// leave a server answering into a closed pipe until its input also ends.
+/// The transport records the closed pipe here and stops receiving, so the
+/// session shuts down promptly and the caller gets a typed [`StreamError`].
+#[derive(Default)]
+struct OutputHealth {
+    closed: std::sync::Mutex<Option<StreamError>>,
+    stopped: Notify,
+}
+
+impl OutputHealth {
+    /// Records a closed-pipe failure and returns the error to propagate.
+    fn observe(&self, error: io::Error) -> io::Error {
+        if !is_closed_pipe(&error) {
+            return error;
+        }
+        let mut closed = self.closed.lock().unwrap_or_else(PoisonError::into_inner);
+        if closed.is_none() {
+            *closed = Some(StreamError::classify("MCP output", error));
+        }
+        self.stopped.notify_one();
+        io::Error::from(io::ErrorKind::BrokenPipe)
+    }
+
+    fn take_closed(&self) -> Option<StreamError> {
+        self.closed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+}
+
 struct ResilientJsonLineTransport<R, W> {
     reader: BufReader<R>,
     writer: Arc<Mutex<W>>,
+    output: Arc<OutputHealth>,
     buffer: Vec<u8>,
 }
 
@@ -649,10 +694,11 @@ where
     R: AsyncRead + Send + Unpin + 'static,
     W: AsyncWrite + Send + Unpin + 'static,
 {
-    fn new(reader: R, writer: W) -> Self {
+    fn new(reader: R, writer: W, output: Arc<OutputHealth>) -> Self {
         Self {
             reader: BufReader::new(reader),
             writer: Arc::new(Mutex::new(writer)),
+            output,
             buffer: Vec::new(),
         }
     }
@@ -670,19 +716,29 @@ where
         item: TxJsonRpcMessage<RoleServer>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
         let writer = Arc::clone(&self.writer);
+        let output = Arc::clone(&self.output);
         async move {
             let mut frame = serde_json::to_vec(&item).map_err(io::Error::other)?;
             frame.push(b'\n');
             let mut writer = writer.lock().await;
-            writer.write_all(&frame).await?;
-            writer.flush().await
+            let written = match writer.write_all(&frame).await {
+                Ok(()) => writer.flush().await,
+                Err(error) => Err(error),
+            };
+            written.map_err(|error| output.observe(error))
         }
     }
 
     async fn receive(&mut self) -> Option<RxJsonRpcMessage<RoleServer>> {
         loop {
             self.buffer.clear();
-            match self.reader.read_until(b'\n', &mut self.buffer).await {
+            let read = tokio::select! {
+                biased;
+                // The client can no longer be answered: stop taking requests.
+                () = self.output.stopped.notified() => return None,
+                read = self.reader.read_until(b'\n', &mut self.buffer) => read,
+            };
+            match read {
                 Ok(0) => return None,
                 Ok(_) => {}
                 Err(_) => return None,
@@ -696,8 +752,12 @@ where
                 Err(_) => {
                     const PARSE_ERROR: &[u8] = b"{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32700,\"message\":\"Parse error\"}}\n";
                     let mut writer = self.writer.lock().await;
-                    if writer.write_all(PARSE_ERROR).await.is_err() || writer.flush().await.is_err()
-                    {
+                    let written = match writer.write_all(PARSE_ERROR).await {
+                        Ok(()) => writer.flush().await,
+                        Err(error) => Err(error),
+                    };
+                    if let Err(error) = written {
+                        let _reported = self.output.observe(error);
                         return None;
                     }
                 }

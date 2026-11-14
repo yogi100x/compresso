@@ -32,7 +32,7 @@ struct StderrDiagnosticSink;
 
 impl DiagnosticSink for StderrDiagnosticSink {
     fn warn(&self, message: &str) {
-        eprintln!("{message}");
+        compresso_core::report_diagnostic(format_args!("{message}"));
     }
 }
 

@@ -3,6 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use clap::{Args, Parser, Subcommand, error::ErrorKind};
+use compresso_core::ClosedPipeGuard;
 use serde::Serialize;
 
 use crate::{EvalReport, EvalRunError, EvalRunner, FixtureSet, GateReport, Gates};
@@ -99,7 +100,27 @@ pub struct EvalCalibrateArgs {
     pub dry_run: bool,
 }
 
+/// Parses and executes an evaluation command line.
+///
+/// Standard output is guarded: a reader that closed the pipe early yields a
+/// typed `output_closed` error on `errors` and a failure exit, never a panic.
 pub fn run(
+    arguments: impl IntoIterator<Item = OsString>,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> CliExitCode {
+    let mut guarded = ClosedPipeGuard::new(output, "standard output");
+    let code = run_command(arguments, &mut guarded, errors);
+    match guarded.finish() {
+        Ok(()) => code,
+        Err(error) => {
+            let _ = writeln!(errors, "error[{}]: {error}", error.code());
+            CliExitCode::Failure
+        }
+    }
+}
+
+fn run_command(
     arguments: impl IntoIterator<Item = OsString>,
     output: &mut impl Write,
     errors: &mut impl Write,
@@ -344,6 +365,35 @@ fn write_error(output: &mut impl Write, error: &CliError, json: bool) -> std::io
 mod tests {
     use super::*;
     use crate::{AggregateMetrics, FixtureRecallOutcome, RecallProbeOutcome, RecallReport};
+
+    struct ClosedPipe;
+
+    impl Write for ClosedPipe {
+        fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from(std::io::ErrorKind::BrokenPipe))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn test_closed_output_pipe_is_reported_as_typed_failure() {
+        let mut errors = Vec::new();
+
+        let code = run(
+            ["compresso-eval", "--help"].map(OsString::from),
+            &mut ClosedPipe,
+            &mut errors,
+        );
+
+        assert_eq!(code, CliExitCode::Failure);
+        assert_eq!(
+            String::from_utf8(errors).expect("UTF-8 diagnostics"),
+            "error[output_closed]: standard output was closed by its reader before the write completed\n"
+        );
+    }
 
     fn gates_path() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/plan/gates.toml")
