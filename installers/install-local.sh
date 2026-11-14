@@ -15,6 +15,10 @@ Usage: installers/install-local.sh <source>
   - a local directory containing one matching tarball and SHA256SUMS
   - a local compresso-<version>-<target>.tar.gz path
   - an https:// URL to an immutable versioned tarball
+
+A URL source must also serve SHA256SUMS.sigstore.json, which is verified with
+cosign against the Compresso CI identity. A local source is verified the same
+way when that file sits beside SHA256SUMS.
 EOF
 }
 
@@ -59,6 +63,27 @@ download() {
   fi
 }
 
+# The only publisher this installer trusts: the main-branch CI workflow of the
+# Compresso repository, as attested by GitHub's OIDC issuer through Sigstore.
+# These values are fixed here on purpose; nothing fetched from the release
+# origin can change who is trusted.
+signer_identity='https://github.com/yogi100x/compresso/.github/workflows/ci.yml@refs/heads/main'
+signer_issuer='https://token.actions.githubusercontent.com'
+signature_name=SHA256SUMS.sigstore.json
+
+verify_signature() {
+  command -v cosign >/dev/null 2>&1 ||
+    fail "cosign is required to verify $signature_name (see https://docs.sigstore.dev/cosign/system_config/installation/)"
+  cosign verify-blob \
+    --bundle "$work_dir/$signature_name" \
+    --certificate-identity "$signer_identity" \
+    --certificate-oidc-issuer "$signer_issuer" \
+    "$work_dir/SHA256SUMS" >/dev/null 2>"$work_dir/cosign.err" || {
+    cat "$work_dir/cosign.err" >&2
+    fail "signature verification failed for SHA256SUMS; nothing was installed"
+  }
+}
+
 [ "$#" -eq 1 ] || {
   usage >&2
   exit 2
@@ -94,6 +119,10 @@ case "$source" in
     esac
     download "$source" "$work_dir/$archive_name"
     download "$source_base/SHA256SUMS" "$work_dir/SHA256SUMS"
+    # A network release must prove its publisher: the checksum manifest comes
+    # from the same origin as the archive and proves nothing on its own.
+    download "$source_base/$signature_name" "$work_dir/$signature_name"
+    verify_signature
     ;;
   *)
     if [ -d "$source" ]; then
@@ -117,6 +146,13 @@ case "$source" in
     [ -f "$source_dir/SHA256SUMS" ] || fail "missing checksum manifest: $source_dir/SHA256SUMS"
     cp "$archive_source" "$work_dir/$archive_name"
     cp "$source_dir/SHA256SUMS" "$work_dir/SHA256SUMS"
+    if [ -f "$source_dir/$signature_name" ]; then
+      cp "$source_dir/$signature_name" "$work_dir/$signature_name"
+      verify_signature
+    else
+      printf 'install-local: warning: no %s beside the local artifacts; the publisher signature was not verified, only the checksum\n' \
+        "$signature_name" >&2
+    fi
     ;;
 esac
 

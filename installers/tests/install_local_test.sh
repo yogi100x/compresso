@@ -68,6 +68,154 @@ EOF
   printf '%s\n' "$archive"
 }
 
+# Places a stand-in signature bundle beside the checksum manifest.
+sign_release() {
+  printf '%s\n' '{"fixture": "sigstore bundle"}' > "$1/SHA256SUMS.sigstore.json"
+}
+
+# Installs a cosign stand-in that records its arguments and exits with $2.
+fake_cosign() {
+  mkdir -p "$1"
+  cat > "$1/cosign" <<EOF
+#!/bin/sh
+[ -z "\${COSIGN_ARGUMENTS:-}" ] || printf '%s\n' "\$*" >> "\$COSIGN_ARGUMENTS"
+exit $2
+EOF
+  chmod 0755 "$1/cosign"
+}
+
+# A curl stand-in that serves files from \$FIXTURE_SOURCE and fails for a
+# file the release does not have.
+fake_curl() {
+  mkdir -p "$1"
+  cat > "$1/curl" <<'EOF'
+#!/bin/sh
+output=
+url=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output|-o) output=$2; shift 2 ;;
+    --proto|--proto-redir) shift 2 ;;
+    -* ) shift ;;
+    * ) url=$1; shift ;;
+  esac
+done
+[ -n "$output" ] && [ -n "$url" ] || exit 2
+cp "$FIXTURE_SOURCE/$(basename "$url")" "$output" 2>/dev/null
+EOF
+  chmod 0755 "$1/curl"
+}
+
+# Runs a URL install for case $1; output lands in $case_root/out and /err.
+url_install() {
+  case_root="$test_root/$1"
+  home="$case_root/home"
+  release="$case_root/release"
+  fake_bin="$case_root/bin"
+  target=$(host_target)
+  mkdir -p "$home"
+  HOME="$home" FIXTURE_SOURCE="$release" COSIGN_ARGUMENTS="$case_root/cosign-arguments" \
+    PATH="$fake_bin:/usr/bin:/bin" \
+    "$installer" "https://fixtures.invalid/releases/compresso-6.0.0-$target.tar.gz" \
+    > "$case_root/out" 2> "$case_root/err"
+}
+
+test_url_install_verifies_the_publisher_signature() {
+  case_root="$test_root/signed-url"
+  create_release "$case_root/release" 6.0.0 signed >/dev/null
+  sign_release "$case_root/release"
+  fake_curl "$case_root/bin"
+  fake_cosign "$case_root/bin" 0
+
+  url_install signed-url || fail "signed URL install failed: $(cat "$case_root/err")"
+
+  [ "$("$home/.local/bin/compresso" --version)" = 'compresso 6.0.0' ] ||
+    fail "signed URL install version mismatch"
+  arguments=$(cat "$case_root/cosign-arguments")
+  assert_contains "$arguments" 'verify-blob'
+  assert_contains "$arguments" '--bundle '
+  assert_contains "$arguments" \
+    '--certificate-identity https://github.com/yogi100x/compresso/.github/workflows/ci.yml@refs/heads/main'
+  assert_contains "$arguments" \
+    '--certificate-oidc-issuer https://token.actions.githubusercontent.com'
+  assert_contains "$arguments" '/SHA256SUMS'
+}
+
+test_url_install_without_a_signature_fails_closed() {
+  case_root="$test_root/unsigned-url"
+  create_release "$case_root/release" 6.0.0 unsigned >/dev/null
+  fake_curl "$case_root/bin"
+  fake_cosign "$case_root/bin" 0
+
+  if url_install unsigned-url; then
+    fail "URL install without a signature bundle was accepted"
+  fi
+  assert_contains "$(cat "$case_root/err")" 'SHA256SUMS.sigstore.json'
+  [ ! -e "$home/.local/bin/compresso" ] || fail "unsigned URL release installed a binary"
+}
+
+test_url_install_without_cosign_fails_closed() {
+  case_root="$test_root/no-cosign"
+  create_release "$case_root/release" 6.0.0 nocosign >/dev/null
+  sign_release "$case_root/release"
+  fake_curl "$case_root/bin"
+
+  if url_install no-cosign; then
+    fail "URL install without cosign was accepted"
+  fi
+  assert_contains "$(cat "$case_root/err")" 'cosign is required'
+  [ ! -e "$home/.local/bin/compresso" ] || fail "unverified URL release installed a binary"
+}
+
+test_rejected_signature_aborts_before_install_write() {
+  case_root="$test_root/bad-signature"
+  create_release "$case_root/release" 6.0.0 badsig >/dev/null
+  sign_release "$case_root/release"
+  fake_curl "$case_root/bin"
+  fake_cosign "$case_root/bin" 1
+
+  if url_install bad-signature; then
+    fail "a rejected signature was accepted"
+  fi
+  assert_contains "$(cat "$case_root/err")" 'signature verification failed'
+  [ ! -e "$home/.local" ] || fail "rejected signature wrote under ~/.local"
+}
+
+test_local_install_verifies_a_signature_when_present() {
+  case_root="$test_root/local-signed"
+  home="$case_root/home"
+  mkdir -p "$home"
+  create_release "$case_root/release" 6.1.0 localsigned >/dev/null
+  sign_release "$case_root/release"
+  fake_cosign "$case_root/bin" 1
+
+  if HOME="$home" PATH="$case_root/bin:/usr/bin:/bin" "$installer" "$case_root/release" \
+    > "$case_root/out" 2> "$case_root/err"; then
+    fail "local install ignored a rejected signature"
+  fi
+  assert_contains "$(cat "$case_root/err")" 'signature verification failed'
+
+  fake_cosign "$case_root/bin" 0
+  HOME="$home" PATH="$case_root/bin:/usr/bin:/bin" "$installer" "$case_root/release" \
+    > "$case_root/out" 2> "$case_root/err" || fail "signed local install failed"
+  [ "$("$home/.local/bin/compresso" --version)" = 'compresso 6.1.0' ] ||
+    fail "signed local install version mismatch"
+}
+
+test_unsigned_local_install_warns_that_only_the_checksum_was_checked() {
+  case_root="$test_root/local-unsigned"
+  home="$case_root/home"
+  mkdir -p "$home"
+  create_release "$case_root/release" 6.2.0 localunsigned >/dev/null
+
+  HOME="$home" PATH="/usr/bin:/bin" "$installer" "$case_root/release" \
+    > "$case_root/out" 2> "$case_root/err" || fail "unsigned local install failed"
+
+  assert_contains "$(cat "$case_root/err")" 'publisher signature was not verified'
+  [ "$("$home/.local/bin/compresso" --version)" = 'compresso 6.2.0' ] ||
+    fail "unsigned local install version mismatch"
+}
+
 test_install_clean_home() {
   case_root="$test_root/clean"
   home="$case_root/home"
@@ -186,6 +334,8 @@ test_install_from_versioned_url() {
   fake_bin="$case_root/bin"
   mkdir -p "$home" "$fake_bin"
   archive=$(create_release "$release" 5.0.0 url)
+  sign_release "$release"
+  fake_cosign "$fake_bin" 0
   archive_name=$(basename "$archive")
   cat > "$fake_bin/curl" <<'EOF'
 #!/bin/sh
@@ -243,6 +393,8 @@ test_url_download_is_restricted_to_https() {
   fake_bin="$test_root/proto-bin"
   mkdir -p "$home" "$fake_bin"
   create_release "$release" 5.0.0 proto >/dev/null
+  sign_release "$release"
+  fake_cosign "$fake_bin" 0
   target=$(host_target)
   cat > "$fake_bin/curl" <<'EOF'
 #!/bin/sh
@@ -277,6 +429,8 @@ test_wget_fallback_never_follows_redirects() {
   tools="$test_root/wget-tools"
   mkdir -p "$home" "$tools"
   create_release "$release" 5.0.0 wget >/dev/null
+  sign_release "$release"
+  fake_cosign "$tools" 0
   target=$(host_target)
   # Every system tool except curl, so the installer takes its wget path.
   for tool in /usr/bin/* /bin/*; do
@@ -318,4 +472,10 @@ test_install_from_versioned_url
 test_plain_http_url_rejected_before_any_download
 test_url_download_is_restricted_to_https
 test_wget_fallback_never_follows_redirects
+test_url_install_verifies_the_publisher_signature
+test_url_install_without_a_signature_fails_closed
+test_url_install_without_cosign_fails_closed
+test_rejected_signature_aborts_before_install_write
+test_local_install_verifies_a_signature_when_present
+test_unsigned_local_install_warns_that_only_the_checksum_was_checked
 printf '%s\n' 'install_local_test: all tests passed'
