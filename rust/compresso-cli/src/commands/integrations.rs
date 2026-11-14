@@ -2,18 +2,19 @@ use std::env;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use compresso_core::RuntimePaths;
 use compresso_integrations::{
-    ClaudeCodeDiscovery, ClaudeCodeIntegration, CodexIntegration, CursorApplicationEvidence,
-    CursorCliEvidence, CursorDiscovery, CursorIntegration, DeferredInstallAuthorization, Detection,
-    FileReceiptStore, InstallCtx, InstallReceipt, Integration, IntegrationError, MutationPlan,
-    PlanApproval, PlanClock, PlanManager, ReceiptStore, Scope, VerificationCheck,
-    VerificationReport,
+    ClaudeCodeDiscovery, ClaudeCodeIntegration, CodexIntegration, ConfigFormat,
+    CursorApplicationEvidence, CursorCliEvidence, CursorDiscovery, CursorIntegration,
+    DeferredInstallAuthorization, Detection, FileReceiptStore, InstallCtx, InstallReceipt,
+    Integration, IntegrationError, MutationPlan, PlanApproval, PlanClock, PlanManager,
+    ReceiptStore, Scope, VerificationCheck, VerificationReport, read_configured_server,
 };
 use compresso_store::{ReceiptRecord, Store};
 
+use super::mcp_probe::{self, McpServerHealth};
 use super::{
     CliExitCode, IntegrationClientArg, IntegrationMutationArgs, IntegrationReadArgs,
     IntegrationsCommand, write_error,
@@ -31,6 +32,9 @@ pub struct IntegrationEnvironment {
     pub data_dir: PathBuf,
     pub path_entries: Vec<PathBuf>,
     pub session_id: String,
+    /// Deadline for the live MCP handshake run by `integrations status`.
+    /// `None` (the default for injected environments) starts no process.
+    pub mcp_probe_timeout: Option<Duration>,
 }
 
 impl IntegrationEnvironment {
@@ -50,7 +54,14 @@ impl IntegrationEnvironment {
             data_dir,
             path_entries,
             session_id: session_id.into(),
+            mcp_probe_timeout: None,
         }
+    }
+
+    /// Enables the bounded live MCP handshake reported by `integrations status`.
+    pub fn with_mcp_probe_timeout(mut self, timeout: Duration) -> Self {
+        self.mcp_probe_timeout = Some(timeout);
+        self
     }
 
     pub(crate) fn system() -> Result<Self, IntegrationCliError> {
@@ -86,7 +97,8 @@ impl IntegrationEnvironment {
             data_dir,
             path_entries,
             session_id,
-        ))
+        )
+        .with_mcp_probe_timeout(mcp_probe::DEFAULT_PROBE_TIMEOUT))
     }
 
     fn receipt_store_path(&self) -> PathBuf {
@@ -490,6 +502,12 @@ fn execute_status(
     let active_receipt = receipts
         .active_for(arguments.client.as_str(), &selected.config_path)?
         .is_some();
+    let server = mcp_server_health(
+        arguments.client,
+        &selected.config_path,
+        &scope,
+        environment.mcp_probe_timeout,
+    );
     if arguments.output.json {
         serde_json::to_writer(
             &mut *output,
@@ -501,6 +519,7 @@ fn execute_status(
                     "config_path": selected.config_path,
                     "detection": detection,
                     "canonical_receipt_active": active_receipt,
+                    "mcp_server": server.to_json(),
                 }
             }),
         )?;
@@ -514,8 +533,42 @@ fn execute_status(
             "canonical receipt: {}",
             if active_receipt { "active" } else { "none" }
         )?;
+        writeln!(
+            output,
+            "mcp server: {} ({})",
+            server.state.code(),
+            server.detail
+        )?;
+        if server.state.is_failure() {
+            writeln!(output, "fix: {}", server.fix)?;
+        }
     }
     Ok(())
+}
+
+/// Reports whether the server entry in the selected config starts and answers.
+fn mcp_server_health(
+    client: IntegrationClientArg,
+    config_path: &Path,
+    scope: &Scope,
+    probe_timeout: Option<Duration>,
+) -> McpServerHealth {
+    let format = match client {
+        IntegrationClientArg::Codex => ConfigFormat::Toml,
+        _ => ConfigFormat::Json,
+    };
+    let mut args = mcp_probe::user_scope_args();
+    if let Scope::Project(root) = scope {
+        // Adapters pin the canonical project root; an unresolvable root can
+        // never match and is reported as a modified entry.
+        let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
+        args.extend(["--root".to_owned(), root.to_string_lossy().into_owned()]);
+    }
+    mcp_probe::assess(
+        &read_configured_server(format, config_path, &args),
+        client.as_str(),
+        probe_timeout,
+    )
 }
 
 fn execute_verify(
@@ -859,7 +912,7 @@ fn detection_label(detection: &Detection) -> String {
     }
 }
 
-fn system_home_dir() -> Result<PathBuf, IntegrationCliError> {
+pub(super) fn system_home_dir() -> Result<PathBuf, IntegrationCliError> {
     #[cfg(windows)]
     let value = env::var_os("USERPROFILE");
     #[cfg(not(windows))]

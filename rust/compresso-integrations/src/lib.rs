@@ -10,6 +10,7 @@ mod codex;
 mod cursor;
 mod plan;
 mod receipt;
+mod server_entry;
 
 use std::path::PathBuf;
 
@@ -32,6 +33,7 @@ pub use receipt::{
     CREATED_FILE_BACKUP_SENTINEL, FileReceiptStore, InstallReceipt, MemoryReceiptStore,
     RECEIPT_SCHEMA_VERSION, ReceiptError, ReceiptStore,
 };
+pub use server_entry::{ConfiguredServer, read_configured_server};
 
 /// Adapter contract shared by Claude Code, Codex, and Cursor.
 ///

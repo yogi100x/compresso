@@ -12,6 +12,7 @@ mod engine;
 mod index;
 mod integrations;
 mod mcp;
+mod mcp_probe;
 mod repos;
 mod retrieval;
 mod setup;

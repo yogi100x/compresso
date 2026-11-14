@@ -2,15 +2,17 @@ use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::{Args, ValueEnum};
 use compresso_atlas::parsers::{Language, ParserRegistry};
 use compresso_core::{
     Config, ConfigOverrides, ConfigSource, Mode, RuntimePaths, TokenProvider, counter_for,
 };
+use compresso_integrations::{ConfiguredServer, read_configured_server};
 use compresso_store::Store;
 
+use super::mcp_probe::{self, McpServerHealth};
 use super::{ConfigCommand, OutputArgs, RootCommand};
 
 const CONFIG_ENVIRONMENT: [&str; 5] = [
@@ -69,6 +71,12 @@ pub struct DiagnosticEnvironment {
     pub database_path: PathBuf,
     pub executable_path: PathBuf,
     pub environment: BTreeMap<String, String>,
+    /// Home directory whose user-scope client configs name the MCP server to
+    /// check. `None` skips the MCP server check.
+    pub home_dir: Option<PathBuf>,
+    /// Deadline for the live MCP handshake. `None` keeps the check
+    /// process-free: launcher paths are validated but nothing is started.
+    pub mcp_probe_timeout: Option<Duration>,
 }
 
 impl DiagnosticEnvironment {
@@ -95,6 +103,8 @@ impl DiagnosticEnvironment {
             database_path: paths.database_file,
             executable_path,
             environment,
+            home_dir: super::integrations::system_home_dir().ok(),
+            mcp_probe_timeout: Some(mcp_probe::DEFAULT_PROBE_TIMEOUT),
         })
     }
 }
@@ -216,6 +226,7 @@ impl DiagnosticCheck {
 }
 
 fn run_doctor(environment: &DiagnosticEnvironment) -> Rendered {
+    let servers = configured_mcp_servers(environment);
     let checks = [
         check_binary(environment),
         check_data_directory(environment),
@@ -223,6 +234,7 @@ fn run_doctor(environment: &DiagnosticEnvironment) -> Rendered {
         check_config(environment),
         check_tokenizers(),
         check_grammars(),
+        check_mcp_server(environment, &servers),
     ];
     let success = checks.iter().all(|check| check.passed);
     let json_checks = checks
@@ -254,10 +266,112 @@ fn run_doctor(environment: &DiagnosticEnvironment) -> Rendered {
     Rendered {
         json: serde_json::json!({
             "schema_version": 1,
-            "data": { "checks": json_checks },
+            "data": {
+                "checks": json_checks,
+                "mcp_servers": servers.iter().map(McpServerReport::to_json).collect::<Vec<_>>(),
+            },
         }),
         human: format!("{human}\n"),
         success,
+    }
+}
+
+/// Health of the Compresso MCP server one coding client is configured to start.
+struct McpServerReport {
+    client: &'static str,
+    config_path: PathBuf,
+    health: McpServerHealth,
+}
+
+impl McpServerReport {
+    fn to_json(&self) -> serde_json::Value {
+        let mut value = self.health.to_json();
+        value["client"] = self.client.into();
+        value["config_path"] = self.config_path.display().to_string().into();
+        value
+    }
+}
+
+/// Assesses every user-scope client entry, starting each distinct launcher at
+/// most once so the whole check stays bounded by one deadline per launcher.
+fn configured_mcp_servers(environment: &DiagnosticEnvironment) -> Vec<McpServerReport> {
+    let Some(home) = environment.home_dir.as_deref() else {
+        return Vec::new();
+    };
+    let args = mcp_probe::user_scope_args();
+    let mut reports: Vec<McpServerReport> = Vec::new();
+    let mut assessed: Vec<(ConfiguredServer, McpServerHealth)> = Vec::new();
+    for config in mcp_probe::user_client_configs(home) {
+        let server = read_configured_server(config.format, &config.path, &args);
+        if server == ConfiguredServer::NotConfigured {
+            continue;
+        }
+        let health = match assessed.iter().find(|(seen, _)| *seen == server) {
+            Some((_, health)) => relabel(health, config.client),
+            None => {
+                let health =
+                    mcp_probe::assess(&server, config.client, environment.mcp_probe_timeout);
+                assessed.push((server, health.clone()));
+                health
+            }
+        };
+        reports.push(McpServerReport {
+            client: config.client,
+            config_path: config.path,
+            health,
+        });
+    }
+    reports
+}
+
+/// Reuses a probe verdict for another client that starts the same launcher,
+/// pointing its fix text at that client's own install command.
+fn relabel(health: &McpServerHealth, client: &str) -> McpServerHealth {
+    let mut health = health.clone();
+    for known in ["claude-code", "codex", "cursor"] {
+        health.fix = health.fix.replace(
+            &format!("compresso integrations install {known}"),
+            &format!("compresso integrations install {client}"),
+        );
+    }
+    health
+}
+
+fn check_mcp_server(
+    environment: &DiagnosticEnvironment,
+    servers: &[McpServerReport],
+) -> DiagnosticCheck {
+    const NAME: &str = "mcp_server";
+    if environment.home_dir.is_none() {
+        return DiagnosticCheck::passed(NAME, "skipped: no home directory is available");
+    }
+    if servers.is_empty() {
+        return DiagnosticCheck::passed(
+            NAME,
+            "no coding client is configured to start Compresso; run `compresso setup` to add one",
+        );
+    }
+    let detail = servers
+        .iter()
+        .map(|server| {
+            format!(
+                "{}: {} ({})",
+                server.client,
+                server.health.state.code(),
+                server.health.detail
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let fixes = servers
+        .iter()
+        .filter(|server| server.health.state.is_failure())
+        .map(|server| format!("{}: {}", server.client, server.health.fix))
+        .collect::<Vec<_>>();
+    if fixes.is_empty() {
+        DiagnosticCheck::passed(NAME, detail)
+    } else {
+        DiagnosticCheck::failed(NAME, detail, fixes.join(" "))
     }
 }
 
