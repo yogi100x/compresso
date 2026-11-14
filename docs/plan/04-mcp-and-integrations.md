@@ -117,6 +117,8 @@ Shipped verbatim as the rmcp server `instructions` (build-doc §13.4: brief, fac
 }
 ```
 
+**Query semantics**: a one-word query is a literal, case-insensitive substring match. A multi-word query such as `start session` matches symbols whose indexed fields contain every whitespace-separated term, in any order and letter case; punctuation around a term is ignored, punctuation inside it (`Session::start`) is kept, and terms under three characters are dropped. Symbols containing the exact phrase rank first, then the remaining all-terms matches, each group bm25-ordered. Query text is always quoted and never parsed as FTS5 syntax.
+
 **Truncation**: when `max_tokens` drops ranked hits, `truncated` is `true` and `truncated_hits` lists the dropped hits in rank order as `{ "path", "start_line", "end_line" }` so they can be read directly. Locations are counted inside `max_tokens`; if no location fits beside the kept hits, the last full hit is exchanged for locations. `truncated_hits_omitted` counts dropped hits whose location did not fit either (at most 50 locations are listed).
 
 **Diagnostics**: `diagnostics` is an array of `{ "code", "severity": "info", "message" }` on a successful result. `path_not_found`: the `path` scope names no indexed file or directory (`hits: []`). `query_too_short`: the query is under three characters and cannot match the trigram index. `path_scope_window_capped`: the scope was applied to the top 1000 ranked symbols and fewer than `limit` hits remained.

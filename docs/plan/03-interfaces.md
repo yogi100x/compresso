@@ -215,7 +215,8 @@ impl Store {
     pub fn indexed_file(&self, repo: RepoId, path: &str) -> Result<Option<FileRecord>>;
     pub fn replace_symbols(&self, file: FileId, symbols: &[SymbolRecord], edges: &[EdgeRecord]) -> Result<()>; // single transaction
     pub fn delete_files(&self, repo: RepoId, paths: &[String]) -> Result<()>;
-    pub fn search_symbols(&self, repo: RepoId, query: &str, limit: usize) -> Result<Vec<SymbolHit>>; // FTS5, bm25-ranked
+    pub fn search_symbols(&self, repo: RepoId, query: &str, limit: usize) -> Result<Vec<SymbolHit>>; // FTS5, bm25-ranked; whole query is one literal contiguous phrase
+    pub fn search_symbols_all_terms(&self, repo: RepoId, query: &str, limit: usize) -> Result<Vec<SymbolHit>>; // multi-word: every whitespace-separated term (any order/case, edge punctuation stripped, terms under 3 chars dropped); exact-phrase hits first, then all-terms hits, each bm25-ordered; one word == search_symbols
     pub fn search_symbols_excluding_language(&self, repo: RepoId, query: &str, limit: usize, excluded: FileLanguage) -> Result<Vec<SymbolHit>>; // exclusion occurs in SQL before bm25 limit
     pub fn symbols_in_file(&self, repo: RepoId, path: &str) -> Result<Vec<SymbolRecord>>;
     pub fn resolved_edges(&self, repo: RepoId) -> Result<Vec<ResolvedEdgeRecord>>; // deterministic, resolved rows only
@@ -282,7 +283,7 @@ pub struct BoundedRead { pub path: String, pub content: String, pub start_line: 
 pub fn repo_map(store: &Store, repo: RepoId, budget_tokens: usize) -> Result<RepoMap>;      // dir tree + top symbols per file, PageRank-ish by edge in-degree
 pub fn outline(store: &Store, repo: RepoId, path: &str) -> Result<Outline>;                  // symbol skeleton with line ranges + token estimates
 pub fn unfold(store: &Store, repo: RepoId, selector: &SymbolSelector) -> Result<UnfoldResult>; // multiple matches return typed Ambiguous candidates
-pub fn search(store: &Store, repo: RepoId, query: &str, limit: usize) -> Result<Vec<SearchHit>>;
+pub fn search(store: &Store, repo: RepoId, query: &str, limit: usize) -> Result<Vec<SearchHit>>; // Store::search_symbols_all_terms semantics; plan_context keeps literal per-concept queries
 // search.rs — diagnostics are informational data on a successful result, never errors
 pub struct SearchOptions<'a> { pub limit: usize, pub path: Option<&'a str> } // path: repo-relative file or directory scope, applied before the hit limit
 pub enum SearchDiagnosticCode { PathNotFound, QueryTooShort, PathScopeWindowCapped } // as_str(): path_not_found, query_too_short, path_scope_window_capped

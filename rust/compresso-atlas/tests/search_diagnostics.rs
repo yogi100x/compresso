@@ -225,6 +225,50 @@ fn test_search_with_diagnostics_rejects_invalid_query_before_searching() {
     ));
 }
 
+#[test]
+fn test_multi_word_search_requires_all_terms_and_ranks_exact_phrase_first() {
+    let fixture = IndexedFixture::new(&[
+        (
+            "src/gates.rs",
+            "pub fn safety_gate() {}\npub fn gate_for_safety() {}\npub fn safety_only() {}\npub fn gate_only() {}\n",
+        ),
+        ("docs/guide.md", "# Safety gate overview\n\nBody text.\n"),
+    ]);
+    let names = |query: &str| {
+        search(&fixture.store, fixture.repo, query, 10)
+            .expect("search should succeed")
+            .into_iter()
+            .map(|hit| hit.symbol.name)
+            .collect::<Vec<_>>()
+    };
+
+    let hits = names("safety gate");
+    assert_eq!(hits[0], "Safety gate overview", "exact phrase ranks first");
+    let mut rest = hits[1..].to_vec();
+    rest.sort_unstable();
+    assert_eq!(rest, ["gate_for_safety", "safety_gate"]);
+
+    assert_eq!(names("Safety GATE"), hits, "terms are case-insensitive");
+    assert_eq!(
+        names("safety,   gate!"),
+        hits,
+        "edge punctuation is ignored"
+    );
+    let mut reordered = names("gate safety");
+    assert_ne!(reordered[0], "Safety gate overview", "no exact phrase");
+    reordered.sort_unstable();
+    let mut expected = hits.clone();
+    expected.sort_unstable();
+    assert_eq!(reordered, expected, "term order is free");
+    assert_eq!(names("safety gate missing_term"), Vec::<String>::new());
+    assert_eq!(names("safety").len(), 4);
+    assert_eq!(
+        names("safety_gate"),
+        ["safety_gate"],
+        "one word stays literal"
+    );
+}
+
 fn hit_paths(hits: &[compresso_atlas::SearchHit]) -> Vec<&str> {
     hits.iter().map(|hit| hit.path.as_str()).collect()
 }

@@ -124,7 +124,7 @@ pub fn search_with_diagnostics(
     } else {
         options.limit
     };
-    let mut hits = search_hits(store.search_symbols(repo, query, fetch_limit)?)?;
+    let mut hits = search_hits(store.search_symbols_all_terms(repo, query, fetch_limit)?)?;
     let window_full = hits.len() >= fetch_limit;
     if let Some(scope) = scope {
         hits.retain(|hit| map_path_matches_focus(&hit.path, scope));

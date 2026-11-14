@@ -299,6 +299,33 @@ fn test_search_invalid_query_reports_position_and_reason() {
 }
 
 #[test]
+fn test_search_multi_word_query_matches_symbols_containing_all_terms() {
+    let fixture = Fixture::new();
+
+    for query in ["session manager", "Session MANAGER", "session, manager!"] {
+        let (exit, output, errors) =
+            fixture.run_json(&["search", query, "--root", fixture.root_str(), "--json"]);
+        assert_eq!(exit, CliExitCode::Success);
+        assert!(errors.is_null());
+        assert_eq!(
+            output["data"]["hits"][0]["symbol"]["qualified_name"], "SessionManager",
+            "{query:?}"
+        );
+    }
+
+    let (exit, output, errors) = fixture.run_json(&[
+        "search",
+        "session importer",
+        "--root",
+        fixture.root_str(),
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success);
+    assert!(errors.is_null());
+    assert_eq!(output["data"]["hits"], serde_json::json!([]));
+}
+
+#[test]
 fn test_malformed_read_range_is_invalid_arguments() {
     let fixture = Fixture::new();
 

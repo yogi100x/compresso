@@ -484,8 +484,22 @@ pub fn unfold(
     }
 }
 
-/// Returns Store's FTS5/BM25 ranking as typed Atlas hits without reordering it.
+/// Returns Store's ranking as typed Atlas hits without reordering it.
+///
+/// A multi-word query matches symbols containing every term, in any order and
+/// letter case, with exact-phrase matches first; one word is a literal match.
 pub fn search(
+    store: &Store,
+    repo: RepoId,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<SearchHit>, AtlasError> {
+    search_hits(store.search_symbols_all_terms(repo, query, limit)?)
+}
+
+/// Literal contiguous-phrase search used by context planning, which already
+/// issues one query per task concept.
+fn search_literal(
     store: &Store,
     repo: RepoId,
     query: &str,
@@ -908,7 +922,7 @@ fn context_query_hits(
                 FileLanguage::Text,
             )?
         } else {
-            search(
+            search_literal(
                 store,
                 repo,
                 query,

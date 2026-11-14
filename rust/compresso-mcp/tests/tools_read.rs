@@ -676,6 +676,45 @@ async fn test_search_invalid_query_reports_position_and_reason() {
 }
 
 #[tokio::test]
+async fn test_search_multi_word_query_matches_symbols_containing_all_terms() {
+    let fixture = IndexedFixture::new();
+    let mut harness = Harness::start(fixture.store.clone()).await;
+    for query in ["retry session", "Retry  SESSION", "retry, session!"] {
+        let mut arguments = fixture.arguments();
+        arguments.insert("query".to_owned(), json!(query));
+        let result = successful_json(
+            harness
+                .call("compresso_search", Value::Object(arguments))
+                .await,
+        );
+        let hits = result["hits"].as_array().expect("hits should be an array");
+        assert!(
+            hits.iter()
+                .any(|hit| hit["qualified_name"] == "SessionManager::retry_session"),
+            "{query:?} should match retry_session"
+        );
+        assert!(
+            hits.iter().all(|hit| {
+                let indexed =
+                    format!("{} {}", hit["qualified_name"], hit["signature"]).to_ascii_lowercase();
+                indexed.contains("retry") && indexed.contains("session")
+            }),
+            "{query:?}: {hits:?}"
+        );
+    }
+
+    let mut arguments = fixture.arguments();
+    arguments.insert("query".to_owned(), json!("retry cache"));
+    let unrelated = successful_json(
+        harness
+            .call("compresso_search", Value::Object(arguments))
+            .await,
+    );
+    assert_eq!(unrelated["hits"], json!([]));
+    harness.close().await;
+}
+
+#[tokio::test]
 async fn test_search_stale_is_structured_success() {
     let fixture = IndexedFixture::new();
     fs::write(
