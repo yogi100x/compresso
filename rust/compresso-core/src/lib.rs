@@ -1,5 +1,6 @@
 //! Deterministic context graph, token accounting, compression, and safety primitives.
 
+pub mod background_spawn;
 pub mod config;
 pub mod engine;
 pub mod graph;
@@ -11,6 +12,7 @@ pub mod strategy;
 pub mod tokens;
 pub mod trace;
 
+pub use background_spawn::{CREATE_NO_WINDOW, background_creation_flags, suppress_console_window};
 pub use config::{
     CompressionCfg, Config, ConfigError, ConfigExplanation, ConfigOverrides, ConfigSource,
     EffectiveValue, IndexCfg, McpCfg, PrivacyCfg, ProxyCfg, RuntimeCfg, RuntimePaths,
