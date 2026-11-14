@@ -380,7 +380,8 @@ Counts are reported for both `openai_o200k` (exact) and `anthropic_calibrated` (
   "properties": {
     "since": { "type": "string", "description": "ISO 8601 timestamp or relative duration ('24h', '7d', '30d'). Default: all retained history (90 days)." },
     "session_id": { "type": "string", "description": "Restrict to one session (ulid)." },
-    "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 20, "description": "Maximum newest per-operation rows." }
+    "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 20, "description": "Maximum newest per-operation rows." },
+    "model": { "type": "string", "minLength": 1, "maxLength": 128, "description": "Model id used to price modeled savings at its input rate from the local versioned price table. Unknown models report tokens only." }
   },
   "required": []
 }
@@ -399,7 +400,8 @@ Counts are reported for both `openai_o200k` (exact) and `anthropic_calibrated` (
   "removed_tokens": 379000,
   "compression_overhead": 12400,
   "net_tokens_saved": 366600,
-  "modeled_cost_saved": { "amount_usd": 4.12, "label": "modeled" },
+  "modeled_cost_saved": { "amount_usd": 1.5892, "label": "modeled" },
+  "cost_basis": { "model": "claude-sonnet-5-5", "priced": true, "rate": "input", "price_table_version": "2026-11-03.1", "effective_date": "2026-11-03" },
   "fallback_rate": 0.02,
   "compression_savings": { "removed_tokens": 379000, "compression_overhead": 12400, "net_tokens_saved": 366600, "basis": "applied" },
   "retrieval_savings": { "retrieval_pack_tokens": 82000, "estimated_raw_source_tokens": 510000, "retrieval_tokens_avoided": 428000, "follow_up_calls_avoided": 91, "basis": "modeled" },
@@ -408,7 +410,9 @@ Counts are reported for both `openai_o200k` (exact) and `anthropic_calibrated` (
 }
 ```
 
-**Errors**: `invalid_arguments` (unparseable `since`). An empty store is a success with zeros. `modeled_cost_saved` is always labelled `modeled`; `provider_observed_cost` is post-slice and never fabricated (D6: local-only, no telemetry).
+**Cost basis (E17-03, ADR-0028)**: `modeled_cost_saved.amount_usd` is `total_effective_savings` (floored at zero) priced once at the named model's base input rate from the checked-in price table (`rust/compresso-core/data/price-table-v1.json`, schema `schemas/price-table/v1.json`). With no `model`, or a model absent from the table, `cost_basis.priced` is `false` and the amount is `0`; a price is never guessed and never fetched. The MCP tool accepts no file path; transcript-derived savings are a CLI-only surface (`compresso stats --transcript PATH`).
+
+**Errors**: `invalid_arguments` (unparseable `since`, oversized `model`). An empty store is a success with zeros. `modeled_cost_saved` is always labelled `modeled`; `provider_observed_cost` is post-slice and never fabricated (D6: local-only, no telemetry).
 
 **Predecessor compatibility**: counterpart of the predecessor `stats` command / `session_insights` tool; no argument mapping required by D7.
 

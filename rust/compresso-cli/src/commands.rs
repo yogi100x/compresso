@@ -16,6 +16,7 @@ mod mcp;
 mod repos;
 mod retrieval;
 mod setup;
+mod transcript_stats;
 
 pub use doctor::{ConfigExplainArgs, ConfigModeArg, DiagnosticEnvironment, DoctorArgs};
 pub use engine::{CompressArgs, ExplainArgs, StatsArgs};
