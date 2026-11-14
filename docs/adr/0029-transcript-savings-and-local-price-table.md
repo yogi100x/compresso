@@ -1,4 +1,4 @@
-# ADR-0028: Transcript-derived savings and a local price table
+# ADR-0029: Transcript-derived savings and a local price table
 
 ## Status
 

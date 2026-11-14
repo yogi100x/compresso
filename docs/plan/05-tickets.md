@@ -2695,6 +2695,209 @@ Test cases:
 - `test_plan_lint_clean_corpus_matches_repository_plan`: run against the complete Compresso plan and emit stable machine-readable counts, days, and dependency order.
 
 
+## E17 — Session continuity, savings fidelity, and platform hardening
+
+Added 2026-11-14 (D70). Clean-room follow-ups to the local slice; all ten landed together through `integration/e17`.
+
+### [x] E17-01: Re-assert tool routing after client compaction
+Owner: D1 · Estimate: 2d · Depends: E5-01, E6-01, E6-02, E6-03
+Files: rust/compresso-mcp/src/reminder.rs, rust/compresso-integrations/src/compaction_hook.rs, rust/compresso-cli/src/commands/{mcp,integrations}.rs, rust/compresso-cli/tests/cli_compaction_hook.rs, docs/integrations/compaction-reminder.md
+Description: Constant bounded routing reminder (`compresso mcp routing-reminder`) plus an opt-in `SessionStart`/`compact` hook for Claude Code and Codex, managed by `integrations … --compaction-hook` through plans and receipts. Cursor is unsupported.
+Acceptance criteria:
+- Reminder ≤640 bytes, byte-identical per call, names only served tools; no store, network, or telemetry.
+- Adapter owns only `hooks.SessionStart`; idempotent; refuses user-defined hooks; uninstall retains modified keys; symlinked config rejected.
+- Hook and MCP entry have independent receipts.
+Test cases:
+- `test_routing_reminder_is_bounded_single_line_ascii`: size, ASCII, single line.
+- `test_routing_reminder_hook_envelope_is_session_start_additional_context`: exact JSON envelope.
+- `test_install_refuses_to_rewrite_user_defined_session_start_hooks`: typed refusal, bytes unchanged.
+- `test_repeated_install_is_idempotent_and_follows_a_moved_launcher`: one group, updated path.
+- `test_uninstall_retains_hooks_the_user_added_after_install`: `key_modified` warning.
+- `test_hook_and_mcp_entry_have_independent_receipts`: uninstalling the hook keeps the MCP entry.
+- `test_hook_dry_run_and_unsupported_clients_write_nothing`: Cursor refused, no writes.
+- `test_installed_hook_command_emits_the_reminder_when_run_by_a_shell`: real binary through `/bin/sh -c`.
+
+### [x] E17-02: Index-free local session recall across clients
+Owner: R2 · Estimate: 3d · Depends: E1-03, E4-01, E5-01
+Files: rust/compresso-recall/src/{lib,sources,parse,redact,search}.rs, rust/compresso-recall/tests/recall_search.rs, rust/compresso-cli/src/commands/{recall,mcp}.rs, rust/compresso-cli/tests/cli_recall.rs, rust/compresso-mcp/src/tools/recall.rs, rust/compresso-mcp/src/server.rs, rust/compresso-mcp/tests/tools_recall.rs, rust/compresso-store/src/ops.rs, docs/plan/04-mcp-and-integrations.md
+Description: Add the pure-local `compresso-recall` crate, `compresso recall QUERY --source SOURCE`, and the opt-in `compresso_recall` MCP tool. Recall searches Claude Code (`~/.claude/projects/<encoded-cwd>/<session-id>.jsonl`) and Codex (`~/.codex/sessions/**/rollout-*.jsonl`) transcripts directly from disk with no persistent index, cache, write, or upload. It is the index-free precursor to E15-14–E15-16 and keeps their private-read, per-source opt-in rule. Every line is shape-probed; unrecognized files are counted, not guessed. Cursor is reported `unsupported` and never read.
+Acceptance criteria:
+- Recall reads nothing until a source is named: the CLI requires `--source`; the MCP tool is neither listed nor callable unless the server starts with `--recall-source`, and the default tool list stays at ten.
+- MCP recall is always scoped to the bound repository; the CLI defaults to the repository enclosing the cwd and widens only with `--all-repositories`. A tool call cannot add a source, widen scope, or raise a bound.
+- Text is secret-redacted before matching, so a query for a redacted value returns no hit.
+- Results, files, bytes per file, line size, and wall-clock time are bounded; `truncated` is reported when a bound stops the search.
+- Transcript directories are byte-for-byte unchanged after recall; symbolic links are never followed.
+- Each MCP call records a `compresso_recall` ledger operation.
+Test cases:
+- test_recall_finds_decisions_across_claude_code_and_codex
+- test_recall_is_repository_scoped_by_default_and_widens_only_explicitly
+- test_recall_requires_an_explicitly_enabled_source
+- test_recall_redacts_secrets_and_never_matches_a_redacted_value
+- test_recall_reports_unverified_formats_instead_of_guessing
+- test_recall_is_read_only_and_keeps_no_index
+- test_recall_bounds_results_snippets_files_and_time
+- test_redact_removes_every_secret_in_the_corpus
+- test_discover_never_follows_symlinks
+- test_recall_tool_is_absent_and_refused_until_an_operator_enables_a_source
+- test_recall_tool_returns_redacted_repository_scoped_hits_and_records_the_operation
+- test_recall_tool_cannot_widen_sources_scope_or_bounds
+- test_recall_json_searches_enabled_sources_in_the_enclosing_repository
+- test_recall_sources_are_disabled_by_default_and_enabled_only_explicitly
+
+### [x] E17-03: Transcript-derived savings and cost reporting
+Owner: R1+PQ · Estimate: 2d · Depends: E2-15, E3-03, E4-03, E5-04
+Files: rust/compresso-core/src/{pricing,transcript}.rs, rust/compresso-core/data/price-table-v1.json, schemas/price-table/v1.json, rust/compresso-cli/src/commands/{engine,transcript_stats}.rs, rust/compresso-mcp/src/{server.rs,tools/engine_tools.rs}, docs/adr/0029-transcript-savings-and-local-price-table.md, docs/plan/{02-schemas,04-mcp-and-integrations}.md
+Description: Derive savings from a client JSON Lines transcript of Compresso tool calls (`compresso stats --transcript`) so saved headless runs report savings without a ledger, and price modeled savings per model from a checked-in versioned price table. Ledger rows stay authoritative; CLI and MCP stats remain schema_version 1 with additive `cost_basis` and `transcript_savings`.
+Acceptance criteria:
+- Price table is local, schema-validated, carries table_version and effective_date, and is never fetched; unknown models report tokens only.
+- Savings are priced once at the base input rate and labelled modeled; negative totals cost nothing.
+- Each operation_id counts once; ledger row wins; ledgerless compression uses exact counts (zero on fallback); ledgerless retrieval claims zero avoidance.
+- Errors, unparsed, duplicate, and missing results add nothing; no transcript text is retained; scanning writes no ledger rows; MCP accepts no file path.
+- Model ids (transcript, `--model`, MCP `model`) must be 1–128 bytes of printable ASCII with no spaces; others bucket to unknown, are never priced, are counted in `model_ids_rejected`, and are never echoed; human output escapes non-printable characters.
+Test cases:
+- `test_headless_transcript_without_ledger_reports_exact_compression_savings`, `test_fallback_and_baseline_free_retrieval_claim_zero_savings`, `test_ledger_row_is_authoritative_over_transcript_numbers`, `test_unknown_and_synthetic_models_report_tokens_without_price`, `test_duplicates_errors_foreign_tools_and_garbage_never_add_savings`, `test_scan_retains_no_transcript_text`, `test_unknown_model_is_unpriced_and_never_guessed`, `test_checked_in_price_table_validates_against_v1_schema`, `test_stats_transcript_reports_savings_and_cost_for_headless_run_without_ledger`, `test_stats_transcript_prefers_ledger_row_over_transcript_numbers`, `test_stats_prices_modeled_savings_only_for_models_in_price_table`, `test_every_control_byte_in_model_id_is_rejected_and_unpriced`, `test_escape_sequences_oversized_and_invisible_model_ids_are_rejected`, `test_stats_transcript_hostile_model_ids_never_reach_terminal_or_pricing`, `test_stats_rejects_unsafe_model_argument_without_echoing_it`.
+
+### [x] E17-04: Parallel scanning and reads in Atlas
+Owner: R2 · Estimate: 2d · Depends: E3-04, E3-09
+Files: rust/compresso-atlas/src/concurrency.rs, rust/compresso-atlas/src/scanner.rs, rust/compresso-atlas/src/indexer.rs, rust/compresso-atlas/src/lib.rs, rust/compresso-atlas/benches/parallel_index.rs, rust/compresso-atlas/Cargo.toml, docs/plan/03-interfaces.md
+Description: Parallelize the repository scanner and incremental indexer without changing their results. Add `Concurrency` (`default()`, `serial()`, `bounded(jobs, memory_budget_bytes)`): jobs are clamped to `1..=available CPUs` and a byte budget (default 64 MiB) caps buffered in-flight source bytes. `scan_with_concurrency` walks with the `ignore` parallel walker and fans file inspection (canonicalize, binary sniff, BLAKE3) out to scoped worker threads; secret-pattern, symlink, file-type, and size exclusions are decided on the calling thread before any worker can open a file. `Indexer::with_concurrency` reads, hashes, parses, resolves imports, and estimates tokens on workers, while every `Store` write stays on the calling thread in candidate order, one transaction per file (single writer, WAL unchanged). Budget bytes are charged at dispatch and released at commit. Small inputs (under 16 files to inspect, under 8 index candidates) stay serial. No new dependency: `std::thread::scope`, `std::sync::mpsc`, and the already-locked `criterion` as a dev-dependency.
+Acceptance criteria:
+- `ScanResult` is identical for serial and 2/4/8 workers, including ordering of `added`, `changed`, `removed`, and `skipped`.
+- Files, symbols, edges, `IndexReport` counts, and the `IndexProgress` sequence are identical for serial and parallel indexing.
+- Secret-pattern and oversize entries are never opened at any concurrency.
+- When several files fail, the lowest-ordered failure is reported; an indexing failure leaves every earlier candidate committed and nothing later.
+- Worker count never exceeds available CPUs or `memory_budget_bytes / per-worker bytes`; a one-byte budget still completes in order.
+- A criterion benchmark compares serial and parallel scan and first index; existing latency gates stay green.
+Test cases:
+- test_parallel_scan_matches_serial_scan: wide tree with added/changed/removed/binary/secret entries; jobs 2, 4, 8 repeated three times equal the serial result.
+- test_parallel_scan_never_opens_excluded_entries: recording inspector never sees `.env.production` or a 2 MB file with 4 workers.
+- test_parallel_scan_reports_lowest_ordered_read_error: two injected read denials with 8 workers always report the lower path.
+- test_memory_budget_limits_inspection_workers: tight budgets reduce 8 requested workers to 2 and 1.
+- test_parallel_index_matches_serial_index: 64 generated Rust/TypeScript/Python/Markdown files; snapshot of report, progress, files, symbols, and edges equals serial for jobs 2, 4, 8.
+- test_parallel_index_stops_at_lowest_ordered_failure: injected failure at candidate 5 with 8 workers leaves exactly the first five files committed and five progress events.
+- test_parallel_preparation_commits_in_order_under_a_starved_memory_budget: 4 workers with a one-byte budget commit all 48 candidates in order.
+- test_bounded_concurrency_never_exceeds_available_cpus, test_workers_are_limited_by_memory_budget_and_item_count, test_read_ahead_holds_budget_until_ordered_release, test_read_ahead_admits_one_over_budget_item_alone, test_read_ahead_window_bounds_zero_cost_items: bounds and admission-control units.
+- bench parallel_index: `cargo bench -p compresso-atlas --bench parallel_index -- --noplot` reports `atlas_scan_1200_files/{serial,parallel}` and `atlas_first_index_1200_files/{serial,parallel}`.
+
+### [x] E17-05: Windows hardening — line endings, console windows, broken pipes
+Owner: D1 · Estimate: 2d · Depends: E6-05, E5-01, E4-02
+Files: rust/compresso-integrations/src/{text_fidelity,plan,lib,claude_code,codex,cursor}.rs, rust/compresso-integrations/tests/text_fidelity.rs, rust/compresso-core/src/{stdio,background_spawn}.rs, rust/compresso-mcp/src/{server,session}.rs, rust/compresso-mcp/tests/closed_pipe.rs, rust/compresso-cli/src/commands.rs, rust/compresso-cli/tests/cli_closed_pipe.rs, rust/compresso-eval/src/cli.rs
+Description: Preserve BOM and line endings in every client-config mutation, provide the CREATE_NO_WINDOW policy for background launches, and turn closed stdio pipes into typed reported errors.
+Acceptance criteria:
+- BOM kept, never added; untouched lines keep exact terminators; written lines use the dominant ending (tie → LF); created files are LF without BOM.
+- Uninstall of a config untouched since install is byte-identical; later user edits are never reverted.
+- Launch sites route through `suppress_console_window`; no production spawn exists.
+- EPIPE / ERROR_BROKEN_PIPE / ERROR_NO_DATA never panic; CLI, eval and MCP report `output_closed`.
+Test cases:
+- test_install_then_uninstall_restores_byte_identical_original_for_every_encoding
+- test_install_preserves_bom_untouched_terminators_and_inserts_dominant_ending
+- test_uninstall_restores_non_canonical_json_formatting_byte_for_byte
+- test_uninstall_never_reverts_a_whitespace_only_user_edit_to_the_backup
+- test_windows_builder_receives_create_no_window
+- test_cli_reports_typed_error_when_stdout_reader_closed_early
+- test_mcp_server_exits_with_typed_error_when_stdout_reader_closed_early
+- test_writing_to_child_that_exited_early_is_typed_closed_error
+- test_output_closed_during_session_is_typed_error
+
+### [x] E17-06: MCP server health and unresponsive detection
+Owner: D1 · Estimate: 3d · Depends: E4-04, E5-01, E6-01, E6-05
+Files: rust/compresso-cli/src/commands/{mcp_probe,doctor,integrations}.rs, rust/compresso-integrations/src/server_entry.rs, rust/compresso-cli/tests/cli_mcp_health.rs, scripts/check-crate-capabilities.ts, docs/adr/0028-bounded-mcp-health-probe.md
+Description: `compresso doctor` and `integrations status` report a configured server that is stale, not executable, crashes, hangs, or answers wrongly, each with fix text, using one bounded stdio handshake against trusted launchers only.
+Acceptance criteria:
+- Only the running executable or a receipt-authenticated entry is started; all else is `not_probed`/`config_modified`.
+- One deadline, 1 MiB output cap, scrubbed environment, cwd `/`, process-group kill.
+- Injected environments start no process; the capability allowance is one file in one crate.
+Test cases:
+- `test_doctor_reports_handshake_timeout_for_unresponsive_server`: bounded timeout verdict.
+- `test_doctor_reports_crash_with_exit_status`: `exited_early`, status 3.
+- `test_doctor_reports_stale_and_non_executable_launcher_paths`: `binary_missing`, `binary_not_executable`.
+- `test_doctor_reports_malformed_output_and_foreign_tool_list`: `malformed_response`.
+- `test_project_config_pointing_at_canary_is_never_executed`: canary file absent.
+- `test_symlink_to_a_non_compresso_binary_is_rejected`: `not_probed`.
+- `test_timeout_kills_the_server_process_tree`: descendant is dead.
+- `test_doctor_reports_healthy_for_real_compresso_server`: real binary handshake.
+- `test_mcp_probe_allowance_does_not_cover_other_cli_modules`: checker still denies siblings.
+
+### [x] E17-07: Clearer search diagnostics
+Owner: R2 · Estimate: 1.5d · Depends: E3-02, E3-11, E4-02, E5-03
+Files: rust/compresso-atlas/src/search.rs, rust/compresso-atlas/src/queries.rs, rust/compresso-atlas/src/lib.rs, rust/compresso-store/src/symbols.rs, rust/compresso-mcp/src/tools/atlas_read.rs, rust/compresso-mcp/src/tools/common.rs, rust/compresso-mcp/src/server.rs, rust/compresso-cli/src/commands/retrieval.rs, docs/plan/03-interfaces.md, docs/plan/04-mcp-and-integrations.md, tests in rust/compresso-atlas/tests/search_diagnostics.rs, rust/compresso-mcp/tests/tools_read.rs, rust/compresso-cli/tests/cli_retrieval.rs
+Description: Make symbol search explain empty and partial results. Add `search_with_diagnostics(store, repo, query, SearchOptions { limit, path })` returning `SearchReport { hits, diagnostics }`. An optional repo-relative `path` scope (file or directory, applied before the hit limit) that names no indexed file yields a successful empty result with a `path_not_found` diagnostic; a query under three characters yields `query_too_short`; a scope applied to a capped ranked window yields `path_scope_window_capped`. Malformed queries fail with `QueryError::InvalidSearchQuery { position, reason }` (zero-based byte offset); an escaping scope fails with `QueryError::InvalidSearchPath`. `compresso_search` gains `path`, `diagnostics`, `truncated_hits` (`path`, `start_line`, `end_line` of hits dropped by `max_tokens`, counted inside the budget), and `truncated_hits_omitted`; `compresso search` gains `--path` and `diagnostics`. All result fields are additive, so `schema_version` stays 1. Multi-word queries match symbols containing every whitespace-separated term (`Store::search_symbols_all_terms`): any order and letter case, surrounding punctuation ignored, terms under three characters dropped, exact-phrase matches first. Search has no regex mode, so regex validation is out of scope here and belongs to the E15 combined-search work.
+Acceptance criteria:
+- A missing path scope is a success with `hits: []` and one `path_not_found` info diagnostic in Atlas, MCP, and CLI; a secret-pattern scope reports the same without revealing existence.
+- A path scope restricts hits to that file or directory and is applied before `limit`.
+- Empty, whitespace-only, and NUL-containing queries are `invalid_arguments` naming the byte offset and reason.
+- When `max_tokens` drops hits, `truncated_hits` lists their path and line range, `tokens_used` stays within `max_tokens`, and kept + listed + omitted equals `hits_total`.
+- `search "safety gate"` matches `safety_gate` and `SafetyGates`; case, extra spaces, and edge punctuation do not change the result; a term absent from a symbol excludes it; one-word queries are unchanged.
+- Query text is always quoted and never parsed as FTS5 syntax.
+Test cases:
+- test_search_missing_path_scope_is_informational_not_an_error: Atlas report has no hits and a `path_not_found` diagnostic naming the scope.
+- test_search_path_scope_filters_to_file_or_directory: directory and file scopes; `src/auth/` does not match `src/auth_extra.rs`.
+- test_search_path_scope_is_applied_before_the_hit_limit: 40 higher-ranked out-of-scope symbols do not crowd out the scoped hit at limit 2.
+- test_search_rejects_path_scope_that_escapes_the_repository: `../outside`, `/etc`, and backslash paths are `InvalidSearchPath`.
+- test_search_secret_path_scope_reports_not_found_without_hits: `.env` scope is `path_not_found`.
+- test_search_query_below_trigram_length_is_diagnosed: `io` returns `query_too_short`.
+- test_invalid_query_reports_byte_position_and_reason: positions 0, 0, 5, and 3 (multi-byte prefix) with matching reasons.
+- test_search_with_diagnostics_rejects_invalid_query_before_searching: invalid query wins over a missing scope.
+- test_multi_word_search_requires_all_terms_and_ranks_exact_phrase_first: phrase heading first, then `safety_gate` and `gate_for_safety`; case, punctuation, and term order variants.
+- test_search_symbols_all_terms_matches_any_order_with_phrase_first, test_multi_word_query_quotes_every_term: Store-level semantics, limits, and FTS quoting.
+- test_search_truncation_reports_line_numbers_for_dropped_hits, test_search_untruncated_result_has_no_truncated_hits, test_search_missing_path_scope_is_informational_success, test_search_invalid_query_reports_position_and_reason, test_search_multi_word_query_matches_symbols_containing_all_terms: MCP `compresso_search` contract.
+- test_search_missing_path_scope_is_informational_success, test_search_invalid_query_reports_position_and_reason, test_search_multi_word_query_matches_symbols_containing_all_terms: CLI `compresso search --json` contract.
+
+### [x] E17-08: Doc–code drift linter
+Owner: PQ · Estimate: 3d · Depends: E1-02, E4-01, E5-01, E17-10
+Files: scripts/doc-drift-lint.ts, scripts/doc-drift-lint.test.ts, scripts/doc-drift-lint.config.json, rust/compresso-cli/src/surface.rs, rust/compresso-cli/examples/surface_inventory.rs, rust/compresso-mcp/src/server.rs, docs/architecture/doc-drift-lint.md, .github/workflows/ci.yml
+Description: Lint current-state docs against a surface inventory generated from the live clap trees, MCP tool registry, and config key table. Plan docs are out of scope except `Files:` of completed tickets; plan-internal consistency stays with E16-16.
+Acceptance criteria:
+- Unknown commands, flags, MCP tools, config keys, and repository paths fail; undocumented visible commands and tools fail.
+- JSON report; exit 0/1/2; reasoned allowlist whose unused entries fail; enforced in CI.
+Test cases:
+- test_surface_inventory_reflects_live_clap_trees, test_surface_inventory_lists_registered_mcp_tools_and_config_keys
+- test_drift_lint_reports_unknown_cli_command_and_flag, test_drift_lint_ignores_flags_of_other_programs
+- test_drift_lint_reports_unknown_mcp_tool_but_not_crate_identifiers, test_drift_lint_reports_unknown_config_key_only_in_known_sections
+- test_drift_lint_reports_missing_paths_and_links, test_drift_lint_reports_undocumented_commands_and_tools
+- test_drift_lint_checks_files_of_completed_tickets_only, test_drift_lint_allowlist_suppresses_matches_and_flags_stale_entries
+- test_drift_lint_cli_emits_json_and_exit_codes
+
+### [x] E17-09: Session decisions to pull request draft
+Owner: R2 · Estimate: 2d · Depends: E1-03, E4-02, E17-02
+Files: rust/compresso-cli/src/commands/decisions.rs, rust/compresso-cli/src/commands.rs, rust/compresso-cli/src/lib.rs, rust/compresso-cli/tests/cli_decisions.rs, docs/plan/04-mcp-and-integrations.md
+Description: Add `compresso decisions [--session ULID] [--limit N] [--pr NUMBER] [--post --yes] [--dry-run] [--json]`. Summarizes one client session's operation-ledger decisions (compression mode, strategies applied or skipped, fallbacks, per-tool retrieval counts, savings totals) as a Markdown pull request comment draft built only from the content-free ledger; every ledger string is secret-redacted and stripped of markup, mentions, and issue references. Posting goes through the `PullRequestPoster` boundary; because `compresso-cli` is `bounded-local` and may not start child processes, a confirmed post fails closed and prints the manual `gh pr comment` pipeline.
+Acceptance criteria:
+- Preview is the default; `--post` without `--yes` reports `confirmation_required`; `--dry-run` always previews; the poster is never called in any of these cases.
+- A post is attempted only for `--pr NUMBER --post --yes`, with a body identical to the preview draft.
+- The draft and all output contain no secret and no mention or markup taken from ledger strings.
+- Poster failures exit non-zero with `gh_not_found`, `post_unavailable`, or `post_failed` and state that nothing was posted.
+- The default session is the one owning the newest session-bound operation; `--session` selects another; unknown, idle, and missing sessions return typed errors.
+- No test reaches the network or starts a process.
+Test cases:
+- test_decisions_preview_is_the_default_and_never_calls_the_poster
+- test_decisions_post_only_with_pr_and_explicit_confirmation
+- test_decisions_redact_secrets_and_neutralize_untrusted_ledger_text
+- test_decisions_report_poster_failures_and_the_system_poster_never_posts
+- test_decisions_select_the_newest_session_or_an_explicit_one
+- test_system_poster_never_starts_a_process
+- test_inline_neutralizes_markup_mentions_and_secrets
+- test_format_utc_matches_known_instants
+
+### [x] E17-10: Resumable large-scale benchmark campaigns
+Owner: PQ · Estimate: 3d · Depends: E7-02, E1-03
+Files: rust/compresso-eval/src/campaign/{mod,state,adapter,checkpoint,runner,report,fixture_adapter,cli}.rs, rust/compresso-eval/src/bin/campaign.rs, rust/compresso-eval/tests/campaign.rs, rust/compresso-eval/tests/data/campaign-smoke/suite.json, docs/architecture/benchmark-campaigns.md
+Description: Run external task suites as checkpointed campaigns through a `SuiteAdapter` trait, with a local scripted fixture adapter. Network/container adapters are an opt-in extension point and are not built into this bounded-local crate.
+Acceptance criteria:
+- Per-task state machine; atomic versioned checkpoint bound to suite and task set; resume never reruns terminal tasks.
+- Bounded retries (interrupted attempts counted), per-task timeout with cooperative cancellation, concurrency limit.
+- Report in evaluation-report shape plus `campaign` section, ordered by task identifier.
+Test cases:
+- test_task_state_machine_permits_only_documented_transitions
+- test_campaign_drives_every_task_to_a_terminal_state_with_bounded_retries
+- test_campaign_resume_does_not_rerun_completed_tasks, test_campaign_resume_counts_attempt_interrupted_by_crash
+- test_campaign_resume_applies_attempt_budget_to_pending_retries, test_campaign_resume_rejects_corrupt_or_mismatched_checkpoint
+- test_campaign_task_timeout_cancels_attempt_and_exhausts_retries, test_campaign_never_exceeds_concurrency_limit
+- test_campaign_persists_running_state_before_each_attempt
+- test_campaign_report_uses_eval_report_shape_and_ignores_completion_order
+- test_external_adapters_require_opt_in_and_are_not_built_in, test_campaign_cli_runs_resumes_and_reports_status_as_json
+
+
 ## Execution order (flat, dependency-ordered)
 
 Slice: E1-01, E1-02, E1-03, E1-04, E1-05, E1-06, E2-01, E2-02, E2-02a, E3-01, E2-03, E3-02, E3-03, E2-04, E2-05, E2-06, E2-07, E2-08, E2-12, E2-13, E2-14, E3-04, E3-05, E3-06, E3-07, E3-08, E2-09, E7-01, E7-07, E2-10, E2-11, E3-09, E7-02, E3-10, E3-11, E3-12, E4-01, E4-02, E4-03, E4-04, E4-05, E5-01, E5-02, E5-03, E5-04, E5-05, E5-06, E2-15, E7-03, E7-04, E7-05, E7-06, E5-07, E6-01, E6-02, E6-03, E6-04, E6-05.
@@ -2710,6 +2913,7 @@ Wave 6 — release engineering and hardening close-out: E12-01, E13-32, E12-02, 
 Wave 7 — E15 A-F plus threat-model and sandbox foundations: E15-01, E14-17, E14-18, E15-02, E15-03, E15-05, E15-09, E15-11, E15-14, E15-19, E15-06..E15-17, E15-18, E15-18b, E15-18c, E15-20..E15-30 subject to dependencies.
 Wave 8 — full-product completion: E16-01..E16-16 subject to listed dependencies.
 Wave 9 — deferred sandbox actions: E14-19, E14-20, E15-04, E15-31, E15-32.
+E17 (delivered after the slice, independent of waves 1–9): E17-05, E17-03, E17-04, E17-07, E17-02, E17-09, E17-01, E17-06, E17-10, E17-08.
 
 Parallelism notes:
 - Slice: E2 (R1) and E3 (R2) run concurrently after E1; E7-01/E7-02 (PQ/R1) overlap E2's tail; E4 (D1) starts once E2-09 and E3-12 land; E5 (R2) follows E3; E6 (D1) follows E5-01 and overlaps E5-02..07; E1-06 and E4-05 (I1) slot in any time after E1-02/E4-04. E2-02a is a maintainer task (needs an Anthropic API key) and can land any time after E2-02 without blocking anything — until it lands, the interim 1.15 factor applies.
@@ -2740,5 +2944,6 @@ Parallelism notes:
 | E14 IP & secure deployment | 17 | 39 | ~8 wk | +E15 threat/sandbox gates |
 | E15 Clean-room advanced capabilities | 34 | 121.5 | ~24.5 engineer-wk | A-F incremental; G deferred |
 | E16 Full-product completion | 16 | 59 | ~12 engineer-wk, dependency-phased | |
-| **Post-slice + PB total** | **154** | **462 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
-| **Grand total** | **212** | **558 gross** | **~111.6 engineer-wk** | |
+| E17 Session continuity & hardening | 10 | 23.5 | ~4.7 engineer-wk | delivered 2026-11-14 |
+| **Post-slice + PB total** | **164** | **485.5 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
+| **Grand total** | **222** | **581.5 gross** | **~116.3 engineer-wk** | |

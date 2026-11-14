@@ -178,7 +178,7 @@ cost_basis                      model, priced flag, rate, price table version an
 transcript_savings              the same vocabulary derived from a client transcript; CLI only, never added to ledger totals
 ```
 
-Cost and transcript rules (E17-03, ADR-0028): `modeled_cost_saved` prices `total_effective_savings` (floored at zero) once at the base input rate of a caller-named model from the checked-in price table `rust/compresso-core/data/price-table-v1.json` (schema `schemas/price-table/v1.json`, carrying `schema_version`, `table_version`, and `effective_date`). Prices are never fetched and never guessed: a model absent from the table is reported with tokens only. `transcript_savings` counts each distinct `operation_id` once, prefers the ledger row when one exists, takes exact before/after counts for ledgerless compression (zero on fallback), and claims zero retrieval avoidance without a recorded baseline.
+Cost and transcript rules (E17-03, ADR-0029): `modeled_cost_saved` prices `total_effective_savings` (floored at zero) once at the base input rate of a caller-named model from the checked-in price table `rust/compresso-core/data/price-table-v1.json` (schema `schemas/price-table/v1.json`, carrying `schema_version`, `table_version`, and `effective_date`). Prices are never fetched and never guessed: a model absent from the table is reported with tokens only. `transcript_savings` counts each distinct `operation_id` once, prefers the ledger row when one exists, takes exact before/after counts for ledgerless compression (zero on fallback), and claims zero retrieval avoidance without a recorded baseline.
 
 ## 4. SQLite DDL v1 (`rust/compresso-store/migrations/0001_init.sql`)
 

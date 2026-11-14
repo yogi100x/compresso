@@ -1,4 +1,4 @@
-# 0028 — Bounded MCP server health probe
+# ADR-0028: Bounded MCP server health probe
 
 ## Status
 
