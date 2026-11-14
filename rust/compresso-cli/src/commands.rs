@@ -14,6 +14,7 @@ mod engine;
 mod index;
 mod integrations;
 mod mcp;
+mod mcp_probe;
 mod recall;
 mod repos;
 mod retrieval;
@@ -94,6 +95,15 @@ pub enum RootCommand {
     },
 }
 
+/// Arguments for the constant tool-routing reminder.
+#[derive(Args, Debug, Default)]
+pub struct RoutingReminderArgs {
+    /// Emit the `SessionStart` hook JSON envelope that Claude Code and Codex
+    /// add to model context after compaction, instead of plain text.
+    #[arg(long)]
+    pub session_start_hook: bool,
+}
+
 #[derive(Args, Debug, Default)]
 pub struct OutputArgs {
     #[arg(long)]
@@ -146,6 +156,10 @@ pub struct IntegrationMutationArgs {
     /// Use this repository's project-local MCP config instead of user scope.
     #[arg(long, value_name = "DIR")]
     pub project: Option<PathBuf>,
+    /// Manage the post-compaction routing-reminder hook instead of the MCP
+    /// server entry (Claude Code and Codex only).
+    #[arg(long)]
+    pub compaction_hook: bool,
 }
 
 #[derive(Args, Debug)]
@@ -158,6 +172,10 @@ pub struct IntegrationReadArgs {
     /// Inspect this repository's project-local MCP config instead of user scope.
     #[arg(long, value_name = "DIR")]
     pub project: Option<PathBuf>,
+    /// Inspect the post-compaction routing-reminder hook instead of the MCP
+    /// server entry (Claude Code and Codex only).
+    #[arg(long)]
+    pub compaction_hook: bool,
 }
 
 #[derive(Args, Debug, Default)]
@@ -182,6 +200,8 @@ pub enum ConfigCommand {
 #[derive(Debug, Subcommand)]
 pub enum McpCommand {
     Serve(DeferredArgs),
+    /// Print the bounded Compresso tool-routing reminder.
+    RoutingReminder(RoutingReminderArgs),
 }
 
 #[derive(Debug, Subcommand)]
@@ -283,6 +303,9 @@ fn execute_command(
             let stdin = std::io::stdin();
             integrations::execute(command, &environment, &mut stdin.lock(), output, errors)
         }
+        RootCommand::Mcp {
+            command: McpCommand::RoutingReminder(arguments),
+        } => execute_routing_reminder(&arguments, output),
         RootCommand::Mcp { command } => mcp::execute(command, errors),
         RootCommand::Eval { command } => compresso_eval::cli::execute(command, output, errors),
         RootCommand::Account { command } => execute_account(command, account, output, errors),
@@ -714,6 +737,34 @@ fn execute_index(
     }
 }
 
+/// Prints the constant routing reminder. It reads no input, opens no store,
+/// and touches no network, so a client hook can run it after every compaction.
+fn execute_routing_reminder(
+    arguments: &RoutingReminderArgs,
+    output: &mut impl Write,
+) -> CliExitCode {
+    let reminder = compresso_mcp::routing_reminder();
+    let result = if arguments.session_start_hook {
+        serde_json::to_writer(
+            &mut *output,
+            &serde_json::json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": reminder,
+                }
+            }),
+        )
+        .map_err(std::io::Error::other)
+        .and_then(|()| writeln!(output))
+    } else {
+        writeln!(output, "{reminder}")
+    };
+    match result {
+        Ok(()) => CliExitCode::Success,
+        Err(_) => CliExitCode::Failure,
+    }
+}
+
 fn execute_account(
     command: AccountCommand,
     account: &dyn AccountClient,
@@ -828,6 +879,7 @@ impl RootCommand {
             },
             Self::Mcp { command } => match command {
                 McpCommand::Serve(arguments) => arguments.output.json,
+                McpCommand::RoutingReminder(_) => false,
             },
             Self::Integrations { command } => match command {
                 IntegrationsCommand::Install(arguments)

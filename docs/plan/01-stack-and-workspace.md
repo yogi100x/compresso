@@ -94,7 +94,7 @@ Crate dependency rule: `core` has no internal dependencies; `store → core type
 | Crate group | Outbound network | Process execution | Additional boundary |
 |---|---|---|---|
 | core, atlas, store, mcp, search, edit, recall, knowledge, review, router, model-protocol | none | none | Pure local processing |
-| integrations, cli, eval | none; maintainer calibration binary may call only the configured counting endpoint | no arbitrary child process; detection uses bounded executable lookup | Config paths and approved repositories only |
+| integrations, cli, eval | none; maintainer calibration binary may call only the configured counting endpoint | no arbitrary child process; detection uses bounded executable lookup; the CLI's `commands/mcp_probe.rs` alone may start a trusted Compresso launcher (the running executable or a receipt-authenticated entry) for one bounded MCP handshake, and the system `kill` utility to end that server's process group (ADR-0028) | Config paths and approved repositories only |
 | proxy | Explicit configured provider hosts | none | TLS, signed/profile host allowlist, redirect/private-IP/body/time limits |
 | providers | Explicit configured provider hosts | none | Keychain credentials and the same host controls |
 | agent | Compresso account/entitlement control-plane origin only | supervisor-owned child lifecycle only | No arbitrary destination or command |

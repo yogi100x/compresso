@@ -55,7 +55,7 @@ fn test_canonical_command_snapshot() {
         ]
     );
     assert_eq!(subcommands(&root, "config"), ["explain"]);
-    assert_eq!(subcommands(&root, "mcp"), ["serve"]);
+    assert_eq!(subcommands(&root, "mcp"), ["serve", "routing-reminder"]);
     assert_eq!(
         subcommands(&root, "integrations"),
         ["install", "status", "verify", "uninstall"]

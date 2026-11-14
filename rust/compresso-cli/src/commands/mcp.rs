@@ -22,7 +22,12 @@ struct ServeOptions {
 }
 
 pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCode {
-    let McpCommand::Serve(arguments) = command;
+    let McpCommand::Serve(arguments) = command else {
+        // The routing reminder needs no store, config, or runtime and is
+        // dispatched before this server entry point.
+        let _ = write_error(errors, "invalid_arguments", "not a server command", false);
+        return CliExitCode::Failure;
+    };
     let options = match parse_serve_arguments(&arguments.arguments) {
         Ok(options) => options,
         Err(message) => {

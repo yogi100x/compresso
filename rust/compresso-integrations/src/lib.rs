@@ -23,9 +23,11 @@
 
 mod claude_code;
 mod codex;
+mod compaction_hook;
 mod cursor;
 mod plan;
 mod receipt;
+mod server_entry;
 mod text_fidelity;
 
 use std::path::PathBuf;
@@ -35,6 +37,7 @@ pub use codex::{
     CodexAdapter, CodexIntegration, CodexPlatform, CodexVerificationEvidence,
     CodexVerificationMethod, CodexVersionEvidence,
 };
+pub use compaction_hook::{CompactionHookClient, CompactionHookIntegration};
 pub use cursor::{
     CursorApplicationEvidence, CursorCliEvidence, CursorDiscovery, CursorIntegration,
     CursorLiveProbeEvidence, CursorPlatform,
@@ -49,6 +52,7 @@ pub use receipt::{
     CREATED_FILE_BACKUP_SENTINEL, FileReceiptStore, InstallReceipt, MemoryReceiptStore,
     RECEIPT_SCHEMA_VERSION, ReceiptError, ReceiptStore,
 };
+pub use server_entry::{ConfiguredServer, read_configured_server, receipt_authenticates_server};
 
 /// Adapter contract shared by Claude Code, Codex, and Cursor.
 ///

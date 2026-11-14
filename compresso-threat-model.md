@@ -222,6 +222,7 @@ Present likelihood is low because distribution is not occurring. The path become
 | TM-012 | Capability lint misses a new network/process path | New dependency/FFI/generated code bypasses finite list | Local-only invariant | Low | High | **Low-Medium** | Source/tree lint is strong but denylist-based, not a sandbox |
 | TM-013 | Mandatory local plugin is compromised or unexpectedly upgraded | Contributor follows tracked agent instructions | Source, network, development session | Low | High | **Low-Medium** | Installed context-mode showed no telemetry; version/trust is not pinned by repository |
 | TM-014 | Future telemetry erodes offline guarantee | Scope change without explicit consent/design review | Repository metadata and user privacy | Low | High | **Low currently** | Config forces telemetry off and D6 requires a new owner decision |
+| TM-015 | Health probe starts an attacker-chosen command | A cloned repository ships a project MCP config naming its own binary, or a local writer edits a client config; the user runs `compresso doctor` or `integrations status` | Local code execution as the user | Low | High | **Low** | Config is untrusted: the probe starts a command only when its canonical path is the running Compresso executable or an authenticated install receipt matches the entry exactly; exact `mcp serve` argv, no shell, scrubbed environment, neutral working directory, process-group kill; anything else is `not_probed`/`config_modified` and never executed (ADR-0028) |
 
 ## Criticality calibration
 

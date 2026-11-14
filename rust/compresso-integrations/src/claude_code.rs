@@ -366,7 +366,7 @@ fn checked_config_child(
     }
 }
 
-fn read_json_object(path: &Path) -> Result<Map<String, Value>, IntegrationError> {
+pub(crate) fn read_json_object(path: &Path) -> Result<Map<String, Value>, IntegrationError> {
     match fs::read(path) {
         Ok(bytes) => parse_json_object(&bytes),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
@@ -377,7 +377,9 @@ fn read_json_object(path: &Path) -> Result<Map<String, Value>, IntegrationError>
     }
 }
 
-fn read_existing_json_object(path: &Path) -> Result<Map<String, Value>, IntegrationError> {
+pub(crate) fn read_existing_json_object(
+    path: &Path,
+) -> Result<Map<String, Value>, IntegrationError> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -395,7 +397,7 @@ fn read_existing_json_object(path: &Path) -> Result<Map<String, Value>, Integrat
     parse_json_object(&bytes)
 }
 
-fn read_existing_json_object_for_verify(path: &Path) -> Result<Map<String, Value>, ()> {
+pub(crate) fn read_existing_json_object_for_verify(path: &Path) -> Result<Map<String, Value>, ()> {
     fs::read(path)
         .map_err(|_| ())
         .and_then(|bytes| parse_json_object(&bytes).map_err(|_| ()))
@@ -420,7 +422,7 @@ fn object_at_or_insert<'a>(
         .ok_or_else(|| invalid_request(format!("{key} must be a JSON object")))
 }
 
-fn render_json(document: &Map<String, Value>) -> Result<String, IntegrationError> {
+pub(crate) fn render_json(document: &Map<String, Value>) -> Result<String, IntegrationError> {
     let mut rendered =
         serde_json::to_string_pretty(&Value::Object(document.clone())).map_err(|error| {
             invalid_request(format!("configuration JSON cannot be rendered: {error}"))
@@ -429,14 +431,14 @@ fn render_json(document: &Map<String, Value>) -> Result<String, IntegrationError
     Ok(rendered)
 }
 
-fn canonical_json_hash(value: &Value) -> Result<String, IntegrationError> {
+pub(crate) fn canonical_json_hash(value: &Value) -> Result<String, IntegrationError> {
     let bytes = serde_json::to_vec(value).map_err(|error| {
         invalid_request(format!("owned JSON value cannot be canonicalized: {error}"))
     })?;
     Ok(blake3::hash(&bytes).to_hex().to_string())
 }
 
-fn resolved_compresso_command(path: &Path) -> Result<String, IntegrationError> {
+pub(crate) fn resolved_compresso_command(path: &Path) -> Result<String, IntegrationError> {
     if !is_normalized_absolute_path(path) {
         return Err(invalid_request(
             "compresso binary path must be normalized and absolute",
@@ -496,7 +498,7 @@ fn is_exact_server_entry(value: &Value, expected_args: &[String]) -> bool {
         && entry.get("args") == Some(&json!(expected_args))
 }
 
-fn is_executable_file(path: &Path) -> bool {
+pub(crate) fn is_executable_file(path: &Path) -> bool {
     let Ok(metadata) = fs::metadata(path) else {
         return false;
     };
