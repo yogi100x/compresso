@@ -46,6 +46,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      - name: Require the release commit to be on main
+        # Acceptance coverage: test_beta_release_commit_must_be_on_main
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          scripts/release/beta/require-main-ancestry.sh "${GITHUB_SHA}" refs/remotes/origin/main
       - id: version
         name: Validate package, engine, source, and workflow identity
         shell: bash
