@@ -1,6 +1,7 @@
 //! Controlled fixture loading, evaluation runners, and release-gate primitives.
 
 pub mod calibrate;
+pub mod campaign;
 pub mod cli;
 pub mod fixtures;
 pub mod gates;
