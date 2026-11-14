@@ -528,9 +528,7 @@ function checkTools(context: Context, line: number, text: string) {
     // tool check comes first.
     if (context.surface.tools.has(name)) {
       context.mentionedTools.add(name);
-    } else if (context.surface.crateIdentifiers.has(name)) {
-      continue;
-    } else {
+    } else if (!context.surface.crateIdentifiers.has(name)) {
       context.findings.push({
         kind: "unknown_mcp_tool",
         doc: context.doc,
