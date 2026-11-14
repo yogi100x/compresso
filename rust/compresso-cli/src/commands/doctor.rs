@@ -9,10 +9,13 @@ use compresso_atlas::parsers::{Language, ParserRegistry};
 use compresso_core::{
     Config, ConfigOverrides, ConfigSource, Mode, RuntimePaths, TokenProvider, counter_for,
 };
-use compresso_integrations::{ConfiguredServer, read_configured_server};
+use compresso_integrations::{
+    ConfiguredServer, FileReceiptStore, ReceiptStore as _, read_configured_server,
+    receipt_authenticates_server,
+};
 use compresso_store::Store;
 
-use super::mcp_probe::{self, McpServerHealth};
+use super::mcp_probe::{self, LauncherTrust, McpServerHealth};
 use super::{ConfigCommand, OutputArgs, RootCommand};
 
 const CONFIG_ENVIRONMENT: [&str; 5] = [
@@ -298,20 +301,41 @@ fn configured_mcp_servers(environment: &DiagnosticEnvironment) -> Vec<McpServerR
     let Some(home) = environment.home_dir.as_deref() else {
         return Vec::new();
     };
+    // Receipts record the canonical configuration path, so resolve the home
+    // directory the same way the adapters do before looking one up.
+    let home = fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
+    let receipts = FileReceiptStore::new(super::integrations::receipt_store_path(
+        &environment.data_dir,
+    ));
     let args = mcp_probe::user_scope_args();
     let mut reports: Vec<McpServerReport> = Vec::new();
-    let mut assessed: Vec<(ConfiguredServer, McpServerHealth)> = Vec::new();
-    for config in mcp_probe::user_client_configs(home) {
+    let mut assessed: Vec<(ConfiguredServer, LauncherTrust, McpServerHealth)> = Vec::new();
+    for config in mcp_probe::user_client_configs(&home) {
         let server = read_configured_server(config.format, &config.path, &args);
         if server == ConfiguredServer::NotConfigured {
             continue;
         }
-        let health = match assessed.iter().find(|(seen, _)| *seen == server) {
-            Some((_, health)) => relabel(health, config.client),
+        let receipt_authenticated = receipts
+            .active_for(config.client, &config.path)
+            .ok()
+            .flatten()
+            .is_some_and(|receipt| {
+                receipt_authenticates_server(&receipt, config.format, &config.path)
+            });
+        let trust = LauncherTrust::new(Some(&environment.executable_path), receipt_authenticated);
+        let health = match assessed
+            .iter()
+            .find(|(seen, seen_trust, _)| *seen == server && *seen_trust == trust)
+        {
+            Some((_, _, health)) => relabel(health, config.client),
             None => {
-                let health =
-                    mcp_probe::assess(&server, config.client, environment.mcp_probe_timeout);
-                assessed.push((server, health.clone()));
+                let health = mcp_probe::assess(
+                    &server,
+                    config.client,
+                    &trust,
+                    environment.mcp_probe_timeout,
+                );
+                assessed.push((server, trust, health.clone()));
                 health
             }
         };

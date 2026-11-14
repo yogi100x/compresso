@@ -11,10 +11,11 @@ use compresso_integrations::{
     DeferredInstallAuthorization, Detection, FileReceiptStore, InstallCtx, InstallReceipt,
     Integration, IntegrationError, MutationPlan, PlanApproval, PlanClock, PlanManager,
     ReceiptStore, Scope, VerificationCheck, VerificationReport, read_configured_server,
+    receipt_authenticates_server,
 };
 use compresso_store::{ReceiptRecord, Store};
 
-use super::mcp_probe::{self, McpServerHealth};
+use super::mcp_probe::{self, LauncherTrust, McpServerHealth};
 use super::{
     CliExitCode, IntegrationClientArg, IntegrationMutationArgs, IntegrationReadArgs,
     IntegrationsCommand, write_error,
@@ -102,12 +103,17 @@ impl IntegrationEnvironment {
     }
 
     fn receipt_store_path(&self) -> PathBuf {
-        self.data_dir.join(RECEIPT_STORE_NAME)
+        receipt_store_path(&self.data_dir)
     }
 
     fn database_path(&self) -> PathBuf {
         self.data_dir.join("compresso.db")
     }
+}
+
+/// Location of the canonical integration receipt store inside a data directory.
+pub(super) fn receipt_store_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(RECEIPT_STORE_NAME)
 }
 
 fn resolve_compresso_command() -> Result<PathBuf, IntegrationCliError> {
@@ -499,13 +505,13 @@ fn execute_status(
     let selected = SelectedIntegration::new(arguments.client, environment, &scope)?;
     let receipts = FileReceiptStore::new(environment.receipt_store_path());
     let detection = selected.adapter.detect(&scope);
-    let active_receipt = receipts
-        .active_for(arguments.client.as_str(), &selected.config_path)?
-        .is_some();
+    let receipt = receipts.active_for(arguments.client.as_str(), &selected.config_path)?;
+    let active_receipt = receipt.is_some();
     let server = mcp_server_health(
         arguments.client,
         &selected.config_path,
         &scope,
+        receipt.as_ref(),
         environment.mcp_probe_timeout,
     );
     if arguments.output.json {
@@ -551,6 +557,7 @@ fn mcp_server_health(
     client: IntegrationClientArg,
     config_path: &Path,
     scope: &Scope,
+    receipt: Option<&InstallReceipt>,
     probe_timeout: Option<Duration>,
 ) -> McpServerHealth {
     let format = match client {
@@ -564,9 +571,18 @@ fn mcp_server_health(
         let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
         args.extend(["--root".to_owned(), root.to_string_lossy().into_owned()]);
     }
+    // The configuration may sit inside an untrusted repository. Its command
+    // is started only when it is the running executable or when an
+    // authenticated receipt proves Compresso wrote this exact entry.
+    let running_executable = env::current_exe().ok();
+    let trust = LauncherTrust::new(
+        running_executable.as_deref(),
+        receipt.is_some_and(|receipt| receipt_authenticates_server(receipt, format, config_path)),
+    );
     mcp_probe::assess(
         &read_configured_server(format, config_path, &args),
         client.as_str(),
+        &trust,
         probe_timeout,
     )
 }

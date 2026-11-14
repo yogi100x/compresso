@@ -1,11 +1,18 @@
 //! Bounded liveness probe for the configured Compresso MCP server.
 //!
 //! This is the only module in the CLI allowed to start a child process
-//! (ADR-0028). It launches exactly the adapter-written, absolute Compresso
-//! launcher with the adapter-written fixed arguments, never through a shell,
-//! performs one MCP `initialize` plus `tools/list` exchange under a hard
-//! deadline, and always reaps the child. Entries that were edited by hand are
-//! reported but never launched.
+//! (ADR-0028). Client configuration is untrusted input: a project-scope
+//! config lives inside a repository and can name any executable. The probe
+//! therefore starts a configured command only when it is a trusted Compresso
+//! launcher, meaning either its canonical path is the running Compresso
+//! executable or an authenticated install receipt proves Compresso wrote that
+//! exact entry. Everything else is reported as `not_probed` or
+//! `config_modified` and is never executed.
+//!
+//! A trusted launch uses the fixed adapter-written arguments, no shell, a
+//! scrubbed environment, a neutral working directory, and its own process
+//! group; one MCP `initialize` plus `tools/list` exchange runs under a hard
+//! deadline, after which the whole process group is killed and reaped.
 
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -26,13 +33,70 @@ const EXIT_GRACE: Duration = Duration::from_millis(500);
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 const PROTOCOL_VERSION: &str = "2024-11-05";
 const PROBE_CLIENT_NAME: &str = "compresso-doctor";
+/// The only environment variables a probed server inherits: what Compresso
+/// needs to locate its own configuration, data, and temporary directories.
+const ENVIRONMENT_ALLOWLIST: [&str; 19] = [
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "COMPRESSO_MODE",
+    "COMPRESSO_TARGET_TOKENS",
+    "COMPRESSO_TELEMETRY",
+    "COMPRESSO_BYPASS",
+    "COMPRESSO_LOG",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+];
+
+/// Evidence that a configured launcher is a Compresso binary the user chose.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct LauncherTrust {
+    /// Canonical path of the running Compresso executable, when resolvable.
+    pub running_executable: Option<PathBuf>,
+    /// An authenticated install receipt covers the entry exactly as it is now.
+    pub receipt_authenticated: bool,
+}
+
+impl LauncherTrust {
+    pub(crate) fn new(running_executable: Option<&Path>, receipt_authenticated: bool) -> Self {
+        Self {
+            running_executable: running_executable
+                .and_then(|path| std::fs::canonicalize(path).ok()),
+            receipt_authenticated,
+        }
+    }
+
+    /// Returns the path to execute, or `None` when the command is untrusted.
+    ///
+    /// A command matching the running executable is started through its
+    /// canonical path so a symbolic link swapped after the check cannot
+    /// redirect the launch. A receipt-authenticated command is started exactly
+    /// as the approved install recorded it.
+    fn launch_path(&self, command: &Path) -> Option<PathBuf> {
+        let canonical = std::fs::canonicalize(command).ok()?;
+        if self.running_executable.as_ref() == Some(&canonical) {
+            return Some(canonical);
+        }
+        self.receipt_authenticated.then(|| command.to_path_buf())
+    }
+}
 
 /// Observable health of one configured Compresso MCP server entry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum McpServerState {
     NotConfigured,
     ConfigUnreadable,
-    EntryModified,
+    ConfigModified,
+    NotProbed,
     BinaryMissing,
     BinaryNotExecutable,
     ProbeSkipped,
@@ -48,7 +112,8 @@ impl McpServerState {
         match self {
             Self::NotConfigured => "not_configured",
             Self::ConfigUnreadable => "config_unreadable",
-            Self::EntryModified => "entry_modified",
+            Self::ConfigModified => "config_modified",
+            Self::NotProbed => "not_probed",
             Self::BinaryMissing => "binary_missing",
             Self::BinaryNotExecutable => "binary_not_executable",
             Self::ProbeSkipped => "probe_skipped",
@@ -96,11 +161,13 @@ impl McpServerHealth {
     }
 }
 
-/// Classifies one configured server entry, probing it when `probe_timeout` is
-/// set and the entry still has the exact adapter-written shape.
+/// Classifies one configured server entry, probing it only when
+/// `probe_timeout` is set, the entry has the exact adapter-written shape, and
+/// `trust` identifies its command as a trusted Compresso launcher.
 pub(crate) fn assess(
     server: &ConfiguredServer,
     client: &str,
+    trust: &LauncherTrust,
     probe_timeout: Option<Duration>,
 ) -> McpServerHealth {
     let reinstall = format!("compresso integrations install {client}");
@@ -123,7 +190,7 @@ pub(crate) fn assess(
         }
         ConfiguredServer::Modified => {
             return McpServerHealth::new(
-                McpServerState::EntryModified,
+                McpServerState::ConfigModified,
                 "the Compresso entry was edited and no longer matches the installed shape; it was not launched",
                 format!("Restore the entry with `{reinstall}`, then restart the client."),
             );
@@ -152,6 +219,17 @@ pub(crate) fn assess(
             );
         }
     }
+    let Some(launch_path) = trust.launch_path(command) else {
+        return McpServerHealth::new(
+            McpServerState::NotProbed,
+            format!(
+                "configured command {shown} is not a launcher this Compresso installed; it was not launched"
+            ),
+            format!(
+                "If you trust this configuration, run `{reinstall}` to write a verified entry, then restart the client. Otherwise remove the entry."
+            ),
+        );
+    };
     let Some(timeout) = probe_timeout else {
         return McpServerHealth::new(
             McpServerState::ProbeSkipped,
@@ -160,7 +238,7 @@ pub(crate) fn assess(
         );
     };
     let manual = format!("{shown} {}", args.join(" "));
-    match probe(command, args, timeout) {
+    match probe(&launch_path, args, timeout) {
         ProbeOutcome::Healthy { tools } => McpServerHealth::new(
             McpServerState::Healthy,
             format!("MCP handshake succeeded with {tools} tools"),
@@ -234,8 +312,18 @@ enum Exchange {
 }
 
 fn probe(command: &Path, args: &[String], timeout: Duration) -> ProbeOutcome {
-    let mut child = match Command::new(command)
+    let mut launch = Command::new(command);
+    launch
         .args(args)
+        .env_clear()
+        .current_dir(neutral_directory());
+    for name in ENVIRONMENT_ALLOWLIST {
+        if let Some(value) = std::env::var_os(name) {
+            launch.env(name, value);
+        }
+    }
+    isolate_process_group(&mut launch);
+    let mut child = match launch
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -370,7 +458,9 @@ fn spawn_line_reader(stdout: std::process::ChildStdout) -> Receiver<String> {
     receiver
 }
 
-/// Waits briefly for a clean exit, then kills and reaps the child.
+/// Waits briefly for a clean exit; otherwise kills the child's whole process
+/// group and reaps the child. The group is signalled only while the unreaped
+/// child still reserves its process id, so the id cannot name another group.
 fn reap(child: &mut Child) -> Option<i32> {
     let deadline = Instant::now() + EXIT_GRACE;
     loop {
@@ -380,9 +470,54 @@ fn reap(child: &mut Child) -> Option<i32> {
             _ => break,
         }
     }
+    kill_process_group(child.id());
     let _ = child.kill();
     child.wait().ok().and_then(|status| status.code())
 }
+
+/// A working directory that is never the repository being inspected.
+fn neutral_directory() -> PathBuf {
+    let temporary = std::env::temp_dir();
+    if temporary.is_dir() {
+        temporary
+    } else if cfg!(windows) {
+        PathBuf::from("C:\\")
+    } else {
+        PathBuf::from("/")
+    }
+}
+
+#[cfg(unix)]
+fn isolate_process_group(command: &mut Command) {
+    use std::os::unix::process::CommandExt as _;
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn isolate_process_group(_command: &mut Command) {}
+
+/// Kills every process in the probed server's group. The child leads its own
+/// group, so the group id equals its process id. The system `kill` utility is
+/// invoked by absolute path with a fixed argument vector.
+#[cfg(unix)]
+fn kill_process_group(process_id: u32) {
+    for kill in ["/bin/kill", "/usr/bin/kill"] {
+        if !Path::new(kill).is_file() {
+            continue;
+        }
+        let _ = Command::new(kill)
+            .args(["-KILL", "--", &format!("-{process_id}")])
+            .env_clear()
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        return;
+    }
+}
+
+#[cfg(not(unix))]
+fn kill_process_group(_process_id: u32) {}
 
 /// The user-scope argument vector every adapter writes.
 pub(crate) fn user_scope_args() -> Vec<String> {

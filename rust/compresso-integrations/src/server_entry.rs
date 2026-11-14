@@ -10,7 +10,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::ConfigFormat;
+use crate::{ConfigFormat, InstallReceipt};
 
 /// Largest client configuration file inspected for a server entry.
 const MAX_CONFIG_BYTES: u64 = 4 * 1024 * 1024;
@@ -58,6 +58,57 @@ pub fn read_configured_server(
         ConfigFormat::Json => read_json_entry(&bytes, expected_args),
         ConfigFormat::Toml => read_toml_entry(&bytes, expected_args),
     }
+}
+
+/// Whether `receipt` proves that Compresso itself wrote the server entry
+/// currently stored in `config_path`.
+///
+/// The receipt must be active, name this exact configuration file, and record
+/// an owned-value hash equal to the hash of the entry as it exists now. Any
+/// later edit to the entry, including its command, breaks the match, so a
+/// caller can treat a `true` result as "this launcher path is the one an
+/// approved Compresso install plan recorded".
+pub fn receipt_authenticates_server(
+    receipt: &InstallReceipt,
+    format: ConfigFormat,
+    config_path: &Path,
+) -> bool {
+    if receipt.uninstalled_at.is_some() || receipt.config_path != config_path {
+        return false;
+    }
+    let (key, current) = match format {
+        ConfigFormat::Json => ("mcpServers.compresso", current_json_hash(config_path)),
+        ConfigFormat::Toml => ("mcp_servers.compresso", current_toml_hash(config_path)),
+    };
+    match (receipt.owned_value_hashes.get(key), current) {
+        (Some(installed), Some(current)) => *installed == current,
+        _ => false,
+    }
+}
+
+fn read_bounded(config_path: &Path) -> Option<Vec<u8>> {
+    let metadata = fs::metadata(config_path).ok()?;
+    if metadata.len() > MAX_CONFIG_BYTES {
+        return None;
+    }
+    fs::read(config_path).ok()
+}
+
+fn current_json_hash(config_path: &Path) -> Option<String> {
+    let document: serde_json::Value = serde_json::from_slice(&read_bounded(config_path)?).ok()?;
+    let entry = document.get("mcpServers")?.get("compresso")?;
+    let bytes = serde_json::to_vec(entry).ok()?;
+    Some(blake3::hash(&bytes).to_hex().to_string())
+}
+
+fn current_toml_hash(config_path: &Path) -> Option<String> {
+    let bytes = read_bounded(config_path)?;
+    let document = std::str::from_utf8(&bytes)
+        .ok()?
+        .parse::<toml_edit::DocumentMut>()
+        .ok()?;
+    let entry = document.as_item().get("mcp_servers")?.get("compresso")?;
+    Some(crate::plan::hash_toml_owned_item(entry))
 }
 
 fn read_json_entry(bytes: &[u8], expected_args: &[String]) -> ConfiguredServer {
