@@ -83,11 +83,6 @@
     },
     {
       "kind": "undocumented_cli_command",
-      "reference": "compresso read",
-      "reason": "Documentation gap that predates the drift linter; remove this entry when the command is documented."
-    },
-    {
-      "kind": "undocumented_cli_command",
       "reference": "compresso search",
       "reason": "Documentation gap that predates the drift linter; remove this entry when the command is documented."
     },
