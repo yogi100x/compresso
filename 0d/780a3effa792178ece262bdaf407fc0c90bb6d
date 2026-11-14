@@ -1,0 +1,19 @@
+Cargo.lock
+  s_431f9036f52a4a::t_eee1f31bdff0dc 1610,1612,1890,1892
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0d780a3effa792178ece262bdaf407fc0c90bb6d",
+  "prompts": {},
+  "sessions": {
+    "s_431f9036f52a4a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "40a919f0-900b-4a17-914f-e88a974777a0",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
