@@ -342,6 +342,7 @@ dependencies = [
  "blake3",
  "compresso-core",
  "compresso-store",
+ "criterion",
  "ignore",
  "tempfile",
  "thiserror",

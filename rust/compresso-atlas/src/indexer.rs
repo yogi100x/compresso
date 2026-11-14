@@ -1,17 +1,25 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, mpsc};
+use std::thread;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use compresso_core::TokenCounter;
 use compresso_store::{EdgeKind, EdgeRecord, EdgeResolution, FileRecord, Store, SymbolRecord};
 
+use crate::concurrency::{Concurrency, ReadAhead};
 use crate::parsers::{ImportRecord, ImportResolution, ParseError, ParserRegistry};
-use crate::scanner::{AtlasError, scan};
+use crate::scanner::{AtlasError, DEFAULT_MAX_FILE_BYTES, ScanOptions, scan_with_concurrency};
 
 const INDEX_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_PARSER_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+atlas-shell-text-v1");
+/// Below this many candidates worker startup costs more than it saves.
+const PARALLEL_INDEX_MIN_CANDIDATES: usize = 8;
+/// Prepared files a worker may run ahead of the ordered commit.
+const READ_AHEAD_PER_WORKER: usize = 4;
 
 /// A deterministic progress event emitted only after its corresponding action starts or commits.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -87,6 +95,7 @@ pub struct Indexer<'a> {
     counter: &'a dyn TokenCounter,
     parser_version: String,
     schema_version: u32,
+    concurrency: Concurrency,
 }
 
 impl<'a> Indexer<'a> {
@@ -96,7 +105,17 @@ impl<'a> Indexer<'a> {
             counter,
             parser_version: DEFAULT_PARSER_VERSION.to_owned(),
             schema_version: INDEX_SCHEMA_VERSION,
+            concurrency: Concurrency::default(),
         }
+    }
+
+    /// Bounds the workers and buffered source bytes used to scan, read, and parse.
+    ///
+    /// Store writes always stay on the calling thread in candidate order, so
+    /// the resulting index is identical for every setting.
+    pub fn with_concurrency(mut self, concurrency: Concurrency) -> Self {
+        self.concurrency = concurrency;
+        self
     }
 
     /// Overrides the parser version used for staleness checks and version stamps.
@@ -139,7 +158,13 @@ impl<'a> Indexer<'a> {
             version.parser_version != self.parser_version
                 || version.schema_version != self.schema_version
         });
-        let scan = scan(self.store, repo, &canonical_root)?;
+        let scan = scan_with_concurrency(
+            self.store,
+            repo,
+            &canonical_root,
+            ScanOptions::default(),
+            self.concurrency,
+        )?;
         let removed_set = scan.removed.iter().cloned().collect::<HashSet<_>>();
         let known_paths = known_repository_paths(&previous_hashes, &scan, &removed_set)?;
         let paths_expanded = !scan.added.is_empty();
@@ -189,66 +214,70 @@ impl<'a> Indexer<'a> {
         let mut imports_resolved = 0_usize;
         let mut imports_unresolved = 0_usize;
 
-        for (index, relative) in candidates.into_iter().enumerate() {
-            before_file(index, &relative)?;
-            let relative_text = relative
-                .to_str()
-                .ok_or_else(|| IndexError::NonUtf8Path {
-                    path: relative.clone(),
-                })?
-                .to_owned();
-            let absolute = resolve_candidate(&canonical_root, &relative)?;
-            let source =
-                fs::read_to_string(&absolute).map_err(|source| IndexError::ReadSource {
-                    path: absolute.clone(),
-                    source,
-                })?;
-            let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
-            let language = ParserRegistry::for_path(&relative);
-            let mut file_symbols = Vec::new();
-            let mut edges = Vec::new();
-
-            if let Some(language) = language {
-                progress(IndexProgress::Parsing {
-                    path: relative.clone(),
-                });
-                let mut extraction =
-                    ParserRegistry::extract(language, &source).map_err(|source| {
-                        IndexError::Parse {
-                            path: relative.clone(),
-                            source,
-                        }
-                    })?;
-                resolve_repository_imports(&relative_text, &mut extraction.imports, &known_paths);
-                file_symbols = extraction.symbols;
-                estimate_symbol_tokens(&source, &relative, &mut file_symbols, self.counter)?;
-                for import in extraction.imports {
-                    match &import.resolution {
-                        ImportResolution::Resolved => imports_resolved += 1,
-                        ImportResolution::Ambiguous(_) | ImportResolution::Unresolved(_) => {
-                            imports_unresolved += 1;
-                        }
+        let candidates = candidates.into_iter().collect::<Vec<_>>();
+        let context = PrepareContext {
+            root: &canonical_root,
+            known_paths: &known_paths,
+            counter: self.counter,
+            indexed_at,
+        };
+        // Every Store write happens here, on the calling thread, in candidate
+        // order: one writer, one transaction per file, at any concurrency.
+        let mut commit = |relative: &Path,
+                          outcome: Result<PreparedFile, PrepareFailure>|
+         -> Result<(), AtlasError> {
+            let prepared = match outcome {
+                Ok(prepared) => prepared,
+                Err(failure) => {
+                    if failure.parsing_started {
+                        progress(IndexProgress::Parsing {
+                            path: relative.to_path_buf(),
+                        });
                     }
-                    edges.push(edge_from_import(import));
+                    return Err(failure.error);
                 }
+            };
+            if prepared.parsed {
+                progress(IndexProgress::Parsing {
+                    path: relative.to_path_buf(),
+                });
                 files_indexed += 1;
-                symbols += file_symbols.len();
+                symbols += prepared.symbols.len();
+                imports_resolved += prepared.imports_resolved;
+                imports_unresolved += prepared.imports_unresolved;
             } else {
                 files_skipped += 1;
             }
-
             self.store.replace_indexed_file(
                 repo,
-                &FileRecord {
-                    path: relative_text,
-                    hash,
-                    language,
-                    size_bytes: source.len() as u64,
-                    token_estimate: self.counter.count(&source),
-                    indexed_at,
+                &prepared.record,
+                &prepared.symbols,
+                &prepared.edges,
+            )?;
+            Ok(())
+        };
+
+        let workers = if candidates.len() < PARALLEL_INDEX_MIN_CANDIDATES {
+            1
+        } else {
+            self.concurrency
+                .workers_for(candidates.len(), DEFAULT_MAX_FILE_BYTES)
+        };
+        if workers <= 1 {
+            for (index, relative) in candidates.iter().enumerate() {
+                before_file(index, relative)?;
+                commit(relative, prepare_file(&context, relative))?;
+            }
+        } else {
+            prepare_in_parallel(
+                &context,
+                &candidates,
+                workers,
+                self.concurrency.memory_budget_bytes(),
+                |index, outcome| {
+                    before_file(index, &candidates[index])?;
+                    commit(&candidates[index], outcome)
                 },
-                &file_symbols,
-                &edges,
             )?;
         }
 
@@ -270,6 +299,206 @@ impl<'a> Indexer<'a> {
             stale,
         })
     }
+}
+
+/// Read-only inputs shared by every file preparation, on any thread.
+struct PrepareContext<'a> {
+    root: &'a Path,
+    known_paths: &'a BTreeSet<String>,
+    counter: &'a dyn TokenCounter,
+    indexed_at: i64,
+}
+
+/// Everything one file contributes to the index, computed without the Store.
+struct PreparedFile {
+    record: FileRecord,
+    symbols: Vec<SymbolRecord>,
+    edges: Vec<EdgeRecord>,
+    parsed: bool,
+    imports_resolved: usize,
+    imports_unresolved: usize,
+}
+
+/// A preparation failure plus whether parsing had begun, so the committing
+/// thread can replay the same progress events a serial run would emit.
+struct PrepareFailure {
+    error: AtlasError,
+    parsing_started: bool,
+}
+
+impl PrepareFailure {
+    fn before_parse(error: impl Into<AtlasError>) -> Self {
+        Self {
+            error: error.into(),
+            parsing_started: false,
+        }
+    }
+
+    fn during_parse(error: impl Into<AtlasError>) -> Self {
+        Self {
+            error: error.into(),
+            parsing_started: true,
+        }
+    }
+}
+
+/// Reads, hashes, parses, and resolves one candidate. Pure with respect to
+/// the Store, so it is safe to run on a worker thread.
+fn prepare_file(
+    context: &PrepareContext<'_>,
+    relative: &Path,
+) -> Result<PreparedFile, PrepareFailure> {
+    let relative_text = relative
+        .to_str()
+        .ok_or_else(|| {
+            PrepareFailure::before_parse(IndexError::NonUtf8Path {
+                path: relative.to_path_buf(),
+            })
+        })?
+        .to_owned();
+    let absolute =
+        resolve_candidate(context.root, relative).map_err(PrepareFailure::before_parse)?;
+    let source = fs::read_to_string(&absolute).map_err(|source| {
+        PrepareFailure::before_parse(IndexError::ReadSource {
+            path: absolute.clone(),
+            source,
+        })
+    })?;
+    let hash = blake3::hash(source.as_bytes()).to_hex().to_string();
+    let language = ParserRegistry::for_path(relative);
+    let mut symbols = Vec::new();
+    let mut edges = Vec::new();
+    let mut imports_resolved = 0_usize;
+    let mut imports_unresolved = 0_usize;
+
+    if let Some(language) = language {
+        let mut extraction = ParserRegistry::extract(language, &source).map_err(|source| {
+            PrepareFailure::during_parse(IndexError::Parse {
+                path: relative.to_path_buf(),
+                source,
+            })
+        })?;
+        resolve_repository_imports(&relative_text, &mut extraction.imports, context.known_paths);
+        symbols = extraction.symbols;
+        estimate_symbol_tokens(&source, relative, &mut symbols, context.counter)
+            .map_err(PrepareFailure::during_parse)?;
+        for import in extraction.imports {
+            match &import.resolution {
+                ImportResolution::Resolved => imports_resolved += 1,
+                ImportResolution::Ambiguous(_) | ImportResolution::Unresolved(_) => {
+                    imports_unresolved += 1;
+                }
+            }
+            edges.push(edge_from_import(import));
+        }
+    }
+
+    Ok(PreparedFile {
+        record: FileRecord {
+            path: relative_text,
+            hash,
+            language,
+            size_bytes: source.len() as u64,
+            token_estimate: context.counter.count(&source),
+            indexed_at: context.indexed_at,
+        },
+        symbols,
+        edges,
+        parsed: language.is_some(),
+        imports_resolved,
+        imports_unresolved,
+    })
+}
+
+/// Prepares candidates on `workers` threads and commits them in candidate order.
+///
+/// `commit` runs only on the calling thread, strictly in index order, and the
+/// first failure it returns stops the run with nothing later committed. Source
+/// bytes are charged against `memory_budget_bytes` from dispatch until commit.
+fn prepare_in_parallel<C>(
+    context: &PrepareContext<'_>,
+    candidates: &[PathBuf],
+    workers: usize,
+    memory_budget_bytes: u64,
+    mut commit: C,
+) -> Result<(), AtlasError>
+where
+    C: FnMut(usize, Result<PreparedFile, PrepareFailure>) -> Result<(), AtlasError>,
+{
+    let (job_sender, job_receiver) = mpsc::channel::<usize>();
+    let job_receiver = Mutex::new(job_receiver);
+    let (result_sender, result_receiver) = mpsc::channel();
+    let cancelled = AtomicBool::new(false);
+
+    thread::scope(|scope| {
+        for _ in 0..workers {
+            let result_sender = result_sender.clone();
+            let job_receiver = &job_receiver;
+            let cancelled = &cancelled;
+            scope.spawn(move || {
+                loop {
+                    let job = match job_receiver.lock() {
+                        Ok(receiver) => receiver.recv(),
+                        Err(_) => break,
+                    };
+                    let Ok(index) = job else { break };
+                    if cancelled.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let outcome = prepare_file(context, &candidates[index]);
+                    if result_sender.send((index, outcome)).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(result_sender);
+
+        let mut read_ahead = ReadAhead::new(
+            memory_budget_bytes,
+            workers.saturating_mul(READ_AHEAD_PER_WORKER),
+        );
+        let mut ready = BTreeMap::new();
+        let mut next_dispatch = 0_usize;
+        let mut next_commit = 0_usize;
+        let outcome = (|| {
+            while next_commit < candidates.len() {
+                while next_dispatch < candidates.len() {
+                    let cost_bytes = fs::metadata(context.root.join(&candidates[next_dispatch]))
+                        .map_or(0, |metadata| metadata.len());
+                    if !read_ahead.try_admit(cost_bytes) {
+                        break;
+                    }
+                    if job_sender.send(next_dispatch).is_err() {
+                        read_ahead.release_oldest();
+                        break;
+                    }
+                    next_dispatch += 1;
+                }
+                let Ok((index, prepared)) = result_receiver.recv() else {
+                    // Every worker stopped early. Finish on this thread so the
+                    // run still completes with the serial result.
+                    for (index, candidate) in candidates.iter().enumerate().skip(next_commit) {
+                        let prepared = ready
+                            .remove(&index)
+                            .unwrap_or_else(|| prepare_file(context, candidate));
+                        commit(index, prepared)?;
+                    }
+                    return Ok(());
+                };
+                ready.insert(index, prepared);
+                while let Some(prepared) = ready.remove(&next_commit) {
+                    commit(next_commit, prepared)?;
+                    read_ahead.release_oldest();
+                    next_commit += 1;
+                }
+            }
+            Ok(())
+        })();
+        cancelled.store(true, Ordering::Relaxed);
+        drop(job_sender);
+        outcome
+    })
 }
 
 fn known_repository_paths(
@@ -552,7 +781,7 @@ fn elapsed_millis(started: Instant) -> u64 {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     use compresso_core::{TokenProvider, counter_for};
     use compresso_store::Store;
@@ -651,6 +880,184 @@ mod tests {
                     .name,
                 format!("old_{name}")
             );
+        }
+    }
+
+    #[test]
+    fn test_parallel_index_matches_serial_index() {
+        let serial = index_generated_repository(Concurrency::serial());
+        assert!(serial.files.len() >= 60);
+        assert!(serial.edges.iter().any(|edge| edge.contains("resolved")));
+        for (jobs, memory_budget_bytes) in [(2, 1 << 30), (4, 1 << 30), (8, 1 << 30), (8, 512)] {
+            let parallel =
+                index_generated_repository(Concurrency::exact(jobs, memory_budget_bytes));
+            assert_eq!(
+                parallel, serial,
+                "jobs = {jobs}, budget = {memory_budget_bytes}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parallel_index_stops_at_lowest_ordered_failure() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let root = directory.path().join("repo");
+        write_generated_repository(&root, 40);
+        let store = Store::open(&directory.path().join("compresso.db")).expect("store should open");
+        let indexer = Indexer::new(&store, counter_for(TokenProvider::Heuristic))
+            .with_concurrency(Concurrency::exact(8, 1 << 30));
+        let mut progress = Vec::new();
+        let error = indexer
+            .index_with_hook(
+                &root,
+                |event| progress.push(event),
+                |index, path| {
+                    if index == 5 {
+                        return Err(IndexError::InjectedFailure {
+                            path: path.to_path_buf(),
+                        });
+                    }
+                    Ok(())
+                },
+            )
+            .expect_err("sixth-file injection should stop the run");
+        assert!(matches!(
+            error,
+            AtlasError::Index(IndexError::InjectedFailure { .. })
+        ));
+        assert_eq!(progress.len(), 5);
+
+        let canonical_root = fs::canonicalize(&root).expect("root should canonicalize");
+        let repo = store
+            .repo_by_root(&canonical_root)
+            .expect("repository lookup should succeed")
+            .expect("repository should exist")
+            .id;
+        let mut committed = store
+            .file_hashes(repo)
+            .expect("hashes should load")
+            .into_keys()
+            .collect::<Vec<_>>();
+        committed.sort_unstable();
+        let mut expected = generated_paths(40);
+        expected.sort_unstable();
+        expected.truncate(5);
+        assert_eq!(committed, expected);
+    }
+
+    #[derive(Debug, Eq, PartialEq)]
+    struct IndexSnapshot {
+        report: (usize, usize, usize, usize, usize, usize, bool),
+        progress: Vec<IndexProgress>,
+        files: Vec<(String, String, Option<String>, u64, usize)>,
+        symbols: Vec<String>,
+        edges: Vec<String>,
+    }
+
+    fn generated_paths(files: usize) -> Vec<String> {
+        (0..files)
+            .map(|index| {
+                let extension = ["rs", "ts", "py", "md"][index % 4];
+                format!("src/m{:02}/file_{index:03}.{extension}", index % 7)
+            })
+            .collect()
+    }
+
+    fn write_generated_repository(root: &Path, files: usize) {
+        for (index, path) in generated_paths(files).into_iter().enumerate() {
+            let absolute = root.join(&path);
+            fs::create_dir_all(
+                absolute
+                    .parent()
+                    .expect("generated path should have a parent"),
+            )
+            .expect("generated directory should be created");
+            let body = match index % 4 {
+                0 => format!(
+                    "use crate::m00::file_000;\npub fn rust_{index}() -> usize {{ {index} }}\npub struct Shape{index};\n"
+                ),
+                1 => format!(
+                    "import {{ helper }} from './file_{:03}';\nexport function ts_{index}(): number {{ return {index}; }}\n",
+                    index + 4
+                ),
+                2 => format!("import os\n\ndef py_{index}():\n    return {index}\n"),
+                _ => format!("# Notes {index}\n\nPlain text body {index}.\n"),
+            };
+            fs::write(absolute, body).expect("generated source should be written");
+        }
+    }
+
+    fn index_generated_repository(concurrency: Concurrency) -> IndexSnapshot {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let root = directory.path().join("repo");
+        write_generated_repository(&root, 64);
+        let store = Store::open(&directory.path().join("compresso.db")).expect("store should open");
+        let mut progress = Vec::new();
+        let report = Indexer::new(&store, counter_for(TokenProvider::Heuristic))
+            .with_concurrency(concurrency)
+            .index(&root, |event| progress.push(event))
+            .expect("index should succeed");
+        let canonical_root = fs::canonicalize(&root).expect("root should canonicalize");
+        let repo = store
+            .repo_by_root(&canonical_root)
+            .expect("repository lookup should succeed")
+            .expect("repository should exist")
+            .id;
+        let mut paths = store
+            .file_hashes(repo)
+            .expect("hashes should load")
+            .into_iter()
+            .collect::<Vec<_>>();
+        paths.sort_unstable();
+        let mut files = Vec::new();
+        let mut symbols = Vec::new();
+        for (path, hash) in paths {
+            let record = store
+                .indexed_file(repo, &path)
+                .expect("file should load")
+                .expect("file should exist");
+            files.push((
+                path.clone(),
+                hash,
+                record.language.map(|language| format!("{language:?}")),
+                record.size_bytes,
+                record.token_estimate,
+            ));
+            symbols.extend(
+                store
+                    .symbols_in_file(repo, &path)
+                    .expect("symbols should load")
+                    .into_iter()
+                    .map(|symbol| format!("{path}: {symbol:?}")),
+            );
+        }
+        let mut edges = store
+            .resolved_edges(repo)
+            .expect("resolved edges should load")
+            .into_iter()
+            .map(|edge| format!("resolved {edge:?}"))
+            .collect::<Vec<_>>();
+        edges.extend(
+            store
+                .unresolved_edge_sources(repo)
+                .expect("unresolved sources should load")
+                .into_iter()
+                .map(|path| format!("unresolved {path}")),
+        );
+        IndexSnapshot {
+            report: (
+                report.files_indexed,
+                report.files_removed,
+                report.files_skipped,
+                report.symbols,
+                report.imports_resolved,
+                report.imports_unresolved,
+                report.stale,
+            ),
+            progress,
+            files,
+            symbols,
+            edges,
         }
     }
 

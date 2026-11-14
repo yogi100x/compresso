@@ -244,6 +244,8 @@ pub struct ScanResult { pub added: Vec<PathBuf>, pub changed: Vec<PathBuf>, pub 
 pub struct ScanOptions { pub max_file_bytes: u64 }
 pub fn scan(store: &Store, repo: RepoId, root: &Path) -> Result<ScanResult, AtlasError>; // safe default: max_file_bytes = 1_000_000
 pub fn scan_with_options(store: &Store, repo: RepoId, root: &Path, options: ScanOptions) -> Result<ScanResult, AtlasError>;
+pub struct Concurrency { /* jobs clamped to 1..=available CPUs; memory_budget_bytes (default 64 MiB) */ } // Concurrency::default(), ::serial(), ::bounded(jobs, memory_budget_bytes)
+pub fn scan_with_concurrency(store: &Store, repo: RepoId, root: &Path, options: ScanOptions, concurrency: Concurrency) -> Result<ScanResult, AtlasError>; // identical ScanResult at every concurrency; scan/scan_with_options use Concurrency::default()
 // respects .gitignore + built-in exclusions (binaries, >max_file_bytes, node_modules/target/dist/.git, secret-file patterns: .env*, *.pem, id_rsa*)
 // ignored and built-in excluded directories are reported once in skipped and pruned before descent; descendants are intentionally not enumerated
 
@@ -263,6 +265,7 @@ pub struct Extraction { pub symbols: Vec<SymbolRecord>, pub imports: Vec<ImportR
 // indexer.rs
 pub struct Indexer<'a> { /* store, registry, counter */ }
 impl Indexer<'_> {
+    pub fn with_concurrency(self, concurrency: Concurrency) -> Self; // workers read/hash/parse; Store writes stay on the calling thread in candidate order
     pub fn index(&self, root: &Path, progress: impl FnMut(IndexProgress)) -> Result<IndexReport, AtlasError>;
     // pipeline: canonicalize+approve root -> scan -> parse ONLY added/changed -> replace_indexed_file per file transaction -> delete removed -> stamp index_versions
 }
