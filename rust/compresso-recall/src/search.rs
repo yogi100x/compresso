@@ -515,9 +515,18 @@ fn snippet(normalized: &str, match_char: usize) -> String {
     snippet
 }
 
+/// Renders a transcript path for output. Paths under the home directory use a
+/// `~/` prefix and `/` separators on every platform, so output is stable and
+/// never mixes separators (`~/.codex\\sessions` on Windows).
 fn display_path(home_dir: &Path, path: &Path) -> String {
     match path.strip_prefix(home_dir) {
-        Ok(relative) => format!("~/{}", relative.display()),
+        Ok(relative) => {
+            let parts = relative
+                .components()
+                .map(|component| component.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>();
+            format!("~/{}", parts.join("/"))
+        }
         Err(_) => path.display().to_string(),
     }
 }
@@ -525,6 +534,13 @@ fn display_path(home_dir: &Path, path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_display_path_uses_forward_slashes_under_home() {
+        let home = Path::new("home").join("user");
+        let path = home.join(".codex").join("sessions").join("a.jsonl");
+        assert_eq!(display_path(&home, &path), "~/.codex/sessions/a.jsonl");
+    }
 
     #[test]
     fn test_query_terms_are_lowercased_deduplicated_and_capped() {

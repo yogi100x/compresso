@@ -288,6 +288,28 @@ mod tests {
 
     use super::*;
 
+    /// Absolute launcher path used by the fixtures. `/opt/compresso` is not
+    /// absolute on Windows, where the reader would rightly call it modified.
+    #[cfg(not(windows))]
+    const OPT_COMPRESSO: &str = "/opt/compresso";
+    #[cfg(windows)]
+    const OPT_COMPRESSO: &str = r"C:\opt\compresso";
+
+    /// Fixture writer: rewrites `/opt/compresso` to the platform's absolute
+    /// launcher path (escaped for JSON and TOML strings) before writing.
+    mod fs {
+        pub fn write(
+            path: impl AsRef<std::path::Path>,
+            contents: impl AsRef<[u8]>,
+        ) -> std::io::Result<()> {
+            let text = String::from_utf8_lossy(contents.as_ref()).replace(
+                "/opt/compresso",
+                &super::OPT_COMPRESSO.replace('\\', "\\\\"),
+            );
+            std::fs::write(path, text)
+        }
+    }
+
     fn serve_args() -> Vec<String> {
         vec!["mcp".to_owned(), "serve".to_owned()]
     }
@@ -323,7 +345,7 @@ mod tests {
         )
         .expect("toml written");
         let expected = ConfiguredServer::Exact {
-            command: PathBuf::from("/opt/compresso"),
+            command: PathBuf::from(OPT_COMPRESSO),
             args: serve_args(),
         };
         assert_eq!(
