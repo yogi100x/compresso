@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args, ValueEnum};
 use compresso_atlas::{
-    AtlasError, BoundedRead, ContextPlan, QueryError, UnfoldResult, impact, outline, plan_context,
-    read_bounded, repo_map, search, unfold,
+    AtlasError, BoundedRead, ContextPlan, QueryError, SearchOptions, UnfoldResult, impact, outline,
+    plan_context, read_bounded, repo_map, search_with_diagnostics, unfold,
 };
 use compresso_core::{TokenProvider, counter_for};
 use compresso_store::{
@@ -45,6 +45,9 @@ pub struct SearchArgs {
     pub query: String,
     #[command(flatten)]
     pub repository: RepositoryArgs,
+    /// Repository-relative file or directory to restrict hits to.
+    #[arg(long, value_name = "REPO_PATH")]
+    pub path: Option<String>,
     #[arg(long, default_value_t = DEFAULT_SEARCH_LIMIT)]
     pub limit: usize,
     #[command(flatten)]
@@ -179,16 +182,34 @@ fn execute_search(
     cwd: &Path,
     arguments: SearchArgs,
 ) -> Result<Rendered, RetrievalError> {
-    if arguments.query.trim().is_empty() {
-        return Err(RetrievalError::invalid("query must not be empty"));
-    }
+    compresso_atlas::validate_search_query(&arguments.query).map_err(map_query_error)?;
     if !(1..=100).contains(&arguments.limit) {
         return Err(RetrievalError::invalid("limit must be between 1 and 100"));
     }
     let repository = resolve_repository(store, arguments.repository.root.as_deref(), cwd)?;
-    let hits =
-        search(store, repository.id, &arguments.query, arguments.limit).map_err(map_atlas_error)?;
-    let hits = hits
+    let report = search_with_diagnostics(
+        store,
+        repository.id,
+        &arguments.query,
+        SearchOptions {
+            limit: arguments.limit,
+            path: arguments.path.as_deref(),
+        },
+    )
+    .map_err(map_atlas_error)?;
+    let diagnostics = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            json!({
+                "code": diagnostic.code.as_str(),
+                "severity": "info",
+                "message": diagnostic.message,
+            })
+        })
+        .collect::<Vec<_>>();
+    let hits = report
+        .hits
         .into_iter()
         .map(|hit| {
             json!({
@@ -200,8 +221,10 @@ fn execute_search(
         .collect::<Vec<_>>();
     let data = json!({
         "query": arguments.query,
+        "path": arguments.path,
         "hits_total": hits.len(),
         "hits": hits,
+        "diagnostics": diagnostics,
         "truncated": false,
     });
     Ok(rendered_pretty(data))
@@ -648,6 +671,8 @@ fn map_query_error(error: QueryError) -> RetrievalError {
     match error {
         QueryError::NotFound { .. } => RetrievalError::not_found(),
         invalid @ (QueryError::InvalidFocus { .. }
+        | QueryError::InvalidSearchQuery { .. }
+        | QueryError::InvalidSearchPath { .. }
         | QueryError::InvalidImpactOptions { .. }
         | QueryError::InvalidRange { .. }
         | QueryError::InvalidSymbolRange { .. }) => RetrievalError::invalid(&invalid.to_string()),

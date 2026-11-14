@@ -246,6 +246,59 @@ fn test_explicit_root_must_be_the_exact_approved_repository() {
 }
 
 #[test]
+fn test_search_missing_path_scope_is_informational_success() {
+    let fixture = Fixture::new();
+
+    let (exit, output, errors) = fixture.run_json(&[
+        "search",
+        "SessionManager",
+        "--path",
+        "src/missing",
+        "--root",
+        fixture.root_str(),
+        "--json",
+    ]);
+
+    assert_eq!(exit, CliExitCode::Success);
+    assert!(errors.is_null());
+    assert_eq!(output["data"]["hits"], serde_json::json!([]));
+    assert_eq!(output["data"]["path"], "src/missing");
+    assert_eq!(output["data"]["diagnostics"][0]["code"], "path_not_found");
+    assert_eq!(output["data"]["diagnostics"][0]["severity"], "info");
+
+    let (exit, output, errors) = fixture.run_json(&[
+        "search",
+        "SessionManager",
+        "--path",
+        "src/session.rs",
+        "--root",
+        fixture.root_str(),
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success);
+    assert!(errors.is_null());
+    assert_eq!(output["data"]["hits"][0]["path"], "src/session.rs");
+    assert_eq!(output["data"]["diagnostics"], serde_json::json!([]));
+}
+
+#[test]
+fn test_search_invalid_query_reports_position_and_reason() {
+    let fixture = Fixture::new();
+
+    let (exit, output, errors) =
+        fixture.run_json(&["search", "   ", "--root", fixture.root_str(), "--json"]);
+
+    assert_eq!(exit, CliExitCode::Failure);
+    assert!(output.is_null());
+    assert_eq!(errors["error"]["code"], "invalid_arguments");
+    let message = errors["error"]["message"]
+        .as_str()
+        .expect("error should carry a message");
+    assert!(message.contains("byte 0"), "{message}");
+    assert!(message.contains("whitespace"), "{message}");
+}
+
+#[test]
 fn test_malformed_read_range_is_invalid_arguments() {
     let fixture = Fixture::new();
 

@@ -283,6 +283,13 @@ pub fn repo_map(store: &Store, repo: RepoId, budget_tokens: usize) -> Result<Rep
 pub fn outline(store: &Store, repo: RepoId, path: &str) -> Result<Outline>;                  // symbol skeleton with line ranges + token estimates
 pub fn unfold(store: &Store, repo: RepoId, selector: &SymbolSelector) -> Result<UnfoldResult>; // multiple matches return typed Ambiguous candidates
 pub fn search(store: &Store, repo: RepoId, query: &str, limit: usize) -> Result<Vec<SearchHit>>;
+// search.rs — diagnostics are informational data on a successful result, never errors
+pub struct SearchOptions<'a> { pub limit: usize, pub path: Option<&'a str> } // path: repo-relative file or directory scope, applied before the hit limit
+pub enum SearchDiagnosticCode { PathNotFound, QueryTooShort, PathScopeWindowCapped } // as_str(): path_not_found, query_too_short, path_scope_window_capped
+pub struct SearchDiagnostic { pub code: SearchDiagnosticCode, pub message: String }
+pub struct SearchReport { pub hits: Vec<SearchHit>, pub diagnostics: Vec<SearchDiagnostic> }
+pub fn validate_search_query(query: &str) -> Result<(), QueryError>; // QueryError::InvalidSearchQuery { position /* byte offset */, reason }
+pub fn search_with_diagnostics(store: &Store, repo: RepoId, query: &str, options: SearchOptions<'_>) -> Result<SearchReport>; // errors only for InvalidSearchQuery / InvalidSearchPath
 pub fn read_bounded(root: &Path, path: &str, range: Option<(u32, u32)>, budget_tokens: usize, counter: &dyn TokenCounter) -> Result<BoundedRead>; // path canonicalized, MUST be under approved root (symlink-resolved)
 pub fn impact(store: &Store, repo: RepoId, path: &str) -> Result<ImpactReport>;              // reverse-edge closure, depth 2
 pub fn plan_context(store: &Store, repo: RepoId, task: &str, budget_tokens: usize) -> Result<ContextPlan>; // search-driven pack: focused map + file-diverse evidence excerpts within budget

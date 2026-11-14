@@ -178,6 +178,14 @@ pub struct ContextPlan {
 pub enum QueryError {
     #[error("repository-map focus must be a lexical repository-relative prefix: {focus:?}")]
     InvalidFocus { focus: String },
+    #[error("invalid search query at byte {position}: {reason}")]
+    InvalidSearchQuery {
+        /// Zero-based byte offset of the first offending input.
+        position: usize,
+        reason: &'static str,
+    },
+    #[error("search path scope must be a lexical repository-relative path: {path:?}")]
+    InvalidSearchPath { path: String },
     #[error("invalid impact options: {reason}")]
     InvalidImpactOptions { reason: &'static str },
     #[error("failed to canonicalize repository query root {path:?}")]
@@ -313,7 +321,7 @@ pub fn repo_map_focused(
     })
 }
 
-fn validate_map_focus(focus: &str) -> Result<Option<&str>, QueryError> {
+pub(crate) fn validate_map_focus(focus: &str) -> Result<Option<&str>, QueryError> {
     if focus.is_empty() {
         return Ok(None);
     }
@@ -331,7 +339,7 @@ fn validate_map_focus(focus: &str) -> Result<Option<&str>, QueryError> {
     Ok(Some(focus.trim_end_matches('/')))
 }
 
-fn map_path_matches_focus(path: &str, focus: &str) -> bool {
+pub(crate) fn map_path_matches_focus(path: &str, focus: &str) -> bool {
     path == focus
         || path
             .strip_prefix(focus)
@@ -496,7 +504,9 @@ fn search_excluding_language(
     search_hits(store.search_symbols_excluding_language(repo, query, limit, excluded_language)?)
 }
 
-fn search_hits(hits: Vec<compresso_store::SymbolHit>) -> Result<Vec<SearchHit>, AtlasError> {
+pub(crate) fn search_hits(
+    hits: Vec<compresso_store::SymbolHit>,
+) -> Result<Vec<SearchHit>, AtlasError> {
     hits.into_iter()
         .filter(|hit| !is_secret_path(Path::new(&hit.file.path)))
         .map(|hit| {

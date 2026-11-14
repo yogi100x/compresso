@@ -546,6 +546,136 @@ async fn test_search_tool_budget_is_deterministic() {
 }
 
 #[tokio::test]
+async fn test_search_truncation_reports_line_numbers_for_dropped_hits() {
+    let fixture = IndexedFixture::new();
+    let mut harness = Harness::start(fixture.store.clone()).await;
+    let mut arguments = fixture.arguments();
+    arguments.insert("query".to_owned(), json!("helper"));
+    arguments.insert("limit".to_owned(), json!(100));
+    arguments.insert("max_tokens".to_owned(), json!(200));
+
+    let result = successful_json(
+        harness
+            .call("compresso_search", Value::Object(arguments))
+            .await,
+    );
+
+    assert_eq!(result["truncated"], true);
+    let hits = result["hits"].as_array().expect("hits should be an array");
+    let dropped = result["truncated_hits"]
+        .as_array()
+        .expect("truncated hits should be an array");
+    assert!(!hits.is_empty());
+    assert!(!dropped.is_empty());
+    for location in dropped {
+        assert_eq!(location["path"], "src/sample.rs");
+        let start = location["start_line"]
+            .as_u64()
+            .expect("start line should be reported");
+        let end = location["end_line"]
+            .as_u64()
+            .expect("end line should be reported");
+        assert!(start >= 1 && end >= start);
+        assert!(location.get("signature").is_none());
+    }
+    let omitted = result["truncated_hits_omitted"]
+        .as_u64()
+        .expect("omitted count should be reported");
+    assert_eq!(hits.len() as u64 + dropped.len() as u64 + omitted, 100);
+    assert!(
+        result["tokens_used"]
+            .as_u64()
+            .is_some_and(|used| used <= 200)
+    );
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_search_untruncated_result_has_no_truncated_hits() {
+    let fixture = IndexedFixture::new();
+    let mut harness = Harness::start(fixture.store.clone()).await;
+    let mut arguments = fixture.arguments();
+    arguments.insert("query".to_owned(), json!("SessionManager"));
+
+    let result = successful_json(
+        harness
+            .call("compresso_search", Value::Object(arguments))
+            .await,
+    );
+
+    assert_eq!(result["truncated"], false);
+    assert_eq!(result["truncated_hits"], json!([]));
+    assert_eq!(result["truncated_hits_omitted"], 0);
+    assert_eq!(result["diagnostics"], json!([]));
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_search_missing_path_scope_is_informational_success() {
+    let fixture = IndexedFixture::new();
+    let mut harness = Harness::start(fixture.store.clone()).await;
+    let mut arguments = fixture.arguments();
+    arguments.insert("query".to_owned(), json!("SessionManager"));
+    arguments.insert("path".to_owned(), json!("src/missing"));
+
+    let result = successful_json(
+        harness
+            .call("compresso_search", Value::Object(arguments.clone()))
+            .await,
+    );
+
+    assert_eq!(result["hits"], json!([]));
+    assert_eq!(result["path"], "src/missing");
+    assert_eq!(result["diagnostics"][0]["code"], "path_not_found");
+    assert_eq!(result["diagnostics"][0]["severity"], "info");
+    assert!(
+        result["diagnostics"][0]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("src/missing"))
+    );
+
+    arguments.insert("path".to_owned(), json!("src/session.rs"));
+    let scoped = successful_json(
+        harness
+            .call("compresso_search", Value::Object(arguments.clone()))
+            .await,
+    );
+    assert_eq!(scoped["hits"][0]["path"], "src/session.rs");
+    assert_eq!(scoped["diagnostics"], json!([]));
+
+    arguments.insert("path".to_owned(), json!("../outside"));
+    let escaped = harness
+        .call("compresso_search", Value::Object(arguments))
+        .await;
+    assert_tool_error(&escaped, "invalid_arguments");
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_search_invalid_query_reports_position_and_reason() {
+    let fixture = IndexedFixture::new();
+    let mut harness = Harness::start(fixture.store.clone()).await;
+    for (query, position, reason) in [
+        ("Session\u{0}Manager", 7, "NUL"),
+        ("   ", 0, "whitespace"),
+        ("", 0, "empty"),
+    ] {
+        let mut arguments = fixture.arguments();
+        arguments.insert("query".to_owned(), json!(query));
+        let response = harness
+            .call("compresso_search", Value::Object(arguments))
+            .await;
+        assert_tool_error(&response, "invalid_arguments");
+        let text = response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("tool error should contain text");
+        assert!(text.contains(&format!("byte {position}")), "{text}");
+        assert!(text.contains(reason), "{text}");
+    }
+    harness.close().await;
+}
+
+#[tokio::test]
 async fn test_search_stale_is_structured_success() {
     let fixture = IndexedFixture::new();
     fs::write(

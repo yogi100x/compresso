@@ -5,6 +5,7 @@ pub mod indexer;
 pub mod parsers;
 pub mod queries;
 pub mod scanner;
+pub mod search;
 
 pub use concurrency::{Concurrency, DEFAULT_MEMORY_BUDGET_BYTES};
 pub use indexer::{IndexError, IndexProgress, IndexReport, Indexer};
@@ -17,4 +18,8 @@ pub use queries::{
 pub use scanner::{
     AtlasError, ScanError, ScanOptions, ScanResult, SkipReason, scan, scan_with_concurrency,
     scan_with_options,
+};
+pub use search::{
+    SEARCH_MIN_QUERY_CHARS, SearchDiagnostic, SearchDiagnosticCode, SearchOptions, SearchReport,
+    search_with_diagnostics, validate_search_query,
 };
