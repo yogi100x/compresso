@@ -2809,6 +2809,7 @@ Files: rust/compresso-cli/src/commands/{mcp_probe,doctor,integrations}.rs, rust/
 Description: `compresso doctor` and `integrations status` report a configured server that is stale, not executable, crashes, hangs, or answers wrongly, each with fix text, using one bounded stdio handshake against trusted launchers only.
 Acceptance criteria:
 - Only the running executable or a receipt-authenticated entry is started; all else is `not_probed`/`config_modified`.
+- `not_probed` and `config_modified` are warnings (owner decision): the fix text is shown, the additive `severity` field is `warning`, and `doctor` exits 0 when nothing else fails. A missing or non-executable binary, a crash, a handshake timeout, a malformed response, and an unreadable config are errors and fail `doctor`. `integrations status` reports the same `severity`.
 - One deadline, 1 MiB output cap, scrubbed environment, cwd `/`, process-group kill.
 - Injected environments start no process; the capability allowance is one file in one crate.
 Test cases:
@@ -2817,7 +2818,10 @@ Test cases:
 - `test_doctor_reports_stale_and_non_executable_launcher_paths`: `binary_missing`, `binary_not_executable`.
 - `test_doctor_reports_malformed_output_and_foreign_tool_list`: `malformed_response`.
 - `test_project_config_pointing_at_canary_is_never_executed`: canary file absent.
-- `test_symlink_to_a_non_compresso_binary_is_rejected`: `not_probed`.
+- `test_symlink_to_a_non_compresso_binary_is_rejected`: `not_probed`, a warning, never executed.
+- `test_doctor_human_output_shows_warning_and_fix_text_for_hand_edited_entry`: `[WARN]` with the fix text.
+- `test_doctor_fails_on_real_failure_and_keeps_warning_fix_text`: one warning plus one crash exits non-zero with both fixes.
+- `test_integration_status_shows_fix_text_for_unverifiable_entry`: `warning:` line, exit 0.
 - `test_timeout_kills_the_server_process_tree`: descendant is dead.
 - `test_doctor_reports_healthy_for_real_compresso_server`: real binary handshake.
 - `test_mcp_probe_allowance_does_not_cover_other_cli_modules`: checker still denies siblings.

@@ -7,7 +7,8 @@
 //! launcher, meaning either its canonical path is the running Compresso
 //! executable or an authenticated install receipt proves Compresso wrote that
 //! exact entry. Everything else is reported as `not_probed` or
-//! `config_modified` and is never executed.
+//! `config_modified` and is never executed. Those two verdicts are warnings:
+//! the entry could not be verified, which is not evidence that it is broken.
 //!
 //! A trusted launch uses the fixed adapter-written arguments, no shell, a
 //! scrubbed environment, a neutral working directory, and its own process
@@ -90,6 +91,27 @@ impl LauncherTrust {
     }
 }
 
+/// How much a diagnostic verdict matters to the command's outcome.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Severity {
+    /// Nothing to do.
+    Ok,
+    /// Worth the operator's attention, but not a failure.
+    Warning,
+    /// A real failure: the command exits non-zero.
+    Error,
+}
+
+impl Severity {
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Warning => "warning",
+            Self::Error => "error",
+        }
+    }
+}
+
 /// Observable health of one configured Compresso MCP server entry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum McpServerState {
@@ -125,12 +147,25 @@ impl McpServerState {
         }
     }
 
-    /// Whether the state means the client cannot use the configured server.
-    pub(crate) const fn is_failure(self) -> bool {
-        !matches!(
-            self,
-            Self::NotConfigured | Self::ProbeSkipped | Self::Healthy
-        )
+    /// Classifies the state for exit codes and rendering.
+    ///
+    /// An entry Compresso refused to launch (`not_probed`, `config_modified`)
+    /// is a warning: it was never executed, so nothing is known to be broken,
+    /// and a hand-edited entry is the user's to keep. Only an observed fault
+    /// (an unreadable config, a missing or non-executable launcher, a crash,
+    /// a timeout, a malformed answer) is an error.
+    pub(crate) const fn severity(self) -> Severity {
+        match self {
+            Self::NotConfigured | Self::ProbeSkipped | Self::Healthy => Severity::Ok,
+            Self::ConfigModified | Self::NotProbed => Severity::Warning,
+            Self::ConfigUnreadable
+            | Self::BinaryMissing
+            | Self::BinaryNotExecutable
+            | Self::SpawnFailed
+            | Self::ExitedEarly
+            | Self::HandshakeTimeout
+            | Self::MalformedResponse => Severity::Error,
+        }
     }
 }
 
@@ -154,7 +189,8 @@ impl McpServerHealth {
     pub(crate) fn to_json(&self) -> Value {
         json!({
             "state": self.state.code(),
-            "healthy": !self.state.is_failure(),
+            "healthy": self.state.severity() == Severity::Ok,
+            "severity": self.state.severity().code(),
             "detail": self.detail,
             "fix": self.fix,
         })
