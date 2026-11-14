@@ -585,7 +585,8 @@ fn tool_declarations() -> Vec<Tool> {
             json!({
                 "since": { "type": "string", "description": "ISO 8601 timestamp or relative duration ('24h', '7d', '30d'). Default: all retained history (90 days)." },
                 "session_id": { "type": "string", "description": "Restrict to one session (ulid)." },
-                "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 20, "description": "Maximum newest per-operation rows returned." }
+                "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 20, "description": "Maximum newest per-operation rows returned." },
+                "model": { "type": "string", "minLength": 1, "maxLength": 128, "description": "Model id used to price modeled savings at its input rate from the local versioned price table. Unknown models report tokens only." }
             }),
             &[],
         ),

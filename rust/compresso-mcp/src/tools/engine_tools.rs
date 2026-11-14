@@ -4,7 +4,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use compresso_atlas::{ImpactOptions, impact_with_options, repository_stale};
 use compresso_core::{
     CompressionBudget, Config, ContextGraph, Engine, Lossiness, MAX_COMPRESSION_INPUT_BYTES, Mode,
-    NodeKind, TokenCounter, TokenProvider, anthropic_calibrated_count, counter_for,
+    NodeKind, PriceTable, TokenCounter, TokenProvider, anthropic_calibrated_count, counter_for,
     operation_identity,
 };
 use compresso_store::{EdgeKind, OperationRecord, SessionId, StatsFilter, Store};
@@ -19,6 +19,7 @@ use super::common::{
 };
 
 const DEFAULT_MAX_LATENCY_MS: usize = 200;
+const MAX_MODEL_ID_BYTES: usize = 128;
 
 pub(crate) fn handles(name: &str) -> bool {
     matches!(
@@ -216,8 +217,17 @@ fn stats_tool(
     mode: Mode,
     arguments: Option<JsonObject>,
 ) -> Result<ToolSuccess, ToolFailure> {
-    let mut arguments = checked_arguments(arguments, &["since", "session_id", "limit"])?;
+    let mut arguments = checked_arguments(arguments, &["since", "session_id", "limit", "model"])?;
     let since = optional_string(&mut arguments, "since", false)?;
+    let model = optional_string(&mut arguments, "model", false)?;
+    if model
+        .as_deref()
+        .is_some_and(|model| model.len() > MAX_MODEL_ID_BYTES)
+    {
+        return Err(ToolFailure::invalid(
+            "argument 'model' must be at most 128 bytes.",
+        ));
+    }
     let session_id = optional_string(&mut arguments, "session_id", false)?
         .map(|value| {
             SessionId::parse(&value).map_err(|_| {
@@ -238,6 +248,9 @@ fn stats_tool(
             operation_limit: Some(operation_limit),
         })
         .map_err(|_| ToolFailure::internal())?;
+    let cost_basis = PriceTable::embedded()
+        .map_err(|_| ToolFailure::internal())?
+        .cost_basis(stats.summary.total_effective_savings, model.as_deref());
     let by_tool = stats
         .by_tool
         .iter()
@@ -264,8 +277,15 @@ fn stats_tool(
             "compression_overhead": stats.summary.compression_overhead,
             "net_tokens_saved": stats.summary.net_tokens_saved,
             "modeled_cost_saved": {
-                "amount_usd": stats.summary.modeled_cost_saved.amount_usd,
+                "amount_usd": cost_basis.amount_usd,
                 "label": stats.summary.modeled_cost_saved.label
+            },
+            "cost_basis": {
+                "model": cost_basis.model,
+                "priced": cost_basis.priced,
+                "rate": cost_basis.rate,
+                "price_table_version": cost_basis.table_version,
+                "effective_date": cost_basis.effective_date
             },
             "fallback_rate": stats.summary.fallback_rate,
             "compression_savings": {

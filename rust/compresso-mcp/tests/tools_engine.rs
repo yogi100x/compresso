@@ -2,9 +2,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use compresso_core::{Config, Engine, TokenProvider, counter_for};
+use compresso_core::{Config, Engine, Mode, TokenProvider, counter_for};
 use compresso_mcp::{McpDeps, serve_io, serve_io_for_root};
-use compresso_store::{EdgeKind, EdgeRecord, EdgeResolution, FileLanguage, FileRecord, Store};
+use compresso_store::{
+    EdgeKind, EdgeRecord, EdgeResolution, FileLanguage, FileRecord, OperationRecord,
+    RetrievalMetrics, Store,
+};
 use jsonschema::{Draft, Validator};
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -332,6 +335,76 @@ async fn test_stats_reflects_session_ops() {
     assert_eq!(stats["observed_tokens"], observed);
     assert_eq!(stats["applied_tokens"], applied);
     assert_eq!(stats["net_tokens_saved"], observed.saturating_sub(applied));
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_stats_prices_modeled_savings_only_for_models_in_price_table() {
+    let temp = tempfile::tempdir().expect("temporary directory should be created");
+    let store = Store::open(&temp.path().join("compresso.db")).expect("store should open");
+    store
+        .record_operation(&OperationRecord {
+            id: "01J2X3Y4Z5A6B7C8D9E0F1G2H3".to_owned(),
+            session_id: None,
+            tool: "compresso_context".to_owned(),
+            mode: Mode::Safe,
+            observed_tokens: 800,
+            applied_tokens: 800,
+            compression_overhead: 0,
+            fallback_used: false,
+            tokens_served: Some(800),
+            retrieval: Some(RetrievalMetrics {
+                repository_id: None,
+                estimated_raw_source_tokens: 1_000_800,
+                modeled_follow_up_calls_avoided: 2,
+            }),
+            trace_json: None,
+            created_at: 100,
+        })
+        .expect("retrieval operation should record");
+    let mut harness = Harness::start(store).await;
+
+    let unpriced = successful_json(harness.call("compresso_stats", json!({})).await);
+    assert_eq!(unpriced["schema_version"], 1);
+    assert_eq!(unpriced["total_effective_savings"], 1_000_000);
+    assert_eq!(unpriced["modeled_cost_saved"]["amount_usd"], 0.0);
+    assert_eq!(unpriced["modeled_cost_saved"]["label"], "modeled");
+    assert_eq!(unpriced["cost_basis"]["priced"], false);
+    assert!(unpriced["cost_basis"]["model"].is_null());
+
+    let priced = successful_json(
+        harness
+            .call("compresso_stats", json!({ "model": "claude-sonnet-5-5" }))
+            .await,
+    );
+    assert_eq!(priced["modeled_cost_saved"]["amount_usd"], 2.0);
+    assert_eq!(priced["modeled_cost_saved"]["label"], "modeled");
+    assert_eq!(priced["cost_basis"]["priced"], true);
+    assert_eq!(priced["cost_basis"]["rate"], "input");
+    assert!(priced["cost_basis"]["effective_date"].is_string());
+    assert!(priced["cost_basis"]["price_table_version"].is_string());
+
+    let unknown = successful_json(
+        harness
+            .call(
+                "compresso_stats",
+                json!({ "model": "model-without-a-price" }),
+            )
+            .await,
+    );
+    assert_eq!(unknown["total_effective_savings"], 1_000_000);
+    assert_eq!(unknown["modeled_cost_saved"]["amount_usd"], 0.0);
+    assert_eq!(unknown["cost_basis"]["priced"], false);
+
+    for arguments in [
+        json!({ "model": "" }),
+        json!({ "model": "m".repeat(129) }),
+        json!({ "model": 5 }),
+        json!({ "transcript": "/tmp/any.jsonl" }),
+    ] {
+        let response = harness.call("compresso_stats", arguments).await;
+        assert_tool_error(&response, "invalid_arguments");
+    }
     harness.close().await;
 }
 
