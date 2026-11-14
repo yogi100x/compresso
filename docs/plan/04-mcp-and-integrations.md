@@ -411,7 +411,7 @@ Counts are reported for both `openai_o200k` (exact) and `anthropic_calibrated` (
   "compression_overhead": 12400,
   "net_tokens_saved": 366600,
   "modeled_cost_saved": { "amount_usd": 1.5892, "label": "modeled" },
-  "cost_basis": { "model": "claude-sonnet-5-5", "priced": true, "rate": "input", "price_table_version": "2026-11-03.1", "effective_date": "2026-11-03" },
+  "cost_basis": { "model": "claude-sonnet-5-5", "priced": true, "rate": "input", "price_table_version": "2026-11-14.1", "effective_date": "2026-11-03" },
   "fallback_rate": 0.02,
   "compression_savings": { "removed_tokens": 379000, "compression_overhead": 12400, "net_tokens_saved": 366600, "basis": "applied" },
   "retrieval_savings": { "retrieval_pack_tokens": 82000, "estimated_raw_source_tokens": 510000, "retrieval_tokens_avoided": 428000, "follow_up_calls_avoided": 91, "basis": "modeled" },

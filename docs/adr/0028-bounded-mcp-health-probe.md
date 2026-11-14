@@ -2,8 +2,8 @@
 
 ## Status
 
-Proposed (E17-06). Requires owner sign-off because it adds a process
-capability to a `bounded-local` crate.
+Accepted 2026-11-14 by the owner (E17-06, D71). It adds a process capability
+to a `bounded-local` crate, limited to the `mcp_probe` module.
 
 ## Context
 

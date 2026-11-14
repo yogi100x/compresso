@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "table_version": "2026-11-03.1",
+  "table_version": "2026-11-14.1",
   "effective_date": "2026-11-03",
   "currency": "USD",
   "unit": "per_million_tokens",
-  "source": "Anthropic first-party API list prices as published on 2026-11-03. Standard (non-batch, non-fast) rates; the lowest published prompt-size tier where tiers exist. Cache-write rates are the published 1.25x (5-minute) and 2x (1-hour) multiples of the input rate; cache-read rates are the published per-model figure, otherwise the published 0.1x multiple. Partner-platform prices are not included.",
+  "source": "Anthropic first-party API list prices from https://platform.claude.com/docs/en/about-claude/pricing, verified 2026-11-14 against every row. Standard (non-batch, non-fast) rates; the lowest published prompt-size tier where tiers exist. Cache writes are the published 1.25x (5-minute) and 2x (1-hour) input multiples; cache reads use the published per-model multiplier (0.025x Fable/Mythos 5.1-5.2, 0.05x Opus 5.5 and Sonnet 5.5, 0.1x otherwise). Partner-platform prices are not included.",
   "models": [
     {
       "model": "claude-fable-5-2",
@@ -44,6 +44,15 @@
     },
     {
       "model": "claude-fable-5",
+      "aliases": [],
+      "input_usd_per_mtok": 10.0,
+      "output_usd_per_mtok": 50.0,
+      "cache_write_5m_usd_per_mtok": 12.5,
+      "cache_write_1h_usd_per_mtok": 20.0,
+      "cache_read_usd_per_mtok": 1.0
+    },
+    {
+      "model": "claude-mythos-5",
       "aliases": [],
       "input_usd_per_mtok": 10.0,
       "output_usd_per_mtok": 50.0,
