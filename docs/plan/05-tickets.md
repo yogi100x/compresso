@@ -26,14 +26,14 @@ Test cases:
 ### [x] E1-02: CI workflow
 Owner: I1 · Estimate: 2d · Depends: E1-01
 Files: .github/workflows/ci.yml, .github/workflows/release.yml (stub)
-Description: Author `ci.yml` per `01-stack-and-workspace.md` §4: rust job matrix (`macos-14`, `macos-15-intel`, `ubuntu-24.04`, `windows-2022`) running `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo build --release -p compresso-cli`; `Swatinem/rust-cache@v2`; release-binary artifact upload on main. The `eval` job is added in E7-04; the `ts` job is gated off until Phase 6. `release.yml` is a named no-op stub until Phase 8 (E12).
+Description: Author `ci.yml` per `01-stack-and-workspace.md` §4: rust job matrix (`macos-15`, `macos-15-intel`, `ubuntu-24.04`, `windows-2022`) running `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `cargo build --release -p compresso-cli`; `Swatinem/rust-cache@v2`; release-binary artifact upload on main. The `eval` job is added in E7-04; the `ts` job is gated off until Phase 6. `release.yml` is a named no-op stub until Phase 8 (E12).
 Acceptance criteria:
 - CI triggers on push to main and on PRs; all four matrix legs green on the scaffold commit.
 - Clippy runs with `-D warnings` and formatting is enforced via `cargo fmt --check`.
 - Release binary for each platform uploaded as an artifact on main pushes.
 Test cases:
 - test_ci_yaml_valid: `actionlint .github/workflows/ci.yml` exits 0 (run locally and as a CI step).
-- test_matrix_covers_d33: assert ci.yml matrix contains macos-14, macos-15-intel, ubuntu-24.04, windows-2022 (yq assertion in a repo lint script).
+- test_matrix_covers_d33: assert ci.yml matrix contains macos-15, macos-15-intel, ubuntu-24.04, windows-2022 (yq assertion in a repo lint script).
 
 ### [x] E1-03: Supply-chain and capability-boundary checks
 Owner: I1 · Estimate: 1d · Depends: E1-02
@@ -259,7 +259,7 @@ Files: rust/compresso-core/benches/compress_latency.rs, docs/plan/gates.toml (la
 Description: Criterion benchmarks running `Engine::compress` in Safe mode over the committed fixtures (500-line log, 2000-element JSON tool response, 40-node mixed conversation graph, 200 KB source-file graph), reporting P50/P95. Adds a plain `#[test]` (release-profile CI leg) asserting P95 < 200 ms per D37 so regressions fail CI even where criterion output isn't parsed.
 Acceptance criteria:
 - `cargo bench -p compresso-core` produces named benchmarks `compress_log_500`, `compress_json_2000`, `compress_conversation_40`, `compress_source_200kb`.
-- P95 across 100 iterations of each fixture < 200 ms on CI hardware (macos-14 and ubuntu-24.04 legs).
+- P95 across 100 iterations of each fixture < 200 ms on CI hardware (macos-15 and ubuntu-24.04 legs).
 - Benchmark inputs are the committed fixtures, not synthetic in-bench strings, so eval and bench measure the same corpus.
 Test cases:
 - test_p95_under_200ms_all_fixtures: run each fixture 100×, sort durations, assert `durations[94] < Duration::from_millis(200)` (release mode, `#[cfg_attr(debug_assertions, ignore)]`).
@@ -747,7 +747,7 @@ Test cases:
 ### [x] E7-04: Eval CI integration
 Owner: I1 · Estimate: 1.5d · Depends: E7-03, E1-02
 Files: .github/workflows/ci.yml (eval job)
-Description: Add the `eval` CI job per `01-stack` §4 on ubuntu-24.04 and macos-14: build release, run `cargo run -p compresso-eval --release -- run fixtures/ --gates docs/plan/gates.toml`, upload the JSON report as an artifact, and fail the workflow on any gate regression. Latency-sensitive gates run only on the macos-14 leg (dedicated hardware class) with the ubuntu leg enforcing the non-latency gates, to keep the P95 gate meaningful.
+Description: Add the `eval` CI job per `01-stack` §4 on ubuntu-24.04 and macos-15: build release, run `cargo run -p compresso-eval --release -- run fixtures/ --gates docs/plan/gates.toml`, upload the JSON report as an artifact, and fail the workflow on any gate regression. Latency-sensitive gates run only on the macos-15 leg (dedicated hardware class) with the ubuntu leg enforcing the non-latency gates, to keep the P95 gate meaningful.
 Acceptance criteria:
 - Eval job green on main with the committed corpus; report artifact downloadable per run.
 - A deliberate gate regression on a scratch branch (threshold temporarily raised to 0.99) fails the job with the gate name in the log, verified once and documented in the PR.

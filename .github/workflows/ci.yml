@@ -152,7 +152,7 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - macos-14
+          - macos-15
           - macos-15-intel
           - ubuntu-24.04
           - windows-2022
@@ -194,7 +194,7 @@ jobs:
         include:
           - os: ubuntu-24.04
             enforce_latency: false
-          - os: macos-14
+          - os: macos-15
             enforce_latency: true
     steps:
       - name: Check out repository
@@ -244,7 +244,7 @@ jobs:
             exit "${eval_status}"
           fi
           if [[ "${failed_gates}" == "p95_latency_ms" ]]; then
-            echo "P95 latency is reported on Ubuntu and enforced on macos-14"
+            echo "P95 latency is reported on Ubuntu and enforced on macos-15"
           fi
       - name: Run large-payload latency gates
         if: ${{ matrix.enforce_latency }}
@@ -266,7 +266,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
             binary: compresso
           - os: macos-15-intel

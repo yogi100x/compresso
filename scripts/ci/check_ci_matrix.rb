@@ -4,10 +4,10 @@
 require "yaml"
 
 workflow_path = File.expand_path("../../.github/workflows/ci.yml", __dir__)
-expected = %w[macos-14 macos-15-intel ubuntu-24.04 windows-2022].sort.freeze
+expected = %w[macos-15 macos-15-intel ubuntu-24.04 windows-2022].sort.freeze
 expected_eval = [
   { "os" => "ubuntu-24.04", "enforce_latency" => false },
-  { "os" => "macos-14", "enforce_latency" => true }
+  { "os" => "macos-15", "enforce_latency" => true }
 ].freeze
 shared_cache_key = 'ci-${{ matrix.os }}'
 
@@ -68,7 +68,7 @@ end
 
 actual_eval = eval_job.fetch("strategy").fetch("matrix").fetch("include")
 unless actual_eval == expected_eval
-  warn "CI eval matrix must use ubuntu-24.04 without latency and macos-14 with latency"
+  warn "CI eval matrix must use ubuntu-24.04 without latency and macos-15 with latency"
   exit 1
 end
 
@@ -101,7 +101,7 @@ required_large_payload_invocation =
 unless large_payload_gate &&
        large_payload_gate["if"] == "${{ matrix.enforce_latency }}" &&
        large_payload_gate.fetch("run", "").include?(required_large_payload_invocation)
-  warn "CI eval job must enforce the optimized large-payload benchmark on macos-14"
+  warn "CI eval job must enforce the optimized large-payload benchmark on macos-15"
   exit 1
 end
 

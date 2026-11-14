@@ -78,7 +78,7 @@ jobs:
   quality:
     name: Block release on E1-E7 and PB gates
     needs: preflight
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: Check out immutable source
         uses: actions/checkout@v7
@@ -90,7 +90,7 @@ jobs:
           # Remove after https://github.com/Swatinem/rust-cache/issues/331 is fixed.
           NODE_OPTIONS: --disable-warning=DEP0040
         with:
-          shared-key: package-beta-quality-macos-14
+          shared-key: package-beta-quality-macos-15
       - name: Set up Node.js
         uses: actions/setup-node@v7
         with:
@@ -118,7 +118,7 @@ jobs:
           cargo run -p compresso-eval --profile dist -- \
             run fixtures/ \
             --gates docs/plan/gates.toml \
-            --json > eval-report-macos-14-dist.json
+            --json > eval-report-macos-15-dist.json
       - name: Run large-payload latency gates
         run: cargo bench -p compresso-eval --bench large_payload_latency -- --noplot
       - name: Upload private evaluation evidence
@@ -126,7 +126,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: private-beta-eval-${{ github.run_id }}-${{ github.run_attempt }}
-          path: eval-report-macos-14-dist.json
+          path: eval-report-macos-15-dist.json
           if-no-files-found: error
           retention-days: 90
 
@@ -143,7 +143,7 @@ jobs:
         include:
           - rust_target: aarch64-apple-darwin
             package_target: darwin-arm64
-            os: macos-14
+            os: macos-15
             signing_kind: apple_codesign
           - rust_target: x86_64-apple-darwin
             package_target: darwin-x64
