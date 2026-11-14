@@ -2,6 +2,7 @@ pub(crate) mod atlas_nav;
 pub(crate) mod atlas_read;
 pub(crate) mod common;
 pub(crate) mod engine_tools;
+pub(crate) mod recall;
 
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -19,15 +20,20 @@ pub(crate) struct ToolSuccess {
 }
 
 pub(crate) fn handles(name: &str) -> bool {
-    atlas_nav::handles(name) || atlas_read::handles(name) || engine_tools::handles(name)
+    atlas_nav::handles(name)
+        || atlas_read::handles(name)
+        || engine_tools::handles(name)
+        || recall::handles(name)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn dispatch(
     store: &Store,
     engine: &Engine,
     config: &Config,
     session: &SessionRuntime,
     repository_root: Option<&Path>,
+    recall_options: Option<&recall::McpRecallOptions>,
     name: &str,
     arguments: Option<JsonObject>,
 ) -> CallToolResult {
@@ -43,6 +49,8 @@ pub(crate) fn dispatch(
     } else if atlas_read::handles(name) {
         atlas_read::dispatch(store, repository_root, name, arguments)
             .and_then(|payload| retrieval_outcome(payload, name, engine.mode(), repository_id))
+    } else if recall::handles(name) {
+        recall::dispatch(recall_options, repository_root, engine.mode(), arguments)
     } else {
         engine_tools::dispatch(store, engine, config, repository_root, name, arguments)
     };

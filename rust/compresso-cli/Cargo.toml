@@ -14,6 +14,7 @@ compresso-core.workspace = true
 compresso-eval.workspace = true
 compresso-integrations.workspace = true
 compresso-mcp.workspace = true
+compresso-recall.workspace = true
 compresso-store.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

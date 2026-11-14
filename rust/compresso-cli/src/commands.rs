@@ -12,6 +12,7 @@ mod engine;
 mod index;
 mod integrations;
 mod mcp;
+mod recall;
 mod repos;
 mod retrieval;
 mod setup;
@@ -20,6 +21,7 @@ pub use doctor::{ConfigExplainArgs, ConfigModeArg, DiagnosticEnvironment, Doctor
 pub use engine::{CompressArgs, ExplainArgs, StatsArgs};
 pub use index::IndexArgs;
 pub use integrations::{IntegrationEnvironment, execute_integrations};
+pub use recall::{RecallArgs, RecallEnvironment, RecallSourceArg, execute_recall};
 pub use repos::{ReposCommand, ReposListArgs, ReposRemoveArgs};
 pub use retrieval::{
     ContextArgs, ImpactArgs, MapArgs, OutlineArgs, ReadArgs, SearchArgs, UnfoldArgs,
@@ -56,6 +58,8 @@ pub enum RootCommand {
     Compress(CompressArgs),
     Explain(ExplainArgs),
     Stats(StatsArgs),
+    /// Search past local session transcripts without a persistent index.
+    Recall(RecallArgs),
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
@@ -250,6 +254,18 @@ pub fn execute(
         RootCommand::Mcp { command } => mcp::execute(command, errors),
         RootCommand::Eval { command } => compresso_eval::cli::execute(command, output, errors),
         RootCommand::Account { command } => execute_account(command, account, output, errors),
+        RootCommand::Recall(arguments) => {
+            let Some(environment) = RecallEnvironment::system() else {
+                let _ = write_error(
+                    errors,
+                    "environment",
+                    "failed to resolve the home or current working directory",
+                    arguments.output.json,
+                );
+                return CliExitCode::Failure;
+            };
+            execute_recall(arguments, &environment, output, errors)
+        }
         RootCommand::Setup(arguments) => {
             let json = arguments.output.json;
             let environment = match IntegrationEnvironment::system() {
@@ -454,6 +470,15 @@ pub fn execute_with_store_and_input(
         }
         RootCommand::Eval { command } => compresso_eval::cli::execute(command, output, errors),
         RootCommand::Account { command } => execute_account(command, account, output, errors),
+        RootCommand::Recall(arguments) => {
+            let _ = write_error(
+                errors,
+                "environment_required",
+                "recall requires an explicit RecallEnvironment at injected boundaries",
+                arguments.output.json,
+            );
+            CliExitCode::Failure
+        }
         RootCommand::Index(arguments) => execute_index(arguments, Some(store), cwd, output, errors),
         RootCommand::Repos { command } => {
             repos::execute(command, store, cwd, input, output, errors)
@@ -736,6 +761,7 @@ impl RootCommand {
             Self::Compress(arguments) => arguments.output.json,
             Self::Explain(arguments) => arguments.output.json,
             Self::Stats(arguments) => arguments.output.json,
+            Self::Recall(arguments) => arguments.output.json,
             Self::Config { command } => match command {
                 ConfigCommand::Explain(arguments) => arguments.output.json,
             },
