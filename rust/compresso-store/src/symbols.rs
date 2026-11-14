@@ -233,6 +233,44 @@ impl Store {
         self.search_symbols_with_excluded_language(repo, query, limit, None)
     }
 
+    /// Searches for symbols that contain every whitespace-separated term of
+    /// `query`, in any order and any letter case.
+    ///
+    /// Symbols containing the query as one exact phrase rank first, followed by
+    /// the remaining all-terms matches; each group is bm25-ordered. A one-word
+    /// query is exactly [`Store::search_symbols`].
+    pub fn search_symbols_all_terms(
+        &self,
+        repo: RepoId,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<SymbolHit>, StoreError> {
+        let mut hits = self.search_symbols(repo, query, limit)?;
+        let Some(terms) = MultiWordQuery::parse(query) else {
+            return Ok(hits);
+        };
+        // Widening passes, most specific first: the phrase with punctuation
+        // and spacing normalized, then every term in any order.
+        for expression in [fts_literal(&terms.phrase), terms.all_terms] {
+            if hits.len() >= limit {
+                break;
+            }
+            let window = limit.saturating_add(hits.len());
+            for hit in self.search_symbols_matching(repo, &expression, window, None)? {
+                if hits.len() == limit {
+                    break;
+                }
+                let already_ranked = hits
+                    .iter()
+                    .any(|ranked| ranked.file.path == hit.file.path && ranked.symbol == hit.symbol);
+                if !already_ranked {
+                    hits.push(hit);
+                }
+            }
+        }
+        Ok(hits)
+    }
+
     /// Searches indexed symbol fields while excluding one persisted language
     /// before ranking and limiting the result set.
     pub fn search_symbols_excluding_language(
@@ -253,6 +291,17 @@ impl Store {
         excluded_language: Option<FileLanguage>,
     ) -> Result<Vec<SymbolHit>, StoreError> {
         validate_search_query(query)?;
+        self.search_symbols_matching(repo, &fts_literal(query), limit, excluded_language)
+    }
+
+    /// Runs one already-escaped FTS5 expression against the symbol index.
+    fn search_symbols_matching(
+        &self,
+        repo: RepoId,
+        fts_query: &str,
+        limit: usize,
+        excluded_language: Option<FileLanguage>,
+    ) -> Result<Vec<SymbolHit>, StoreError> {
         let limit = sqlite_integer_from_usize("symbol search limit", limit)?;
         let connection = self.connection()?;
         ensure_repo_exists(&connection, repo)?;
@@ -260,7 +309,6 @@ impl Store {
             return Ok(Vec::new());
         }
 
-        let fts_query = fts_literal(query);
         let excluded_language = excluded_language.map(FileLanguage::as_db);
         let mut statement = connection.prepare(
             "SELECT f.path, f.hash, f.language, f.size_bytes, f.token_estimate, f.indexed_at, s.id, s.name, s.qualified_name, s.kind, s.signature, s.start_line, s.end_line, s.token_estimate, bm25(symbols_fts) FROM symbols_fts JOIN symbols AS s ON s.id = symbols_fts.rowid JOIN files AS f ON f.id = s.file_id WHERE symbols_fts MATCH ?1 AND f.repo_id = ?2 AND (?3 IS NULL OR f.language IS NULL OR f.language != ?3) ORDER BY bm25(symbols_fts) ASC, f.path ASC, s.qualified_name ASC, s.kind ASC, s.start_line ASC, s.end_line ASC, s.id ASC LIMIT ?4",
@@ -589,6 +637,58 @@ fn validate_search_query(query: &str) -> Result<(), StoreError> {
 
 fn fts_literal(query: &str) -> String {
     format!("\"{}\"", query.replace('"', "\"\""))
+}
+
+/// Shortest term, in characters, that the trigram tokenizer can match.
+const FTS_MIN_TERM_CHARS: usize = 3;
+
+/// A multi-word query split into searchable terms.
+///
+/// Terms are split on whitespace and stripped of surrounding punctuation;
+/// punctuation inside a term (`Session::start`, `safety_gate`) is kept. Every
+/// term is quoted, so no query text is ever parsed as FTS5 syntax.
+struct MultiWordQuery {
+    /// The terms joined by single spaces, for a normalized phrase match.
+    phrase: String,
+    /// An FTS5 expression requiring every distinct term. Terms too short for
+    /// the trigram index are dropped rather than forcing zero matches.
+    all_terms: String,
+}
+
+impl MultiWordQuery {
+    /// Returns `None` for a one-word query, which stays a literal search, and
+    /// when no term is long enough to search.
+    fn parse(query: &str) -> Option<Self> {
+        query.split_whitespace().nth(1)?;
+        let words = query
+            .split_whitespace()
+            .map(|word| {
+                word.trim_matches(|character: char| {
+                    !character.is_alphanumeric() && character != '_'
+                })
+            })
+            .filter(|word| !word.is_empty())
+            .collect::<Vec<_>>();
+        let mut terms = Vec::<&str>::new();
+        for word in &words {
+            if word.chars().count() >= FTS_MIN_TERM_CHARS
+                && !terms.iter().any(|seen| seen.eq_ignore_ascii_case(word))
+            {
+                terms.push(word);
+            }
+        }
+        if terms.is_empty() {
+            return None;
+        }
+        Some(Self {
+            phrase: words.join(" "),
+            all_terms: terms
+                .into_iter()
+                .map(fts_literal)
+                .collect::<Vec<_>>()
+                .join(" AND "),
+        })
+    }
 }
 
 fn normalize_signature_hash(hash: &str) -> Result<String, StoreError> {
@@ -942,6 +1042,77 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].file.path, "scripts/auth.sh");
         assert_eq!(hits[0].file.language, Some(FileLanguage::Shell));
+    }
+
+    #[test]
+    fn test_search_symbols_all_terms_matches_any_order_with_phrase_first() {
+        let (_directory, store, repo) = setup();
+        let file_id = store
+            .upsert_file(repo, &file("src/lib.rs"))
+            .expect("file should insert");
+        let mut heading = symbol("Safety gate overview", "Safety gate overview", 1);
+        heading.signature = None;
+        store
+            .replace_symbols(
+                file_id,
+                &[
+                    heading,
+                    symbol("safety_gate", "safety_gate", 10),
+                    symbol("gate_for_safety", "gate_for_safety", 20),
+                    symbol("safety_only", "safety_only", 30),
+                ],
+                &[],
+            )
+            .expect("symbols should insert");
+        let names = |query: &str, limit: usize| {
+            store
+                .search_symbols_all_terms(repo, query, limit)
+                .expect("all-terms search should succeed")
+                .into_iter()
+                .map(|hit| hit.symbol.name)
+                .collect::<Vec<_>>()
+        };
+
+        assert!(
+            store
+                .search_symbols(repo, "safety gate", 10)
+                .expect("literal search should succeed")
+                .iter()
+                .all(|hit| hit.symbol.name == "Safety gate overview"),
+            "the literal search only sees the contiguous phrase"
+        );
+        let hits = names("safety gate", 10);
+        assert_eq!(hits.len(), 3);
+        assert_eq!(hits[0], "Safety gate overview");
+        assert!(!hits.contains(&"safety_only".to_owned()));
+        assert_eq!(names("SAFETY  Gate", 10), hits);
+        assert_eq!(names("(safety)   gate;", 10), hits);
+        assert_eq!(names("safety gate", 2), hits[..2]);
+        assert_eq!(names("safety gate", 1), ["Safety gate overview"]);
+        let mut without_short_term = names("safety of gate", 10);
+        without_short_term.sort_unstable();
+        let mut expected = hits.clone();
+        expected.sort_unstable();
+        assert_eq!(without_short_term, expected, "short terms are dropped");
+        assert!(names("safety absent", 10).is_empty());
+        assert_eq!(names("safety", 10).len(), 4);
+    }
+
+    #[test]
+    fn test_multi_word_query_quotes_every_term() {
+        assert!(super::MultiWordQuery::parse("safety_gate").is_none());
+        assert!(super::MultiWordQuery::parse("a b").is_none());
+        let quoted = super::MultiWordQuery::parse("say(\"hello\") NOT world")
+            .expect("three words should parse");
+        assert_eq!(
+            quoted.all_terms,
+            "\"say(\"\"hello\" AND \"NOT\" AND \"world\""
+        );
+        assert_eq!(quoted.phrase, "say(\"hello NOT world");
+        let repeated = super::MultiWordQuery::parse("Session::start,  of session::START")
+            .expect("repeated words should parse");
+        assert_eq!(repeated.all_terms, "\"Session::start\"");
+        assert_eq!(repeated.phrase, "Session::start of session::START");
     }
 
     #[test]

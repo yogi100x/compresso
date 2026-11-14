@@ -3,16 +3,23 @@ use std::ffi::OsStr;
 use std::fs::{self, File, Metadata};
 use std::io::{self, BufReader, Read};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread;
 
 use compresso_store::{RepoId, Store, StoreError};
-use ignore::{DirEntry, WalkBuilder};
+use ignore::{DirEntry, WalkBuilder, WalkState};
+
+use crate::concurrency::Concurrency;
 
 /// Safe scanner limit used by [`scan`] and by the slice configuration default.
 pub const DEFAULT_MAX_FILE_BYTES: u64 = 1_000_000;
 const BINARY_SNIFF_BYTES: u64 = 8 * 1024;
 const HASH_BUFFER_BYTES: usize = 64 * 1024;
+/// Upper bound on the buffers one inspection worker holds while hashing a file.
+const INSPECTION_WORKER_BYTES: u64 = BINARY_SNIFF_BYTES * 2 + HASH_BUFFER_BYTES as u64;
+/// Below this many files a parallel inspection costs more than it saves.
+const PARALLEL_INSPECTION_MIN_FILES: usize = 16;
 
 /// Per-scan limits that can be supplied by configuration and tests.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -126,7 +133,22 @@ pub fn scan_with_options(
     root: &Path,
     options: ScanOptions,
 ) -> Result<ScanResult, AtlasError> {
-    scan_impl(store, repo, root, options, None, &inspect_file)
+    scan_with_concurrency(store, repo, root, options, Concurrency::default())
+}
+
+/// Scans with explicit worker and memory bounds.
+///
+/// The result is identical for every [`Concurrency`]: the walk and file
+/// inspection fan out, while classification, error selection, and output
+/// ordering stay keyed by repository-relative path.
+pub fn scan_with_concurrency(
+    store: &Store,
+    repo: RepoId,
+    root: &Path,
+    options: ScanOptions,
+    concurrency: Concurrency,
+) -> Result<ScanResult, AtlasError> {
+    scan_impl(store, repo, root, options, concurrency, None, &inspect_file)
 }
 
 fn scan_impl<I>(
@@ -134,11 +156,12 @@ fn scan_impl<I>(
     repo: RepoId,
     root: &Path,
     options: ScanOptions,
+    concurrency: Concurrency,
     instrumentation: Option<WalkInstrumentation>,
     inspector: &I,
 ) -> Result<ScanResult, AtlasError>
 where
-    I: Fn(&Path, u64) -> io::Result<FileInspection>,
+    I: Fn(&Path, u64) -> io::Result<FileInspection> + Sync,
 {
     let canonical_root = fs::canonicalize(root).map_err(|source| ScanError::CanonicalizeRoot {
         path: root.to_path_buf(),
@@ -167,7 +190,8 @@ where
     }
 
     let stored_hashes = store.file_hashes(repo)?;
-    let classification = metadata_classification_walk(&canonical_root, instrumentation)?;
+    let classification =
+        metadata_classification_walk(&canonical_root, concurrency.jobs(), instrumentation)?;
     let mut candidate_hashes = BTreeMap::new();
     let mut skipped = classification
         .ignored
@@ -175,6 +199,9 @@ where
         .map(|path| (path, SkipReason::Ignored))
         .collect::<Vec<_>>();
 
+    // Path, type, and size exclusions are decided here, before any worker can
+    // open a file, so excluded entries are never read at any concurrency.
+    let mut pending = Vec::new();
     for (relative, entry) in classification.discovered {
         let relative_path = PathBuf::from(&relative);
         let reason = if is_secret_pattern(&relative) {
@@ -193,31 +220,36 @@ where
             continue;
         }
 
-        let resolved = fs::canonicalize(&entry.absolute).map_err(|source| ScanError::ReadFile {
-            path: entry.absolute.clone(),
-            source,
-        })?;
-        if !resolved.starts_with(&canonical_root) {
-            return Err(AtlasError::OutsideRoot {
-                path: resolved,
-                root: canonical_root,
-            });
-        }
-        if resolved != entry.absolute {
-            return Err(ScanError::EntryChanged {
-                path: entry.absolute,
-            }
-            .into());
-        }
+        pending.push((relative, entry.absolute));
+    }
 
-        match inspector(&resolved, options.max_file_bytes).map_err(|source| {
-            ScanError::ReadFile {
-                path: resolved.clone(),
-                source,
+    let workers = if pending.len() < PARALLEL_INSPECTION_MIN_FILES {
+        1
+    } else {
+        concurrency.workers_for(pending.len(), INSPECTION_WORKER_BYTES)
+    };
+    let outcomes = inspect_candidates(
+        &canonical_root,
+        &pending,
+        options.max_file_bytes,
+        workers,
+        inspector,
+    );
+    for ((relative, absolute), outcome) in pending.into_iter().zip(outcomes) {
+        let inspection = match outcome {
+            Some(inspection) => inspection,
+            None => inspect_candidate(
+                &canonical_root,
+                &absolute,
+                options.max_file_bytes,
+                inspector,
+            ),
+        }?;
+        match inspection {
+            FileInspection::Binary => skipped.push((PathBuf::from(relative), SkipReason::Binary)),
+            FileInspection::TooLarge => {
+                skipped.push((PathBuf::from(relative), SkipReason::TooLarge));
             }
-        })? {
-            FileInspection::Binary => skipped.push((relative_path, SkipReason::Binary)),
-            FileInspection::TooLarge => skipped.push((relative_path, SkipReason::TooLarge)),
             FileInspection::Hash(hash) => {
                 candidate_hashes.insert(relative, hash);
             }
@@ -251,6 +283,114 @@ where
     })
 }
 
+/// Confirms one candidate still resolves to itself inside the root, then inspects it.
+fn inspect_candidate<I>(
+    canonical_root: &Path,
+    absolute: &Path,
+    max_file_bytes: u64,
+    inspector: &I,
+) -> Result<FileInspection, AtlasError>
+where
+    I: Fn(&Path, u64) -> io::Result<FileInspection>,
+{
+    let resolved = fs::canonicalize(absolute).map_err(|source| ScanError::ReadFile {
+        path: absolute.to_path_buf(),
+        source,
+    })?;
+    if !resolved.starts_with(canonical_root) {
+        return Err(AtlasError::OutsideRoot {
+            path: resolved,
+            root: canonical_root.to_path_buf(),
+        });
+    }
+    if resolved != absolute {
+        return Err(ScanError::EntryChanged {
+            path: absolute.to_path_buf(),
+        }
+        .into());
+    }
+    inspector(&resolved, max_file_bytes).map_err(|source| {
+        ScanError::ReadFile {
+            path: resolved.clone(),
+            source,
+        }
+        .into()
+    })
+}
+
+/// Inspects candidates in path order, returning one slot per candidate.
+///
+/// Every slot up to and including the lowest-ordered failure is filled, so a
+/// caller that consumes the slots in order observes exactly the serial outcome.
+/// Slots after a failure may be `None` because that work is abandoned.
+fn inspect_candidates<I>(
+    canonical_root: &Path,
+    pending: &[(String, PathBuf)],
+    max_file_bytes: u64,
+    workers: usize,
+    inspector: &I,
+) -> Vec<Option<Result<FileInspection, AtlasError>>>
+where
+    I: Fn(&Path, u64) -> io::Result<FileInspection> + Sync,
+{
+    let mut outcomes = Vec::new();
+    outcomes.resize_with(pending.len(), || None);
+    if workers <= 1 {
+        for (slot, (_, absolute)) in outcomes.iter_mut().zip(pending) {
+            let outcome = inspect_candidate(canonical_root, absolute, max_file_bytes, inspector);
+            let failed = outcome.is_err();
+            *slot = Some(outcome);
+            if failed {
+                break;
+            }
+        }
+        return outcomes;
+    }
+
+    let next = AtomicUsize::new(0);
+    let first_failure = AtomicUsize::new(usize::MAX);
+    let batches = thread::scope(|scope| {
+        let handles = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut batch = Vec::new();
+                    loop {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        // Indices are claimed in order, so everything below a
+                        // recorded failure is already owned by some worker.
+                        if index >= pending.len() || index > first_failure.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        let outcome = inspect_candidate(
+                            canonical_root,
+                            &pending[index].1,
+                            max_file_bytes,
+                            inspector,
+                        );
+                        if outcome.is_err() {
+                            first_failure.fetch_min(index, Ordering::Relaxed);
+                        }
+                        batch.push((index, outcome));
+                    }
+                    batch
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect::<Vec<_>>()
+    });
+    for (index, outcome) in batches.into_iter().flatten() {
+        outcomes[index] = Some(outcome);
+    }
+    outcomes
+}
+
 struct ClassifiedEntry {
     absolute: PathBuf,
     metadata: Metadata,
@@ -263,6 +403,7 @@ struct ClassificationWalk {
 
 fn metadata_classification_walk(
     root: &Path,
+    workers: usize,
     instrumentation: Option<WalkInstrumentation>,
 ) -> Result<ClassificationWalk, ScanError> {
     let mut matcher_builder = WalkBuilder::new(root);
@@ -335,26 +476,17 @@ fn metadata_classification_walk(
         true
     });
 
-    let mut discovered = BTreeMap::new();
-    for result in builder.build() {
-        let entry = result.map_err(walk_error)?;
-        if entry.depth() == 0 || entry.file_type().is_some_and(|kind| kind.is_dir()) {
-            continue;
+    let discovered = if workers <= 1 {
+        let mut discovered = BTreeMap::new();
+        for result in builder.build() {
+            if let Some((relative, entry)) = classify_walk_entry(root, result)? {
+                discovered.insert(relative, entry);
+            }
         }
-        let relative = relative_path(root, entry.path())?;
-        let metadata =
-            fs::symlink_metadata(entry.path()).map_err(|source| ScanError::Metadata {
-                path: entry.path().to_path_buf(),
-                source,
-            })?;
-        discovered.insert(
-            relative,
-            ClassifiedEntry {
-                absolute: entry.path().to_path_buf(),
-                metadata,
-            },
-        );
-    }
+        discovered
+    } else {
+        parallel_classification_walk(root, &mut builder, workers)?
+    };
     if matcher_unavailable.load(Ordering::Relaxed) {
         return Err(ScanError::IgnoreMatcherUnavailable);
     }
@@ -375,6 +507,81 @@ fn metadata_classification_walk(
         discovered,
         ignored,
     })
+}
+
+/// Converts one walk result into a discovered non-directory entry, if any.
+fn classify_walk_entry(
+    root: &Path,
+    result: Result<DirEntry, ignore::Error>,
+) -> Result<Option<(String, ClassifiedEntry)>, ScanError> {
+    let entry = result.map_err(walk_error)?;
+    if entry.depth() == 0 || entry.file_type().is_some_and(|kind| kind.is_dir()) {
+        return Ok(None);
+    }
+    let relative = relative_path(root, entry.path())?;
+    let metadata = fs::symlink_metadata(entry.path()).map_err(|source| ScanError::Metadata {
+        path: entry.path().to_path_buf(),
+        source,
+    })?;
+    Ok(Some((
+        relative,
+        ClassifiedEntry {
+            absolute: entry.path().to_path_buf(),
+            metadata,
+        },
+    )))
+}
+
+/// Walks with several threads and merges entries into path order.
+///
+/// Workers finish the whole walk before a failure is chosen, and the failure
+/// with the lowest path wins, so the reported error does not depend on timing.
+fn parallel_classification_walk(
+    root: &Path,
+    builder: &mut WalkBuilder,
+    workers: usize,
+) -> Result<BTreeMap<String, ClassifiedEntry>, ScanError> {
+    let discovered = Mutex::new(BTreeMap::new());
+    let failures = Mutex::new(Vec::<(Option<PathBuf>, ScanError)>::new());
+    let poisoned = AtomicBool::new(false);
+    builder.threads(workers).build_parallel().run(|| {
+        Box::new(|result| {
+            let entry_path = result.as_ref().ok().map(|entry| entry.path().to_path_buf());
+            match classify_walk_entry(root, result) {
+                Ok(Some((relative, entry))) => match discovered.lock() {
+                    Ok(mut discovered) => {
+                        discovered.insert(relative, entry);
+                    }
+                    Err(_) => poisoned.store(true, Ordering::Relaxed),
+                },
+                Ok(None) => {}
+                Err(error) => {
+                    let path = match &error {
+                        ScanError::Walk { path, .. } => path.clone(),
+                        _ => entry_path,
+                    };
+                    match failures.lock() {
+                        Ok(mut failures) => failures.push((path, error)),
+                        Err(_) => poisoned.store(true, Ordering::Relaxed),
+                    }
+                }
+            }
+            WalkState::Continue
+        })
+    });
+    if poisoned.load(Ordering::Relaxed) {
+        return Err(ScanError::IgnoreMatcherUnavailable);
+    }
+    let mut failures = failures
+        .into_inner()
+        .map_err(|_| ScanError::IgnoreMatcherUnavailable)?;
+    failures.sort_by(|left, right| left.0.cmp(&right.0));
+    if let Some((_, error)) = failures.into_iter().next() {
+        return Err(error);
+    }
+    discovered
+        .into_inner()
+        .map_err(|_| ScanError::IgnoreMatcherUnavailable)
 }
 
 fn configure_ignore_filters(builder: &mut WalkBuilder, respect_gitignore: bool) {
@@ -691,6 +898,7 @@ mod tests {
             fixture.repo,
             &fixture.root,
             ScanOptions::default(),
+            Concurrency::default(),
             None,
             &move |path, max_file_bytes| {
                 assert!(
@@ -779,6 +987,7 @@ mod tests {
             ScanOptions {
                 max_file_bytes: 1_000_000,
             },
+            Concurrency::default(),
             None,
             &move |path, max_file_bytes| {
                 inspected_for_scan
@@ -893,6 +1102,7 @@ mod tests {
             fixture.repo,
             &fixture.root,
             ScanOptions::default(),
+            Concurrency::default(),
             Some(visits.clone()),
             &inspect_file,
         )
@@ -917,6 +1127,7 @@ mod tests {
             fixture.repo,
             &fixture.root,
             ScanOptions::default(),
+            Concurrency::default(),
             Some(visits.clone()),
             &inspect_file,
         )
@@ -949,6 +1160,7 @@ mod tests {
             fixture.repo,
             &fixture.root,
             ScanOptions::default(),
+            Concurrency::default(),
             None,
             &move |path, max_file_bytes| {
                 inspected_for_scan
@@ -982,6 +1194,7 @@ mod tests {
             fixture.repo,
             &fixture.root,
             ScanOptions::default(),
+            Concurrency::default(),
             None,
             &|path, max_file_bytes| {
                 if path.ends_with("src/main.rs") {
@@ -1045,6 +1258,155 @@ mod tests {
         assert_sorted_unique(&result.changed);
         assert_sorted_unique(&result.removed);
         assert_sorted_unique(&result.skipped);
+    }
+
+    #[test]
+    fn test_parallel_scan_matches_serial_scan() {
+        let fixture = Fixture::new();
+        populate_wide_tree(&fixture.root, 12, 9);
+        seed_store(&fixture);
+        fs::write(
+            fixture.root.join("wide/d03/f004.rs"),
+            "pub fn changed() -> u8 { 9 }\n",
+        )
+        .expect("changed fixture should be written");
+        fs::remove_file(fixture.root.join("wide/d07/f001.rs"))
+            .expect("removed fixture should be deleted");
+        fs::write(
+            fixture.root.join("wide/d09/added.rs"),
+            "pub fn added() {}\n",
+        )
+        .expect("added fixture should be written");
+        fs::write(fixture.root.join("wide/d05/blob.bin"), b"\0binary")
+            .expect("binary fixture should be written");
+        fs::write(fixture.root.join("wide/d02/.env.local"), "TOKEN=fixture\n")
+            .expect("secret fixture should be written");
+
+        let serial = scan_with_concurrency(
+            &fixture.store,
+            fixture.repo,
+            &fixture.root,
+            ScanOptions::default(),
+            Concurrency::serial(),
+        )
+        .expect("serial scan should succeed");
+        assert_eq!(serial.changed, [PathBuf::from("wide/d03/f004.rs")]);
+        assert_eq!(serial.removed, ["wide/d07/f001.rs"]);
+        for jobs in [2, 4, 8] {
+            for _ in 0..3 {
+                let parallel = scan_with_concurrency(
+                    &fixture.store,
+                    fixture.repo,
+                    &fixture.root,
+                    ScanOptions::default(),
+                    Concurrency::exact(jobs, 1 << 30),
+                )
+                .expect("parallel scan should succeed");
+                assert_eq!(parallel, serial, "jobs = {jobs}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_parallel_scan_never_opens_excluded_entries() {
+        let fixture = Fixture::new();
+        populate_wide_tree(&fixture.root, 6, 8);
+        let secret = fixture.root.join("wide/d01/.env.production");
+        fs::write(&secret, "TOKEN=fixture\n").expect("secret fixture should be written");
+        let oversize = fixture.root.join("wide/d02/large.rs");
+        File::create(&oversize)
+            .expect("oversize fixture should be created")
+            .set_len(2_000_000)
+            .expect("oversize fixture length should be set");
+        let inspected = Arc::new(Mutex::new(Vec::new()));
+        let inspected_for_scan = Arc::clone(&inspected);
+
+        let result = scan_impl(
+            &fixture.store,
+            fixture.repo,
+            &fixture.root,
+            ScanOptions::default(),
+            Concurrency::exact(4, 1 << 30),
+            None,
+            &move |path, max_file_bytes| {
+                inspected_for_scan
+                    .lock()
+                    .expect("inspection recorder should lock")
+                    .push(path.to_path_buf());
+                inspect_file(path, max_file_bytes)
+            },
+        )
+        .expect("scan should succeed");
+
+        let skipped = skipped_map(&result);
+        assert_eq!(
+            skipped.get("wide/d01/.env.production"),
+            Some(&SkipReason::SecretPattern)
+        );
+        assert_eq!(
+            skipped.get("wide/d02/large.rs"),
+            Some(&SkipReason::TooLarge)
+        );
+        let inspected = inspected.lock().expect("inspection recorder should lock");
+        assert!(inspected.len() >= PARALLEL_INSPECTION_MIN_FILES);
+        assert!(
+            inspected
+                .iter()
+                .all(|path| !path.ends_with(".env.production") && !path.ends_with("large.rs"))
+        );
+    }
+
+    #[test]
+    fn test_parallel_scan_reports_lowest_ordered_read_error() {
+        let fixture = Fixture::new();
+        populate_wide_tree(&fixture.root, 6, 8);
+        for _ in 0..5 {
+            let error = scan_impl(
+                &fixture.store,
+                fixture.repo,
+                &fixture.root,
+                ScanOptions::default(),
+                Concurrency::exact(8, 1 << 30),
+                None,
+                &|path, max_file_bytes| {
+                    if path.ends_with("wide/d01/f002.rs") || path.ends_with("wide/d04/f000.rs") {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "injected read denial",
+                        ));
+                    }
+                    inspect_file(path, max_file_bytes)
+                },
+            )
+            .expect_err("read errors must fail safe");
+            assert!(matches!(
+                error,
+                AtlasError::Scan(ScanError::ReadFile { path, .. })
+                    if path.ends_with("wide/d01/f002.rs")
+            ));
+        }
+    }
+
+    #[test]
+    fn test_memory_budget_limits_inspection_workers() {
+        let tight = Concurrency::exact(8, INSPECTION_WORKER_BYTES * 2);
+        assert_eq!(tight.workers_for(1_000, INSPECTION_WORKER_BYTES), 2);
+        let starved = Concurrency::exact(8, 1);
+        assert_eq!(starved.workers_for(1_000, INSPECTION_WORKER_BYTES), 1);
+    }
+
+    fn populate_wide_tree(root: &Path, directories: usize, files: usize) {
+        for directory in 0..directories {
+            let path = root.join(format!("wide/d{directory:02}"));
+            fs::create_dir_all(&path).expect("wide fixture directory should be created");
+            for file in 0..files {
+                fs::write(
+                    path.join(format!("f{file:03}.rs")),
+                    format!("pub fn value_{directory}_{file}() -> usize {{ {file} }}\n"),
+                )
+                .expect("wide fixture file should be written");
+            }
+        }
     }
 
     struct Fixture {

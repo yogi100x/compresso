@@ -515,6 +515,7 @@ fn tool_declarations() -> Vec<Tool> {
             json!({
                 "root": { "type": "string", "description": "Optional absolute repository root; when supplied, it must equal this MCP session's repository root." },
                 "query": { "type": "string", "minLength": 1, "description": "Search text, e.g. 'SessionManager' or 'start session'." },
+                "path": { "type": "string", "minLength": 1, "description": "Optional repo-relative file or directory to restrict hits to. A path with no indexed files returns an empty result with a path_not_found diagnostic, not an error." },
                 "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 8 },
                 "max_tokens": token_budget(500)
             }),

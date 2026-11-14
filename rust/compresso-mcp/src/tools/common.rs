@@ -323,6 +323,12 @@ pub(crate) fn map_atlas_error(error: AtlasError) -> ToolFailure {
             "not_found",
             format!("File '{path}' is not present in the repository index."),
         ),
+        AtlasError::Query(error @ QueryError::InvalidSearchQuery { .. }) => {
+            ToolFailure::invalid(format!("argument 'query' is invalid: {error}."))
+        }
+        AtlasError::Query(QueryError::InvalidSearchPath { .. }) => ToolFailure::invalid(
+            "argument 'path' must be a repository-relative path without '..' or backslashes.",
+        ),
         AtlasError::Query(QueryError::InvalidFocus { .. })
         | AtlasError::Query(QueryError::InvalidRange { .. })
         | AtlasError::Query(QueryError::InvalidSymbolRange { .. })

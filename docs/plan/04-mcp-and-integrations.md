@@ -80,6 +80,7 @@ Shipped verbatim as the rmcp server `instructions` (build-doc §13.4: brief, fac
   "properties": {
     "root": { "type": "string", "description": "Optional absolute root; when supplied, it must equal the server's bound repository session root." },
     "query": { "type": "string", "minLength": 1, "description": "Search text, e.g. 'SessionManager' or 'start session'." },
+    "path": { "type": "string", "minLength": 1, "description": "Optional repo-relative file or directory to restrict hits to. A path with no indexed files returns an empty result with a path_not_found diagnostic, not an error." },
     "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 8 },
     "max_tokens": { "type": "integer", "minimum": 100, "maximum": 100000, "default": 500 }
   },
@@ -107,13 +108,22 @@ Shipped verbatim as the rmcp server `instructions` (build-doc §13.4: brief, fac
     }
   ],
   "hits_total": 7,
+  "truncated_hits": [],
+  "truncated_hits_omitted": 0,
+  "diagnostics": [],
   "tokens_used": 640,
   "token_provider": "openai_o200k",
   "truncated": false
 }
 ```
 
-**Errors**: `not_indexed`, `invalid_arguments` (empty query). Zero hits is a success with `hits: []`, plus a one-line suggestion to broaden the query or reindex if `stale`.
+**Query semantics**: a one-word query is a literal, case-insensitive substring match. A multi-word query such as `start session` matches symbols whose indexed fields contain every whitespace-separated term, in any order and letter case; punctuation around a term is ignored, punctuation inside it (`Session::start`) is kept, and terms under three characters are dropped. Symbols containing the exact phrase rank first, then the remaining all-terms matches, each group bm25-ordered. Query text is always quoted and never parsed as FTS5 syntax.
+
+**Truncation**: when `max_tokens` drops ranked hits, `truncated` is `true` and `truncated_hits` lists the dropped hits in rank order as `{ "path", "start_line", "end_line" }` so they can be read directly. Locations are counted inside `max_tokens`; if no location fits beside the kept hits, the last full hit is exchanged for locations. `truncated_hits_omitted` counts dropped hits whose location did not fit either (at most 50 locations are listed).
+
+**Diagnostics**: `diagnostics` is an array of `{ "code", "severity": "info", "message" }` on a successful result. `path_not_found`: the `path` scope names no indexed file or directory (`hits: []`). `query_too_short`: the query is under three characters and cannot match the trigram index. `path_scope_window_capped`: the scope was applied to the top 1000 ranked symbols and fewer than `limit` hits remained.
+
+**Errors**: `not_indexed`, `invalid_arguments`. An invalid query names the zero-based byte offset and the reason, e.g. `invalid search query at byte 7: a NUL byte cannot be searched` (also: empty query, whitespace-only query). A `path` that is absolute or contains `..` or a backslash is `invalid_arguments`. Zero hits is a success with `hits: []`, plus a one-line suggestion to broaden the query or reindex if `stale`. These fields are additive, so `schema_version` stays `1`.
 
 **Predecessor compatibility (D7)**: replaces the predecessor `search` tool. Argument names `query`, `limit`, `max_tokens` match the predecessor CLI's semantics; results are token-bounded the same way.
 

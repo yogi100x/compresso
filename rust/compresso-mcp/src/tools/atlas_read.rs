@@ -1,4 +1,7 @@
-use compresso_atlas::{plan_context, read_bounded, repository_stale, search};
+use compresso_atlas::{
+    SearchHit, SearchOptions, plan_context, read_bounded, repository_stale,
+    search_with_diagnostics, validate_search_query,
+};
 use compresso_core::{TokenCounter, operation_identity};
 use compresso_store::{Store, SymbolRecord};
 use rmcp::model::JsonObject;
@@ -14,6 +17,8 @@ use super::common::{
 
 const SEARCH_DEFAULT_LIMIT: usize = 8;
 const SEARCH_DEFAULT_TOKENS: usize = 500;
+/// Most dropped hits that are still reported by location.
+const SEARCH_MAX_TRUNCATED_LOCATIONS: usize = 50;
 const READ_DEFAULT_TOKENS: usize = 2_000;
 const CONTEXT_INITIAL_TOKENS: usize = 800;
 const CONTEXT_DEFAULT_CEILING: usize = 4_000;
@@ -47,25 +52,41 @@ fn search_tool(
     repository_root: Option<&Path>,
     arguments: Option<JsonObject>,
 ) -> ToolResult {
-    let mut arguments = checked_arguments(arguments, &["root", "query", "limit", "max_tokens"])?;
+    let mut arguments =
+        checked_arguments(arguments, &["root", "query", "path", "limit", "max_tokens"])?;
     let root = optional_string(&mut arguments, "root", false)?;
-    let query = required_string(&mut arguments, "query")?;
-    if query.trim().is_empty() || query.contains('\0') {
-        return Err(ToolFailure::invalid(
-            "argument 'query' must contain searchable text and no NUL byte.",
-        ));
-    }
+    let query = optional_string(&mut arguments, "query", true)?
+        .ok_or_else(|| ToolFailure::invalid("missing required string argument 'query'."))?;
+    validate_search_query(&query).map_err(|error| map_atlas_error(error.into()))?;
+    let path = optional_string(&mut arguments, "path", false)?;
     let limit = optional_usize(&mut arguments, "limit", 1, 100)?.unwrap_or(SEARCH_DEFAULT_LIMIT);
     let max_tokens = token_budget(&mut arguments, SEARCH_DEFAULT_TOKENS)?;
     let repository = resolve_repository(store, repository_root, root.as_deref())?;
-    let hits = search(store, repository.id, &query, limit).map_err(map_atlas_error)?;
-    let hits_total = hits.len();
+    let report = search_with_diagnostics(
+        store,
+        repository.id,
+        &query,
+        SearchOptions {
+            limit,
+            path: path.as_deref(),
+        },
+    )
+    .map_err(map_atlas_error)?;
+    let hits_total = report.hits.len();
     let counter = navigation_counter();
-    let hit_values = hits
-        .into_iter()
-        .map(|hit| search_hit_value(&hit.path, &hit.symbol, hit.score))
+    let capped = cap_search_hits(&report.hits, max_tokens, counter);
+    let (hits, tokens_used, truncated) = (capped.hits, capped.tokens_used, capped.truncated);
+    let diagnostics = report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| {
+            json!({
+                "code": diagnostic.code.as_str(),
+                "severity": "info",
+                "message": diagnostic.message
+            })
+        })
         .collect::<Vec<_>>();
-    let (hits, tokens_used, truncated) = cap_values(hit_values, max_tokens, counter);
     let stale = repository_stale(store, repository.id).map_err(map_atlas_error)?;
     let operation_id = operation_identity().id;
 
@@ -73,8 +94,12 @@ fn search_tool(
         "schema_version": 1,
         "operation_id": operation_id,
         "query": query,
+        "path": path,
         "hits": hits,
         "hits_total": hits_total,
+        "truncated_hits": capped.truncated_hits,
+        "truncated_hits_omitted": capped.truncated_hits_omitted,
+        "diagnostics": diagnostics,
         "suggestion": (hits_total == 0).then_some(if stale {
             "No indexed symbols matched. Reindex the repository, then retry or broaden the query."
         } else {
@@ -468,6 +493,82 @@ fn stabilize_payload_tokens(
     }
     let serialized = serde_json::to_string(payload).map_err(|_| ToolFailure::internal())?;
     Ok(counter.count(&serialized))
+}
+
+/// Search hits fitted to a token budget, with locations for the hits that were cut.
+struct CappedSearchHits {
+    hits: Vec<Value>,
+    /// `path` and line range of dropped hits, in rank order, within the budget.
+    truncated_hits: Vec<Value>,
+    /// Dropped hits whose location did not fit the budget either.
+    truncated_hits_omitted: usize,
+    tokens_used: usize,
+    truncated: bool,
+}
+
+/// Keeps as many full hits as fit, then spends what is left of the budget on
+/// the line ranges of the dropped hits so they can be read directly.
+///
+/// When hits were dropped and not even one location fits, the last full hit
+/// is exchanged for locations, so truncation is never reported without them.
+fn cap_search_hits(
+    hits: &[SearchHit],
+    max_tokens: usize,
+    counter: &dyn TokenCounter,
+) -> CappedSearchHits {
+    let values = hits
+        .iter()
+        .map(|hit| search_hit_value(&hit.path, &hit.symbol, hit.score))
+        .collect::<Vec<_>>();
+    let (mut kept, mut hit_tokens, truncated) = cap_values(values, max_tokens, counter);
+    if !truncated {
+        return CappedSearchHits {
+            hits: kept,
+            truncated_hits: Vec::new(),
+            truncated_hits_omitted: 0,
+            tokens_used: hit_tokens,
+            truncated,
+        };
+    }
+
+    let mut locations = truncated_locations(&hits[kept.len()..], max_tokens - hit_tokens, counter);
+    if locations.0.is_empty() && kept.len() > 1 {
+        kept.pop();
+        hit_tokens = counter.count(&serde_json::to_string(&kept).unwrap_or_default());
+        locations = truncated_locations(&hits[kept.len()..], max_tokens - hit_tokens, counter);
+    }
+    let (truncated_hits, location_tokens) = locations;
+    CappedSearchHits {
+        truncated_hits_omitted: hits.len() - kept.len() - truncated_hits.len(),
+        hits: kept,
+        truncated_hits,
+        tokens_used: hit_tokens + location_tokens,
+        truncated,
+    }
+}
+
+/// Renders dropped-hit locations in rank order until `budget` tokens are spent.
+fn truncated_locations(
+    dropped: &[SearchHit],
+    budget: usize,
+    counter: &dyn TokenCounter,
+) -> (Vec<Value>, usize) {
+    let mut locations = Vec::new();
+    let mut tokens = 0;
+    for hit in dropped.iter().take(SEARCH_MAX_TRUNCATED_LOCATIONS) {
+        locations.push(json!({
+            "path": hit.path,
+            "start_line": hit.symbol.start_line,
+            "end_line": hit.symbol.end_line
+        }));
+        let rendered = counter.count(&serde_json::to_string(&locations).unwrap_or_default());
+        if rendered > budget {
+            locations.pop();
+            break;
+        }
+        tokens = rendered;
+    }
+    (locations, tokens)
 }
 
 fn search_hit_value(path: &str, symbol: &SymbolRecord, score: f64) -> Value {
