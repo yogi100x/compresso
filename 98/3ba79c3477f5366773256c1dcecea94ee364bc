@@ -33,6 +33,7 @@ rust/compresso-cli/src/commands/setup.rs
   s_e2da226df94350::t_dac452b9d1eaa1 589-591,599-601
   s_e2da226df94350::t_a31021949b97e6 622
   s_e2da226df94350::t_a4a503f0177cd9 15
+  s_e2da226df94350::t_f4733157f0ef1f 351,369,800,885-887
 rust/compresso-integrations/src/compaction_hook.rs
   s_e2da226df94350::t_79a71f7bd694f7 221-224,530-532,534-537
 rust/compresso-cli/src/commands/integrations.rs
