@@ -1,0 +1,22 @@
+.github/workflows/ci.yml
+  h_3f7cbffd44cc1b 155,197,247,269
+.github/workflows/package-beta.yml
+  h_3f7cbffd44cc1b 81,93,121,129,146
+docs/plan/01-stack-and-workspace.md
+  h_3f7cbffd44cc1b 115,117
+docs/plan/05-tickets.md
+  h_3f7cbffd44cc1b 29,36,262,750
+scripts/ci/check_ci_matrix.rb
+  h_3f7cbffd44cc1b 7,10,71,104
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7328bb356f568e99159457e0484f0789c02a3eac",
+  "prompts": {},
+  "humans": {
+    "h_3f7cbffd44cc1b": {
+      "author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
