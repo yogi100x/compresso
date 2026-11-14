@@ -32,6 +32,7 @@ rust/compresso-cli/tests/cli_setup.rs
   s_1be76dfb38fcd9::t_73acd4d0fae614 49-50,255,571-581,584,1395-1416
 docs/plan/04-mcp-and-integrations.md
   s_e2da226df94350::t_0c26978bf0a4ba 516,533,548
+  s_e2da226df94350::t_a916ae7521b18f 522,551,592
 rust/compresso-cli/src/commands.rs
   s_1be76dfb38fcd9::t_ccb46573968280 165-169
 rust/compresso-cli/src/commands/integrations.rs
@@ -48,10 +49,14 @@ README.md
   s_b8d866055f9e9b::t_2495abb9afd20c 8-29
 docs/adr/0028-bounded-mcp-health-probe.md
   s_b8d866055f9e9b::t_c65f34ec7180ac 46-52
+  s_e2da226df94350::t_a916ae7521b18f 45
 docs/plan/03-interfaces.md
   s_b8d866055f9e9b::t_699265ea35bb28 325
+  s_e2da226df94350::t_a916ae7521b18f 322
 packages/cli-distribution/README.md
   s_b8d866055f9e9b::t_038e346b4d945d 24-27
+docs/plan/05-tickets.md
+  s_e2da226df94350::t_a916ae7521b18f 2727
 ---
 {
   "schema_version": "authorship/3.0.0",
