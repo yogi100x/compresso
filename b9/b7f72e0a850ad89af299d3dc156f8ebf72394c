@@ -1,0 +1,48 @@
+docs/plan/08-ip-and-secure-deployment.md
+  s_f3ae5462f697a3::t_303ad243381539 72
+docs/plan/05-tickets.md
+  s_f3ae5462f697a3::t_303ad243381539 76,527
+security_best_practices_report.md
+  s_f3ae5462f697a3::t_64c62cb0e7127f 22
+  s_f3ae5462f697a3::t_303ad243381539 11,25,146,414
+decisions.md
+  s_f3ae5462f697a3::t_303ad243381539 70
+docs/plan/01-stack-and-workspace.md
+  s_f3ae5462f697a3::t_303ad243381539 120
+installers/tests/install_local_test.sh
+  s_f3ae5462f697a3::t_7ec854470e5abc 244,259,276,291,313-314,338,357
+  s_f3ae5462f697a3::t_09187c6ceca224 513-514
+  s_f3ae5462f697a3::t_ce47b14680ca46 205-237
+docs/adr/0030-keyless-signed-slice-checksums.md
+  s_f3ae5462f697a3::t_d3872850d97e00 44-58
+  s_f3ae5462f697a3::t_565eebc071dc29 72-74
+compresso-threat-model.md
+  s_f3ae5462f697a3::t_3d454ab68b7d3f 146
+installers/install-local.sh
+  s_f3ae5462f697a3::t_9279920ee938dc 88-92
+  s_f3ae5462f697a3::t_69fd4932700337 117-118
+  s_f3ae5462f697a3::t_9f680c1648ce9f 160,163-164
+  s_f3ae5462f697a3::t_2b8b58629ff675 19-22
+  s_f3ae5462f697a3::t_dd9cccf896f154 77
+  s_f3ae5462f697a3::t_6302fc27ce6d07 84
+  s_f3ae5462f697a3::t_93999ae391d648 12
+docs/runbooks/install-local.md
+  s_f3ae5462f697a3::t_be64fb43c5441f 38-47
+  s_f3ae5462f697a3::t_368693d2d6b264 57-59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b9b7f72e0a850ad89af299d3dc156f8ebf72394c",
+  "prompts": {},
+  "sessions": {
+    "s_f3ae5462f697a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7cc607c-32b2-4e30-bc4c-55ff6e2d2dd7",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
