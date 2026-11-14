@@ -899,6 +899,37 @@ mod tests {
     }
 
     #[test]
+    fn test_parallel_preparation_commits_in_order_under_a_starved_memory_budget() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let root = directory.path().join("repo");
+        write_generated_repository(&root, 48);
+        let root = fs::canonicalize(&root).expect("root should canonicalize");
+        let mut paths = generated_paths(48);
+        paths.sort_unstable();
+        let candidates = paths.iter().map(PathBuf::from).collect::<Vec<_>>();
+        let known_paths = paths.iter().cloned().collect::<BTreeSet<_>>();
+        let context = PrepareContext {
+            root: &root,
+            known_paths: &known_paths,
+            counter: counter_for(TokenProvider::Heuristic),
+            indexed_at: 1,
+        };
+
+        // One byte admits a single file at a time, so every commit must
+        // release the budget before the next file can be dispatched.
+        let mut committed = Vec::new();
+        prepare_in_parallel(&context, &candidates, 4, 1, |index, outcome| {
+            let prepared = outcome.map_err(|failure| failure.error)?;
+            committed.push((index, prepared.record.path));
+            Ok(())
+        })
+        .expect("a starved budget must still finish");
+
+        let expected = paths.into_iter().enumerate().collect::<Vec<_>>();
+        assert_eq!(committed, expected);
+    }
+
+    #[test]
     fn test_parallel_index_stops_at_lowest_ordered_failure() {
         let directory = tempfile::tempdir().expect("temporary directory should be created");
         let root = directory.path().join("repo");
