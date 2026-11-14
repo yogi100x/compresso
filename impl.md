@@ -74,4 +74,4 @@
 
   Then Codex can use Compresso’s MCP tools without cloud access.
 
-  Do not start E8–E16 or licensing infrastructure yet. The next concrete action is implementing E1-01.
+  Do not start E8–E16 or licensing infrastructure yet. Ticket status lives in `docs/plan/05-tickets.md`.

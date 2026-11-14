@@ -5,7 +5,8 @@
 Compresso is a local-first context intelligence layer for AI coding tools. The
 current delivery target is the offline vertical slice defined by E1-E7, the
 separately authorized PB-01..PB-08 public package-manager beta lane, and the
-E17 local follow-ups the owner authorized in D70 (`decisions.md`). Do not
+E17 local follow-ups the owner authorized (see `decisions.md` and the E17
+tickets in `docs/plan/05-tickets.md`). Do not
 start E8-E16, licensing, cloud, or desktop work unless the user explicitly
 changes the scope. PB tickets may pull only the release-hardening and signing
 subsets of E12/E14 named in ADR-0025; that exception does not authorize either
@@ -36,8 +37,6 @@ inventing a new contract.
   dependency order. PB work publishes signed native artifacts and auditable
   packaging only; the private engine source never moves into the public
   distribution repository.
-- E17 tickets are local-only follow-ups to the delivered slice and may run in
-  any order their own dependencies allow.
 - Keep every change within the active ticket's scope.
 
 ## Development Workflow
