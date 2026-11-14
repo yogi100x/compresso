@@ -213,6 +213,64 @@ EOF
     fail "URL install version mismatch"
 }
 
+test_plain_http_url_rejected_before_any_download() {
+  home="$test_root/http-home"
+  fake_bin="$test_root/http-bin"
+  mkdir -p "$home" "$fake_bin"
+  target=$(host_target)
+  cat > "$fake_bin/curl" <<'EOF'
+#!/bin/sh
+: > "$DOWNLOAD_MARKER"
+exit 1
+EOF
+  chmod 0755 "$fake_bin/curl"
+  cp "$fake_bin/curl" "$fake_bin/wget"
+  marker="$test_root/http-download-attempted"
+
+  if HOME="$home" DOWNLOAD_MARKER="$marker" PATH="$fake_bin:/usr/bin:/bin" \
+    "$installer" "http://fixtures.invalid/releases/compresso-5.0.0-$target.tar.gz" \
+    > "$test_root/http.out" 2> "$test_root/http.err"; then
+    fail "plain HTTP URL was accepted"
+  fi
+  assert_contains "$(cat "$test_root/http.err")" 'https://'
+  [ ! -e "$marker" ] || fail "plain HTTP URL reached the downloader"
+  [ ! -e "$home/.local/bin/compresso" ] || fail "plain HTTP URL installed a binary"
+}
+
+test_url_download_is_restricted_to_https() {
+  home="$test_root/proto-home"
+  release="$test_root/proto-release"
+  fake_bin="$test_root/proto-bin"
+  mkdir -p "$home" "$fake_bin"
+  create_release "$release" 5.0.0 proto >/dev/null
+  target=$(host_target)
+  cat > "$fake_bin/curl" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$CURL_ARGUMENTS"
+output=
+url=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --output|-o) output=$2; shift 2 ;;
+    --proto|--proto-redir) shift 2 ;;
+    -* ) shift ;;
+    * ) url=$1; shift ;;
+  esac
+done
+[ -n "$output" ] && [ -n "$url" ] || exit 2
+cp "$FIXTURE_SOURCE/$(basename "$url")" "$output"
+EOF
+  chmod 0755 "$fake_bin/curl"
+  arguments="$test_root/proto-curl-arguments"
+
+  HOME="$home" FIXTURE_SOURCE="$release" CURL_ARGUMENTS="$arguments" \
+    PATH="$fake_bin:/usr/bin:/bin" \
+    "$installer" "https://fixtures.invalid/releases/compresso-5.0.0-$target.tar.gz" >/dev/null
+
+  assert_contains "$(cat "$arguments")" '--proto =https'
+  assert_contains "$(cat "$arguments")" '--proto-redir =https'
+}
+
 test_install_clean_home
 test_install_from_direct_local_tarball
 test_checksum_mismatch_aborts_before_install_write
@@ -220,4 +278,6 @@ test_install_idempotent_with_previous_backup
 test_multiple_payload_archive_rejected
 test_no_config_or_assistant_writes
 test_install_from_versioned_url
+test_plain_http_url_rejected_before_any_download
+test_url_download_is_restricted_to_https
 printf '%s\n' 'install_local_test: all tests passed'
