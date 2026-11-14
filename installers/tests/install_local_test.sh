@@ -271,6 +271,43 @@ EOF
   assert_contains "$(cat "$arguments")" '--proto-redir =https'
 }
 
+test_wget_fallback_never_follows_redirects() {
+  home="$test_root/wget-home"
+  release="$test_root/wget-release"
+  tools="$test_root/wget-tools"
+  mkdir -p "$home" "$tools"
+  create_release "$release" 5.0.0 wget >/dev/null
+  target=$(host_target)
+  # Every system tool except curl, so the installer takes its wget path.
+  for tool in /usr/bin/* /bin/*; do
+    name=${tool##*/}
+    [ "$name" = curl ] || [ -e "$tools/$name" ] || ln -s "$tool" "$tools/$name"
+  done
+  rm -f "$tools/wget"
+  cat > "$tools/wget" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$WGET_ARGUMENTS"
+output=
+url=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -O) output=$2; shift 2 ;;
+    -* ) shift ;;
+    * ) url=$1; shift ;;
+  esac
+done
+[ -n "$output" ] && [ -n "$url" ] || exit 2
+cp "$FIXTURE_SOURCE/$(basename "$url")" "$output"
+EOF
+  chmod 0755 "$tools/wget"
+  arguments="$test_root/wget-arguments"
+
+  HOME="$home" FIXTURE_SOURCE="$release" WGET_ARGUMENTS="$arguments" PATH="$tools" \
+    "$installer" "https://fixtures.invalid/releases/compresso-5.0.0-$target.tar.gz" >/dev/null
+
+  assert_contains "$(cat "$arguments")" '--max-redirect=0'
+}
+
 test_install_clean_home
 test_install_from_direct_local_tarball
 test_checksum_mismatch_aborts_before_install_write
@@ -280,4 +317,5 @@ test_no_config_or_assistant_writes
 test_install_from_versioned_url
 test_plain_http_url_rejected_before_any_download
 test_url_download_is_restricted_to_https
+test_wget_fallback_never_follows_redirects
 printf '%s\n' 'install_local_test: all tests passed'

@@ -51,7 +51,9 @@ download() {
       --proto '=https' --proto-redir '=https' --output "$output" "$url" ||
       fail "download failed: $url"
   elif command -v wget >/dev/null 2>&1; then
-    wget -q --https-only -O "$output" "$url" || fail "download failed: $url"
+    # wget cannot restrict a redirect to HTTPS (--https-only only governs
+    # recursive retrieval), so it follows none.
+    wget -q --max-redirect=0 -O "$output" "$url" || fail "download failed: $url"
   else
     fail "URL source requires curl or wget"
   fi
