@@ -1,0 +1,42 @@
+compresso-threat-model.md
+  s_f3ae5462f697a3::t_65eaf411a2f49e 146
+docs/runbooks/install-local.md
+  s_f3ae5462f697a3::t_efa6fd82a41313 61-62
+  s_f3ae5462f697a3::t_3de4e02fe68c2e 3-6
+  s_f3ae5462f697a3::t_bf23c315cc8ac1 38-42
+  s_f3ae5462f697a3::t_d9167db656fa2d 46-54
+installers/tests/install_local_test.sh
+  s_f3ae5462f697a3::t_9cb22492ecb2b2 432-433
+  s_f3ae5462f697a3::t_242ed87d842386 396-397
+  s_f3ae5462f697a3::t_6f0c48b32f365e 475-480
+  s_f3ae5462f697a3::t_857c3f65c95554 71-218
+  s_f3ae5462f697a3::t_d1a1991e972e9c 337-338
+.github/workflows/ci.yml
+  s_f3ae5462f697a3::t_678863bdef5217 325-328
+  s_f3ae5462f697a3::t_225a6c73398b2b 352-375,379-381
+installers/install-local.sh
+  s_f3ae5462f697a3::t_ffdbd205497b6d 149-155
+  s_f3ae5462f697a3::t_30e3ba371834dd 122-125
+  s_f3ae5462f697a3::t_896fbd1a8d0ca1 18-21
+  s_f3ae5462f697a3::t_fb20e9ca6fcbe1 66-86
+docs/adr/0030-keyless-signed-slice-checksums.md
+  s_f3ae5462f697a3::t_df7c9fdfe52107 1-70
+security_best_practices_report.md
+  s_f3ae5462f697a3::t_f06f4fff4d1972 22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1d69cc0d02014300b0af3052aab7f0a135fce86b",
+  "prompts": {},
+  "sessions": {
+    "s_f3ae5462f697a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7cc607c-32b2-4e30-bc4c-55ff6e2d2dd7",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
