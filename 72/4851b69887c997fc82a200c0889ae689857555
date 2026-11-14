@@ -1,0 +1,26 @@
+scripts/ci/check_ci_matrix.rb
+  s_f3ae5462f697a3::t_6fe4cbfdd6b1f8 139,145
+  s_f3ae5462f697a3::t_4f1eff4f352129 30-31,33-34,38,77,79,110,134-138,140-144,146-152
+.github/workflows/package-beta.yml
+  s_f3ae5462f697a3::t_5251afbb7805c5 24,46,84,88,95,126,158,162,171,315,323,342,346,385,416
+deny.toml
+  s_f3ae5462f697a3::t_5251afbb7805c5 34-39
+.github/workflows/ci.yml
+  s_f3ae5462f697a3::t_5251afbb7805c5 18,35,39,43-50,52,68,73-74,169,171,187,209,211,262,291,293,314,327,329,349
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "724851b69887c997fc82a200c0889ae689857555",
+  "prompts": {},
+  "sessions": {
+    "s_f3ae5462f697a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7cc607c-32b2-4e30-bc4c-55ff6e2d2dd7",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
