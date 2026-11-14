@@ -332,7 +332,11 @@ secret-safe key-level diff, diff hash, backup path, and owned-key effect. Exact
 target bytes stay private inside the manager and remain bound by `result_hash`;
 they are never serialized into CLI or assistant-visible preview output. Before
 indexing setup converts that still-valid plan into an opaque, manager-bound,
-one-use authorization.
+one-use authorization. For Claude Code and Codex setup also previews and,
+after the MCP entry is applied, installs the post-compaction routing-reminder
+hook as a second plan with its own receipt (D76; `--no-compaction-hook` opts
+out). A hook step that cannot be planned or applied is reported as `skipped`
+or `failed` with fix text and never changes setup's exit status.
 Because indexing may outlive the plan TTL, setup renews only `issued_at`,
 `expires_at`, and the derived plan hash afterward; every approved material
 field, including the private target, remains byte-identical. The strict setup apply path refuses any pending

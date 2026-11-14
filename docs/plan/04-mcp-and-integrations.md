@@ -580,7 +580,7 @@ args = ["mcp", "serve", "--recall-source", "codex"]
 ### 2.5 Explicit non-goals
 
 - **Claude Desktop**: no adapter, no detection, no writes to `~/Library/Application Support/Claude/claude_desktop_config.json` under any code path (D5). The CLI responds to `compresso integrations install claude-desktop` with a refusal citing this decision.
-- No hooks, wrappers, or PATH shims are installed for any client in the slice; the integration surface is exactly one MCP server entry per client.
+- No wrappers or PATH shims are installed for any client in the slice. The integration surface is one MCP server entry per client plus, by owner decision D76, exactly one hook: the post-compaction routing-reminder `SessionStart` hook (matcher `compact`) for Claude Code and Codex, specified in `docs/integrations/compaction-reminder.md`. `compresso setup` installs it by default as a separate previewed plan with its own backup and receipt (`--no-compaction-hook` opts out); `compresso integrations install` installs it only with `--compaction-hook`. It owns only `hooks.SessionStart`, is never merged into hooks a user defined (setup then skips the step with a warning and still exits 0), and is removed with `compresso integrations uninstall <client> --compaction-hook`. Cursor gets no hook. No other hook is installed for any client.
 - No automatic migration of the predecessor CLI's client configs. The predecessor CLI's entries are never read, modified, or removed by Compresso adapters (D2/D3); users remove the predecessor CLI separately.
 
 ## 3. Future E15 tool surface

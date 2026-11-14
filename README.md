@@ -25,6 +25,19 @@ turn it off later. Compresso itself makes no network request, but anything an
 MCP tool returns, recall snippets included, goes to the coding client, which
 may send it to its model provider.
 
+`compresso setup` for Claude Code and Codex also installs one hook: a
+`SessionStart` hook with matcher `compact` that runs
+`compresso mcp routing-reminder --session-start-hook`, so the client re-reads
+Compresso's tool routing after it compacts a conversation. It is previewed
+with the rest of the plan and has its own receipt. If you already define
+`SessionStart` hooks, Compresso does not touch them: setup skips the hook,
+prints a warning with the entry to add by hand, and still succeeds. Pass
+`--no-compaction-hook` to leave it out, and remove it later with
+`compresso integrations uninstall <client> --compaction-hook`.
+`compresso integrations install` adds the hook only when given
+`--compaction-hook`. Details:
+[Post-compaction routing reminder](docs/integrations/compaction-reminder.md).
+
 ## Development
 
 Development standards are documented in

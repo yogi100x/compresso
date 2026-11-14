@@ -1428,6 +1428,13 @@ fn test_setup_partial_failure_recovery_command_keeps_the_no_recall_opt_out() {
             .contains("compresso integrations install codex --yes --no-recall"),
         "recovery must not silently enable recall: {errors}"
     );
+    assert!(
+        errors["error"]["message"]
+            .as_str()
+            .expect("error message should be text")
+            .contains("compresso integrations install codex --compaction-hook --yes"),
+        "recovery names the hook step that `integrations install` does not add: {errors}"
+    );
 }
 
 #[test]

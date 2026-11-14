@@ -2708,6 +2708,7 @@ Acceptance criteria:
 - Reminder ≤640 bytes, byte-identical per call, names only served tools; no store, network, or telemetry.
 - Adapter owns only `hooks.SessionStart`; idempotent; refuses user-defined hooks; uninstall retains modified keys; symlinked config rejected.
 - Hook and MCP entry have independent receipts.
+- Follow-up (D76): `compresso setup` installs the hook by default for Claude Code and Codex (`--no-compaction-hook` opts out); a refusal because the user defines `SessionStart` hooks is a skipped step with warning and fix text and exit 0; Cursor has no step; `integrations install` still requires `--compaction-hook`. Covered by `rust/compresso-cli/tests/cli_setup_compaction_hook.rs`.
 Test cases:
 - `test_routing_reminder_is_bounded_single_line_ascii`: size, ASCII, single line.
 - `test_routing_reminder_hook_envelope_is_session_start_additional_context`: exact JSON envelope.

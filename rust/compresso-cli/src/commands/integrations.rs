@@ -244,6 +244,7 @@ impl MutationAction {
 /// One exact integration effect retained while setup renews short-lived plan timing.
 pub(crate) struct PreparedSetupInstall {
     client: IntegrationClientArg,
+    compaction_hook: bool,
     scope: Scope,
     launcher_path: PathBuf,
     selected: SelectedIntegration,
@@ -267,6 +268,11 @@ impl PreparedSetupInstall {
         &self.plan
     }
 
+    /// The validated launcher path this plan writes into client configuration.
+    pub(crate) fn launcher_path(&self) -> &Path {
+        &self.launcher_path
+    }
+
     pub(crate) fn authorize(&self) -> Result<DeferredInstallAuthorization, IntegrationCliError> {
         let approval = PlanApproval::from(&self.plan);
         self.manager
@@ -278,7 +284,8 @@ impl PreparedSetupInstall {
         &self,
         environment: &IntegrationEnvironment,
     ) -> Result<(), IntegrationCliError> {
-        let current = SelectedIntegration::new(self.client, environment, &self.scope, false)?;
+        let current =
+            SelectedIntegration::new(self.client, environment, &self.scope, self.compaction_hook)?;
         if current.config_path != self.selected.config_path {
             return Err(IntegrationCliError::new(
                 "config_drift",
@@ -336,9 +343,35 @@ pub(crate) fn prepare_setup_install(
     environment: &IntegrationEnvironment,
     clock: Arc<dyn PlanClock>,
 ) -> Result<PreparedSetupInstall, IntegrationCliError> {
+    prepare_install(client, project, false, session_recall, environment, clock)
+}
+
+/// Prepares the post-compaction routing-reminder hook install for setup, with
+/// the same no-recovery, no-mutation guarantees as [`prepare_setup_install`].
+///
+/// The hook lives in its own file with its own plan and receipt. A refusal
+/// because the user already defines hooks for the owned event carries the
+/// entry to add by hand in `manual_hook_entry`.
+pub(crate) fn prepare_setup_hook_install(
+    client: IntegrationClientArg,
+    project: Option<&Path>,
+    environment: &IntegrationEnvironment,
+    clock: Arc<dyn PlanClock>,
+) -> Result<PreparedSetupInstall, IntegrationCliError> {
+    prepare_install(client, project, true, false, environment, clock)
+}
+
+fn prepare_install(
+    client: IntegrationClientArg,
+    project: Option<&Path>,
+    compaction_hook: bool,
+    session_recall: bool,
+    environment: &IntegrationEnvironment,
+    clock: Arc<dyn PlanClock>,
+) -> Result<PreparedSetupInstall, IntegrationCliError> {
     let scope = resolve_scope(project, &environment.cwd)?;
     let launcher_path = validate_stable_launcher(environment.compresso_bin.clone())?;
-    let selected = SelectedIntegration::new(client, environment, &scope, false)?;
+    let selected = SelectedIntegration::new(client, environment, &scope, compaction_hook)?;
     let manager = PlanManager::with_clock(&environment.session_id, clock)?;
     let receipts = FileReceiptStore::new(environment.receipt_store_path());
     let plan = selected.adapter.plan_install(
@@ -351,6 +384,7 @@ pub(crate) fn prepare_setup_install(
     )?;
     Ok(PreparedSetupInstall {
         client,
+        compaction_hook,
         scope,
         launcher_path,
         selected,
@@ -496,6 +530,15 @@ fn execute_mutation(
     };
     let mut warnings = Vec::new();
     project_canonical_receipts(&receipts, environment, &mut warnings);
+    if action == MutationAction::Uninstall && !arguments.compaction_hook {
+        warnings.extend(remaining_hook_warning(
+            arguments.client,
+            arguments.project.as_deref(),
+            environment,
+            &scope,
+            &receipts,
+        ));
+    }
     render_plan(
         output,
         &PlanRendering {
@@ -508,6 +551,30 @@ fn execute_mutation(
             json: arguments.output.json,
         },
     )
+}
+
+/// The hook has its own file and receipt, so removing the MCP entry leaves it
+/// in place. Says so, with the exact command that removes it.
+fn remaining_hook_warning(
+    client: IntegrationClientArg,
+    project: Option<&Path>,
+    environment: &IntegrationEnvironment,
+    scope: &Scope,
+    receipts: &FileReceiptStore,
+) -> Option<String> {
+    let hook = SelectedIntegration::compaction_hook(client, environment, scope).ok()?;
+    receipts
+        .active_for(client.as_str(), &hook.config_path)
+        .ok()
+        .flatten()?;
+    let project = project
+        .map(|root| format!(" --project {}", root.display()))
+        .unwrap_or_default();
+    Some(format!(
+        "compaction_hook_still_installed: the post-compaction routing reminder hook in {} is still installed; remove it with `compresso integrations uninstall {} --compaction-hook{project}`",
+        hook.config_path.display(),
+        client.as_str(),
+    ))
 }
 
 fn execute_status(
@@ -1058,6 +1125,9 @@ pub(super) fn system_home_dir() -> Result<PathBuf, IntegrationCliError> {
 pub(crate) struct IntegrationCliError {
     pub(crate) code: &'static str,
     pub(crate) message: String,
+    /// The hook group a user can add by hand when install was refused because
+    /// the client already defines its own hooks for the owned event.
+    pub(crate) manual_hook_entry: Option<String>,
 }
 
 impl IntegrationCliError {
@@ -1065,6 +1135,7 @@ impl IntegrationCliError {
         Self {
             code,
             message: message.into(),
+            manual_hook_entry: None,
         }
     }
 
@@ -1075,8 +1146,14 @@ impl IntegrationCliError {
 
 impl From<IntegrationError> for IntegrationCliError {
     fn from(error: IntegrationError) -> Self {
+        let manual_hook_entry = match &error {
+            IntegrationError::UserHooksPresent { entry, .. } => Some(entry.clone()),
+            _ => None,
+        };
         let code = match error {
-            IntegrationError::Unsupported { .. } => "unsupported",
+            IntegrationError::Unsupported { .. } | IntegrationError::UserHooksPresent { .. } => {
+                "unsupported"
+            }
             IntegrationError::ConfigDrift { .. } => "config_drift",
             IntegrationError::PendingRecovery { .. } => "pending_recovery",
             IntegrationError::PlanExpired { .. } => "plan_expired",
@@ -1087,7 +1164,10 @@ impl From<IntegrationError> for IntegrationCliError {
             | IntegrationError::UninstallReceiptNotIdempotent { .. } => "receipt_invalid",
             _ => "integration_error",
         };
-        Self::new(code, error.to_string())
+        Self {
+            manual_hook_entry,
+            ..Self::new(code, error.to_string())
+        }
     }
 }
 

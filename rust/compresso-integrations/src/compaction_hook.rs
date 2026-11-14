@@ -218,11 +218,10 @@ impl Integration for CompactionHookIntegration {
             .get(HOOK_EVENT)
             .is_some_and(|existing| !is_compresso_hook_value(existing))
         {
-            return Err(IntegrationError::Unsupported {
-                reason: format!(
-                    "{OWNED_PATH} already defines hooks that Compresso did not write and will not rewrite; add this entry to that array by hand instead: {}",
-                    value[0]
-                ),
+            return Err(IntegrationError::UserHooksPresent {
+                path: config_path,
+                key: OWNED_PATH.to_owned(),
+                entry: value[0].to_string(),
             });
         }
         hooks.insert(HOOK_EVENT.to_owned(), value);
@@ -528,9 +527,14 @@ mod tests {
             .plan_install(&manager, &harness.context(Scope::User))
             .expect_err("user hooks must not be rewritten");
 
-        let IntegrationError::Unsupported { reason } = error else {
-            panic!("expected a typed unsupported refusal");
+        let reason = error.to_string();
+        let IntegrationError::UserHooksPresent { path, key, entry } = error else {
+            panic!("expected a typed user-hooks refusal");
         };
+        assert_eq!(path, harness.claude_settings());
+        assert_eq!(key, "hooks.SessionStart");
+        assert!(entry.contains("routing-reminder --session-start-hook"));
+        assert!(entry.contains("\"matcher\":\"compact\""));
         assert!(reason.contains("by hand"));
         assert!(reason.contains("routing-reminder --session-start-hook"));
         assert_eq!(

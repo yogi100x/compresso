@@ -505,6 +505,18 @@ pub enum IntegrationError {
     #[error("unsupported integration operation: {reason}")]
     Unsupported { reason: String },
     /// Plan approval was never issued by this manager or was altered.
+    /// The client's hook file already defines hooks for an event Compresso
+    /// would own. Compresso never merges into or rewrites them; `entry` is the
+    /// exact group a user can add by hand.
+    #[error(
+        "{key} in {path} already defines hooks that Compresso did not write and will not rewrite; add this entry to that array by hand instead: {entry}"
+    )]
+    UserHooksPresent {
+        path: PathBuf,
+        key: String,
+        entry: String,
+    },
+
     #[error("integration plan approval is forged or unknown")]
     ForgedPlan,
     /// Approval came from another local session.
