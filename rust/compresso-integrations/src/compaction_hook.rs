@@ -5,6 +5,14 @@
 //! `additionalContext` to the model's context. This adapter installs one such
 //! hook that runs `compresso mcp routing-reminder --session-start-hook`.
 //!
+//! The CLI installs the hook only in the client's user-level hook file
+//! (`~/.claude/settings.json`, `~/.codex/hooks.json`), never in a repository
+//! file a team may commit. The command it runs names the launcher by absolute
+//! path and prints a constant, so it is correct from any working directory.
+//! The adapter still resolves project scope so that a hook an earlier version
+//! wrote into a repository's hook file can be found and removed by its
+//! receipt (see [`LegacyProjectHook`]).
+//!
 //! The adapter owns exactly `hooks.SessionStart` in the client's hook file and
 //! only takes ownership when that key is absent or already holds a
 //! Compresso-written value. It never merges into or rewrites hooks a user
@@ -24,7 +32,8 @@ use crate::claude_code::{
 use crate::plan::MutationRequest;
 use crate::{
     ConfigFormat, Detection, InstallCtx, InstallReceipt, Integration, IntegrationError,
-    MutationKind, MutationPlan, PlanManager, Scope, VerificationCheck, VerificationReport,
+    MutationKind, MutationPlan, PlanManager, ReceiptStore, Scope, VerificationCheck,
+    VerificationReport,
 };
 
 const OWNED_PATH: &str = "hooks.SessionStart";
@@ -37,10 +46,27 @@ const HOOK_TIMEOUT_SECONDS: u64 = 10;
 /// Coding clients that document a post-compaction `SessionStart` hook.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CompactionHookClient {
-    /// Claude Code: `.claude/settings.json`.
+    /// Claude Code: `~/.claude/settings.json`.
     ClaudeCode,
-    /// Codex: `.codex/hooks.json`.
+    /// Codex: `~/.codex/hooks.json`.
     Codex,
+}
+
+/// A reminder hook found in a repository's project-level hook file, where
+/// versions before the user-level-only rule could install it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LegacyProjectHook {
+    /// The project file holds no Compresso reminder hook.
+    Absent,
+    /// An active receipt proves Compresso installed the hook in this file, so
+    /// [`Integration::plan_uninstall`] may remove the receipt-owned key.
+    Receipted(Box<InstallReceipt>),
+    /// The file holds a Compresso-shaped hook but no active receipt covers it.
+    /// It must be left unchanged.
+    Unreceipted {
+        /// The project hook file that holds the unowned entry.
+        config_path: PathBuf,
+    },
 }
 
 impl CompactionHookClient {
@@ -157,6 +183,47 @@ impl CompactionHookIntegration {
                 ]
             }
         ]))
+    }
+
+    /// Looks for a reminder hook that an earlier version installed in
+    /// `root`'s project-level hook file. Reads only; never writes.
+    ///
+    /// A project root whose hook file is the user-level file (the repository
+    /// is the home directory) has nothing to migrate and reports `Absent`.
+    pub fn legacy_project_hook(
+        &self,
+        root: &Path,
+        receipts: &dyn ReceiptStore,
+    ) -> Result<LegacyProjectHook, IntegrationError> {
+        let config_path = self.config_path(&Scope::Project(root.to_path_buf()))?;
+        if self
+            .config_path(&Scope::User)
+            .is_ok_and(|user| user == config_path)
+        {
+            return Ok(LegacyProjectHook::Absent);
+        }
+        let receipt = receipts
+            .active_for(self.client.client_id(), &config_path)
+            .map_err(|error| invalid(&format!("receipt store could not be read: {error}")))?;
+        if let Some(receipt) = receipt {
+            return Ok(if receipt.keys_owned == [OWNED_PATH] {
+                LegacyProjectHook::Receipted(Box::new(receipt))
+            } else {
+                LegacyProjectHook::Absent
+            });
+        }
+        let holds_compresso_hook = read_existing_json_object_for_verify(&config_path)
+            .ok()
+            .as_ref()
+            .and_then(|document| document.get("hooks"))
+            .and_then(Value::as_object)
+            .and_then(|hooks| hooks.get(HOOK_EVENT))
+            .is_some_and(is_compresso_hook_value);
+        Ok(if holds_compresso_hook {
+            LegacyProjectHook::Unreceipted { config_path }
+        } else {
+            LegacyProjectHook::Absent
+        })
     }
 
     fn receipt_config_path(&self, path: &Path) -> Result<PathBuf, IntegrationError> {
@@ -704,6 +771,98 @@ mod tests {
         assert_eq!(
             fs::read_to_string(outside.join("settings.json")).expect("outside settings"),
             "{}"
+        );
+    }
+
+    #[test]
+    fn test_legacy_project_hook_is_found_only_through_its_receipt() {
+        let harness = Harness::new();
+        let adapter = harness.adapter(CompactionHookClient::ClaudeCode);
+        let empty = MemoryReceiptStore::default();
+        assert_eq!(
+            adapter
+                .legacy_project_hook(&harness.project, &empty)
+                .expect("probe"),
+            LegacyProjectHook::Absent
+        );
+
+        let (_, receipts, receipt) = harness.install(
+            CompactionHookClient::ClaudeCode,
+            Scope::Project(harness.project.clone()),
+        );
+        assert_eq!(
+            adapter
+                .legacy_project_hook(&harness.project, &receipts)
+                .expect("probe"),
+            LegacyProjectHook::Receipted(Box::new(receipt))
+        );
+        // The same bytes without a receipt are never claimed.
+        assert_eq!(
+            adapter
+                .legacy_project_hook(&harness.project, &empty)
+                .expect("probe"),
+            LegacyProjectHook::Unreceipted {
+                config_path: harness.project.join(".claude/settings.json"),
+            }
+        );
+
+        // A user's own hooks in the project file are not a legacy hook.
+        write(
+            &harness.project.join(".claude/settings.json"),
+            &json!({ "hooks": { "SessionStart": [{ "matcher": "startup", "hooks": [] }] } }),
+        );
+        assert_eq!(
+            adapter
+                .legacy_project_hook(&harness.project, &empty)
+                .expect("probe"),
+            LegacyProjectHook::Absent
+        );
+    }
+
+    #[test]
+    fn test_legacy_probe_never_treats_the_user_level_file_as_a_project_file() {
+        let harness = Harness::new();
+        let (_, receipts, _) = harness.install(CompactionHookClient::ClaudeCode, Scope::User);
+
+        assert_eq!(
+            harness
+                .adapter(CompactionHookClient::ClaudeCode)
+                .legacy_project_hook(&harness.home, &receipts)
+                .expect("probe"),
+            LegacyProjectHook::Absent,
+            "a repository rooted at the home directory must not uninstall the user-level hook"
+        );
+    }
+
+    #[test]
+    fn test_user_level_install_and_uninstall_keep_bom_and_crlf_line_endings() {
+        let harness = Harness::new();
+        let original = "\u{feff}{\r\n  \"model\": \"example\",\r\n  \"hooks\": {\r\n    \"Stop\": []\r\n  }\r\n}\r\n";
+        fs::create_dir_all(harness.home.join(".claude")).expect("config directory");
+        fs::write(harness.claude_settings(), original).expect("settings");
+
+        let (manager, receipts, receipt) =
+            harness.install(CompactionHookClient::ClaudeCode, Scope::User);
+        let installed = fs::read_to_string(harness.claude_settings()).expect("settings");
+        assert!(installed.starts_with('\u{feff}'), "byte-order mark kept");
+        assert!(installed.contains("SessionStart"));
+        assert_eq!(
+            installed.matches('\n').count(),
+            installed.matches("\r\n").count(),
+            "every line ending stays CRLF"
+        );
+
+        let adapter = harness.adapter(CompactionHookClient::ClaudeCode);
+        let plan = adapter
+            .plan_uninstall(&manager, &receipt)
+            .expect("uninstall plan");
+        adapter
+            .uninstall(&manager, &PlanApproval::from(&plan), &receipts)
+            .expect("uninstall applies");
+        assert_eq!(
+            fs::read_to_string(harness.claude_settings()).expect("settings"),
+            original,
+            "uninstall restores the original bytes"
         );
     }
 

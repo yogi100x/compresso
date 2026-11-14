@@ -28,12 +28,17 @@ may send it to its model provider.
 `compresso setup` for Claude Code and Codex also installs one hook: a
 `SessionStart` hook with matcher `compact` that runs
 `compresso mcp routing-reminder --session-start-hook`, so the client re-reads
-Compresso's tool routing after it compacts a conversation. It is previewed
-with the rest of the plan and has its own receipt. If you already define
+Compresso's tool routing after it compacts a conversation. The hook goes in
+your user-level settings (`~/.claude/settings.json` or `~/.codex/hooks.json`),
+never in a repository file, so it is not committed and one hook covers all
+your repositories. It is previewed with the rest of the plan and has its own
+receipt. If you already define
 `SessionStart` hooks, Compresso does not touch them: setup skips the hook,
 prints a warning with the entry to add by hand, and still succeeds. Pass
 `--no-compaction-hook` to leave it out, and remove it later with
-`compresso integrations uninstall <client> --compaction-hook`.
+`compresso integrations uninstall <client> --compaction-hook`; because the
+hook is user-wide, uninstalling the MCP entry of one repository leaves it in
+place.
 `compresso integrations install` adds the hook only when given
 `--compaction-hook`. Details:
 [Post-compaction routing reminder](docs/integrations/compaction-reminder.md).

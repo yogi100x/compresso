@@ -159,7 +159,9 @@ pub struct IntegrationMutationArgs {
     #[arg(long, value_name = "DIR")]
     pub project: Option<PathBuf>,
     /// Manage the post-compaction routing-reminder hook instead of the MCP
-    /// server entry (Claude Code and Codex only).
+    /// server entry (Claude Code and Codex only). The hook is installed in
+    /// user-level settings only; with `--project`, install and uninstall
+    /// remove a hook an earlier version wrote into that repository.
     #[arg(long)]
     pub compaction_hook: bool,
     /// Install the MCP server entry without session recall. By default the
@@ -179,8 +181,9 @@ pub struct IntegrationReadArgs {
     /// Inspect this repository's project-local MCP config instead of user scope.
     #[arg(long, value_name = "DIR")]
     pub project: Option<PathBuf>,
-    /// Inspect the post-compaction routing-reminder hook instead of the MCP
-    /// server entry (Claude Code and Codex only).
+    /// Inspect the post-compaction routing-reminder hook in user-level
+    /// settings instead of the MCP server entry (Claude Code and Codex only;
+    /// not combined with `--project`).
     #[arg(long)]
     pub compaction_hook: bool,
 }

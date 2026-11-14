@@ -12,7 +12,8 @@ use serde_json::{Value, json};
 
 use super::index::{self, IndexCommandError, Rendered as IndexRendered};
 use super::integrations::{
-    IntegrationCliError, IntegrationEnvironment, PreparedSetupInstall, SetupInstallResult,
+    IntegrationCliError, IntegrationEnvironment, LegacyHookMigration, PreparedSetupInstall,
+    SetupInstallResult, apply_legacy_hook_migration, plan_legacy_hook_migration,
     prepare_setup_hook_install, prepare_setup_install,
 };
 use super::{CliExitCode, IndexArgs, IntegrationClientArg, OutputArgs, write_error};
@@ -94,7 +95,8 @@ pub struct SetupArgs {
     /// Do not install the post-compaction routing-reminder hook. By default
     /// setup also installs a `SessionStart` hook (matcher `compact`) that
     /// re-states Compresso tool routing after the client compacts a
-    /// conversation (Claude Code and Codex only).
+    /// conversation (Claude Code and Codex only). The hook goes into the
+    /// client's user-level settings, never into a repository file.
     #[arg(long)]
     pub no_compaction_hook: bool,
     /// Configure the MCP server without session recall. By default the server
@@ -188,6 +190,14 @@ fn execute_inner(
     .map_err(SetupCliError::integration)?;
     let (hook_preview, hook_prepared) =
         plan_compaction_hook(&arguments, &root, environment, runtime.hook_plan_clock());
+    // The hook is user-level; a hook an earlier version installed in this
+    // repository's own hook file is migrated away as part of the hook step.
+    let hook_migration = match hook_preview {
+        HookPreview::Disabled | HookPreview::Unsupported => None,
+        HookPreview::Skipped(_) | HookPreview::Planned { .. } => {
+            plan_legacy_hook_migration(arguments.client.integration_client(), &root, environment)
+        }
+    };
     let plan = SetupPlan {
         client: arguments.client,
         root,
@@ -195,6 +205,7 @@ fn execute_inner(
         integration: prepared.plan().clone(),
         session_recall: !arguments.no_recall,
         compaction_hook: hook_preview,
+        hook_migration,
     };
 
     if arguments.dry_run {
@@ -233,10 +244,9 @@ fn execute_inner(
     // This keeps a slow local index from weakening plan expiry while retaining the exact diff and
     // backup path the user just approved.
     let authorization = prepared.authorize().map_err(SetupCliError::integration)?;
-    let hook_project = plan.client.project(&plan.root).map(Path::to_path_buf);
     let hook_authorized = hook_prepared.map(|prepared| match prepared.authorize() {
         Ok(authorization) => Ok((prepared, authorization)),
-        Err(error) => Err(HookNotice::new(error, plan.client, hook_project.as_deref())),
+        Err(error) => Err(HookNotice::new(error, plan.client)),
     });
 
     let current_root =
@@ -350,17 +360,16 @@ fn execute_inner(
         integration,
         session_recall,
         compaction_hook,
+        hook_migration,
     } = plan;
-    let hook_preview_json = compaction_hook.to_json();
+    let hook_preview_json = hook_preview_json(&compaction_hook, hook_migration.as_ref());
     // The hook is applied only after the MCP entry landed, and its outcome
     // never changes setup's exit status.
-    let hook_outcome = apply_compaction_hook(
-        compaction_hook,
-        hook_authorized,
-        client,
-        hook_project.as_deref(),
-        environment,
-    );
+    let hook_outcome = apply_compaction_hook(compaction_hook, hook_authorized, client, environment);
+    // Removing the repository's legacy hook comes last and never fails setup.
+    let migration_outcome = hook_migration.as_ref().map(|migration| {
+        apply_legacy_hook_migration(migration, client.integration_client(), &root, environment)
+    });
     let plan = SetupPlan {
         client,
         root,
@@ -368,6 +377,7 @@ fn execute_inner(
         integration,
         session_recall,
         compaction_hook: HookPreview::Disabled,
+        hook_migration: None,
     };
 
     if arguments.output.json {
@@ -378,6 +388,9 @@ fn execute_inner(
             plan_hash_changed,
         );
         result["compaction_hook"] = hook_outcome.to_json();
+        if let Some(outcome) = &migration_outcome {
+            result["compaction_hook"]["migration"] = outcome.to_json();
+        }
         render_plan_with_hook(output, &plan, hook_preview_json, false, Some(result), true)?;
     } else {
         if installed.already_applied {
@@ -410,6 +423,9 @@ fn execute_inner(
         hook_outcome
             .write_human(output, plan.client)
             .map_err(SetupCliError::io)?;
+        if let Some(outcome) = &migration_outcome {
+            writeln!(output, "{}", outcome.human_line()).map_err(SetupCliError::io)?;
+        }
         writeln!(
             output,
             "Setup complete for {} at {}.",
@@ -429,8 +445,8 @@ struct HookNotice {
 }
 
 impl HookNotice {
-    fn new(error: IntegrationCliError, client: SetupClientArg, project: Option<&Path>) -> Self {
-        let rerun = hook_install_command(client, project);
+    fn new(error: IntegrationCliError, client: SetupClientArg) -> Self {
+        let rerun = hook_install_command(client);
         match error.manual_hook_entry {
             Some(entry) => Self {
                 code: "user_hooks_present",
@@ -459,14 +475,21 @@ impl HookNotice {
     }
 }
 
-fn hook_install_command(client: SetupClientArg, project: Option<&Path>) -> String {
-    let project = project
-        .map(|root| format!(" --project {}", root.display()))
-        .unwrap_or_default();
+/// The hook is user-level for every client, so the command takes no project.
+fn hook_install_command(client: SetupClientArg) -> String {
     format!(
-        "compresso integrations install {} --compaction-hook{project}",
+        "compresso integrations install {} --compaction-hook",
         client.as_str()
     )
+}
+
+/// The hook step as previewed, with the legacy-hook migration it carries.
+fn hook_preview_json(preview: &HookPreview, migration: Option<&LegacyHookMigration>) -> Value {
+    let mut value = preview.to_json();
+    if let Some(migration) = migration {
+        value["migration"] = migration.to_json();
+    }
+    value
 }
 
 /// The post-compaction routing-reminder hook step as shown in the preview.
@@ -477,11 +500,13 @@ enum HookPreview {
     Unsupported,
     /// The hook cannot be planned; setup continues without it.
     Skipped(HookNotice),
-    /// The exact hook-file change that will be applied. The key-level diff
-    /// redacts array contents, so `entry` carries the one hook group written.
+    /// The exact user-level hook-file change that will be applied. The
+    /// key-level diff redacts array contents, so `entry` carries the one hook
+    /// group written.
     Planned {
         plan: Box<MutationPlan>,
         entry: Value,
+        warnings: Vec<String>,
     },
 }
 
@@ -491,10 +516,16 @@ impl HookPreview {
             Self::Disabled => json!({ "status": "disabled" }),
             Self::Unsupported => json!({ "status": "unsupported" }),
             Self::Skipped(notice) => notice.to_json("skipped"),
-            Self::Planned { plan, entry } => json!({
+            Self::Planned {
+                plan,
+                entry,
+                warnings,
+            } => json!({
                 "status": "planned",
+                "scope": "user",
                 "entry": entry,
                 "plan": plan.public_preview(),
+                "warnings": warnings,
             }),
         }
     }
@@ -579,28 +610,36 @@ fn plan_compaction_hook(
     if arguments.client == SetupClientArg::Cursor || cfg!(windows) {
         return (HookPreview::Unsupported, None);
     }
-    let project = arguments.client.project(root);
-    match prepare_setup_hook_install(
-        arguments.client.integration_client(),
-        project,
-        environment,
-        clock,
-    ) {
+    match prepare_setup_hook_install(arguments.client.integration_client(), environment, clock) {
         Ok(prepared) => match CompactionHookIntegration::hook_value(prepared.launcher_path()) {
-            Ok(value) => (
-                HookPreview::Planned {
-                    plan: Box::new(prepared.plan().clone()),
-                    entry: value[0].clone(),
-                },
-                Some(prepared),
-            ),
+            Ok(value) => {
+                // The hook runs in every repository, so a launcher that lives
+                // inside this one would tie all of them to this checkout.
+                let warnings = if prepared.launcher_path().starts_with(root) {
+                    vec![format!(
+                        "launcher_in_repository: the hook is user-level and runs in every repository, but the Compresso launcher {} is inside {}; the reminder stops working everywhere if this checkout moves or is deleted",
+                        prepared.launcher_path().display(),
+                        root.display()
+                    )]
+                } else {
+                    Vec::new()
+                };
+                (
+                    HookPreview::Planned {
+                        plan: Box::new(prepared.plan().clone()),
+                        entry: value[0].clone(),
+                        warnings,
+                    },
+                    Some(prepared),
+                )
+            }
             Err(error) => (
-                HookPreview::Skipped(HookNotice::new(error.into(), arguments.client, project)),
+                HookPreview::Skipped(HookNotice::new(error.into(), arguments.client)),
                 None,
             ),
         },
         Err(error) => (
-            HookPreview::Skipped(HookNotice::new(error, arguments.client, project)),
+            HookPreview::Skipped(HookNotice::new(error, arguments.client)),
             None,
         ),
     }
@@ -612,7 +651,6 @@ fn apply_compaction_hook(
     preview: HookPreview,
     authorized: Option<Result<(PreparedSetupInstall, DeferredInstallAuthorization), HookNotice>>,
     client: SetupClientArg,
-    project: Option<&Path>,
     environment: &IntegrationEnvironment,
 ) -> HookOutcome {
     match preview {
@@ -628,16 +666,16 @@ fn apply_compaction_hook(
             return HookOutcome::Skipped(HookNotice {
                 code: "internal",
                 reason: "the planned hook change was not authorized".to_owned(),
-                fix: format!("Run `{}`.", hook_install_command(client, project)),
+                fix: format!("Run `{}`.", hook_install_command(client)),
             });
         }
     };
     if let Err(error) = prepared.revalidate_target(environment) {
-        return HookOutcome::Skipped(HookNotice::new(error, client, project));
+        return HookOutcome::Skipped(HookNotice::new(error, client));
     }
     match prepared.apply(authorization, environment) {
         Ok(installed) => HookOutcome::Installed(installed),
-        Err(error) => HookOutcome::Failed(HookNotice::new(error, client, project)),
+        Err(error) => HookOutcome::Failed(HookNotice::new(error, client)),
     }
 }
 
@@ -650,6 +688,9 @@ struct SetupPlan {
     /// text never re-enables what `--no-recall` turned off.
     session_recall: bool,
     compaction_hook: HookPreview,
+    /// A hook an earlier version installed in this repository's own hook
+    /// file, which the hook step migrates away.
+    hook_migration: Option<LegacyHookMigration>,
 }
 
 fn render_plan(
@@ -662,7 +703,7 @@ fn render_plan(
     render_plan_with_hook(
         output,
         plan,
-        plan.compaction_hook.to_json(),
+        hook_preview_json(&plan.compaction_hook, plan.hook_migration.as_ref()),
         dry_run,
         result,
         json_output,
@@ -722,12 +763,19 @@ fn render_plan_with_hook(
     writeln!(output, "# Plan hash: {}", plan.integration.plan_hash).map_err(SetupCliError::io)?;
     match &plan.compaction_hook {
         HookPreview::Disabled | HookPreview::Unsupported => {}
-        HookPreview::Planned { plan: hook, entry } => {
+        HookPreview::Planned {
+            plan: hook,
+            entry,
+            warnings,
+        } => {
             writeln!(
                 output,
-                "Post-compaction routing reminder hook (skip with --no-compaction-hook):"
+                "Post-compaction routing reminder hook, in your user-level settings so it applies to every repository and is never written into this one (skip with --no-compaction-hook):"
             )
             .map_err(SetupCliError::io)?;
+            for warning in warnings {
+                writeln!(output, "warning: {warning}").map_err(SetupCliError::io)?;
+            }
             writeln!(output, "# Adds this hooks.SessionStart entry: {entry}")
                 .map_err(SetupCliError::io)?;
             output
@@ -747,6 +795,9 @@ fn render_plan_with_hook(
             .map_err(SetupCliError::io)?;
             writeln!(output, "fix: {}", notice.fix).map_err(SetupCliError::io)?;
         }
+    }
+    if let Some(migration) = &plan.hook_migration {
+        migration.write_preview(output).map_err(SetupCliError::io)?;
     }
     if dry_run {
         writeln!(output, "Dry run: no setup changes were made.").map_err(SetupCliError::io)?;
@@ -791,13 +842,8 @@ fn fail_after_index(
 ) -> Result<(), SetupCliError> {
     // `integrations install` never adds the hook on its own, so name the
     // second command when setup had planned one.
-    let hook_command = matches!(plan.compaction_hook, HookPreview::Planned { .. }).then(|| {
-        let placeholder = plan
-            .client
-            .project(&plan.root)
-            .map(|_| Path::new("<repository-root>"));
-        hook_install_command(plan.client, placeholder)
-    });
+    let hook_command = matches!(plan.compaction_hook, HookPreview::Planned { .. })
+        .then(|| hook_install_command(plan.client));
     let recovery = partial_failure_recovery(
         plan.client,
         plan.session_recall,

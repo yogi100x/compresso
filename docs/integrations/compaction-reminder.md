@@ -28,9 +28,17 @@ byte-identical.
 
 `compresso setup claude-code ROOT` and `compresso setup codex ROOT` install the
 hook as a second step, after the MCP server entry. Pass
-`--no-compaction-hook` to leave it out. The hook is written at the same scope
-as the MCP entry setup writes: `<ROOT>/.claude/settings.json` for Claude Code
-and `~/.codex/hooks.json` for Codex.
+`--no-compaction-hook` to leave it out.
+
+The hook is always written to the client's **user-level** hook file:
+`~/.claude/settings.json` for Claude Code and `~/.codex/hooks.json` for Codex.
+It is never written into a repository file such as
+`<ROOT>/.claude/settings.json`, which teams often commit, so teammates do not
+inherit it. One user-level hook covers every repository: the command it runs
+names the launcher by absolute path, prints a constant, and needs no
+repository, working directory, or environment. If the launcher itself lives
+inside `ROOT`, the preview carries a `launcher_in_repository` warning, because
+the reminder would then depend on that checkout.
 
 - **Preview.** The combined plan shows the hook step before anything is
   written, in `--dry-run` and before the confirmation prompt: the hook file,
@@ -51,7 +59,42 @@ and `~/.codex/hooks.json` for Codex.
   installed. The outcome is `data.result.compaction_hook` in JSON output.
 - **Cursor** has no usable hook, so setup has no hook step for it and prints
   nothing about one. The same holds on Windows, where the hook is unsupported.
-- Re-running setup keeps an installed hook and reports it as already installed.
+- Re-running setup, in the same or another repository, keeps the one
+  installed hook and reports it as already installed.
+
+## Migration from a project-level hook
+
+Builds between the introduction of D76 and this rule wrote the Claude Code
+hook into `<ROOT>/.claude/settings.json` (and `integrations install
+--compaction-hook --project DIR` could write `<DIR>/.codex/hooks.json`). The
+next time the hook step runs for that repository, through `compresso setup
+<client> ROOT` or `compresso integrations install <client> --compaction-hook`
+(`--project DIR`, else the working directory, names the repository), the
+project-level hook is migrated away:
+
+- **Identified by its receipt.** Only a hook with an active Compresso receipt
+  for that exact file is removed, and only the receipt-owned
+  `hooks.SessionStart` key, through the normal uninstall plan with a fresh
+  backup. Every other key and byte of the file is kept.
+- **Previewed.** The preview says the repository file will change and shows
+  that plan and its hash (`data.plan.compaction_hook.migration` in setup JSON,
+  `data.legacy_project_hook` for `integrations install`). The removal is
+  re-planned at apply time and carried out only if the file is still exactly
+  what was previewed.
+- **Your edits win.** If the key was changed after Compresso wrote it, it is
+  retained with a warning. If the file changed after the preview, the removal
+  is skipped with the command to run.
+- **No receipt, no change.** A Compresso-shaped hook in the project file that
+  no receipt covers (for example one a teammate committed) is left alone, and
+  a `legacy_project_hook_unreceipted` warning asks you to remove it by hand.
+- A project hook path that traverses a symbolic link is not read or written.
+- The migration never changes setup's exit status. In setup it runs after
+  the user-level step whatever that step's outcome; with `integrations
+  install`, a refused user-level install changes nothing at all.
+  `--no-compaction-hook` skips the hook step, migration included.
+
+`compresso integrations uninstall <client> --compaction-hook --project DIR`
+removes such a receipted project-level hook on its own.
 
 ## Managing the hook directly
 
@@ -69,22 +112,33 @@ compresso integrations verify  claude-code --compaction-hook
 compresso integrations uninstall claude-code --compaction-hook
 ```
 
-`--project DIR`, `--dry-run`, `--yes`, and `--json` behave as they do for the
-MCP entry.
+`--dry-run`, `--yes`, and `--json` behave as they do for the MCP entry.
+`--project DIR` never selects a project-level hook file: on `install` it only
+names the repository whose legacy hook is migrated, on `uninstall` it removes
+that legacy hook, and `status` and `verify` reject it.
 
-Because the hook has its own receipt, undoing a setup takes two commands:
-`compresso integrations uninstall <client>` for the MCP entry and
-`compresso integrations uninstall <client> --compaction-hook` for the hook
-(add `--project ROOT` for Claude Code). Uninstalling the MCP entry while the
-hook is still installed prints a `compaction_hook_still_installed` warning
-with the exact second command.
+### Uninstalling
+
+The hook is user-wide, so it is removed only by an explicit command:
+
+```sh
+compresso integrations uninstall <client> --compaction-hook
+```
+
+`compresso integrations uninstall <client>` removes one MCP entry and never
+removes the hook, because other repositories may still use Compresso; it
+prints a `compaction_hook_still_installed` warning that says so and gives the
+command above. Compresso does not track which repositories still have an MCP
+entry. Removing the hook removes only the `hooks.SessionStart` key Compresso
+owns, leaves every other hook in the file in place, and reports that the
+reminder is now off in every repository.
 
 ## Client support
 
 | Client | Mechanism | File | Status |
 |---|---|---|---|
-| Claude Code | `SessionStart` hook, matcher `compact` | `~/.claude/settings.json`, `<project>/.claude/settings.json` | Installed by `compresso setup` (project file) unless `--no-compaction-hook`, or by `--compaction-hook` |
-| Codex | `SessionStart` hook, matcher `compact` | `~/.codex/hooks.json`, `<project>/.codex/hooks.json` | Installed by `compresso setup` (user file) unless `--no-compaction-hook`, or by `--compaction-hook`; Codex applies its own hook trust review, and project hooks load only in trusted projects |
+| Claude Code | `SessionStart` hook, matcher `compact` | `~/.claude/settings.json` (user-level only) | Installed by `compresso setup` unless `--no-compaction-hook`, or by `--compaction-hook` |
+| Codex | `SessionStart` hook, matcher `compact` | `~/.codex/hooks.json` (user-level only) | Installed by `compresso setup` unless `--no-compaction-hook`, or by `--compaction-hook`; Codex applies its own hook trust review |
 | Cursor | none | n/a | No step in `compresso setup`; `--compaction-hook` is refused as `unsupported`: the only compaction hook (`preCompact`) is observational and cannot add model context |
 
 Support was taken from each client's published hook reference on 2026-11-14.
@@ -98,8 +152,9 @@ not re-sent after compaction.
 
 ## Ownership and reversibility
 
-The adapter uses the existing plan, backup, receipt, and uninstall mechanism.
-It owns exactly one key, `hooks.SessionStart`, in the hook file:
+The adapter uses the existing plan, backup, receipt, and uninstall mechanism,
+including preservation of the file's byte-order mark and line endings. It owns
+exactly one key, `hooks.SessionStart`, in the user-level hook file:
 
 ```json
 {
@@ -138,5 +193,5 @@ It owns exactly one key, `hooks.SessionStart`, in the hook file:
 
 `docs/plan/04-mcp-and-integrations.md` §2.5 used to state that no hooks are
 installed for any client in the slice. Owner decision D76 makes this one hook
-the single exception and turns it on by default in `compresso setup`; §2.5 is
-amended to match. No other hook, wrapper, or PATH shim is installed.
+the single exception, turns it on by default in `compresso setup`, and places
+it in user-level settings only; §2.5 is amended to match. No other hook, wrapper, or PATH shim is installed.

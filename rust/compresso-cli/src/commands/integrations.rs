@@ -9,9 +9,9 @@ use compresso_integrations::{
     ClaudeCodeDiscovery, ClaudeCodeIntegration, CodexIntegration, CompactionHookClient,
     CompactionHookIntegration, ConfigFormat, CursorApplicationEvidence, CursorCliEvidence,
     CursorDiscovery, CursorIntegration, DeferredInstallAuthorization, Detection, FileReceiptStore,
-    InstallCtx, InstallReceipt, Integration, IntegrationError, MutationPlan, PlanApproval,
-    PlanClock, PlanManager, ReceiptStore, Scope, VerificationCheck, VerificationReport,
-    read_configured_server, receipt_authenticates_server,
+    InstallCtx, InstallReceipt, Integration, IntegrationError, LegacyProjectHook, MutationPlan,
+    PlanApproval, PlanClock, PlanManager, ReceiptStore, Scope, VerificationCheck,
+    VerificationReport, read_configured_server, receipt_authenticates_server,
 };
 use compresso_store::{ReceiptRecord, Store};
 
@@ -349,16 +349,293 @@ pub(crate) fn prepare_setup_install(
 /// Prepares the post-compaction routing-reminder hook install for setup, with
 /// the same no-recovery, no-mutation guarantees as [`prepare_setup_install`].
 ///
-/// The hook lives in its own file with its own plan and receipt. A refusal
-/// because the user already defines hooks for the owned event carries the
-/// entry to add by hand in `manual_hook_entry`.
+/// The hook always goes into the client's user-level hook file, never into a
+/// repository file, with its own plan and receipt. A refusal because the user
+/// already defines hooks for the owned event carries the entry to add by hand
+/// in `manual_hook_entry`.
 pub(crate) fn prepare_setup_hook_install(
     client: IntegrationClientArg,
-    project: Option<&Path>,
     environment: &IntegrationEnvironment,
     clock: Arc<dyn PlanClock>,
 ) -> Result<PreparedSetupInstall, IntegrationCliError> {
-    prepare_install(client, project, true, false, environment, clock)
+    prepare_install(client, None, true, false, environment, clock)
+}
+
+/// What will happen to a reminder hook that an earlier Compresso version
+/// installed in a repository's project-level hook file. The hook is user-level
+/// now, so a receipt-owned project entry is removed; anything else is left
+/// unchanged and reported.
+pub(crate) enum LegacyHookMigration {
+    /// The exact removal of the receipt-owned key, as previewed.
+    Planned(Box<MutationPlan>),
+    /// A Compresso-shaped hook that no receipt covers. Never modified.
+    Unreceipted { config_path: PathBuf },
+    /// A receipted hook that cannot be planned for removal right now.
+    Unavailable {
+        config_path: PathBuf,
+        reason: String,
+    },
+}
+
+impl LegacyHookMigration {
+    pub(crate) fn to_json(&self) -> serde_json::Value {
+        match self {
+            Self::Planned(plan) => serde_json::json!({
+                "status": "planned",
+                "config_path": plan.config_path,
+                "plan": plan.public_preview(),
+            }),
+            Self::Unreceipted { config_path } => serde_json::json!({
+                "status": "unreceipted",
+                "config_path": config_path,
+                "warning": unreceipted_legacy_hook_warning(config_path),
+            }),
+            Self::Unavailable {
+                config_path,
+                reason,
+            } => serde_json::json!({
+                "status": "unavailable",
+                "config_path": config_path,
+                "reason": reason,
+            }),
+        }
+    }
+
+    /// Writes the human preview shown before confirmation.
+    pub(crate) fn write_preview(&self, output: &mut impl Write) -> std::io::Result<()> {
+        match self {
+            Self::Planned(plan) => {
+                writeln!(
+                    output,
+                    "# The reminder hook is user-level now. This also removes the hook an earlier Compresso version installed in the repository file {} (only the receipt-owned hooks.SessionStart key; a fresh backup is taken):",
+                    plan.config_path.display()
+                )?;
+                output.write_all(plan.unified_diff.as_bytes())?;
+                if !plan.unified_diff.ends_with('\n') {
+                    writeln!(output)?;
+                }
+                for warning in &plan.warnings {
+                    writeln!(output, "warning: {warning}")?;
+                }
+                writeln!(output, "# Migration plan hash: {}", plan.plan_hash)
+            }
+            Self::Unreceipted { config_path } => writeln!(
+                output,
+                "warning: {}",
+                unreceipted_legacy_hook_warning(config_path)
+            ),
+            Self::Unavailable {
+                config_path,
+                reason,
+            } => writeln!(
+                output,
+                "warning: the reminder hook an earlier Compresso version installed in {} will not be removed: {reason}",
+                config_path.display()
+            ),
+        }
+    }
+}
+
+fn unreceipted_legacy_hook_warning(config_path: &Path) -> String {
+    format!(
+        "legacy_project_hook_unreceipted: {} contains a Compresso reminder hook that no install receipt covers, so it is left unchanged; remove hooks.SessionStart from that file by hand if you do not want it in the repository",
+        config_path.display()
+    )
+}
+
+/// What happened to a legacy project-level reminder hook.
+pub(crate) struct LegacyHookOutcome {
+    status: &'static str,
+    config_path: PathBuf,
+    backup_path: Option<String>,
+    detail: String,
+}
+
+impl LegacyHookOutcome {
+    pub(crate) fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "status": self.status,
+            "config_path": self.config_path,
+            "backup_path": self.backup_path,
+            "detail": self.detail,
+        })
+    }
+
+    /// One operator-facing line; a `warning: ` prefix unless the hook was removed.
+    pub(crate) fn human_line(&self) -> String {
+        if self.status == "removed" {
+            self.detail.clone()
+        } else {
+            format!("warning: {}", self.detail)
+        }
+    }
+}
+
+struct LegacyHookPlan {
+    adapter: CompactionHookIntegration,
+    manager: PlanManager,
+    receipts: FileReceiptStore,
+    plan: MutationPlan,
+}
+
+enum LegacyHookProbe {
+    Planned(Box<LegacyHookPlan>),
+    Other(LegacyHookMigration),
+}
+
+fn probe_legacy_hook(
+    client: IntegrationClientArg,
+    root: &Path,
+    environment: &IntegrationEnvironment,
+) -> Option<LegacyHookProbe> {
+    let adapter = CompactionHookIntegration::new(
+        compaction_hook_client(client).ok()?,
+        environment.home_dir.clone(),
+    );
+    let receipts = FileReceiptStore::new(environment.receipt_store_path());
+    let receipt = match adapter.legacy_project_hook(root, &receipts) {
+        Ok(LegacyProjectHook::Absent) => return None,
+        Ok(LegacyProjectHook::Unreceipted { config_path }) => {
+            return Some(LegacyHookProbe::Other(LegacyHookMigration::Unreceipted {
+                config_path,
+            }));
+        }
+        Ok(LegacyProjectHook::Receipted(receipt)) => receipt,
+        // The project hook path is unusable (for example it traverses a
+        // symbolic link), so nothing there is read or written.
+        Err(_) => return None,
+    };
+    let unavailable = |reason: String| {
+        Some(LegacyHookProbe::Other(LegacyHookMigration::Unavailable {
+            config_path: receipt.config_path.clone(),
+            reason,
+        }))
+    };
+    let manager = match PlanManager::new(&environment.session_id) {
+        Ok(manager) => manager,
+        Err(error) => return unavailable(error.to_string()),
+    };
+    match adapter.plan_uninstall(&manager, &receipt) {
+        Ok(plan) => Some(LegacyHookProbe::Planned(Box::new(LegacyHookPlan {
+            adapter,
+            manager,
+            receipts,
+            plan,
+        }))),
+        Err(error) => unavailable(error.to_string()),
+    }
+}
+
+/// Previews the removal of a legacy project-level reminder hook in `root`.
+/// Reads only. `None` means the repository has nothing to migrate.
+pub(crate) fn plan_legacy_hook_migration(
+    client: IntegrationClientArg,
+    root: &Path,
+    environment: &IntegrationEnvironment,
+) -> Option<LegacyHookMigration> {
+    Some(match probe_legacy_hook(client, root, environment)? {
+        LegacyHookProbe::Planned(planned) => LegacyHookMigration::Planned(Box::new(planned.plan)),
+        LegacyHookProbe::Other(migration) => migration,
+    })
+}
+
+/// Carries out a previewed migration. The removal is planned again against
+/// the file as it is now and applied only when it is the exact change that
+/// was previewed (same full-file before and after hashes), so an edit made
+/// since the preview is never overwritten. Never fails the caller.
+pub(crate) fn apply_legacy_hook_migration(
+    previewed: &LegacyHookMigration,
+    client: IntegrationClientArg,
+    root: &Path,
+    environment: &IntegrationEnvironment,
+) -> LegacyHookOutcome {
+    let previewed = match previewed {
+        LegacyHookMigration::Planned(plan) => plan,
+        LegacyHookMigration::Unreceipted { config_path } => {
+            return LegacyHookOutcome {
+                status: "unreceipted",
+                config_path: config_path.clone(),
+                backup_path: None,
+                detail: unreceipted_legacy_hook_warning(config_path),
+            };
+        }
+        LegacyHookMigration::Unavailable {
+            config_path,
+            reason,
+        } => {
+            return LegacyHookOutcome {
+                status: "skipped",
+                config_path: config_path.clone(),
+                backup_path: None,
+                detail: legacy_hook_not_removed(client, root, config_path, reason),
+            };
+        }
+    };
+    let config_path = previewed.config_path.clone();
+    let not_removed = |status: &'static str, reason: &str| LegacyHookOutcome {
+        status,
+        config_path: config_path.clone(),
+        backup_path: None,
+        detail: legacy_hook_not_removed(client, root, &config_path, reason),
+    };
+    let Some(LegacyHookProbe::Planned(current)) = probe_legacy_hook(client, root, environment)
+    else {
+        return not_removed(
+            "skipped",
+            "the file or its receipt changed after the preview",
+        );
+    };
+    if current.plan.config_path != previewed.config_path
+        || current.plan.base_hash != previewed.base_hash
+        || current.plan.result_hash != previewed.result_hash
+    {
+        return not_removed("skipped", "the file changed after the preview");
+    }
+    let report = match current.adapter.uninstall(
+        &current.manager,
+        &PlanApproval::from(&current.plan),
+        &current.receipts,
+    ) {
+        Ok(report) => report,
+        Err(error) => return not_removed("failed", &error.to_string()),
+    };
+    project_canonical_receipts(&current.receipts, environment, &mut Vec::new());
+    if report.removed_keys.is_empty() {
+        LegacyHookOutcome {
+            status: "retained",
+            config_path: config_path.clone(),
+            backup_path: None,
+            detail: format!(
+                "legacy_project_hook_retained: hooks.SessionStart in {} was changed after Compresso installed it, so it was left unchanged; remove it by hand if you do not want it in the repository",
+                config_path.display()
+            ),
+        }
+    } else {
+        LegacyHookOutcome {
+            status: "removed",
+            detail: format!(
+                "Removed the reminder hook an earlier Compresso version installed in {} (backup: {}).",
+                config_path.display(),
+                current.plan.backup_path
+            ),
+            config_path,
+            backup_path: Some(current.plan.backup_path),
+        }
+    }
+}
+
+fn legacy_hook_not_removed(
+    client: IntegrationClientArg,
+    root: &Path,
+    config_path: &Path,
+    reason: &str,
+) -> String {
+    format!(
+        "legacy_project_hook_not_removed: the reminder hook an earlier Compresso version installed in {} was not removed ({reason}); remove it with `compresso integrations uninstall {} --compaction-hook --project {}`",
+        config_path.display(),
+        client.as_str(),
+        root.display()
+    )
 }
 
 fn prepare_install(
@@ -408,7 +685,20 @@ fn execute_mutation(
             "--no-recall applies only to `integrations install`; uninstall removes the whole Compresso entry",
         ));
     }
-    let scope = resolve_scope(arguments.project.as_deref(), &environment.cwd)?;
+    let requested_scope = resolve_scope(arguments.project.as_deref(), &environment.cwd)?;
+    // The reminder hook is installed only in user-level configuration. For a
+    // hook install `--project` (or else the working directory) just names the
+    // repository whose legacy project-level hook is migrated away.
+    let (scope, migration_root) = if arguments.compaction_hook && action == MutationAction::Install
+    {
+        let root = match requested_scope {
+            Scope::Project(root) => Some(root),
+            Scope::User => std::fs::canonicalize(&environment.cwd).ok(),
+        };
+        (Scope::User, root)
+    } else {
+        (requested_scope, None)
+    };
     let selected = SelectedIntegration::new(
         arguments.client,
         environment,
@@ -454,6 +744,10 @@ fn execute_mutation(
         }
     };
 
+    let migration = migration_root
+        .as_deref()
+        .and_then(|root| plan_legacy_hook_migration(arguments.client, root, environment));
+
     if arguments.dry_run {
         return render_plan(
             output,
@@ -464,6 +758,8 @@ fn execute_mutation(
                 plan: &plan,
                 result: None,
                 warnings: &[],
+                migration: migration.as_ref(),
+                migration_outcome: None,
                 json: arguments.output.json,
             },
         );
@@ -472,6 +768,9 @@ fn execute_mutation(
     if !arguments.output.json {
         output.write_all(plan.unified_diff.as_bytes())?;
         writeln!(output, "# Plan hash: {}", plan.plan_hash)?;
+        if let Some(migration) = &migration {
+            migration.write_preview(output)?;
+        }
     }
     if !arguments.yes {
         if arguments.output.json {
@@ -484,6 +783,8 @@ fn execute_mutation(
                     plan: &plan,
                     result: None,
                     warnings: &[],
+                    migration: migration.as_ref(),
+                    migration_outcome: None,
                     json: true,
                 },
             )?;
@@ -530,15 +831,37 @@ fn execute_mutation(
     };
     let mut warnings = Vec::new();
     project_canonical_receipts(&receipts, environment, &mut warnings);
-    if action == MutationAction::Uninstall && !arguments.compaction_hook {
-        warnings.extend(remaining_hook_warning(
-            arguments.client,
-            arguments.project.as_deref(),
-            environment,
-            &scope,
-            &receipts,
-        ));
+    if action == MutationAction::Uninstall {
+        if arguments.compaction_hook {
+            if matches!(scope, Scope::User)
+                && matches!(&result, MutationResult::Uninstall(report) if !report.removed_keys.is_empty())
+            {
+                warnings.push(format!(
+                    "compaction_hook_removed_for_all_repositories: the hook in {} was user-level, so the post-compaction reminder is now off in every repository; `compresso setup` or `compresso integrations install {} --compaction-hook` installs it again",
+                    selected.config_path.display(),
+                    arguments.client.as_str(),
+                ));
+            }
+        } else {
+            warnings.extend(remaining_hook_warnings(
+                arguments.client,
+                environment,
+                &scope,
+                &receipts,
+            ));
+        }
     }
+    // The user-level hook is in place; only now is the repository's legacy
+    // project-level hook removed. Its outcome never fails the install.
+    let migration_outcome = match (&migration, migration_root.as_deref()) {
+        (Some(migration), Some(root)) => Some(apply_legacy_hook_migration(
+            migration,
+            arguments.client,
+            root,
+            environment,
+        )),
+        _ => None,
+    };
     render_plan(
         output,
         &PlanRendering {
@@ -548,33 +871,65 @@ fn execute_mutation(
             plan: &plan,
             result: Some(&result),
             warnings: &warnings,
+            migration: migration.as_ref(),
+            migration_outcome: migration_outcome.as_ref(),
             json: arguments.output.json,
         },
     )
 }
 
-/// The hook has its own file and receipt, so removing the MCP entry leaves it
-/// in place. Says so, with the exact command that removes it.
-fn remaining_hook_warning(
+/// The reminder hook is user-level and shared by every repository, with its
+/// own file and receipt, so removing one MCP entry never removes it. Says so,
+/// with the exact command that removes it, and also names a legacy
+/// project-level hook that is still in the uninstalled repository.
+fn remaining_hook_warnings(
     client: IntegrationClientArg,
-    project: Option<&Path>,
     environment: &IntegrationEnvironment,
     scope: &Scope,
     receipts: &FileReceiptStore,
-) -> Option<String> {
-    let hook = SelectedIntegration::compaction_hook(client, environment, scope).ok()?;
-    receipts
-        .active_for(client.as_str(), &hook.config_path)
-        .ok()
-        .flatten()?;
-    let project = project
-        .map(|root| format!(" --project {}", root.display()))
-        .unwrap_or_default();
-    Some(format!(
-        "compaction_hook_still_installed: the post-compaction routing reminder hook in {} is still installed; remove it with `compresso integrations uninstall {} --compaction-hook{project}`",
-        hook.config_path.display(),
-        client.as_str(),
-    ))
+) -> Vec<String> {
+    let active = |scope: &Scope| {
+        let hook = SelectedIntegration::compaction_hook(client, environment, scope).ok()?;
+        receipts
+            .active_for(client.as_str(), &hook.config_path)
+            .ok()
+            .flatten()
+            .map(|_| hook.config_path)
+    };
+    let mut warnings = Vec::new();
+    let user_hook = active(&Scope::User);
+    if let Some(path) = &user_hook {
+        warnings.push(format!(
+            "compaction_hook_still_installed: the post-compaction routing reminder hook in {} is user-level and shared by every repository, so it is still installed; once no repository uses Compresso, remove it with `compresso integrations uninstall {} --compaction-hook`",
+            path.display(),
+            client.as_str(),
+        ));
+    }
+    if let Scope::Project(root) = scope
+        && let Some(path) = active(scope)
+        && user_hook.as_ref() != Some(&path)
+    {
+        warnings.push(format!(
+            "legacy_project_hook_still_installed: an earlier Compresso version installed a reminder hook in the repository file {}; remove it with `compresso integrations uninstall {} --compaction-hook --project {}`",
+            path.display(),
+            client.as_str(),
+            root.display(),
+        ));
+    }
+    warnings
+}
+
+/// Status and verify always inspect the user-level hook file.
+fn reject_project_scoped_hook_read(
+    arguments: &IntegrationReadArgs,
+) -> Result<(), IntegrationCliError> {
+    if arguments.compaction_hook && arguments.project.is_some() {
+        return Err(IntegrationCliError::new(
+            "invalid_arguments",
+            "the post-compaction hook is installed in user-level configuration; run this command without --project",
+        ));
+    }
+    Ok(())
 }
 
 fn execute_status(
@@ -582,6 +937,7 @@ fn execute_status(
     environment: &IntegrationEnvironment,
     output: &mut impl Write,
 ) -> Result<(), IntegrationCliError> {
+    reject_project_scoped_hook_read(&arguments)?;
     let scope = resolve_scope(arguments.project.as_deref(), &environment.cwd)?;
     let selected = SelectedIntegration::new(
         arguments.client,
@@ -734,6 +1090,7 @@ fn execute_verify(
     environment: &IntegrationEnvironment,
     output: &mut impl Write,
 ) -> Result<(), IntegrationCliError> {
+    reject_project_scoped_hook_read(&arguments)?;
     let scope = resolve_scope(arguments.project.as_deref(), &environment.cwd)?;
     let selected = SelectedIntegration::new(
         arguments.client,
@@ -839,28 +1196,32 @@ impl SelectedIntegration {
         environment: &IntegrationEnvironment,
         scope: &Scope,
     ) -> Result<Self, IntegrationCliError> {
-        let client = match client {
-            IntegrationClientArg::ClaudeCode => CompactionHookClient::ClaudeCode,
-            IntegrationClientArg::Codex => CompactionHookClient::Codex,
-            IntegrationClientArg::Cursor => {
-                return Err(IntegrationCliError::new(
-                    "unsupported",
-                    "Cursor has no post-compaction hook that can add model context (its preCompact hook is observational); Compresso routing guidance there comes only from the MCP server instructions",
-                ));
-            }
-            IntegrationClientArg::ClaudeDesktop => {
-                return Err(IntegrationCliError::new(
-                    "unsupported",
-                    "Claude Desktop integration is excluded by decision D5",
-                ));
-            }
-        };
-        let adapter = CompactionHookIntegration::new(client, environment.home_dir.clone());
+        let adapter = CompactionHookIntegration::new(
+            compaction_hook_client(client)?,
+            environment.home_dir.clone(),
+        );
         let config_path = adapter.config_path(scope)?;
         Ok(Self {
             adapter: Box::new(adapter),
             config_path,
         })
+    }
+}
+
+fn compaction_hook_client(
+    client: IntegrationClientArg,
+) -> Result<CompactionHookClient, IntegrationCliError> {
+    match client {
+        IntegrationClientArg::ClaudeCode => Ok(CompactionHookClient::ClaudeCode),
+        IntegrationClientArg::Codex => Ok(CompactionHookClient::Codex),
+        IntegrationClientArg::Cursor => Err(IntegrationCliError::new(
+            "unsupported",
+            "Cursor has no post-compaction hook that can add model context (its preCompact hook is observational); Compresso routing guidance there comes only from the MCP server instructions",
+        )),
+        IntegrationClientArg::ClaudeDesktop => Err(IntegrationCliError::new(
+            "unsupported",
+            "Claude Desktop integration is excluded by decision D5",
+        )),
     }
 }
 
@@ -913,6 +1274,9 @@ struct PlanRendering<'a> {
     plan: &'a MutationPlan,
     result: Option<&'a MutationResult>,
     warnings: &'a [String],
+    /// A legacy project-level reminder hook this install migrates away.
+    migration: Option<&'a LegacyHookMigration>,
+    migration_outcome: Option<&'a LegacyHookOutcome>,
     json: bool,
 }
 
@@ -929,24 +1293,31 @@ fn render_plan(
             Some(MutationResult::Uninstall(report)) => serde_json::to_value(report)?,
             None => serde_json::Value::Null,
         };
-        serde_json::to_writer(
-            &mut *output,
-            &serde_json::json!({
-                "schema_version": 1,
-                "data": {
-                    "action": rendering.action.as_str(),
-                    "client": rendering.client.as_str(),
-                    "dry_run": rendering.dry_run,
-                    "plan": rendering.plan.public_preview(),
-                    "result": outcome,
-                    "warnings": rendering.warnings,
-                }
-            }),
-        )?;
+        let mut document = serde_json::json!({
+            "schema_version": 1,
+            "data": {
+                "action": rendering.action.as_str(),
+                "client": rendering.client.as_str(),
+                "dry_run": rendering.dry_run,
+                "plan": rendering.plan.public_preview(),
+                "result": outcome,
+                "warnings": rendering.warnings,
+            }
+        });
+        if let Some(migration) = rendering.migration {
+            document["data"]["legacy_project_hook"] = serde_json::json!({
+                "plan": migration.to_json(),
+                "result": rendering.migration_outcome.map(LegacyHookOutcome::to_json),
+            });
+        }
+        serde_json::to_writer(&mut *output, &document)?;
         writeln!(output)?;
     } else if rendering.dry_run {
         output.write_all(rendering.plan.unified_diff.as_bytes())?;
         writeln!(output, "# Plan hash: {}", rendering.plan.plan_hash)?;
+        if let Some(migration) = rendering.migration {
+            migration.write_preview(output)?;
+        }
     } else {
         writeln!(
             output,
@@ -956,6 +1327,9 @@ fn render_plan(
         )?;
         for warning in rendering.warnings {
             writeln!(output, "warning: {warning}")?;
+        }
+        if let Some(outcome) = rendering.migration_outcome {
+            writeln!(output, "{}", outcome.human_line())?;
         }
         if let Some(MutationResult::Uninstall(report)) = rendering.result {
             for warning in &report.warnings {
