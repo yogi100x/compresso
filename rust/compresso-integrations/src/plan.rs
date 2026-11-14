@@ -17,6 +17,9 @@ use crate::receipt::{
     CREATED_FILE_BACKUP_SENTINEL, InstallReceipt, RECEIPT_SCHEMA_VERSION, ReceiptError,
     ReceiptStore,
 };
+use crate::text_fidelity::{
+    preserve_text_fidelity, pristine_json_backup, strip_bom, strip_bom_str,
+};
 
 /// Mutation plan schema version.
 pub const PLAN_SCHEMA_VERSION: u32 = 1;
@@ -609,6 +612,14 @@ impl PlanManager {
         request.warnings.dedup();
 
         let base = read_target(&request.config_path)?;
+        if let TargetState::Present(bytes) = &base {
+            // Bind the plan to bytes that keep the file's byte-order mark and
+            // line endings; every hash below covers this final shaping.
+            request.target_contents = preserve_text_fidelity(bytes, &request.target_contents);
+        }
+        if let Some(original) = pristine_uninstall_target(&request) {
+            request.target_contents = original;
+        }
         let owned_keys = derive_owned_mutations(
             request.operation,
             request.config_format,
@@ -1637,6 +1648,23 @@ fn ensure_backup(commit: &PendingCommit) -> Result<(), IntegrationError> {
     sync_parent(&path).map_err(|source| IntegrationError::Io { path, source })
 }
 
+/// Returns the exact pre-install bytes when a JSON uninstall would otherwise
+/// rewrite an equivalent document with different insignificant bytes.
+fn pristine_uninstall_target(request: &MutationRequest) -> Option<String> {
+    if request.operation != MutationKind::Uninstall || request.config_format != ConfigFormat::Json {
+        return None;
+    }
+    let receipt = request.prior_receipt.as_ref()?;
+    if receipt.backup_path == CREATED_FILE_BACKUP_SENTINEL {
+        return None;
+    }
+    pristine_json_backup(
+        &request.config_path,
+        Path::new(&receipt.backup_path),
+        &request.target_contents,
+    )
+}
+
 fn validate_request(request: &MutationRequest) -> Result<(), IntegrationError> {
     if !matches!(request.client.as_str(), "claude-code" | "codex" | "cursor") {
         return Err(invalid("client must be claude-code, codex, or cursor"));
@@ -1767,8 +1795,8 @@ fn derive_json_owned_mutations(
     owned_paths: &[String],
 ) -> Result<Vec<OwnedKeyMutation>, IntegrationError> {
     let mut base_document = parse_json_target(base, "base")?;
-    let mut target_document: serde_json::Value =
-        serde_json::from_str(target).map_err(|error| IntegrationError::InvalidRequest {
+    let mut target_document: serde_json::Value = serde_json::from_str(strip_bom_str(target))
+        .map_err(|error| IntegrationError::InvalidRequest {
             reason: format!("target JSON is malformed: {error}"),
         })?;
     if !target_document.is_object() {
@@ -1814,8 +1842,10 @@ fn parse_json_target(
     let document = match target {
         TargetState::Missing => serde_json::json!({}),
         TargetState::Present(bytes) => {
-            serde_json::from_slice(bytes).map_err(|error| IntegrationError::InvalidRequest {
-                reason: format!("{label} JSON is malformed: {error}"),
+            serde_json::from_slice(strip_bom(bytes)).map_err(|error| {
+                IntegrationError::InvalidRequest {
+                    reason: format!("{label} JSON is malformed: {error}"),
+                }
             })?
         }
     };
@@ -1871,12 +1901,11 @@ fn derive_toml_owned_mutations(
     owned_paths: &[String],
 ) -> Result<Vec<OwnedKeyMutation>, IntegrationError> {
     let mut base_document = parse_toml_target(base, "base")?;
-    let mut target_document =
-        target
-            .parse::<DocumentMut>()
-            .map_err(|_| IntegrationError::InvalidRequest {
-                reason: "target TOML is malformed".to_owned(),
-            })?;
+    let mut target_document = strip_bom_str(target).parse::<DocumentMut>().map_err(|_| {
+        IntegrationError::InvalidRequest {
+            reason: "target TOML is malformed".to_owned(),
+        }
+    })?;
     let mut changes = Vec::with_capacity(owned_paths.len());
     for path in owned_paths {
         let segments = path.split('.').collect::<Vec<_>>();
@@ -1909,7 +1938,7 @@ fn derive_toml_owned_mutations(
 fn parse_toml_target(target: &TargetState, label: &str) -> Result<DocumentMut, IntegrationError> {
     match target {
         TargetState::Missing => Ok(DocumentMut::new()),
-        TargetState::Present(bytes) => std::str::from_utf8(bytes)
+        TargetState::Present(bytes) => std::str::from_utf8(strip_bom(bytes))
             .map_err(|_| invalid("TOML configuration must be UTF-8"))?
             .parse::<DocumentMut>()
             .map_err(|_| IntegrationError::InvalidRequest {
@@ -2046,8 +2075,10 @@ fn safe_owned_projections(
         ConfigFormat::Json => {
             let base = parse_json_target(base, "base")?;
             let target: serde_json::Value =
-                serde_json::from_str(target).map_err(|error| IntegrationError::InvalidRequest {
-                    reason: format!("target JSON is malformed: {error}"),
+                serde_json::from_str(strip_bom_str(target)).map_err(|error| {
+                    IntegrationError::InvalidRequest {
+                        reason: format!("target JSON is malformed: {error}"),
+                    }
                 })?;
             Ok((
                 safe_json_projection(json_value_at(&base, &segments)),
@@ -2056,12 +2087,11 @@ fn safe_owned_projections(
         }
         ConfigFormat::Toml => {
             let base = parse_toml_target(base, "base")?;
-            let target =
-                target
-                    .parse::<DocumentMut>()
-                    .map_err(|_| IntegrationError::InvalidRequest {
-                        reason: "target TOML is malformed".to_owned(),
-                    })?;
+            let target = strip_bom_str(target).parse::<DocumentMut>().map_err(|_| {
+                IntegrationError::InvalidRequest {
+                    reason: "target TOML is malformed".to_owned(),
+                }
+            })?;
             Ok((
                 safe_toml_projection(toml_item_at(base.as_item(), &segments)),
                 safe_toml_projection(toml_item_at(target.as_item(), &segments)),

@@ -11,6 +11,7 @@ use std::time::UNIX_EPOCH;
 use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, Value, value};
 
 use crate::plan::{MutationRequest, hash_toml_owned_item};
+use crate::text_fidelity::strip_bom_str;
 use crate::{
     ConfigFormat, Detection, InstallCtx, InstallReceipt, Integration, IntegrationError,
     MutationKind, MutationPlan, PlanApproval, PlanManager, ReceiptStore, RestoreReport, Scope,
@@ -376,7 +377,7 @@ impl Integration for CodexAdapter {
         let parsed = config_bytes
             .as_deref()
             .and_then(|contents| std::str::from_utf8(contents).ok())
-            .and_then(|contents| contents.parse::<DocumentMut>().ok());
+            .and_then(|contents| strip_bom_str(contents).parse::<DocumentMut>().ok());
         let parse_passed = parsed.is_some();
         let entry = parsed.as_ref().and_then(owned_table);
         let entry_passed = entry.is_some_and(is_exact_server_entry);
@@ -483,7 +484,7 @@ impl Integration for CodexAdapter {
 
 fn read_document(path: &Path) -> Result<DocumentMut, IntegrationError> {
     match fs::read_to_string(path) {
-        Ok(contents) => contents
+        Ok(contents) => strip_bom_str(&contents)
             .parse::<DocumentMut>()
             .map_err(|_| invalid("Codex config is malformed TOML")),
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(DocumentMut::new()),
@@ -496,7 +497,7 @@ fn read_document(path: &Path) -> Result<DocumentMut, IntegrationError> {
 
 fn read_existing_document(path: &Path) -> Result<DocumentMut, IntegrationError> {
     match fs::read_to_string(path) {
-        Ok(contents) => contents
+        Ok(contents) => strip_bom_str(&contents)
             .parse::<DocumentMut>()
             .map_err(|_| invalid("Codex config is malformed TOML")),
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => {

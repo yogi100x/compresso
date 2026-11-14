@@ -10,6 +10,7 @@ mod codex;
 mod cursor;
 mod plan;
 mod receipt;
+mod text_fidelity;
 
 use std::path::PathBuf;
 

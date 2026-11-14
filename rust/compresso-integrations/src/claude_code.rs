@@ -10,6 +10,7 @@ use std::path::{Component, Path, PathBuf};
 use serde_json::{Map, Value, json};
 
 use crate::plan::MutationRequest;
+use crate::text_fidelity::strip_bom;
 use crate::{
     ConfigFormat, Detection, InstallCtx, InstallReceipt, Integration, IntegrationError,
     MutationKind, MutationPlan, PlanManager, Scope, VerificationCheck, VerificationReport,
@@ -401,7 +402,7 @@ fn read_existing_json_object_for_verify(path: &Path) -> Result<Map<String, Value
 }
 
 fn parse_json_object(bytes: &[u8]) -> Result<Map<String, Value>, IntegrationError> {
-    serde_json::from_slice::<Value>(bytes)
+    serde_json::from_slice::<Value>(strip_bom(bytes))
         .map_err(|error| invalid_request(format!("configuration JSON is malformed: {error}")))?
         .as_object()
         .cloned()
