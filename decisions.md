@@ -98,6 +98,8 @@ Updated: 2026-11-14. Source: `compresso-build.md` + owner Q&A. Every item here i
 | D70 | E17 local follow-ups | Add epic E17 (10 tickets): compaction routing reminder, index-free local session recall, transcript-derived savings with a local price table, parallel Atlas scanning, Windows text/pipe hardening, MCP health probe, search diagnostics and all-terms multi-word search, doc–code drift lint, PR decision drafts (preview by default, no automatic post), resumable benchmark campaigns. Clean-room; everything stays local; no telemetry |
 | D71 | Bounded MCP health probe (ADR-0028) | Accepted 2026-11-14. `compresso-cli`'s `mcp_probe` module is the only production source allowed to start a child process, and only for the running executable or a receipt-authenticated entry, with a scrubbed env, neutral cwd and process-group kill (TM-015) |
 | D72 | Transcript savings and local price table (ADR-0029) | Savings can be derived from client transcripts; cost is priced once at the base input rate from a checked-in, versioned price table that is never fetched; unknown or unsafe model ids are never priced or echoed. Table rows are verified against the published pricing page before each table version |
+| D73 | Public benchmark names in code | `swe-bench-verified` and `terminal-bench` may appear as campaign adapter names in code and docs: they name public benchmark suites, not third-party coding tools, so the product-name neutralization rule does not apply |
+| D74 | One recall crate | E15-14..16 indexed recall extends the `compresso-recall` crate delivered by E17-02 rather than creating a second crate; the index-free path remains the default |
 
 ## 6. Owner hard constraints (never override without new owner decision)
 

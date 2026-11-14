@@ -437,3 +437,17 @@ impl EntitlementCache<'_> {
 ## 10. E15 capability interfaces
 
 Authoritative E15 state machines are in `09-advanced-capabilities.md`. Public surfaces are `CombinedSearch`, `EditPlanner`/`EditApplier`, `SqlInspector`/`SqlExecutor`, `RecallIndex`, `KnowledgeStore`, `ReviewOrchestrator`, and `ClientCapabilityNegotiator`. Read and apply interfaces are separate types; apply requires an unexpired content-hashed plan and `ApprovalGrant` issued by the permission engine.
+
+## 11. E17 interfaces (delivered 2026-11-14)
+
+Public surfaces added by E17. Every one is local: none opens a network connection, and none uploads anything.
+
+- **`compresso-core::pricing`** (E17-03, ADR-0029): `PriceTable::embedded() / parse() / lookup(model) / cost_basis(tokens_saved, model)`, `ModelPrice`, `PriceTableError`, and `is_plain_model_id` (printable ASCII, no spaces, at most `MAX_MODEL_ID_BYTES` = 128). Savings are priced at `SAVINGS_RATE_APPLIED = "input"` only. The table is `rust/compresso-core/data/price-table-v1.json`, validated by `schemas/price-table/v1.json`.
+- **`compresso-core::transcript`** (E17-03): `scan_transcript(text)`, the streaming `TranscriptScanner::{new, push_line, finish}`, `TranscriptScan` (including `model_ids_rejected`), `TranscriptCall`, `TranscriptCallKind`, `COMPRESSO_TOOL_NAMES`, `MAX_TRANSCRIPT_TOOL_CALLS`, and `UNKNOWN_MODEL`. Scanning retains no transcript text.
+- **`compresso-core::stdio`** (E17-05): `StreamError::{classify, is_closed, code}`, `is_closed_pipe`, `ClosedPipeGuard<W>`, `write_diagnostic_line`, and `report_diagnostic`. Closed pipes are typed errors and never panic.
+- **`compresso-core::background_spawn`** (E17-05): `CREATE_NO_WINDOW`, `background_creation_flags()`, and `suppress_console_window(set_flags)`. Every child-process launch routes through it. The only permitted launch site is `compresso-cli::commands::mcp_probe` (ADR-0028).
+- **`compresso-recall`** (E17-02, new crate, `bounded-local`): `recall(&RecallRequest) -> Result<RecallReport, RecallError>`, plus `RecallRequest`, `RecallScope`, `RecallLimits`, `RecallHit`, `SourceReport`, `SourceStatus`, `RecallSource`, `SourceSupport`, `redact`, and `Redaction`. It reads transcripts read-only, keeps no index, and redacts before matching. E15-14's indexed recall extends this crate instead of creating a new one.
+- **`compresso-atlas::search`** (E17-07): `search_with_diagnostics(SearchOptions) -> SearchReport`, `SearchDiagnostic`, `SearchDiagnosticCode`, `validate_search_query`, and `SEARCH_MIN_QUERY_CHARS`. Multi-word queries match every term, with exact-phrase hits ranked first.
+- **`compresso-mcp`**: `tool_names()` (the served tool list, used by the drift-lint inventory) and `reminder::routing_reminder()` with `ROUTING_REMINDER_MAX_BYTES` = 640 (E17-01). The `compresso_recall` tool is served only when the server starts with `--recall-source`.
+- **`compresso-cli::surface`** (E17-08): `surface_inventory() -> serde_json::Value` (`SURFACE_SCHEMA_VERSION` = 1). It generates the CLI/MCP/config inventory consumed by `scripts/doc-drift-lint.ts`.
+- **`compresso-eval::campaign`** (E17-10): `CampaignRunner`, `CampaignPolicy`, `CampaignOutcome`, `StartMode`, `Checkpoint`, `TaskState`, `SuiteAdapter`, `SuiteDescriptor`, `TaskSpec`, `TaskContext`, `AdapterKind`, `resolve_adapter`, `FixtureSuiteAdapter`, and `CampaignReport`, exposed by the separate `compresso-eval-campaign` binary. Adapters for external suites are opt-in and not built in.

@@ -2257,6 +2257,7 @@ Acceptance/tests: rollback preview, elevated grant, stale schema/plan, partial f
 ### [ ] E15-14: Recall ingestion and secret redaction
 Owner: R2+I1 · Estimate: 4d · Depends: E15-01, E14-17 · Files: rust/compresso-recall/src/{sources,parse,redact}.rs, fixtures/recall/
 Acceptance/tests: disabled default, per-source consent, typed parsing, malformed/duplicate handling, secret corpus, no plaintext storage.
+Note (D74): extends the `compresso-recall` crate delivered by E17-02 (`sources`, `parse`, `redact` already exist index-free); add ingestion and the index alongside, do not fork the crate.
 
 ### [ ] E15-15: Lexical and semantic recall index
 Owner: R1+R2 · Estimate: 4d · Depends: E15-14, E13-28 · Files: rust/compresso-recall/src/{chunk,index,rank}.rs
@@ -2697,7 +2698,7 @@ Test cases:
 
 ## E17 — Session continuity, savings fidelity, and platform hardening
 
-Added 2026-11-14 (D70). Clean-room follow-ups to the local slice; all ten landed together through `integration/e17`.
+Added 2026-11-14 (D70). Clean-room follow-ups to the local slice; E17-01..10 landed together through `integration/e17`, E17-11..14 are open follow-ups.
 
 ### [x] E17-01: Re-assert tool routing after client compaction
 Owner: D1 · Estimate: 2d · Depends: E5-01, E6-01, E6-02, E6-03
@@ -2897,6 +2898,50 @@ Test cases:
 - test_campaign_report_uses_eval_report_shape_and_ignores_completion_order
 - test_external_adapters_require_opt_in_and_are_not_built_in, test_campaign_cli_runs_resumes_and_reports_status_as_json
 
+### [ ] E17-11: Codex and Cursor transcripts for savings reporting
+Owner: R1+PQ · Estimate: 2d · Depends: E17-03, E17-02
+Files: rust/compresso-core/src/transcript.rs, rust/compresso-cli/src/commands/transcript_stats.rs, rust/compresso-core/tests/fixtures/transcripts/
+Description: Extend `compresso stats --transcript` beyond the Claude Code JSON Lines shape to Codex rollout transcripts, and to Cursor only if its local format can be verified from documentation or format probing. Reuse the E17-02 shape probes instead of a second parser.
+Acceptance criteria:
+- Format is auto-detected per line; an unverified format is reported `unsupported` and never guessed.
+- The same savings rules apply: the ledger row wins, each operation counts once, no transcript text is retained, and model ids are sanitized.
+Test cases:
+- `test_codex_rollout_transcript_reports_savings_like_claude_code`
+- `test_unverified_transcript_format_is_reported_unsupported`
+- `test_mixed_format_file_is_rejected_without_partial_savings`
+
+### [ ] E17-12: Retrieval savings without an operation ledger
+Owner: R2 · Estimate: 2d · Depends: E17-03, E5-03, D69
+Files: rust/compresso-mcp/src/tools/atlas_read.rs, rust/compresso-core/src/transcript.rs, schemas/, docs/plan/04-mcp-and-integrations.md
+Description: Retrieval results carry a content-free raw-source baseline (estimated raw tokens plus a basis label), so transcript-derived savings can credit retrieval calls when no ledger row exists. The baseline is additive in the tool schema; savings stay explicitly modelled (D69).
+Acceptance criteria:
+- Additive schema field with a version note; old transcripts without the field still claim zero retrieval savings.
+- The baseline never includes source content or paths beyond what the result already shows.
+Test cases:
+- `test_retrieval_result_carries_modelled_raw_baseline`
+- `test_ledgerless_retrieval_credits_modelled_savings_from_baseline`
+- `test_transcript_without_baseline_still_claims_zero_retrieval_savings`
+
+### [ ] E17-13: Document every public CLI command
+Owner: D1 · Estimate: 2d · Depends: E17-08
+Files: docs/cli/, README.md, scripts/doc-drift-lint.config.json
+Description: Write user documentation for the 14 commands the drift linter allowlists as undocumented (`search`, `map`, `outline`, `read`, `unfold`, `context`, `impact`, `compress`, `explain`, `init`, and `account` with its subcommands), then delete those allowlist entries.
+Acceptance criteria:
+- Every visible CLI command and MCP tool appears in a current-state doc; the drift lint passes with no `undocumented_cli_command` allowlist entries.
+Test cases:
+- `doc-drift-lint` in CI with the allowlist entries removed
+
+### [ ] E17-14: Free-text session decisions in the operation ledger
+Owner: R2 · Estimate: 2d · Depends: E17-09, E3-03
+Files: rust/compresso-store/migrations/, rust/compresso-store/src/ops.rs, rust/compresso-cli/src/commands/decisions.rs
+Description: Add a ledger table for short free-text design decisions recorded during a session, so `compresso decisions` drafts can include real choices as well as compression statistics. Recording is explicit and local; text is secret-redacted and markup-neutralized on write and on render.
+Acceptance criteria:
+- Forward-only migration; older binaries refuse the newer store with an actionable message, not `internal`.
+- Size and count bounds per session; no automatic capture from transcripts.
+Test cases:
+- `test_decision_text_is_redacted_and_neutralized_on_write_and_render`
+- `test_decisions_draft_includes_recorded_free_text_choices`
+- `test_older_binary_reports_newer_store_with_upgrade_hint`
 
 ## Execution order (flat, dependency-ordered)
 
@@ -2913,7 +2958,7 @@ Wave 6 — release engineering and hardening close-out: E12-01, E13-32, E12-02, 
 Wave 7 — E15 A-F plus threat-model and sandbox foundations: E15-01, E14-17, E14-18, E15-02, E15-03, E15-05, E15-09, E15-11, E15-14, E15-19, E15-06..E15-17, E15-18, E15-18b, E15-18c, E15-20..E15-30 subject to dependencies.
 Wave 8 — full-product completion: E16-01..E16-16 subject to listed dependencies.
 Wave 9 — deferred sandbox actions: E14-19, E14-20, E15-04, E15-31, E15-32.
-E17 (delivered after the slice, independent of waves 1–9): E17-05, E17-03, E17-04, E17-07, E17-02, E17-09, E17-01, E17-06, E17-10, E17-08.
+E17 (delivered after the slice, independent of waves 1–9): E17-05, E17-03, E17-04, E17-07, E17-02, E17-09, E17-01, E17-06, E17-10, E17-08; follow-ups E17-11, E17-12, E17-13, E17-14.
 
 Parallelism notes:
 - Slice: E2 (R1) and E3 (R2) run concurrently after E1; E7-01/E7-02 (PQ/R1) overlap E2's tail; E4 (D1) starts once E2-09 and E3-12 land; E5 (R2) follows E3; E6 (D1) follows E5-01 and overlaps E5-02..07; E1-06 and E4-05 (I1) slot in any time after E1-02/E4-04. E2-02a is a maintainer task (needs an Anthropic API key) and can land any time after E2-02 without blocking anything — until it lands, the interim 1.15 factor applies.
@@ -2944,6 +2989,6 @@ Parallelism notes:
 | E14 IP & secure deployment | 17 | 39 | ~8 wk | +E15 threat/sandbox gates |
 | E15 Clean-room advanced capabilities | 34 | 121.5 | ~24.5 engineer-wk | A-F incremental; G deferred |
 | E16 Full-product completion | 16 | 59 | ~12 engineer-wk, dependency-phased | |
-| E17 Session continuity & hardening | 10 | 23.5 | ~4.7 engineer-wk | delivered 2026-11-14 |
-| **Post-slice + PB total** | **164** | **485.5 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
-| **Grand total** | **222** | **581.5 gross** | **~116.3 engineer-wk** | |
+| E17 Session continuity & hardening | 14 | 31.5 | ~6.3 engineer-wk | E17-01..10 delivered 2026-11-14; E17-11..14 open |
+| **Post-slice + PB total** | **168** | **493.5 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
+| **Grand total** | **226** | **589.5 gross** | **~117.9 engineer-wk** | |
