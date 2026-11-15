@@ -1,0 +1,25 @@
+rust/compresso-eval/src/runner.rs
+  s_f3ae5462f697a3::t_e650bc7d914c1f 501-502
+rust/compresso-core/src/safety.rs
+  s_f3ae5462f697a3::t_e650bc7d914c1f 360-376,380-384
+rust/compresso-core/src/strategies/dedup_exact.rs
+  s_f3ae5462f697a3::t_e650bc7d914c1f 133
+  s_f3ae5462f697a3::t_58664cff1d36f7 216-259
+  s_f3ae5462f697a3::t_edd9515cfcbcc4 215
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f771b0ceac8dd0bba62491208dbe89cbe0203974",
+  "prompts": {},
+  "sessions": {
+    "s_f3ae5462f697a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7cc607c-32b2-4e30-bc4c-55ff6e2d2dd7",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
