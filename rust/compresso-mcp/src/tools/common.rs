@@ -343,6 +343,13 @@ pub(crate) fn map_atlas_error(error: AtlasError) -> ToolFailure {
         AtlasError::Query(QueryError::NotFound { .. }) => {
             ToolFailure::new("not_found", "The requested file was not found on disk.")
         }
+        AtlasError::Query(QueryError::FileTooLarge { limit_bytes, .. }) => ToolFailure::new(
+            "file_too_large",
+            format!(
+                "The requested file exceeds the {} MiB read limit and was not loaded.",
+                limit_bytes / (1024 * 1024)
+            ),
+        ),
         _ => ToolFailure::internal(),
     }
 }

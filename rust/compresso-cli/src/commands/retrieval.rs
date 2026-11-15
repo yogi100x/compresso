@@ -682,6 +682,7 @@ fn map_query_error(error: QueryError) -> RetrievalError {
         QueryError::Read { source, .. } if source.kind() == std::io::ErrorKind::InvalidData => {
             RetrievalError::invalid("repository file must contain UTF-8 text")
         }
+        QueryError::FileTooLarge { limit_bytes, .. } => RetrievalError::file_too_large(limit_bytes),
         QueryError::CanonicalizeRoot { .. }
         | QueryError::RootNotDirectory { .. }
         | QueryError::ResolvePath { .. }
@@ -729,6 +730,16 @@ impl RetrievalError {
         Self {
             code: "outside_root",
             message: "path resolves outside the approved repository root".to_owned(),
+        }
+    }
+
+    fn file_too_large(limit_bytes: u64) -> Self {
+        Self {
+            code: "file_too_large",
+            message: format!(
+                "repository file exceeds the {} MiB read limit",
+                limit_bytes / (1024 * 1024)
+            ),
         }
     }
 

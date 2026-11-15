@@ -162,6 +162,58 @@ fn test_malformed_utf8_is_rejected_without_ledger_row() {
     );
 }
 
+const READ_LIMIT_BYTES: usize = 8 * 1024 * 1024;
+
+#[test]
+fn test_compress_stdin_over_read_limit_is_rejected_without_ledger_row() {
+    let fixture = Fixture::new();
+    let oversized = vec![b'a'; READ_LIMIT_BYTES + 1];
+
+    let (exit, output, errors) = fixture.run_json(&["compress", "--json"], &oversized);
+
+    assert_eq!(exit, CliExitCode::Failure);
+    assert!(output.is_null());
+    assert_eq!(errors["error"]["code"], "input_too_large");
+    assert_eq!(
+        fixture
+            .store
+            .stats(None)
+            .expect("stats should load")
+            .operations,
+        0
+    );
+}
+
+#[test]
+fn test_compress_file_over_read_limit_is_rejected() {
+    let fixture = Fixture::new();
+    let file = fixture.directory.path().join("sparse.txt");
+    fs::File::create(&file)
+        .and_then(|handle| handle.set_len(READ_LIMIT_BYTES as u64 + 1))
+        .expect("sparse input should be created");
+    let file = file.to_str().expect("temporary path should be UTF-8");
+
+    let (exit, output, errors) = fixture.run_json(&["compress", "--json", "--file", file], b"");
+
+    assert_eq!(exit, CliExitCode::Failure);
+    assert!(output.is_null());
+    assert_eq!(errors["error"]["code"], "input_too_large");
+}
+
+#[test]
+fn test_compress_input_at_engine_limit_is_accepted() {
+    let fixture = Fixture::new();
+    let line = "status ok request handled in 12 ms\n";
+    let mut input = line.repeat(READ_LIMIT_BYTES / line.len() + 1);
+    input.truncate(READ_LIMIT_BYTES);
+
+    let (exit, output, _) =
+        fixture.run_raw(&["compress", "--mode", "passthrough"], input.as_bytes());
+
+    assert_eq!(exit, CliExitCode::Success);
+    assert_eq!(output, input.as_bytes());
+}
+
 #[test]
 fn test_explain_last_and_id_return_typed_trace_without_raw_content() {
     let fixture = Fixture::new();
