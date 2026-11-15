@@ -79,10 +79,14 @@ unsigned slice installer.
 - Trust is anchored in GitHub's OIDC issuer, the Sigstore root, and the
   integrity of the `ci.yml` workflow on `main`. A change to that workflow that
   reaches `main` can sign any manifest; branch protection is the control.
-- As of 2026-11-15 `main` has no branch protection, the repository has no
-  rulesets, and the `private-beta-release` environment has no protection
-  rules. Until the owner adds them, the signature proves "built by `ci.yml`
-  on `main`", and `main` accepts a direct push from anyone with write access.
+- The signature proves "built by `ci.yml` on `main`", so the controls on
+  `main` are part of the trust chain. Applied at the owner's instruction on
+  2026-11-15 (they were absent before): `main` requires a pull request and
+  the eight CI checks, with no force push, no deletion, and no administrator
+  exemption; a tag ruleset lets only repository administrators create,
+  move, or delete `cli-v*` tags; and the `private-beta-release` environment
+  requires the owner's approval and deploys only from `cli-v*` tags. These
+  are repository settings, not code, and can be changed by an administrator.
 - The installer does not pin a commit or tag, so any manifest signed by a
   main-branch CI run verifies. The manifest names each tarball with its
   version, so a manifest for another version does not match the requested
