@@ -1486,11 +1486,7 @@ fn detection_label(detection: &Detection) -> String {
 }
 
 pub(super) fn system_home_dir() -> Result<PathBuf, IntegrationCliError> {
-    #[cfg(windows)]
-    let value = env::var_os("USERPROFILE");
-    #[cfg(not(windows))]
-    let value = env::var_os("HOME");
-    value.map(PathBuf::from).ok_or_else(|| {
+    super::recall::system_home_dir().ok_or_else(|| {
         IntegrationCliError::environment("failed to resolve the user home directory")
     })
 }

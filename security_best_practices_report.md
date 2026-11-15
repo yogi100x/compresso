@@ -8,7 +8,7 @@ Assessment posture: defensive, read-only review of the complete implemented E1-E
 
 Distribution status: private repository; no releases or uploaded Actions artifacts; known binaries and installer artifacts are local only
 
-Remediation update: **2026-07-23. SEC-003 is fixed in the current working tree, pending commit/release.** Public plan serialization and CLI output now expose only a secret-safe, key-level preview; exact target bytes remain private to integrity hashing and authenticated crash recovery. This prevents future preview disclosure but cannot invalidate any credential exposed before the fix, which must still be revoked or rotated separately. The finding counts below describe the original 2026-07-22 assessment snapshot.
+Remediation update: **2026-07-23. SEC-003 is fixed in the current working tree, pending commit/release.** (Superseded: committed and on `main`; see the 2026-11-14 table below.) Public plan serialization and CLI output now expose only a secret-safe, key-level preview; exact target bytes remain private to integrity hashing and authenticated crash recovery. This prevents future preview disclosure but cannot invalidate any credential exposed before the fix, which must still be revoked or rotated separately. The finding counts below describe the original 2026-07-22 assessment snapshot.
 
 Remediation update: **2026-11-14.** Status of the findings below after the E17 review fixes. The finding sections keep their original 2026-07-22 text.
 
@@ -16,11 +16,13 @@ Remediation update: **2026-11-14.** Status of the findings below after the E17 r
 |---|---|---|
 | SEC-001 | Fixed for excluded content | `compresso_read` refuses a file the scanner excludes (repository `.gitignore`, built-in excluded directories, secret patterns) unless it is indexed, judged on the resolved path so links and casing cannot bypass it. A file the scanner would accept stays readable before it is indexed. The built-in secret pattern list is unchanged. |
 | SEC-002 | Fixed | Each MCP server is bound to one repository root at startup; `test_bound_root_retarget_cannot_leak_another_approved_repository` covers it. |
+| SEC-003 | Fixed and committed | The 2026-07-23 remediation described below as "in the working tree, pending commit" is on `main`: plans and CLI output carry only the key-level preview, and the bearer-canary tests in `rust/compresso-integrations/src/codex.rs` and `plan.rs` pin it. Credentials exposed before the fix still need rotation. |
 | SEC-004 | Fixed | Turbo upgraded to 2.9.14; CI installs the locked TypeScript dependencies, runs the workspace checks, and audits them on every pull request. |
 | SEC-005 | Partly fixed | Transport framing is bounded: each incoming MCP message is capped at 64 MiB (`MAX_INCOMING_MESSAGE_BYTES`, `rust/compresso-mcp/src/framing.rs`). A longer line is discarded as it streams, answered with JSON-RPC `-32600`, and the session continues. The other evidence items in the finding (compression graph built before the 8 MiB check, whole-file reads before truncation, unlimited internal read budgets) are unchanged, and `compresso compress` still reads all of stdin or `--file` into memory. |
-| SEC-007 | Partly fixed | The installer accepts only `https://` sources and does not leave HTTPS on a redirect. `SHA256SUMS` still comes from the same origin as the archive; publisher authenticity needs signed releases. |
-| SEC-008 | Fixed for new installs | On Unix the store creates its directories 0700 and its database 0600. Directories and databases that already exist are not changed. |
+| SEC-007 | Fixed in code, not yet exercised on a real release | The installer accepts only `https://` sources and does not leave HTTPS on a redirect. The main-branch CI job signs `SHA256SUMS` with keyless Sigstore, and the installer requires a valid `SHA256SUMS.sigstore.json` from the pinned `ci.yml@refs/heads/main` identity for every install (ADR-0030). Only a local source may skip it, and only with the explicit `--allow-unsigned` flag meant for self-built artifacts. The signing step has not run on `main` yet and verification has only been tested against a `cosign` stand-in. Rollback to an older signed release is not prevented. |
+| SEC-008 | Fixed at the default location | On Unix the store creates its directories 0700 and its database 0600. Opening the default store also removes group and other access from an existing `compresso` data directory, database, WAL, and shared-memory file (bits are only removed, symbolic links are skipped, the parent of the data directory is untouched). This runs on the commands that open the default store (`index`, `repos`, `decisions`, `setup`, `mcp serve`, and the engine and retrieval commands); `test_ordinary_command_tightens_a_store_left_readable_by_an_earlier_release` covers it end to end. `doctor` and the integration receipt projection open the database by explicit path and do not tighten it themselves, and the store default ignores `XDG_DATA_HOME` where the runtime paths honour it, so a store under a custom data home is not retrofitted. A database opened at an explicit path keeps its existing permissions; ownership and symlink policy are still not enforced. |
 | SEC-009 | Partly fixed | Every third-party action is pinned to a commit SHA and the CI matrix checker enforces it. The actionlint container image is still referenced by tag. |
+| SEC-010 | Fixed | `.gitleaks.toml` allowlists only `fixture-NNNN` values of the `generic-api-key` rule in `fixtures/benchmarks/json-2000-elements/input.json`. CI proves the canary is detected, proves the allowlist does not cover another value in that file, then requires a clean repository scan. Gitleaks 8.30.1 over the committed tree on 2026-11-15 reports no leaks, where the audit saw 1,008. |
 
 Findings not listed in this table were not re-assessed in this update.
 
@@ -141,7 +143,7 @@ Verification criteria:
 
 ### 3. [SEC-003] Integration preview and JSON output disclose complete assistant configurations — fixed in working tree
 
-Remediation status: **Fixed on 2026-07-23; pending commit/release.**
+Remediation status: **Fixed on 2026-07-23; pending commit/release.** Superseded: the fix is on `main`; see the status table at the top.
 
 Severity: **High**
 
@@ -409,7 +411,7 @@ Recommended remediation: make the integration optional for contributors or docum
 | `cargo test --workspace` | One load-sensitive Eval test failed once; its exact isolated rerun passed. Treat as a reliability flake, not a demonstrated security failure. |
 | `pnpm audit --json` | Fail; Turbo advisories described in SEC-004 |
 | `pnpm check` | Fail; intentionally malformed fixture plus formatting issues are not narrowly handled |
-| Gitleaks repository scan | Fail; 1,008 synthetic benchmark findings described in SEC-010 |
+| Gitleaks repository scan | Fail; 1,008 synthetic benchmark findings described in SEC-010 (superseded: clean as of 2026-11-15, see the status table at the top) |
 
 The worktree already contained modifications to `rust/compresso-eval/src/lib.rs`, `scripts/ci/check_ci_matrix.rb`, `impl.md`, and `rust/compresso-eval/src/calibrate.rs`. The audit did not alter or stage those files.
 

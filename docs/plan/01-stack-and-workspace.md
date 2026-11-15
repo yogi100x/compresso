@@ -117,7 +117,7 @@ Triggers: push to main, PRs. Jobs:
 3. `eval` (ubuntu + macos-15): `cargo run -p compresso-eval -- run fixtures/ --gates docs/plan/gates.toml` — fails CI when release gates regress.
 4. `security`: `cargo audit` (advisories), `cargo deny check licenses bans` (added E1; secret scanning via gitleaks action).
 
-Caching: `Swatinem/rust-cache@v2`. Artifacts: per-platform release tarball (`compresso-<version>-<target>.tar.gz`) + `SHA256SUMS` uploaded on main; `installers/install-local.sh` downloads/copies and verifies the checksum before installing to `~/.local/bin/compresso` (slice-level install path, D42; signing is Phase 8).
+Caching: `Swatinem/rust-cache@v2`. Artifacts: per-platform release tarball (`compresso-<version>-<target>.tar.gz`) + `SHA256SUMS` uploaded on main; `installers/install-local.sh` downloads/copies and verifies the checksum before installing to `~/.local/bin/compresso` (slice-level install path, D42; the checksum manifest is keyless-signed and verified per ADR-0030, native platform signing is Phase 8).
 
 ## 5. Environment configuration
 

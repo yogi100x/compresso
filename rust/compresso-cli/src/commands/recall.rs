@@ -72,12 +72,19 @@ impl RecallEnvironment {
     }
 }
 
+/// The user's home directory, the single resolution every command shares.
 pub(crate) fn system_home_dir() -> Option<PathBuf> {
-    #[cfg(windows)]
-    let value = std::env::var_os("USERPROFILE");
-    #[cfg(not(windows))]
-    let value = std::env::var_os("HOME");
-    value.filter(|value| !value.is_empty()).map(PathBuf::from)
+    home_dir_from(|name| std::env::var_os(name))
+}
+
+/// Resolves the home directory through `lookup`. An empty value is not a
+/// home directory: joining onto it would silently produce paths relative to
+/// the working directory.
+fn home_dir_from(lookup: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let variable = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    lookup(variable)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 /// Runs `compresso recall` against an explicit home and working directory.
@@ -224,4 +231,26 @@ fn report_human(scope: &RecallScope, report: &RecallReport) -> String {
         human.push_str("note: a file, size, or time bound stopped the search early\n");
     }
     human
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    use super::home_dir_from;
+
+    #[test]
+    fn test_home_directory_comes_from_the_platform_variable() {
+        let variable = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        let home = home_dir_from(|name| (name == variable).then(|| OsString::from("/home/dev")));
+
+        assert_eq!(home, Some(PathBuf::from("/home/dev")));
+    }
+
+    #[test]
+    fn test_empty_or_missing_home_variable_is_not_a_home_directory() {
+        assert_eq!(home_dir_from(|_| Some(OsString::new())), None);
+        assert_eq!(home_dir_from(|_| None), None);
+    }
 }

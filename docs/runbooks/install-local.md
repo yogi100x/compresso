@@ -1,7 +1,9 @@
 # Local slice installer
 
-`installers/install-local.sh` installs the unsigned, checksum-verified D42 slice release at
-`~/.local/bin/compresso`. It does not sign in, collect telemetry, start services, or modify
+`installers/install-local.sh` installs the checksum-verified D42 slice release at
+`~/.local/bin/compresso`. The checksum manifest is signed by the main-branch CI workflow and the
+installer verifies that signature with `cosign` (ADR-0030); the binary itself carries no native
+platform signature until E12. It does not sign in, collect telemetry, start services, or modify
 Compresso, Claude, Codex, Cursor, or other assistant configuration.
 
 ## Supported platforms
@@ -33,20 +35,38 @@ installers/install-local.sh /path/to/compresso-0.1.0-aarch64-apple-darwin.tar.gz
 The sibling `SHA256SUMS` remains required. A directory must contain exactly one tarball matching
 the current platform.
 
+`SHA256SUMS.sigstore.json` must sit beside `SHA256SUMS`. The installer verifies it and stops if
+the file is absent, `cosign` is missing, or `cosign` rejects it.
+
+For artifacts you built on this machine there is no CI signature. Pass `--allow-unsigned` to
+install them on the checksum alone; the installer prints a warning that the publisher signature was
+not verified. The flag is refused for a URL source.
+
+```sh
+installers/install-local.sh --allow-unsigned /path/to/locally-built-artifacts
+```
+
 ## Install from a URL
 
 Pass an immutable, versioned `https://` tarball URL. Plain HTTP is rejected, redirects may not
-leave HTTPS with `curl`, and the `wget` fallback follows no redirect at all. The installer fetches `SHA256SUMS` from the same directory, so the checksum guards
-against corruption, not against a compromised origin:
+leave HTTPS with `curl`, and the `wget` fallback follows no redirect at all. The installer fetches
+`SHA256SUMS` and `SHA256SUMS.sigstore.json` from the same directory. The checksum guards against
+corruption; the signature guards against a substituted release, because it must come from the
+Compresso `ci.yml` workflow on `main` and that identity is fixed inside the installer.
+
+Signature verification requires [`cosign`](https://docs.sigstore.dev/cosign/system_config/installation/)
+3.0 or newer on `PATH`; CI signs with cosign 3, whose bundle format older releases do not read by
+default. A missing signature file, a missing `cosign`, or a rejected signature stops the install
+before anything is written. `cosign` contacts Sigstore's public infrastructure to refresh its
+trust root unless it is configured for offline verification.
 
 ```sh
 installers/install-local.sh \
   https://releases.example/compresso/0.1.0/compresso-0.1.0-aarch64-apple-darwin.tar.gz
 ```
 
-URL directory listing and mutable “latest” resolution are intentionally unsupported. D42 release
-artifacts are checksum-verified but unsigned; signature verification, notarization, and package
-managers arrive in E12.
+URL directory listing and mutable “latest” resolution are intentionally unsupported. Native
+platform signing, notarization, and package managers arrive in E12.
 
 ## Verification and replacement behavior
 

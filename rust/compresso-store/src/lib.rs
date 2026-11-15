@@ -233,6 +233,10 @@ impl Store {
     /// Opens the database at the platform-specific Compresso data path.
     pub fn open_default() -> Result<Self, StoreError> {
         let path = default_database_path()?;
+        // The default location is Compresso's own, so a store an earlier
+        // release left group- or world-readable is tightened here. An
+        // explicit path passed to `open` keeps the permissions its owner chose.
+        restrict_existing_store_permissions(&path);
         Self::open(&path)
     }
 
@@ -333,6 +337,48 @@ fn create_private_database_file(path: &Path) {
 
 #[cfg(not(unix))]
 fn create_private_database_file(_path: &Path) {}
+
+/// Removes group and other access from the default data directory, the
+/// database, and its WAL and shared-memory files when an earlier release
+/// created them with wider permissions.
+///
+/// Only permission bits are removed, never added. Symbolic links are skipped,
+/// the directory above the data directory is not touched, and a failure (for
+/// example a file owned by another user) leaves the entry as it was.
+#[cfg(unix)]
+fn restrict_existing_store_permissions(path: &Path) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let remove_bits = |entry: &Path, keep: u32| {
+        let Ok(metadata) = fs::symlink_metadata(entry) else {
+            return;
+        };
+        if metadata.file_type().is_symlink() {
+            return;
+        }
+        let current = metadata.permissions().mode() & 0o7777;
+        let restricted = current & keep;
+        if restricted != current {
+            let _ = fs::set_permissions(entry, fs::Permissions::from_mode(restricted));
+        }
+    };
+
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        remove_bits(parent, 0o700);
+    }
+    remove_bits(path, 0o600);
+    for suffix in ["-wal", "-shm"] {
+        let mut sidecar = path.as_os_str().to_owned();
+        sidecar.push(suffix);
+        remove_bits(Path::new(&sidecar), 0o600);
+    }
+}
+
+#[cfg(not(unix))]
+fn restrict_existing_store_permissions(_path: &Path) {}
 
 fn configure_connection(connection: &Connection) -> Result<(), StoreError> {
     connection.pragma_update(None, "foreign_keys", "ON")?;
@@ -543,6 +589,92 @@ mod tests {
         };
         assert_eq!(mode(&data), 0o755);
         assert_eq!(mode(&path), 0o640);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_default_store_tightens_an_existing_directory_and_database() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempdir().expect("temp directory should be created");
+        let share = directory.path().join("share");
+        let data = share.join("compresso");
+        fs::create_dir_all(&data).expect("data directory should be created");
+        let path = data.join("compresso.db");
+        let sidecars = [data.join("compresso.db-wal"), data.join("compresso.db-shm")];
+        for file in sidecars.iter().chain([&path]) {
+            fs::write(file, b"").expect("file should be created");
+            fs::set_permissions(file, fs::Permissions::from_mode(0o644))
+                .expect("file mode should be set");
+        }
+        for folder in [&share, &data] {
+            fs::set_permissions(folder, fs::Permissions::from_mode(0o755))
+                .expect("directory mode should be set");
+        }
+
+        restrict_existing_store_permissions(&path);
+
+        let mode = |path: &Path| {
+            fs::metadata(path)
+                .expect("metadata should load")
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode(&data), 0o700);
+        assert_eq!(mode(&path), 0o600);
+        for sidecar in &sidecars {
+            assert_eq!(mode(sidecar), 0o600);
+        }
+        assert_eq!(
+            mode(&share),
+            0o755,
+            "the shared parent of the data directory is not Compresso's to change"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_default_store_tightening_never_adds_permissions_or_follows_symlinks() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempdir().expect("temp directory should be created");
+        let data = directory.path().join("compresso");
+        fs::create_dir(&data).expect("data directory should be created");
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o500))
+            .expect("directory mode should be set");
+        let outside = directory.path().join("outside.db");
+        fs::write(&outside, b"").expect("outside file should be created");
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o644))
+            .expect("outside mode should be set");
+        let read_only = directory.path().join("read-only.db");
+        fs::write(&read_only, b"").expect("read-only file should be created");
+        fs::set_permissions(&read_only, fs::Permissions::from_mode(0o444))
+            .expect("read-only mode should be set");
+
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o700))
+            .expect("directory should be writable for setup");
+        std::os::unix::fs::symlink(&outside, data.join("compresso.db"))
+            .expect("symlink should be created");
+        fs::hard_link(&read_only, data.join("compresso.db-wal"))
+            .expect("hard link should be created");
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o500))
+            .expect("directory mode should be set");
+
+        restrict_existing_store_permissions(&data.join("compresso.db"));
+
+        let mode = |path: &Path| {
+            fs::metadata(path)
+                .expect("metadata should load")
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode(&data), 0o500, "owner bits are never added");
+        assert_eq!(mode(&outside), 0o644, "a symlink target is not changed");
+        assert_eq!(mode(&read_only), 0o400, "bits are only removed");
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o700))
+            .expect("directory should be removable");
     }
 
     #[test]

@@ -9,12 +9,17 @@ fail() {
 
 usage() {
   cat <<'EOF'
-Usage: installers/install-local.sh <source>
+Usage: installers/install-local.sh [--allow-unsigned] <source>
 
 <source> is one of:
   - a local directory containing one matching tarball and SHA256SUMS
   - a local compresso-<version>-<target>.tar.gz path
   - an https:// URL to an immutable versioned tarball
+
+SHA256SUMS.sigstore.json must accompany SHA256SUMS. It is verified with cosign
+(3.0 or newer) against the Compresso CI identity before anything is installed.
+--allow-unsigned skips that check for a local source only, for a build you
+made yourself; a URL source is never installed unsigned.
 EOF
 }
 
@@ -59,6 +64,32 @@ download() {
   fi
 }
 
+# The only publisher this installer trusts: the main-branch CI workflow of the
+# Compresso repository, as attested by GitHub's OIDC issuer through Sigstore.
+# These values are fixed here on purpose; nothing fetched from the release
+# origin can change who is trusted.
+signer_identity='https://github.com/yogi100x/compresso/.github/workflows/ci.yml@refs/heads/main'
+signer_issuer='https://token.actions.githubusercontent.com'
+signature_name=SHA256SUMS.sigstore.json
+
+verify_signature() {
+  command -v cosign >/dev/null 2>&1 ||
+    fail "cosign is required (3.0 or newer) to verify $signature_name (see https://docs.sigstore.dev/cosign/system_config/installation/)"
+  cosign verify-blob \
+    --bundle "$work_dir/$signature_name" \
+    --certificate-identity "$signer_identity" \
+    --certificate-oidc-issuer "$signer_issuer" \
+    "$work_dir/SHA256SUMS" >/dev/null 2>"$work_dir/cosign.err" || {
+    cat "$work_dir/cosign.err" >&2
+    fail "signature verification failed for SHA256SUMS (cosign 3.0 or newer is needed); nothing was installed"
+  }
+}
+
+allow_unsigned=false
+if [ "${1:-}" = --allow-unsigned ]; then
+  allow_unsigned=true
+  shift
+fi
 [ "$#" -eq 1 ] || {
   usage >&2
   exit 2
@@ -83,6 +114,8 @@ case "$source" in
     fail "plain HTTP sources are not accepted; use an https:// URL or a local path"
     ;;
   https://*)
+    [ "$allow_unsigned" = false ] ||
+      fail "--allow-unsigned applies only to local sources; a URL release must be signed"
     case "$source" in
       *\?* | *\#*) fail "artifact URL must not contain a query or fragment" ;;
     esac
@@ -94,6 +127,10 @@ case "$source" in
     esac
     download "$source" "$work_dir/$archive_name"
     download "$source_base/SHA256SUMS" "$work_dir/SHA256SUMS"
+    # A network release must prove its publisher: the checksum manifest comes
+    # from the same origin as the archive and proves nothing on its own.
+    download "$source_base/$signature_name" "$work_dir/$signature_name"
+    verify_signature
     ;;
   *)
     if [ -d "$source" ]; then
@@ -117,6 +154,15 @@ case "$source" in
     [ -f "$source_dir/SHA256SUMS" ] || fail "missing checksum manifest: $source_dir/SHA256SUMS"
     cp "$archive_source" "$work_dir/$archive_name"
     cp "$source_dir/SHA256SUMS" "$work_dir/SHA256SUMS"
+    if [ -f "$source_dir/$signature_name" ]; then
+      cp "$source_dir/$signature_name" "$work_dir/$signature_name"
+      verify_signature
+    elif [ "$allow_unsigned" = true ]; then
+      printf 'install-local: warning: no %s beside the local artifacts; the publisher signature was not verified, only the checksum\n' \
+        "$signature_name" >&2
+    else
+      fail "missing $signature_name beside the local artifacts; pass --allow-unsigned only for a build you made yourself"
+    fi
     ;;
 esac
 
