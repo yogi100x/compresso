@@ -1,0 +1,56 @@
+docs/plan/00-overview.md
+  s_e2da226df94350::t_1e10cbad54839b 59,94
+rust/compresso-cli/src/commands/engine.rs
+  s_e2da226df94350::t_ce2bee412c3fda 339,341-344,499
+  s_e2da226df94350::t_48872f4f205d52 7-8,340,345,347-353,355-360,362,366-374,495-498
+  s_e2da226df94350::t_a0fdf233cd4909 501,503-533
+  s_e2da226df94350::t_975c6bf9db1022 361,363-365,500,502
+rust/compresso-atlas/tests/queries_unfold_search_read.rs
+  s_e2da226df94350::t_436947904eb0af 353-361
+  s_e2da226df94350::t_c1e3d9cfcb23a2 320-341
+  s_e2da226df94350::t_a18f970a0d43c5 5-6,342-352,362-378
+  s_e2da226df94350::t_8e888be209748b 379
+decisions.md
+  s_e2da226df94350::t_4ec140edb7cdbb 105
+  s_e2da226df94350::t_bc297619b7e08a 106
+docs/plan/05-tickets.md
+  s_e2da226df94350::t_4ec140edb7cdbb 2970,2972,2974,2980,2983,2988
+  s_e2da226df94350::t_1e10cbad54839b 2701,2956-2969,2971,2973,2975-2979,2981-2982,2984-2987,2989,3005,3036-3038
+docs/plan/03-interfaces.md
+  s_e2da226df94350::t_019b3349393f59 294
+docs/plan/04-mcp-and-integrations.md
+  s_e2da226df94350::t_019b3349393f59 193,263
+  s_e2da226df94350::t_4ec140edb7cdbb 316
+rust/compresso-atlas/src/queries.rs
+  s_e2da226df94350::t_a18f970a0d43c5 763-768,774
+  s_e2da226df94350::t_c1e3d9cfcb23a2 1628-1662
+  s_e2da226df94350::t_7bdcdb1fbff9ac 16-20,220-221,1452-1462,1465-1482
+rust/compresso-mcp/src/tools/common.rs
+  s_e2da226df94350::t_e40a0c5b23884c 346-348,350-352
+  s_e2da226df94350::t_e910a3872f6f5d 349
+rust/compresso-cli/tests/cli_engine.rs
+  s_e2da226df94350::t_a0fdf233cd4909 166-203,205,209,212-213,215-216
+  s_e2da226df94350::t_ef67d04858adc6 206-208,210-211,214
+  s_e2da226df94350::t_ce2bee412c3fda 165,204
+rust/compresso-cli/src/commands/retrieval.rs
+  s_e2da226df94350::t_e40a0c5b23884c 685,736-742
+  s_e2da226df94350::t_a4c8d02e018712 743-745
+rust/compresso-atlas/src/lib.rs
+  s_e2da226df94350::t_3b65097975373d 14-16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8dcbede92039d2b12a53e2201eb0cd7a6a93c0fe",
+  "prompts": {},
+  "sessions": {
+    "s_e2da226df94350": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a4ace18-3be7-440c-984c-7cf6854c84ee",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
