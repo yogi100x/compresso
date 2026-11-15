@@ -2987,6 +2987,12 @@ Test cases:
 - `test_read_bounded_rejects_file_over_byte_limit_before_loading`
 - `test_plan_context_skips_body_of_file_grown_past_read_limit`
 
+Follow-up (D79), files rust/compresso-mcp/src/tools/engine_tools.rs, rust/compresso-atlas/src/queries.rs: MCP `compresso_compress` refuses text over 8 MiB with `input_too_large` before building the graph, without echoing it; staleness checks hash through a fixed buffer and never load a file whole. Test cases:
+- `test_compress_tool_refuses_oversized_input_without_echoing_it`
+- `test_staleness_hash_matches_unchanged_content_in_bounded_chunks`
+- `test_staleness_hash_detects_same_size_content_change`
+- `test_staleness_hash_stops_reading_a_file_that_grew_past_its_indexed_size`
+
 ## Execution order (flat, dependency-ordered)
 
 Slice: E1-01, E1-02, E1-03, E1-04, E1-05, E1-06, E2-01, E2-02, E2-02a, E3-01, E2-03, E3-02, E3-03, E2-04, E2-05, E2-06, E2-07, E2-08, E2-12, E2-13, E2-14, E3-04, E3-05, E3-06, E3-07, E3-08, E2-09, E7-01, E7-07, E2-10, E2-11, E3-09, E7-02, E3-10, E3-11, E3-12, E4-01, E4-02, E4-03, E4-04, E4-05, E5-01, E5-02, E5-03, E5-04, E5-05, E5-06, E2-15, E7-03, E7-04, E7-05, E7-06, E5-07, E6-01, E6-02, E6-03, E6-04, E6-05.

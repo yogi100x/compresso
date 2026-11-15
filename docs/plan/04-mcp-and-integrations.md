@@ -377,7 +377,7 @@ A pack is `task_pack_ready` only after it includes evidence from every distinct 
 
 Counts are reported for both `openai_o200k` (exact) and `anthropic_calibrated` (o200k × calibration factor, D14) so clients can attribute savings to their own provider.
 
-**Errors**: `invalid_arguments` (empty text) only. Compression failures, safety-check failures, and latency overruns are not errors: the engine fails open (D38) and returns the original text with `fallback_used: true` and a reason. Input larger than the engine's body limit (8 MiB) returns the original text with `fallback_used: true`, `fallback_reason: "input_too_large"`.
+**Errors**: `invalid_arguments` (empty text) and `input_too_large` (text over the engine's 8 MiB body limit, D79). Compression failures, safety-check failures, and latency overruns are not errors: the engine fails open (D38) and returns the original text with `fallback_used: true` and a reason. Input larger than the engine's body limit (8 MiB) is the one exception: it is refused with `input_too_large` before any graph is built or token counted, and the text is not returned, because the caller already holds it (D79, SEC-005). The session continues.
 
 **Predecessor compatibility (D7)**: replaces the predecessor `compress_text` tool. Accepts raw text, returns compressed string plus before/after token counts per provider — the same contract, with real-tokenizer counts.
 

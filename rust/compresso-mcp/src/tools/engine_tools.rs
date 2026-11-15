@@ -52,6 +52,15 @@ fn compress_tool(
     let mut arguments =
         checked_arguments(arguments, &["text", "mode", "max_tokens", "max_latency_ms"])?;
     let text = required_string(&mut arguments, "text")?;
+    // Refused before any graph is built or token is counted, and without
+    // returning the text: the caller already holds it, so echoing it would
+    // only double an input that is too large to be useful (SEC-005, D79).
+    if text.len() > MAX_COMPRESSION_INPUT_BYTES {
+        return Err(ToolFailure::new(
+            "input_too_large",
+            "compression input exceeds the 8 MiB input limit; the text was not processed and is unchanged on the caller's side.",
+        ));
+    }
     let requested_mode = optional_string(&mut arguments, "mode", false)?
         .map(|value| parse_mode(&value))
         .transpose()?
@@ -76,9 +85,7 @@ fn compress_tool(
         protected_kinds: Vec::new(),
     };
     let started = Instant::now();
-    let mut result = if text.len() > MAX_COMPRESSION_INPUT_BYTES {
-        engine.fail_open(graph, "input_too_large")
-    } else if effective_mode == Mode::Safe
+    let mut result = if effective_mode == Mode::Safe
         && std::env::var("COMPRESSO_TEST_FAIL_STRATEGY").as_deref() == Ok("collapse_logs")
     {
         engine.fail_open(graph, "strategy_error:collapse_logs")
