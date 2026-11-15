@@ -150,3 +150,16 @@ unless unpinned.empty?
 end
 
 puts "CI workflow actions are pinned to commit SHAs"
+
+# The installer decides what gets executed on a user's machine, so its tests
+# (including the fail-closed signature cases) must gate every change.
+installer_test = "installers/tests/install_local_test.sh"
+runs_installer_tests = jobs.values.any? do |job|
+  job.fetch("steps", []).any? { |step| step["run"].to_s.include?(installer_test) }
+end
+unless runs_installer_tests
+  warn "CI must run #{installer_test}"
+  exit 1
+end
+
+puts "CI runs the local installer tests"
