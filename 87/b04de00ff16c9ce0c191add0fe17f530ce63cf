@@ -1,0 +1,24 @@
+rust/compresso-core/src/tokens.rs
+  s_f3ae5462f697a3::t_24d2ced6773409 384-393,398-440
+  s_f3ae5462f697a3::t_651243399d1040 94
+  s_f3ae5462f697a3::t_2a59db38cdbc8a 394,396-397
+  s_f3ae5462f697a3::t_8a8c7a7a09c57a 395
+  s_f3ae5462f697a3::t_76e19b40736c04 85-86,88-89,92-93,95-103,107,114-119,122,135-144,454-456,464-465,483
+  s_f3ae5462f697a3::t_b0781a70daebcc 145-146
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "87b04de00ff16c9ce0c191add0fe17f530ce63cf",
+  "prompts": {},
+  "sessions": {
+    "s_f3ae5462f697a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7cc607c-32b2-4e30-bc4c-55ff6e2d2dd7",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
