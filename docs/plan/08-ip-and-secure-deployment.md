@@ -69,7 +69,7 @@ Per ip.md §6, mapped to the workspace: (1) auditable bootstrap installers (`ins
 
 ### 3.4 Bootstrap installer trust chain
 
-The installers must be small enough to read in one sitting and must only: detect platform/arch → fetch signed release metadata → download an immutable, versioned artifact → verify signature and digest (checksum-only for the unsigned slice installer, D42) → install atomically → print explicit next steps. They must not contain proprietary algorithms, collect anything, sign in automatically, modify assistant configuration automatically, or fetch mutable unsigned second-stage code. `install-local.sh` (slice) already conforms except for signatures, which arrive with E12-01/E12-02.
+The installers must be small enough to read in one sitting and must only: detect platform/arch → fetch signed release metadata → download an immutable, versioned artifact → verify signature and digest (the slice installer verifies the keyless-signed checksum manifest, ADR-0030; its binary carries no native signature, D42) → install atomically → print explicit next steps. They must not contain proprietary algorithms, collect anything, sign in automatically, modify assistant configuration automatically, or fetch mutable unsigned second-stage code. `install-local.sh` (slice) already conforms; native platform signatures arrive with E12-01/E12-02.
 
 ## 4. Rust release hardening
 

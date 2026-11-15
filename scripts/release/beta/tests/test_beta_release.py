@@ -15,6 +15,7 @@ import unittest
 REPO_ROOT = Path(__file__).resolve().parents[4]
 RELEASE_TOOL = REPO_ROOT / "scripts/release/beta/release.py"
 VERIFY_SCRIPT = REPO_ROOT / "scripts/release/beta/verify-release.sh"
+ANCESTRY_SCRIPT = REPO_ROOT / "scripts/release/beta/require-main-ancestry.sh"
 WORKFLOW = REPO_ROOT / ".github/workflows/package-beta.yml"
 TRUST_POLICY = REPO_ROOT / "scripts/release/beta/trust-policy.json"
 SCHEMA = REPO_ROOT / "schemas/release-manifest/beta-v1.json"
@@ -371,6 +372,65 @@ class BetaReleaseTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unexpected payload file", result.stderr)
+
+    def test_beta_release_commit_must_be_on_main(self) -> None:
+        repository = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        environment = {
+            "PATH": os.environ["PATH"],
+            "HOME": str(repository),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_AUTHOR_NAME": "Release Test",
+            "GIT_AUTHOR_EMAIL": "release-test@example.invalid",
+            "GIT_COMMITTER_NAME": "Release Test",
+            "GIT_COMMITTER_EMAIL": "release-test@example.invalid",
+        }
+
+        def git(*arguments: str) -> str:
+            return subprocess.run(
+                ("git", "-C", str(repository), *arguments),
+                check=True,
+                text=True,
+                capture_output=True,
+                env=environment,
+            ).stdout.strip()
+
+        git("init", "--quiet", "--initial-branch=main")
+        git("commit", "--quiet", "--allow-empty", "-m", "first")
+        released = git("rev-parse", "HEAD")
+        git("commit", "--quiet", "--allow-empty", "-m", "second")
+        git("update-ref", "refs/remotes/origin/main", "HEAD")
+        git("switch", "--quiet", "-c", "side", released)
+        git("commit", "--quiet", "--allow-empty", "-m", "unreviewed")
+        unreviewed = git("rev-parse", "HEAD")
+
+        def check(commit: str, reference: str = "refs/remotes/origin/main"):
+            return subprocess.run(
+                (str(ANCESTRY_SCRIPT), commit, reference),
+                cwd=repository,
+                text=True,
+                capture_output=True,
+                env=environment,
+            )
+
+        self.assertEqual(check(released).returncode, 0, check(released).stderr)
+        off_main = check(unreviewed)
+        self.assertNotEqual(off_main.returncode, 0)
+        self.assertIn("is not on", off_main.stderr)
+        missing_reference = check(released, "refs/remotes/origin/absent")
+        self.assertNotEqual(missing_reference.returncode, 0)
+        self.assertIn("cannot resolve", missing_reference.stderr)
+
+        workflow = WORKFLOW.read_text()
+        self.assertIn(
+            "git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main",
+            workflow,
+        )
+        self.assertIn(
+            'scripts/release/beta/require-main-ancestry.sh "${GITHUB_SHA}" '
+            "refs/remotes/origin/main",
+            workflow,
+        )
+        self.assertIn("test_beta_release_commit_must_be_on_main", workflow)
 
     def test_beta_symbols_private_and_native_signing_policy(self) -> None:
         cargo = (REPO_ROOT / "Cargo.toml").read_text()

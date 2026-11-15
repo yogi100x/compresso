@@ -251,6 +251,37 @@ async fn test_compress_tool_fail_open() {
 }
 
 #[tokio::test]
+async fn test_compress_tool_refuses_oversized_input_without_echoing_it() {
+    let _lock = compression_env_lock().await;
+    let temp = tempfile::tempdir().expect("temporary directory should be created");
+    let store = Store::open(&temp.path().join("compresso.db")).expect("store should open");
+    let mut harness = Harness::start(store).await;
+    let oversized = "a".repeat(compresso_core::MAX_COMPRESSION_INPUT_BYTES + 1);
+
+    let response = harness
+        .call("compresso_compress", json!({ "text": oversized }))
+        .await;
+
+    assert_tool_error(&response, "input_too_large");
+    let rendered = response.to_string();
+    assert!(
+        rendered.len() < 1024,
+        "the refusal must not carry the input back: {} bytes",
+        rendered.len()
+    );
+    assert!(rendered.contains("8 MiB"));
+
+    // The session survives the refusal and keeps compressing.
+    let result = successful_json(
+        harness
+            .call("compresso_compress", json!({ "text": "still working\n" }))
+            .await,
+    );
+    assert_eq!(result["schema_version"], 1);
+    harness.close().await;
+}
+
+#[tokio::test]
 async fn test_impact_tool_depth_two() {
     let fixture = ImpactFixture::new();
     let mut harness = Harness::start_for_root(fixture.store.clone(), fixture.root.clone()).await;

@@ -51,6 +51,9 @@ criterion = { version = "=0.5.1", default-features = false, features = ["cargo_b
 chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
 getrandom = "=0.3.4"
 tempfile = "3.14"
+# Reserved by docs/plan/01-stack-and-workspace.md §1 for later phases (device
+# credentials, entitlement bundles, proxy/updater). No crate depends on these
+# yet, so they are not built and do not appear in Cargo.lock.
 keyring = "3.6"
 jsonwebtoken = "9.3"
 reqwest = "0.12"

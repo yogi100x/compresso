@@ -396,11 +396,7 @@ pub fn outline_current(
         }
         .into());
     };
-    let current = fs::read(&resolved).map_err(|source| QueryError::Read {
-        path: resolved,
-        source,
-    })?;
-    let stale = blake3::hash(&current).to_hex().as_str() != indexed.hash;
+    let stale = !file_matches_index(&resolved, indexed.size_bytes, &indexed.hash)?;
     Ok(CurrentOutline {
         outline,
         stale,
@@ -420,11 +416,7 @@ pub fn repository_stale(store: &Store, repo: RepoId) -> Result<bool, AtlasError>
             | Err(AtlasError::Query(QueryError::NotAFile { .. })) => return Ok(true),
             Err(error) => return Err(error),
         };
-        let current = fs::read(&resolved).map_err(|source| QueryError::Read {
-            path: resolved,
-            source,
-        })?;
-        if blake3::hash(&current).to_hex().as_str() != indexed.hash {
+        if !file_matches_index(&resolved, indexed.size_bytes, &indexed.hash)? {
             return Ok(true);
         }
     }
@@ -1448,6 +1440,57 @@ fn ensure_contained(root: &Path, resolved: &Path) -> Result<(), AtlasError> {
     Ok(())
 }
 
+/// Chunk size for staleness hashing; the only buffer that check allocates.
+const STALENESS_HASH_BUFFER_BYTES: usize = 64 * 1024;
+
+/// Reports whether the file at `path` still has the indexed size and hash.
+///
+/// The file is never loaded whole: a size that differs from the index is
+/// stale without reading, and otherwise the content is hashed through one
+/// fixed buffer.
+fn file_matches_index(
+    path: &Path,
+    indexed_size: u64,
+    indexed_hash: &str,
+) -> Result<bool, QueryError> {
+    let read_error = |source| QueryError::Read {
+        path: path.to_path_buf(),
+        source,
+    };
+    let mut file = fs::File::open(path).map_err(read_error)?;
+    if file.metadata().map_err(read_error)?.len() != indexed_size {
+        return Ok(false);
+    }
+    content_matches_index(&mut file, indexed_size, indexed_hash).map_err(read_error)
+}
+
+/// Hashes `reader` in fixed chunks and compares it with the indexed size and
+/// hash. Reading stops as soon as the content is longer than the index
+/// recorded, so a file that grows during the check cannot extend it.
+fn content_matches_index(
+    reader: &mut impl io::Read,
+    indexed_size: u64,
+    indexed_hash: &str,
+) -> io::Result<bool> {
+    let mut hasher = blake3::Hasher::new();
+    let mut buffer = vec![0_u8; STALENESS_HASH_BUFFER_BYTES];
+    let mut total = 0_u64;
+    loop {
+        let read = match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        total = total.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+        if total > indexed_size {
+            return Ok(false);
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(total == indexed_size && hasher.finalize().to_hex().as_str() == indexed_hash)
+}
+
 fn read_utf8(path: &Path) -> Result<String, QueryError> {
     read_utf8_capped(path, MAX_READ_FILE_BYTES)
 }
@@ -1630,7 +1673,83 @@ fn render_directory(directory: &DirectoryNode, depth: usize, output: &mut String
 mod tests {
     use std::fs;
 
-    use super::{QueryError, read_utf8_capped};
+    use super::{QueryError, STALENESS_HASH_BUFFER_BYTES, content_matches_index, read_utf8_capped};
+
+    /// Serves `total` zero bytes and records how it was read.
+    struct MeteredZeros {
+        remaining: u64,
+        served: u64,
+        largest_request: usize,
+    }
+
+    impl MeteredZeros {
+        fn new(total: u64) -> Self {
+            Self {
+                remaining: total,
+                served: 0,
+                largest_request: 0,
+            }
+        }
+    }
+
+    impl std::io::Read for MeteredZeros {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.largest_request = self.largest_request.max(buffer.len());
+            let count = u64::try_from(buffer.len())
+                .unwrap_or(u64::MAX)
+                .min(self.remaining);
+            let count_usize = usize::try_from(count).expect("count fits the buffer");
+            buffer[..count_usize].fill(0);
+            self.remaining -= count;
+            self.served += count;
+            Ok(count_usize)
+        }
+    }
+
+    fn hash_of_zeros(length: usize) -> String {
+        blake3::hash(&vec![0_u8; length]).to_hex().to_string()
+    }
+
+    #[test]
+    fn test_staleness_hash_matches_unchanged_content_in_bounded_chunks() {
+        let length = 3 * STALENESS_HASH_BUFFER_BYTES + 17;
+        let mut reader = MeteredZeros::new(length as u64);
+
+        let matches = content_matches_index(&mut reader, length as u64, &hash_of_zeros(length))
+            .expect("content should hash");
+
+        assert!(matches);
+        assert!(reader.largest_request <= STALENESS_HASH_BUFFER_BYTES);
+    }
+
+    #[test]
+    fn test_staleness_hash_detects_same_size_content_change() {
+        let length = 4096;
+        let mut reader = MeteredZeros::new(length);
+        let other = blake3::hash(&vec![1_u8; 4096]).to_hex().to_string();
+
+        let matches =
+            content_matches_index(&mut reader, length, &other).expect("content should hash");
+
+        assert!(!matches);
+    }
+
+    #[test]
+    fn test_staleness_hash_stops_reading_a_file_that_grew_past_its_indexed_size() {
+        let indexed = 1024_u64;
+        // A file that grew to 1 TiB after it was indexed.
+        let mut reader = MeteredZeros::new(1 << 40);
+
+        let matches = content_matches_index(&mut reader, indexed, &hash_of_zeros(1024))
+            .expect("content should hash");
+
+        assert!(!matches, "a longer file no longer matches the index");
+        assert!(
+            reader.served <= indexed + STALENESS_HASH_BUFFER_BYTES as u64,
+            "read {} bytes of a file indexed at {indexed}",
+            reader.served
+        );
+    }
 
     #[test]
     fn test_read_utf8_capped_accepts_file_at_limit() {
