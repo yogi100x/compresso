@@ -2520,6 +2520,7 @@ Test cases:
 Owner: R2 · Estimate: 3d · Depends: E16-05
 Files: rust/compresso-atlas/src/resolve/, rust/compresso-store/migrations/0005_import_resolution.sql
 Description: Persist relative/package/workspace/alias tri-state resolution.
+Partly delivered 2026-11-15 without the 0005 migration (`rust/compresso-atlas/src/rust_imports.rs`): Rust `use` paths resolve across crates of one Cargo workspace and to module files, external and same-file imports no longer make `impact` incomplete, and `node:` built-ins are external. Tests: `test_rust_imports_resolve_to_the_file_that_defines_the_path`, `test_same_named_crate_in_another_workspace_is_not_the_import_target`, `test_external_and_same_file_imports_do_not_count_against_completeness`. Still open: persisted resolution table and migration, alias cycles, Python and TypeScript package resolution, rename invalidation, and the remaining test cases below.
 Acceptance criteria:
 - D60 reserves 0005; deterministic; completeness surfaced; transactional reindex.
 Test cases:

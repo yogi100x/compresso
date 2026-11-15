@@ -439,9 +439,9 @@ fn execute_impact(
         })
         .collect::<Vec<_>>();
     let unresolved_sources = store
-        .unresolved_edge_sources(repository.id)
+        .incomplete_edge_sources(repository.id)
         .map_err(map_store_error)?;
-    let complete = unresolved_sources.is_empty();
+    let complete = unresolved_sources.is_empty() && !truncated;
     let data = json!({
         "path": report.path,
         "dependents": dependents,
