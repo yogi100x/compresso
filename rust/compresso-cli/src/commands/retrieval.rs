@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args, ValueEnum};
 use compresso_atlas::{
-    AtlasError, BoundedRead, ContextPlan, QueryError, SearchOptions, UnfoldResult, impact, outline,
-    plan_context, read_bounded, repo_map, search_with_diagnostics, unfold,
+    AtlasError, BoundedRead, ContextPlan, QueryError, SearchOptions, UnfoldResult, file_line_count,
+    impact, outline, plan_context, read_bounded, repo_map, search_with_diagnostics, unfold,
 };
 use compresso_core::{TokenProvider, counter_for};
 use compresso_store::{
@@ -248,9 +248,11 @@ fn execute_read(
         }
         (Some(start_line), Some(end_line)) => Some((start_line, end_line)),
         (Some(start_line), None) => {
-            let full = read_bounded(&repository.root, &arguments.path, None, usize::MAX, counter)
-                .map_err(map_atlas_error)?;
-            Some((start_line, full.end_line))
+            // Only the line count is needed to close the range; a full read
+            // would tokenize the whole file to learn it.
+            let total_lines =
+                file_line_count(&repository.root, &arguments.path).map_err(map_atlas_error)?;
+            Some((start_line, total_lines))
         }
     };
     let result = read_bounded(
@@ -453,7 +455,7 @@ fn execute_impact(
 }
 
 fn render_bounded_read(result: BoundedRead) -> Rendered {
-    let data = json!({
+    let mut data = json!({
         "path": result.path,
         "content": result.content.clone(),
         "start_line": result.start_line,
@@ -467,6 +469,9 @@ fn render_bounded_read(result: BoundedRead) -> Rendered {
         "truncated": result.truncated,
         "elision": result.elision,
     });
+    if result.file_tokens_estimated {
+        data["file_tokens_total_estimated"] = Value::Bool(true);
+    }
     rendered(data, result.content)
 }
 
@@ -527,8 +532,7 @@ fn render_context(task: String, plan: ContextPlan) -> Rendered {
 }
 
 fn validate_file_boundary(repository: &RepoRecord, path: &str) -> Result<(), RetrievalError> {
-    let counter = counter_for(TokenProvider::OpenAiO200k);
-    read_bounded(&repository.root, path, None, 0, counter)
+    file_line_count(&repository.root, path)
         .map(|_| ())
         .map_err(map_atlas_error)
 }

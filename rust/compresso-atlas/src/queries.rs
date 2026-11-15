@@ -109,6 +109,9 @@ pub struct BoundedRead {
     pub file_lines_total: u32,
     pub range_clamped: bool,
     pub file_tokens_total: usize,
+    /// `file_tokens_total` is an estimate: the file is larger than
+    /// [`EXACT_TOKEN_COUNT_MAX_BYTES`], so it was not tokenized whole.
+    pub file_tokens_estimated: bool,
     pub tokens_used: usize,
     pub token_provider: TokenProvider,
     pub truncated: bool,
@@ -533,6 +536,60 @@ pub(crate) fn search_hits(
         .collect()
 }
 
+/// Largest text whose token total is counted exactly by a read. It equals
+/// the scanner's file-size limit, so every indexed file keeps an exact
+/// total; a larger file reports an estimate instead of being tokenized whole.
+pub const EXACT_TOKEN_COUNT_MAX_BYTES: usize = 1_000_000;
+
+/// Counts the lines of one canonicalized in-root file without tokenizing it.
+pub fn file_line_count(root: &Path, path: &str) -> Result<u32, AtlasError> {
+    let root = canonical_query_root(root)?;
+    let ResolvedEntry::File(resolved) = resolve_under_root(&root, path)? else {
+        return Err(QueryError::NotFound {
+            path: root.join(path),
+        }
+        .into());
+    };
+    Ok(line_count(&read_utf8(&resolved)?))
+}
+
+/// The token total of `text`: exact up to [`EXACT_TOKEN_COUNT_MAX_BYTES`],
+/// otherwise the byte-length estimate, flagged as such.
+fn token_total(text: &str, counter: &dyn TokenCounter) -> (usize, bool) {
+    if text.len() <= EXACT_TOKEN_COUNT_MAX_BYTES {
+        (counter.count(text), false)
+    } else {
+        (text.len().div_ceil(4), true)
+    }
+}
+
+/// The longest prefix of `text` within `budget` tokens, and whether anything
+/// was cut. The text is examined through a window that doubles until it
+/// holds more than the budget, so the work follows the size of the answer
+/// instead of the size of the text.
+fn fit_within_budget(text: &str, budget: usize, counter: &dyn TokenCounter) -> (String, bool) {
+    if budget == usize::MAX {
+        return (text.to_owned(), false);
+    }
+    // About four bytes per token is typical; start well above the budget so
+    // ordinary reads settle in one or two steps.
+    let mut window = budget.saturating_mul(16).max(4 * 1024);
+    loop {
+        let mut end = window.min(text.len());
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let candidate = &text[..end];
+        if counter.count(candidate) > budget {
+            return (prefix_within_budget(candidate, budget, counter), true);
+        }
+        if end == text.len() {
+            return (text.to_owned(), false);
+        }
+        window = window.saturating_mul(2);
+    }
+}
+
 /// Reads one canonicalized in-root file or inclusive line range under a hard budget.
 pub fn read_bounded(
     root: &Path,
@@ -549,7 +606,6 @@ pub fn read_bounded(
         .into());
     };
     let source = read_utf8(&resolved)?;
-    let file_tokens_total = counter.count(&source);
     let total_lines = line_count(&source);
     let (start_line, selected_end_line, range_clamped, selected) = match range {
         Some((start_line, end_line)) => {
@@ -565,23 +621,37 @@ pub fn read_bounded(
         None if total_lines == 0 => (0, 0, false, ""),
         None => (1, total_lines, false, source.as_str()),
     };
-    let selected_tokens = counter.count(selected);
-    let (content, truncated) = if selected_tokens <= budget_tokens {
-        (selected.to_owned(), false)
+    let (content, truncated) = fit_within_budget(selected, budget_tokens, counter);
+    let whole_file_returned = !truncated && content.len() == source.len();
+    let (file_tokens_total, file_tokens_estimated) = token_total(&source, counter);
+    let tokens_used = if whole_file_returned {
+        file_tokens_total
+    } else if content.len() <= EXACT_TOKEN_COUNT_MAX_BYTES {
+        counter.count(&content)
     } else {
-        (prefix_within_budget(selected, budget_tokens, counter), true)
+        // Only an unbudgeted internal read returns this much; its callers
+        // use the totals, not an exact count of the returned text.
+        content.len().div_ceil(4)
     };
-    let tokens_used = counter.count(&content);
+    let (selected_tokens, selected_estimated) = if !truncated {
+        (tokens_used, false)
+    } else if selected.len() == source.len() {
+        (file_tokens_total, file_tokens_estimated)
+    } else {
+        token_total(selected, counter)
+    };
     let end_line = if truncated {
         included_end_line(start_line, &content).min(selected_end_line)
     } else {
         selected_end_line
     };
     let elision = truncated.then(|| {
+        // An overage taken from an estimated total is worded as one.
         format!(
-            "[lines {}-{} elided: {} tokens over budget]",
+            "[lines {}-{} elided: {}{} tokens over budget]",
             end_line.max(start_line),
             selected_end_line,
+            if selected_estimated { "about " } else { "" },
             selected_tokens.saturating_sub(tokens_used)
         )
     });
@@ -594,6 +664,7 @@ pub fn read_bounded(
         file_lines_total: total_lines,
         range_clamped,
         file_tokens_total,
+        file_tokens_estimated,
         tokens_used,
         token_provider: counter.provider(),
         truncated,
@@ -1789,6 +1860,191 @@ mod tests {
                 "size {size}, modified {modified:?}"
             );
         }
+    }
+
+    /// Counts like the exact tokenizer and records how much text it was
+    /// asked to count, which is the work a read does.
+    struct MeteredCounter {
+        inner: &'static dyn compresso_core::TokenCounter,
+        bytes_counted: std::sync::atomic::AtomicUsize,
+    }
+
+    impl MeteredCounter {
+        fn new() -> Self {
+            Self {
+                inner: compresso_core::counter_for(compresso_core::TokenProvider::OpenAiO200k),
+                bytes_counted: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn bytes(&self) -> usize {
+            self.bytes_counted
+                .load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl compresso_core::TokenCounter for MeteredCounter {
+        fn provider(&self) -> compresso_core::TokenProvider {
+            self.inner.provider()
+        }
+
+        fn count(&self, text: &str) -> usize {
+            self.bytes_counted
+                .fetch_add(text.len(), std::sync::atomic::Ordering::Relaxed);
+            self.inner.count(text)
+        }
+    }
+
+    fn numbered_lines(total_bytes: usize) -> String {
+        let mut text = String::with_capacity(total_bytes + 64);
+        let mut line = 0_u32;
+        while text.len() < total_bytes {
+            line += 1;
+            text.push_str(&format!(
+                "line {line}: handler finished request with status ok\n"
+            ));
+        }
+        text
+    }
+
+    #[test]
+    fn test_read_of_a_large_file_counts_about_what_it_returns_not_the_whole_file() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let root = fs::canonicalize(directory.path()).expect("root should canonicalize");
+        let source = numbered_lines(4 * 1024 * 1024);
+        fs::write(root.join("large.log"), &source).expect("file should be written");
+
+        let budgeted = MeteredCounter::new();
+        let read = super::read_bounded(&root, "large.log", None, 500, &budgeted)
+            .expect("read should succeed");
+        assert!(read.truncated);
+        assert!(read.tokens_used <= 500 && read.tokens_used > 400);
+        assert!(source.starts_with(&read.content));
+        assert!(
+            read.file_tokens_estimated,
+            "a 4 MiB total is not counted exactly"
+        );
+        let elision = read
+            .elision
+            .as_deref()
+            .expect("a truncated read explains itself");
+        assert!(
+            elision.contains("about ") && elision.ends_with("tokens over budget]"),
+            "an estimated overage must be worded as approximate: {elision}"
+        );
+        assert!(
+            budgeted.bytes() < source.len() / 8,
+            "counted {} bytes to return {} bytes",
+            budgeted.bytes(),
+            read.content.len()
+        );
+
+        let ranged = MeteredCounter::new();
+        let read = super::read_bounded(&root, "large.log", Some((10, 29)), 500, &ranged)
+            .expect("range read should succeed");
+        assert!(!read.truncated);
+        assert_eq!((read.start_line, read.end_line), (10, 29));
+        assert!(
+            ranged.bytes() < 64 * 1024,
+            "counted {} bytes for twenty lines",
+            ranged.bytes()
+        );
+    }
+
+    #[test]
+    fn test_bounded_read_returns_the_same_prefix_as_counting_the_whole_selection() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let root = fs::canonicalize(directory.path()).expect("root should canonicalize");
+        let source = numbered_lines(300 * 1024);
+        fs::write(root.join("mid.log"), &source).expect("file should be written");
+        let counter = compresso_core::counter_for(compresso_core::TokenProvider::OpenAiO200k);
+
+        for budget in [1, 37, 500, 4_000] {
+            let read = super::read_bounded(&root, "mid.log", None, budget, counter)
+                .expect("read should succeed");
+            let expected = super::prefix_within_budget(&source, budget, counter);
+
+            assert_eq!(read.content, expected, "budget {budget}");
+            assert!(read.truncated);
+            // Up to the exact-count limit the total is the tokenizer's own.
+            assert!(!read.file_tokens_estimated);
+            assert_eq!(read.file_tokens_total, counter.count(&source));
+        }
+    }
+
+    #[test]
+    fn test_growing_window_stays_within_budget_and_close_to_counting_everything() {
+        let counter = compresso_core::counter_for(compresso_core::TokenProvider::OpenAiO200k);
+        let code = "fn handle(request: &Request) -> Result<Response, Error> {\n    let value = request.header(\"x-id\")?;\n    Ok(Response::new(value))\n}\n".repeat(700);
+        let compact_json = format!(
+            "[{}]",
+            (0..6000)
+                .map(|index| format!("{{\"id\":{index},\"ok\":true}}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let cjk =
+            "圧縮は完了しました。次の手順を実行してください、設定を確認します。\n".repeat(900);
+        let long_words = (0..4000)
+            .map(|index| format!("{}{index} ", "supercalifragilistic".repeat(1 + index % 7)))
+            .collect::<String>();
+        let blank_heavy = "alpha\n\n\n\n   \t  beta\n\n".repeat(5000);
+        let mixed = format!(
+            "{}\n{}\n{}",
+            "word ".repeat(9000),
+            "x".repeat(30_000),
+            "9".repeat(20_000)
+        );
+        let shapes = [
+            ("code", code),
+            ("compact json", compact_json),
+            ("cjk prose", cjk),
+            ("long words", long_words),
+            ("blank heavy", blank_heavy),
+            ("mixed", mixed),
+        ];
+
+        for (name, text) in &shapes {
+            let whole = counter.count(text);
+            for budget in [1, 2, 99, 1_000, 7_777, 20_000] {
+                let (content, truncated) = super::fit_within_budget(text, budget, counter);
+                let (expected, expected_truncated) = if whole <= budget {
+                    (text.clone(), false)
+                } else {
+                    (super::prefix_within_budget(text, budget, counter), true)
+                };
+
+                assert_eq!(truncated, expected_truncated, "{name}, budget {budget}");
+                // Token counts are not strictly monotonic in the length of a
+                // prefix, so the two searches can settle a few bytes apart.
+                // What a read promises is a prefix within the budget.
+                assert!(text.starts_with(&content), "{name}, budget {budget}");
+                assert!(counter.count(&content) <= budget, "{name}, budget {budget}");
+                assert!(
+                    content.len().abs_diff(expected.len()) <= 16,
+                    "{name}, budget {budget}: {} bytes against {}",
+                    content.len(),
+                    expected.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_file_line_count_matches_a_full_read_without_counting_tokens() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let root = fs::canonicalize(directory.path()).expect("root should canonicalize");
+        fs::write(root.join("lines.txt"), "one\ntwo\nthree").expect("file should be written");
+        fs::write(root.join("empty.txt"), "").expect("file should be written");
+
+        assert_eq!(
+            super::file_line_count(&root, "lines.txt").expect("lines should count"),
+            3
+        );
+        assert_eq!(
+            super::file_line_count(&root, "empty.txt").expect("lines should count"),
+            0
+        );
     }
 
     #[test]
