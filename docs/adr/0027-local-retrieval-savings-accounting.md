@@ -40,3 +40,12 @@ Users can inspect aggregate, per-repository, and bounded newest-first
 per-operation results without conflating measured compression with modeled
 retrieval. Results remain honest but are not a substitute for paired
 evaluation against a controlled baseline.
+
+Scope of the ledger: retrieval operations are recorded by the MCP server,
+where a session exists to attribute them to. The one-shot CLI retrieval
+commands (`map`, `search`, `read`, `outline`, `unfold`, `context`, `impact`)
+write no ledger row, so `compresso stats` reports retrieval savings for MCP
+sessions only; CLI `compress` is recorded. Among MCP tools only a task-ready
+`compresso_context` pack claims avoided tokens; the other retrieval tools
+record the tokens they served with a raw baseline equal to that, so they
+add to pack totals and avoid nothing.
