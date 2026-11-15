@@ -1,6 +1,6 @@
 use compresso_atlas::{
-    SearchHit, SearchOptions, is_scanner_excluded, plan_context, read_bounded, repository_stale,
-    search_with_diagnostics, validate_search_query,
+    SearchHit, SearchOptions, file_line_count, is_scanner_excluded, plan_context, read_bounded,
+    repository_stale, search_with_diagnostics, validate_search_query,
 };
 use compresso_core::{TokenCounter, operation_identity};
 use compresso_store::{Store, SymbolRecord};
@@ -165,7 +165,7 @@ fn read_tool(
         ));
     }
     let counter = navigation_counter();
-    let range = read_range(&repository.root, &path, start_line, end_line, counter)?;
+    let range = read_range(&repository.root, &path, start_line, end_line)?;
     if gate {
         return read_gate(
             store,
@@ -181,7 +181,8 @@ fn read_tool(
     let result = read_bounded(&repository.root, &path, range, max_tokens, counter)
         .map_err(map_atlas_error)?;
     let operation_id = operation_identity().id;
-    Ok(json!({
+    let file_tokens_estimated = result.file_tokens_estimated;
+    let mut payload = json!({
         "schema_version": 1,
         "operation_id": operation_id,
         "path": result.path,
@@ -201,7 +202,11 @@ fn read_tool(
         "token_provider": result.token_provider,
         "truncated": result.truncated,
         "elision": result.elision
-    }))
+    });
+    if file_tokens_estimated {
+        payload["file_tokens_total_estimated"] = serde_json::Value::Bool(true);
+    }
+    Ok(payload)
 }
 
 fn read_range(
@@ -209,15 +214,13 @@ fn read_range(
     path: &str,
     start_line: Option<u32>,
     end_line: Option<u32>,
-    counter: &dyn TokenCounter,
 ) -> Result<Option<(u32, u32)>, ToolFailure> {
     match (start_line, end_line) {
         (None, None) => Ok(None),
         (Some(start_line), Some(end_line)) => Ok(Some((start_line, end_line))),
         (Some(start_line), None) => {
-            let full =
-                read_bounded(root, path, None, usize::MAX, counter).map_err(map_atlas_error)?;
-            Ok(Some((start_line, full.end_line)))
+            let total_lines = file_line_count(root, path).map_err(map_atlas_error)?;
+            Ok(Some((start_line, total_lines)))
         }
         (None, Some(_)) => Err(ToolFailure::invalid(
             "argument 'end_line' requires 'start_line'.",
@@ -282,13 +285,16 @@ fn read_gate(
             )
         },
     );
-    let gate = json!({
+    let mut gate = json!({
         "worth_reading": worth_reading,
         "reason": reason,
         "file_tokens_total": read.file_tokens_total,
         "recommended_budget": recommended_budget,
         "cheaper_alternative": cheaper_alternative
     });
+    if read.file_tokens_estimated {
+        gate["file_tokens_total_estimated"] = serde_json::Value::Bool(true);
+    }
     let tokens_used =
         counter.count(&serde_json::to_string(&gate).map_err(|_| ToolFailure::internal())?);
     let operation_id = operation_identity().id;
