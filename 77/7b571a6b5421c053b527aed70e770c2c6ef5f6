@@ -1,0 +1,21 @@
+.github/workflows/package-beta.yml
+  s_f3ae5462f697a3::t_ab002ac9bfb896 51-54
+docs/adr/0030-keyless-signed-slice-checksums.md
+  s_f3ae5462f697a3::t_721f4c257bf40b 82-85,87-93
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "777b571a6b5421c053b527aed70e770c2c6ef5f6",
+  "prompts": {},
+  "sessions": {
+    "s_f3ae5462f697a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7cc607c-32b2-4e30-bc4c-55ff6e2d2dd7",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
