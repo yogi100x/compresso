@@ -26,6 +26,8 @@ jobs:
         run: scripts/package-tarball.sh --self-test
       - name: Test private beta release contracts
         run: python3 scripts/release/beta/tests/test_beta_release.py
+      - name: Test local installer
+        run: installers/tests/install_local_test.sh
 
   security:
     name: Security gates

@@ -344,7 +344,8 @@ fn normalize_line(line: &str) -> String {
         let matched = iso8601_len(bytes, cursor)
             .map(|length| (length, "<iso8601>"))
             .or_else(|| uuid_len(bytes, cursor).map(|length| (length, "<uuid>")))
-            .or_else(|| hex_token_len(bytes, cursor).map(|length| (length, "<hex>")));
+            .or_else(|| hex_token_len(bytes, cursor).map(|length| (length, "<hex>")))
+            .or_else(|| duration_len(bytes, cursor).map(|length| (length, "<duration>")));
 
         if let Some((length, marker)) = matched {
             normalized.push_str(&line[copied_until..cursor]);
@@ -424,6 +425,40 @@ fn uuid_len(bytes: &[u8], start: usize) -> Option<usize> {
         }
     }
     Some(UUID_LENGTH)
+}
+
+/// Matches an elapsed time such as `3.01s`, `950ms`, or `120µs`.
+///
+/// Only sub-minute time units are recognised, written directly after the
+/// number, so memory sizes (`512m`), versions (`1.2.3`), and identifiers
+/// (`build1s`) keep their exact text.
+fn duration_len(bytes: &[u8], start: usize) -> Option<usize> {
+    const UNITS: [&[u8]; 5] = [b"ms", "µs".as_bytes(), b"us", b"ns", b"s"];
+
+    if !is_boundary_before(bytes, start) || (start > 0 && bytes[start - 1] == b'.') {
+        return None;
+    }
+    let mut end = start;
+    while bytes.get(end).is_some_and(u8::is_ascii_digit) {
+        end += 1;
+    }
+    if end == start {
+        return None;
+    }
+    if bytes.get(end) == Some(&b'.') {
+        let fraction_start = end + 1;
+        let mut fraction_end = fraction_start;
+        while bytes.get(fraction_end).is_some_and(u8::is_ascii_digit) {
+            fraction_end += 1;
+        }
+        if fraction_end == fraction_start {
+            return None;
+        }
+        end = fraction_end;
+    }
+    let unit = UNITS.iter().find(|unit| bytes[end..].starts_with(unit))?;
+    let end = end + unit.len();
+    is_boundary_after(bytes, end).then_some(end - start)
 }
 
 fn hex_token_len(bytes: &[u8], start: usize) -> Option<usize> {
@@ -840,6 +875,49 @@ mod tests {
             .expect("unprofitable collapse should be skipped");
         assert_eq!(output.graph, graph);
         assert!(output.notes.iter().any(|note| note.contains("skipped")));
+    }
+
+    #[test]
+    fn test_lines_differing_only_in_a_duration_collapse() {
+        let durations = ["3.01s", "4.2s", "950ms", "12s", "0.5ms", "120µs", "7ns"];
+        let content = durations
+            .iter()
+            .map(|duration| format!("    Finished dev [unoptimized] target(s) in {duration}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let graph = graph_with(node("log", NodeKind::ToolResponse, &content, false));
+
+        let output = CollapseLogs
+            .execute(&graph, &budget())
+            .expect("duration differences should normalize");
+
+        let collapsed = &output.graph.nodes[0].content;
+        assert_eq!(collapsed.lines().count(), 1);
+        assert!(collapsed.contains("[×7 repeats]"));
+        assert!(
+            collapsed.starts_with("    Finished dev [unoptimized] target(s) in 3.01s"),
+            "the first line is kept verbatim as the representative: {collapsed}"
+        );
+    }
+
+    #[test]
+    fn test_sizes_versions_and_identifiers_are_not_durations() {
+        for content in [
+            "heap limit 512m\nheap limit 256m\nheap limit 128m",
+            "resolved pkg 1.2.3\nresolved pkg 1.2.4\nresolved pkg 1.2.5",
+            "stage build1s\nstage build2s\nstage build3s",
+            "shard 10.0.0.5s\nshard 10.0.0.6s\nshard 10.0.0.7s",
+            "waited 5 s\nwaited 6 s\nwaited 7 s",
+            "column 3sx\ncolumn 4sx\ncolumn 5sx",
+        ] {
+            let graph = graph_with(node("log", NodeKind::ToolResponse, content, false));
+
+            let output = CollapseLogs
+                .execute(&graph, &budget())
+                .expect("non-duration fields must remain exact");
+
+            assert_eq!(output.graph, graph, "collapsed: {content:?}");
+        }
     }
 
     #[test]

@@ -66,6 +66,8 @@ pub enum RootCommand {
     Impact(ImpactArgs),
     Compress(CompressArgs),
     Explain(ExplainArgs),
+    /// Summarize locally recorded savings. Covers MCP sessions and `compress`;
+    /// one-shot CLI retrieval commands are not recorded.
     Stats(StatsArgs),
     /// Search past local session transcripts without a persistent index.
     Recall(RecallArgs),
