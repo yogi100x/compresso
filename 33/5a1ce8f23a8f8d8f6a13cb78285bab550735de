@@ -1,0 +1,31 @@
+rust/compresso-atlas/src/queries.rs
+  s_f3ae5462f697a3::t_c5fb2fa3a07b57 1766-1793
+  s_f3ae5462f697a3::t_777ed3cf736933 399,419,1446-1485,1487-1489,1499-1515
+  s_f3ae5462f697a3::t_ae9a1b505afc66 1492
+  s_f3ae5462f697a3::t_3b1a56027ed439 1765
+rust/compresso-atlas/tests/queries_map_outline.rs
+  s_f3ae5462f697a3::t_c5fb2fa3a07b57 232-293
+  s_f3ae5462f697a3::t_9bd2774c926a9c 231
+decisions.md
+  s_f3ae5462f697a3::t_e57e135ad53ec1 108
+docs/plan/04-mcp-and-integrations.md
+  s_f3ae5462f697a3::t_309f734e909a1c 68
+security_best_practices_report.md
+  s_f3ae5462f697a3::t_be1fbbd87fef33 21
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "335a1ce8f23a8f8d8f6a13cb78285bab550735de",
+  "prompts": {},
+  "sessions": {
+    "s_f3ae5462f697a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7cc607c-32b2-4e30-bc4c-55ff6e2d2dd7",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
