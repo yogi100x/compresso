@@ -1,0 +1,19 @@
+docs/adr/0030-keyless-signed-slice-checksums.md
+  s_f3ae5462f697a3::t_631d30e3603705 82-89
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "dcd2ece1640206e2b3bbb7777c20104f4542f6d4",
+  "prompts": {},
+  "sessions": {
+    "s_f3ae5462f697a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7cc607c-32b2-4e30-bc4c-55ff6e2d2dd7",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
