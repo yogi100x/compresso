@@ -67,8 +67,10 @@ unsigned slice installer.
 - New CI capability: the `checksums` job holds `id-token: write` and sends a
   signature to Sigstore. Each signature is recorded in the public Rekor
   transparency log together with the repository name, workflow path, and
-  commit. For a private repository this makes those three facts public. The
-  private-beta workflow already has the same property.
+  commit. For a private repository this makes those three facts public, on
+  every push to `main`, permanently. The owner accepted this exposure
+  explicitly on 2026-11-15. The private-beta workflow has the same property
+  but only on a manual, environment-gated run.
 - Installing a CI release now needs `cosign`; a machine without it cannot
   install one. Existing local workflows that install a self-built tarball must
   add `--allow-unsigned`.
