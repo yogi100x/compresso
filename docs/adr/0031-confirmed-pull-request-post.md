@@ -59,6 +59,12 @@ runs the GitHub CLI itself.
   states that nothing was posted, except that after a timeout the comment may
   or may not have been delivered before `gh` was stopped.
 - A timed-out `gh` is killed, but a process it started itself may outlive it.
+- `gh` decides which repository the pull request number refers to from the
+  working directory. Compresso does not check that directory against the
+  repository the session worked in, so running the command from a different
+  checkout posts the draft to that repository's pull request of the same
+  number. The command is explicit and confirmed, and the preview shows the
+  draft, but not the target repository.
 - The trust placed in the program named `gh` on the user's `PATH` is the same
   trust the user places in it when running the printed pipeline by hand.
 - Tests start only a stand-in script, never the real `gh`, and reach no
