@@ -82,30 +82,44 @@ impl TiktokenCounter {
     }
 }
 
-/// Longest run without whitespace handed to the tokenizer in one piece.
+/// Length of a run without whitespace after which it is split before it
+/// reaches the tokenizer.
 ///
-/// The tokenizer treats such a run as a single piece and merges it in
-/// quadratic time; past roughly a megabyte its matcher gives up and the
-/// library panics. Ordinary text and code never come near this length, so
-/// they are counted in one call and stay exact.
+/// The tokenizer merges one unbroken piece in quadratic time, and past
+/// roughly a megabyte its matcher gives up and the library panics.
 pub(crate) const MAX_UNBROKEN_RUN_BYTES: usize = 1024;
 
-/// Splits `text` so that no piece holds a longer unbroken run than
-/// [`MAX_UNBROKEN_RUN_BYTES`] (plus the tail of one character). Text without
-/// such a run comes back as a single piece. Cuts fall on character
-/// boundaries, and each cut can add at most one token to the total.
+/// How much further a run may extend while looking for a place where the
+/// tokenizer breaks anyway, before it is cut regardless.
+pub(crate) const SOFT_CUT_WINDOW_BYTES: usize = 256;
+
+/// Splits `text` so that no piece holds an unbroken run much longer than
+/// [`MAX_UNBROKEN_RUN_BYTES`]. Text without such a run is one piece.
+///
+/// A long run is cut where a letter or digit is followed by punctuation,
+/// which is a boundary the tokenizer makes itself, so compact JSON, minified
+/// code, and punctuated prose without spaces keep their exact count. Only a
+/// run with no such point within [`SOFT_CUT_WINDOW_BYTES`] (one long word, a
+/// letters-only blob) is cut mid-run, and its count is then approximate.
 fn bounded_pieces(text: &str) -> impl Iterator<Item = &str> {
     let mut piece_start = 0;
     let mut run_start = 0;
+    let mut previous_is_alphanumeric = false;
     let mut characters = text.char_indices();
     std::iter::from_fn(move || {
         if piece_start >= text.len() {
             return None;
         }
         for (index, character) in characters.by_ref() {
+            let run_length = index - run_start;
+            let cut = !character.is_whitespace()
+                && run_length >= MAX_UNBROKEN_RUN_BYTES
+                && ((previous_is_alphanumeric && is_tokenizer_break(character))
+                    || run_length >= MAX_UNBROKEN_RUN_BYTES + SOFT_CUT_WINDOW_BYTES);
+            previous_is_alphanumeric = character.is_alphanumeric();
             if character.is_whitespace() {
                 run_start = index + character.len_utf8();
-            } else if index - run_start >= MAX_UNBROKEN_RUN_BYTES {
+            } else if cut {
                 let piece = &text[piece_start..index];
                 piece_start = index;
                 run_start = index;
@@ -116,6 +130,18 @@ fn bounded_pieces(text: &str) -> impl Iterator<Item = &str> {
         piece_start = text.len();
         Some(piece)
     })
+}
+
+/// Whether the tokenizer starts a new piece at `character` when it follows a
+/// letter or digit: ASCII punctuation other than the apostrophe (which can
+/// continue a word as a contraction), and CJK or full-width punctuation.
+fn is_tokenizer_break(character: char) -> bool {
+    match character {
+        '\'' => false,
+        _ if character.is_ascii() => character.is_ascii_punctuation(),
+        '\u{3000}'..='\u{303f}' | '\u{ff01}'..='\u{ff0f}' | '\u{ff1a}'..='\u{ff20}' => true,
+        _ => false,
+    }
 }
 
 /// Recognizes a byte-exact repeated nonblank line stream.
@@ -355,6 +381,63 @@ mod tests {
         );
     }
 
+    fn whitespace_free_samples() -> Vec<(&'static str, String)> {
+        let compact_json = format!(
+            "[{}]",
+            (0..400)
+                .map(|index| format!(
+                    "{{\"id\":{index},\"name\":\"item-{index}\",\"tags\":[\"alpha\",\"beta\"],\"ok\":true,\"ratio\":0.{index}}}"
+                ))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let minified =
+            "a=function(b,c){return(b+c*2)};d=a(1,2);if(d>3){e(d)}else{f(\"x\")}".repeat(160);
+        let cjk_prose =
+            "圧縮は完了しました。次の手順を実行してください、設定を確認します。".repeat(120);
+        let path_list = (0..300)
+            .map(|index| format!("/srv/app/releases/2026/module_{index}/src/main.rs"))
+            .collect::<Vec<_>>()
+            .join(":");
+        let base64 = {
+            const ALPHABET: &[u8] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            (0..8_000_u32)
+                .map(|index| {
+                    ALPHABET[(index.wrapping_mul(2_654_435_761) >> 13) as usize % 64] as char
+                })
+                .collect::<String>()
+        };
+        vec![
+            ("compact json", compact_json),
+            ("minified code", minified),
+            ("cjk prose", cjk_prose),
+            ("path list", path_list),
+            ("base64", base64),
+        ]
+    }
+
+    #[test]
+    fn test_whitespace_free_ordinary_text_is_counted_exactly() {
+        for (name, sample) in whitespace_free_samples() {
+            assert!(
+                sample.len() > 4 * MAX_UNBROKEN_RUN_BYTES,
+                "{name} must exceed the limit to exercise the cuts"
+            );
+            assert!(!sample.contains(char::is_whitespace), "{name}");
+            assert_eq!(
+                counter_for(TokenProvider::OpenAiO200k).count(&sample),
+                raw_o200k().encode_ordinary(&sample).len(),
+                "o200k {name}"
+            );
+            assert_eq!(
+                counter_for(TokenProvider::OpenAiCl100k).count(&sample),
+                raw_cl100k().encode_ordinary(&sample).len(),
+                "cl100k {name}"
+            );
+        }
+    }
+
     #[test]
     fn test_run_at_the_unbroken_limit_stays_exact() {
         let mut text = String::from("prefix ");
@@ -368,17 +451,18 @@ mod tests {
     }
 
     #[test]
-    fn test_split_long_run_overcounts_by_at_most_one_token_per_cut() {
+    fn test_run_with_no_tokenizer_break_is_counted_approximately() {
+        // One 12 KiB word: every cut falls mid-run, so the count can only be
+        // close to the tokenizer's, not equal.
         let run = "résumé".repeat(1500);
         let text = format!("before {run} after");
         let exact = raw_o200k().encode_ordinary(&text).len();
-        let cuts = run.len() / MAX_UNBROKEN_RUN_BYTES + 1;
 
         let counted = counter_for(TokenProvider::OpenAiO200k).count(&text);
 
         assert!(
-            counted >= exact && counted <= exact + cuts,
-            "counted {counted}, exact {exact}, cuts {cuts}"
+            counted.abs_diff(exact) * 100 <= exact,
+            "counted {counted}, exact {exact}: more than 1% apart"
         );
     }
 
@@ -396,7 +480,7 @@ mod tests {
                 .max()
                 .unwrap_or(0);
             assert!(
-                longest_run <= MAX_UNBROKEN_RUN_BYTES + 4,
+                longest_run <= MAX_UNBROKEN_RUN_BYTES + SOFT_CUT_WINDOW_BYTES + 4,
                 "run of {longest_run}"
             );
         }
