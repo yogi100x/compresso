@@ -94,7 +94,8 @@ pub(crate) const MAX_UNBROKEN_RUN_BYTES: usize = 1024;
 pub(crate) const SOFT_CUT_WINDOW_BYTES: usize = 256;
 
 /// Splits `text` so that no piece holds an unbroken run much longer than
-/// [`MAX_UNBROKEN_RUN_BYTES`]. Text without such a run is one piece.
+/// [`MAX_UNBROKEN_RUN_BYTES`], whether of whitespace or of anything else.
+/// Text without such a run is one piece.
 ///
 /// A long run is cut where a letter or digit is followed by punctuation,
 /// which is a boundary the tokenizer makes itself, so compact JSON, minified
@@ -104,6 +105,7 @@ pub(crate) const SOFT_CUT_WINDOW_BYTES: usize = 256;
 fn bounded_pieces(text: &str) -> impl Iterator<Item = &str> {
     let mut piece_start = 0;
     let mut run_start = 0;
+    let mut whitespace_start = None::<usize>;
     let mut previous_is_alphanumeric = false;
     let mut characters = text.char_indices();
     std::iter::from_fn(move || {
@@ -119,7 +121,21 @@ fn bounded_pieces(text: &str) -> impl Iterator<Item = &str> {
             previous_is_alphanumeric = character.is_alphanumeric();
             if character.is_whitespace() {
                 run_start = index + character.len_utf8();
-            } else if cut {
+                // A run of whitespace is one piece to the tokenizer as well,
+                // and as slow to match. It has no inner boundary to prefer,
+                // so it is cut at the limit; real indentation and blank
+                // lines never come near it.
+                let started = *whitespace_start.get_or_insert(index);
+                if index - started >= MAX_UNBROKEN_RUN_BYTES {
+                    whitespace_start = Some(index);
+                    let piece = &text[piece_start..index];
+                    piece_start = index;
+                    return Some(piece);
+                }
+                continue;
+            }
+            whitespace_start = None;
+            if cut {
                 let piece = &text[piece_start..index];
                 piece_start = index;
                 run_start = index;
@@ -436,6 +452,84 @@ mod tests {
                 "cl100k {name}"
             );
         }
+    }
+
+    #[test]
+    fn test_long_whitespace_runs_are_counted_in_bounded_time() {
+        // A long run of whitespace is one piece to the tokenizer too, and
+        // just as slow to match as a long run of letters.
+        for (name, unit) in [
+            ("spaces", " "),
+            ("tabs", "\t"),
+            ("blank lines", "\n"),
+            ("crlf", "\r\n"),
+        ] {
+            let text = format!("head\n{}tail\n", unit.repeat(256 * 1024 / unit.len()));
+            let started = Instant::now();
+
+            let count = counter_for(TokenProvider::OpenAiO200k).count(&text);
+
+            assert!(count > 2, "{name}");
+            assert!(
+                started.elapsed() < Duration::from_secs(30),
+                "{name}: counting took {:?}",
+                started.elapsed()
+            );
+        }
+    }
+
+    #[test]
+    fn test_whitespace_run_pieces_are_bounded_and_cover_the_text() {
+        let text = format!("a{}b\n{}c", " ".repeat(5000), "\n".repeat(3000));
+        let pieces: Vec<&str> = bounded_pieces(&text).collect();
+
+        assert_eq!(pieces.concat(), text);
+        assert!(pieces.len() > 4);
+        for piece in &pieces {
+            // A piece may hold text and whitespace; what is bounded is each
+            // unbroken run of either kind inside it.
+            let mut longest = 0;
+            let mut current = 0;
+            let mut in_whitespace = None;
+            for character in piece.chars() {
+                if in_whitespace != Some(character.is_whitespace()) {
+                    in_whitespace = Some(character.is_whitespace());
+                    current = 0;
+                }
+                current += character.len_utf8();
+                longest = longest.max(current);
+            }
+            assert!(longest <= MAX_UNBROKEN_RUN_BYTES + 8, "run of {longest}");
+        }
+    }
+
+    #[test]
+    fn test_split_whitespace_run_stays_close_to_the_exact_count() {
+        let text = format!("fn main() {{\n{}let x = 1;\n}}\n", " ".repeat(6 * 1024));
+        let exact = raw_o200k().encode_ordinary(&text).len();
+
+        let counted = counter_for(TokenProvider::OpenAiO200k).count(&text);
+
+        assert!(
+            counted.abs_diff(exact) <= 8,
+            "counted {counted}, exact {exact}"
+        );
+    }
+
+    #[test]
+    fn test_ordinary_indentation_and_blank_lines_stay_exact() {
+        let text = format!(
+            "class A:\n{}def f(self):\n{}return 1\n\n\n\n{}\n",
+            " ".repeat(4),
+            " ".repeat(8),
+            "\t".repeat(40)
+        )
+        .repeat(200);
+
+        assert_eq!(
+            counter_for(TokenProvider::OpenAiO200k).count(&text),
+            raw_o200k().encode_ordinary(&text).len()
+        );
     }
 
     #[test]
