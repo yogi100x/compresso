@@ -1148,7 +1148,7 @@ Add three blocking scale fixtures:
 
 - `conversations/provider-tool-loop`: Anthropic and OpenAI canonical turns containing assistant reasoning, parallel tool requests, results, and a later dependent turn. Every compressed result must pass the provider profile validator and preserve protected reasoning byte-exact.
 - `conversations/single-oversize-text`: one non-empty input above budget. Output must be non-empty segmented content or byte-identical fallback, never empty success.
-- `logs/mib-rebuild-stream`: 1 MiB, 4 MiB, and configured-maximum variants. Warm P95 must satisfy the release latency gate; cold tokenizer initialization is measured separately at server startup.
+- `logs/mib-rebuild-stream`: 1 MiB, 4 MiB, and configured-maximum variants. Warm P95 must satisfy the release latency gate; cold tokenizer initialization is measured separately at server startup. The benchmark takes the P95 of 100 samples and, because a shared runner can only add time, measures again (three attempts at most) before failing; the 200 ms limit itself is unchanged and every attempt is printed.
 
 Token fixtures assert that every mutated node's stored count equals an independent recount and that aggregate deltas equal trace deltas.
 

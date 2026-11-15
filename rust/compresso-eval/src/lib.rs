@@ -5,6 +5,7 @@ pub mod campaign;
 pub mod cli;
 pub mod fixtures;
 pub mod gates;
+pub mod latency;
 pub mod recall;
 pub mod runner;
 
