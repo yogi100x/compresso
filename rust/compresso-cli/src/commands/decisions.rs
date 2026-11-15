@@ -51,12 +51,12 @@ pub struct DecisionsArgs {
 pub enum PostError {
     #[error("the GitHub CLI `gh` was not found on PATH")]
     GhNotFound,
-    #[error(
-        "this build cannot start `gh`: the CLI crate's capability class forbids child processes"
-    )]
+    #[error("the GitHub CLI `gh` could not be started")]
     ExecutionUnavailable,
     #[error("`gh` did not accept the comment")]
     Failed,
+    #[error("`gh` did not finish in time and was stopped")]
+    TimedOut,
 }
 
 impl PostError {
@@ -65,6 +65,7 @@ impl PostError {
             Self::GhNotFound => "gh_not_found",
             Self::ExecutionUnavailable => "post_unavailable",
             Self::Failed => "post_failed",
+            Self::TimedOut => "post_timed_out",
         }
     }
 }
@@ -77,20 +78,24 @@ pub trait PullRequestPoster {
     fn post_comment(&self, pull_request: u64, body: &str) -> Result<(), PostError>;
 }
 
-/// Production poster. It looks for `gh` on `PATH` and never starts a process.
+/// Production poster. It finds `gh` on `PATH` and runs
+/// `gh pr comment <number> --body-file -` with the draft on standard input.
 ///
-/// `compresso-cli` is a `bounded-local` crate (01-stack §3), so it may not
-/// execute child processes. Until a process-capable owner exists, a confirmed
-/// post reports that honestly and the caller pipes the draft to `gh` itself.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// Starting that process is a capability `compresso-cli` holds only in the
+/// `pr_post` module (ADR-0031), and only this poster reaches it.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SystemPullRequestPoster {
     path_entries: Vec<PathBuf>,
+    timeout: std::time::Duration,
 }
 
 impl SystemPullRequestPoster {
     /// Builds a poster that searches the given `PATH` entries for `gh`.
     pub fn new(path_entries: Vec<PathBuf>) -> Self {
-        Self { path_entries }
+        Self {
+            path_entries,
+            timeout: super::pr_post::POST_TIMEOUT,
+        }
     }
 
     /// Builds a poster from the process `PATH`.
@@ -102,7 +107,9 @@ impl SystemPullRequestPoster {
         )
     }
 
-    fn gh_is_present(&self) -> bool {
+    /// The first `gh` executable on the search path, as an absolute path so
+    /// the working directory can never supply a different one.
+    fn gh_path(&self) -> Option<PathBuf> {
         let names: &[&str] = if cfg!(windows) {
             &["gh.exe", "gh.cmd"]
         } else {
@@ -110,16 +117,16 @@ impl SystemPullRequestPoster {
         };
         self.path_entries
             .iter()
-            .any(|entry| names.iter().any(|name| entry.join(name).is_file()))
+            .filter(|entry| entry.is_absolute())
+            .flat_map(|entry| names.iter().map(move |name| entry.join(name)))
+            .find(|candidate| candidate.is_file())
     }
 }
 
 impl PullRequestPoster for SystemPullRequestPoster {
-    fn post_comment(&self, _pull_request: u64, _body: &str) -> Result<(), PostError> {
-        if !self.gh_is_present() {
-            return Err(PostError::GhNotFound);
-        }
-        Err(PostError::ExecutionUnavailable)
+    fn post_comment(&self, pull_request: u64, body: &str) -> Result<(), PostError> {
+        let gh = self.gh_path().ok_or(PostError::GhNotFound)?;
+        super::pr_post::post_comment(&gh, pull_request, body, self.timeout)
     }
 }
 
@@ -261,10 +268,16 @@ fn run(
             poster
                 .post_comment(pull_request, &draft.markdown)
                 .map_err(|error| {
+                    // A stopped `gh` may already have delivered the comment.
+                    let outcome = if error == PostError::TimedOut {
+                        "check the pull request before posting again"
+                    } else {
+                        "nothing was posted"
+                    };
                     CommandError::new(
                         error.code(),
                         format!(
-                            "{error}; nothing was posted. To post it yourself: compresso decisions --session {} --json | jq -r .data.draft | gh pr comment {pull_request} --body-file -",
+                            "{error}; {outcome}. To post it yourself: compresso decisions --session {} --json | jq -r .data.draft | gh pr comment {pull_request} --body-file -",
                             draft.session.id
                         ),
                     )
@@ -594,19 +607,21 @@ mod tests {
     }
 
     #[test]
-    fn test_system_poster_never_starts_a_process() {
+    fn test_system_poster_only_uses_gh_from_an_absolute_search_path_entry() {
         let temp = tempfile::tempdir().expect("probe directory should be created");
         let temp = temp.path().to_path_buf();
         let missing = SystemPullRequestPoster::new(vec![temp.clone()]);
+        assert_eq!(missing.gh_path(), None);
         assert_eq!(missing.post_comment(1, "body"), Err(PostError::GhNotFound));
 
         let name = if cfg!(windows) { "gh.exe" } else { "gh" };
-        // A file that would fail loudly if it were ever executed.
-        std::fs::write(temp.join(name), "#!/bin/sh\nexit 97\n").expect("probe should be written");
-        let present = SystemPullRequestPoster::new(vec![temp]);
-        assert_eq!(
-            present.post_comment(1, "body"),
-            Err(PostError::ExecutionUnavailable)
-        );
+        std::fs::write(temp.join(name), "").expect("probe should be written");
+        let present = SystemPullRequestPoster::new(vec![temp.clone()]);
+        assert_eq!(present.gh_path(), Some(temp.join(name)));
+
+        // A relative entry would let the working directory choose the
+        // program, so it is never searched.
+        let relative = SystemPullRequestPoster::new(vec![PathBuf::from(".")]);
+        assert_eq!(relative.gh_path(), None);
     }
 }

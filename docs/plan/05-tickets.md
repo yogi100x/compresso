@@ -2872,21 +2872,21 @@ Test cases:
 ### [x] E17-09: Session decisions to pull request draft
 Owner: R2 · Estimate: 2d · Depends: E1-03, E4-02, E17-02
 Files: rust/compresso-cli/src/commands/decisions.rs, rust/compresso-cli/src/commands.rs, rust/compresso-cli/src/lib.rs, rust/compresso-cli/tests/cli_decisions.rs, docs/plan/04-mcp-and-integrations.md
-Description: Add `compresso decisions [--session ULID] [--limit N] [--pr NUMBER] [--post --yes] [--dry-run] [--json]`. Summarizes one client session's operation-ledger decisions (compression mode, strategies applied or skipped, fallbacks, per-tool retrieval counts, savings totals) as a Markdown pull request comment draft built only from the content-free ledger; every ledger string is secret-redacted and stripped of markup, mentions, and issue references. Posting goes through the `PullRequestPoster` boundary; because `compresso-cli` is `bounded-local` and may not start child processes, a confirmed post fails closed and prints the manual `gh pr comment` pipeline.
+Description: Add `compresso decisions [--session ULID] [--limit N] [--pr NUMBER] [--post --yes] [--dry-run] [--json]`. Summarizes one client session's operation-ledger decisions (compression mode, strategies applied or skipped, fallbacks, per-tool retrieval counts, savings totals) as a Markdown pull request comment draft built only from the content-free ledger; every ledger string is secret-redacted and stripped of markup, mentions, and issue references. Posting goes through the `PullRequestPoster` boundary; because `compresso-cli` is `bounded-local` and may not start child processes, a confirmed post fails closed and prints the manual `gh pr comment` pipeline. (Changed 2026-11-15 by D81/ADR-0031: the production poster now runs `gh pr comment` from `commands/pr_post.rs`; tests `test_post_runs_gh_with_fixed_arguments_and_the_draft_on_stdin`, `test_post_reports_a_refusal_from_gh_as_failed`, `test_post_stops_a_gh_that_never_finishes`, `test_post_reports_a_gh_that_cannot_be_started`, `test_system_poster_only_uses_gh_from_an_absolute_search_path_entry` start only a stand-in program.)
 Acceptance criteria:
 - Preview is the default; `--post` without `--yes` reports `confirmation_required`; `--dry-run` always previews; the poster is never called in any of these cases.
 - A post is attempted only for `--pr NUMBER --post --yes`, with a body identical to the preview draft.
 - The draft and all output contain no secret and no mention or markup taken from ledger strings.
 - Poster failures exit non-zero with `gh_not_found`, `post_unavailable`, or `post_failed` and state that nothing was posted.
 - The default session is the one owning the newest session-bound operation; `--session` selects another; unknown, idle, and missing sessions return typed errors.
-- No test reaches the network or starts a process.
+- No test reaches the network. Since ADR-0031 the `pr_post` tests start a process, and only a stand-in script; no test starts the real `gh`.
 Test cases:
 - test_decisions_preview_is_the_default_and_never_calls_the_poster
 - test_decisions_post_only_with_pr_and_explicit_confirmation
 - test_decisions_redact_secrets_and_neutralize_untrusted_ledger_text
-- test_decisions_report_poster_failures_and_the_system_poster_never_posts
+- test_decisions_report_poster_failures_and_dry_run_never_reaches_the_system_poster
 - test_decisions_select_the_newest_session_or_an_explicit_one
-- test_system_poster_never_starts_a_process
+- test_system_poster_only_uses_gh_from_an_absolute_search_path_entry
 - test_inline_neutralizes_markup_mentions_and_secrets
 - test_format_utc_matches_known_instants
 

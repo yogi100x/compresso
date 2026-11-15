@@ -16,6 +16,7 @@ mod index;
 mod integrations;
 mod mcp;
 mod mcp_probe;
+mod pr_post;
 mod quiet_pipe;
 mod recall;
 mod repos;

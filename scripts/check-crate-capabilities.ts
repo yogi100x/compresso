@@ -573,11 +573,12 @@ function isPathWithin(parent: string, candidate: string) {
   );
 }
 
-// ADR-0028: the CLI's bounded MCP health probe is the only production source
-// in a bounded-local crate that may start a child process. The allowance is
-// one exact file in one exact crate; it grants no process-capable dependency.
+// ADR-0028 and ADR-0031: the CLI's bounded MCP health probe and its confirmed
+// pull request post are the only production sources in a bounded-local crate
+// that may start a child process. Each allowance is one exact file in one
+// exact crate; it grants no process-capable dependency.
 const sanctionedProcessSources = new Map<string, string[]>([
-  ["compresso-cli", ["src/commands/mcp_probe.rs"]],
+  ["compresso-cli", ["src/commands/mcp_probe.rs", "src/commands/pr_post.rs"]],
 ]);
 
 function boundedLocalTestProcessSources(
