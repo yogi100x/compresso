@@ -2698,7 +2698,7 @@ Test cases:
 
 ## E17 — Session continuity, savings fidelity, and platform hardening
 
-Added 2026-11-14 (D70). Clean-room follow-ups to the local slice; E17-01..10 landed together through `integration/e17`, E17-11..14 are open follow-ups.
+Added 2026-11-14 (D70). Clean-room follow-ups to the local slice; E17-01..10 landed together through `integration/e17`, E17-11..14 are open follow-ups; E17-15 is open and E17-16 landed 2026-11-15 (D77).
 
 ### [x] E17-01: Re-assert tool routing after client compaction
 Owner: D1 · Estimate: 2d · Depends: E5-01, E6-01, E6-02, E6-03
@@ -2953,6 +2953,40 @@ Test cases:
 - `test_decisions_draft_includes_recorded_free_text_choices`
 - `test_older_binary_reports_newer_store_with_upgrade_hint`
 
+### [ ] E17-15: Compaction reminder hook on Windows
+Owner: D1 · Estimate: 1.5d · Depends: E17-01, E17-05
+Files: rust/compresso-integrations/src/compaction_hook.rs, rust/compresso-cli/src/commands/setup.rs, rust/compresso-cli/tests/cli_setup.rs, docs/integrations/compaction-reminder.md
+Description: The hook command is a POSIX shell line, so `compresso setup` skips the compaction hook on Windows today. Emit a Windows-native hook command (direct executable invocation with Windows quoting, no shell) for Claude Code and Codex, keep the same receipts and ownership rules, and remove the Windows skip.
+Acceptance criteria:
+- On Windows, setup installs a hook whose command runs `compresso mcp routing-reminder` without a POSIX shell; paths with spaces and non-ASCII characters are quoted correctly.
+- Install, re-install, and uninstall are idempotent and receipt-driven, as on Unix; user-defined `SessionStart` hooks are still refused.
+- The Windows CI job runs the hook command and checks its output is the reminder text.
+Test cases:
+- `test_windows_hook_command_invokes_binary_without_shell`
+- `test_windows_hook_command_quotes_paths_with_spaces`
+- `test_setup_installs_compaction_hook_on_windows`
+
+### [x] E17-16: Bounded reads for compression input and repository files
+Owner: R2 · Estimate: 1d · Depends: E2-09, E3-11, E4-02, E5-03
+Files: rust/compresso-cli/src/commands/engine.rs, rust/compresso-atlas/src/queries.rs, rust/compresso-cli/src/commands/retrieval.rs, rust/compresso-mcp/src/tools/common.rs, rust/compresso-cli/tests/cli_engine.rs, rust/compresso-atlas/tests/queries_unfold_search_read.rs
+Description: Cap two of the SEC-005 read paths (D77). `compresso compress` reads stdin and `--file` through an 8 MiB ceiling (the engine input limit) and rejects larger input with `input_too_large` before buffering or tokenizing it, never echoing it back; before this change the CLI had no limit. Repository reads used by `read`, `unfold`, `context`, and the read gate stop at 16 MiB (`MAX_READ_FILE_BYTES`) and fail with `file_too_large`, including line-range reads of larger files; `compresso_context` skips the body excerpt of such a file instead of failing. Not covered here: MCP `compresso_compress` (graph built and tokenized before the 8 MiB check, oversized input echoed back per its documented contract) and the whole-file reads used for staleness hashing.
+Acceptance criteria:
+- The capped paths never buffer more than their ceiling plus one byte; the ceiling is enforced on the open handle, not only on metadata.
+- Exactly-at-limit input is accepted; one byte over is rejected; a multibyte character split at the limit is reported as oversized, not as invalid UTF-8.
+- Rejections write no ledger row.
+Test cases:
+- `test_compress_stdin_over_read_limit_is_rejected_without_ledger_row`
+- `test_compress_file_over_read_limit_is_rejected`
+- `test_compress_input_at_engine_limit_is_accepted`
+- `test_read_capped_accepts_input_at_limit`
+- `test_read_capped_rejects_one_byte_over_limit`
+- `test_read_capped_stops_reading_an_endless_source`
+- `test_read_capped_reports_split_multibyte_text_as_oversized`
+- `test_read_utf8_capped_accepts_file_at_limit`
+- `test_read_utf8_capped_rejects_one_byte_over_limit`
+- `test_read_bounded_rejects_file_over_byte_limit_before_loading`
+- `test_plan_context_skips_body_of_file_grown_past_read_limit`
+
 ## Execution order (flat, dependency-ordered)
 
 Slice: E1-01, E1-02, E1-03, E1-04, E1-05, E1-06, E2-01, E2-02, E2-02a, E3-01, E2-03, E3-02, E3-03, E2-04, E2-05, E2-06, E2-07, E2-08, E2-12, E2-13, E2-14, E3-04, E3-05, E3-06, E3-07, E3-08, E2-09, E7-01, E7-07, E2-10, E2-11, E3-09, E7-02, E3-10, E3-11, E3-12, E4-01, E4-02, E4-03, E4-04, E4-05, E5-01, E5-02, E5-03, E5-04, E5-05, E5-06, E2-15, E7-03, E7-04, E7-05, E7-06, E5-07, E6-01, E6-02, E6-03, E6-04, E6-05.
@@ -2968,7 +3002,7 @@ Wave 6 — release engineering and hardening close-out: E12-01, E13-32, E12-02, 
 Wave 7 — E15 A-F plus threat-model and sandbox foundations: E15-01, E14-17, E14-18, E15-02, E15-03, E15-05, E15-09, E15-11, E15-14, E15-19, E15-06..E15-17, E15-18, E15-18b, E15-18c, E15-20..E15-30 subject to dependencies.
 Wave 8 — full-product completion: E16-01..E16-16 subject to listed dependencies.
 Wave 9 — deferred sandbox actions: E14-19, E14-20, E15-04, E15-31, E15-32.
-E17 (delivered after the slice, independent of waves 1–9): E17-05, E17-03, E17-04, E17-07, E17-02, E17-09, E17-01, E17-06, E17-10, E17-08; follow-ups E17-11, E17-12, E17-13, E17-14.
+E17 (delivered after the slice, independent of waves 1–9): E17-05, E17-03, E17-04, E17-07, E17-02, E17-09, E17-01, E17-06, E17-10, E17-08; follow-ups E17-11, E17-12, E17-13, E17-14, E17-15; E17-16 delivered 2026-11-15.
 
 Parallelism notes:
 - Slice: E2 (R1) and E3 (R2) run concurrently after E1; E7-01/E7-02 (PQ/R1) overlap E2's tail; E4 (D1) starts once E2-09 and E3-12 land; E5 (R2) follows E3; E6 (D1) follows E5-01 and overlaps E5-02..07; E1-06 and E4-05 (I1) slot in any time after E1-02/E4-04. E2-02a is a maintainer task (needs an Anthropic API key) and can land any time after E2-02 without blocking anything — until it lands, the interim 1.15 factor applies.
@@ -2999,6 +3033,6 @@ Parallelism notes:
 | E14 IP & secure deployment | 17 | 39 | ~8 wk | +E15 threat/sandbox gates |
 | E15 Clean-room advanced capabilities | 34 | 121.5 | ~24.5 engineer-wk | A-F incremental; G deferred |
 | E16 Full-product completion | 16 | 59 | ~12 engineer-wk, dependency-phased | |
-| E17 Session continuity & hardening | 14 | 31.5 | ~6.3 engineer-wk | E17-01..10 delivered 2026-11-14; E17-11..14 open |
-| **Post-slice + PB total** | **168** | **493.5 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
-| **Grand total** | **226** | **589.5 gross** | **~117.9 engineer-wk** | |
+| E17 Session continuity & hardening | 16 | 34 | ~6.8 engineer-wk | E17-01..10 delivered 2026-11-14, E17-16 2026-11-15; E17-11..15 open |
+| **Post-slice + PB total** | **170** | **496 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
+| **Grand total** | **228** | **592 gross** | **~118.4 engineer-wk** | |

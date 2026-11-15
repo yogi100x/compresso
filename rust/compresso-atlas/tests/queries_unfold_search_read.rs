@@ -1,10 +1,9 @@
 use std::fs;
 use std::path::PathBuf;
 
-#[cfg(unix)]
-use compresso_atlas::plan_context;
 use compresso_atlas::{
-    AtlasError, Indexer, QueryError, UnfoldResult, outline, read_bounded, search, unfold,
+    AtlasError, Indexer, MAX_READ_FILE_BYTES, QueryError, UnfoldResult, outline, plan_context,
+    read_bounded, search, unfold,
 };
 use compresso_core::{TokenCounter, TokenProvider, counter_for};
 use compresso_store::{Store, SymbolKind, SymbolSelector};
@@ -316,6 +315,66 @@ fn test_search_ranked_and_deterministic() {
             .collect::<Vec<_>>()
     );
     assert_eq!(before, after, "search must remain read-only");
+}
+
+#[test]
+fn test_read_bounded_rejects_file_over_byte_limit_before_loading() {
+    let directory = tempfile::tempdir().expect("temporary directory should be created");
+    let root = directory.path().join("repo");
+    fs::create_dir(&root).expect("root should be created");
+    let root = fs::canonicalize(root).expect("root should canonicalize");
+    fs::File::create(root.join("huge.log"))
+        .and_then(|file| file.set_len(MAX_READ_FILE_BYTES + 1))
+        .expect("sparse file should be created");
+
+    for range in [None, Some((1, 1))] {
+        let error = read_bounded(&root, "huge.log", range, 100, counter())
+            .expect_err("oversized file should be rejected");
+        assert!(
+            matches!(
+                error,
+                AtlasError::Query(QueryError::FileTooLarge { limit_bytes, .. })
+                    if limit_bytes == MAX_READ_FILE_BYTES
+            ),
+            "unexpected error: {error:?}"
+        );
+    }
+}
+
+#[test]
+fn test_plan_context_skips_body_of_file_grown_past_read_limit() {
+    let fixture = IndexedFixture::new(&[
+        ("src/small.rs", "pub fn ledger_flush() -> u32 {\n    1\n}\n"),
+        (
+            "src/grown.rs",
+            "pub fn ledger_rotate() -> u32 {\n    2\n}\n",
+        ),
+    ]);
+    let before = plan_context(&fixture.store, fixture.repo, "ledger flush rotate", 800)
+        .expect("context should be served");
+    assert!(
+        before
+            .symbol_bodies
+            .iter()
+            .any(|body| body.path == "src/grown.rs"),
+        "fixture must place the grown file in the evidence pack first"
+    );
+    fs::OpenOptions::new()
+        .write(true)
+        .open(fixture.root.join("src/grown.rs"))
+        .and_then(|file| file.set_len(MAX_READ_FILE_BYTES + 1))
+        .expect("indexed file should grow");
+
+    let plan = plan_context(&fixture.store, fixture.repo, "ledger flush rotate", 800)
+        .expect("context should still be served");
+
+    let paths = plan
+        .symbol_bodies
+        .iter()
+        .map(|body| body.path.as_str())
+        .collect::<Vec<_>>();
+    assert!(paths.contains(&"src/small.rs"), "{paths:?}");
+    assert!(!paths.contains(&"src/grown.rs"), "{paths:?}");
 }
 
 #[test]

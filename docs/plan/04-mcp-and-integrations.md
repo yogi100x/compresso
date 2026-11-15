@@ -190,7 +190,7 @@ Shipped verbatim as the rmcp server `instructions` (build-doc §13.4: brief, fac
 
 `range` identifies the returned content. `resolved_range` identifies the normalized requested selection before token truncation. An `end_line` beyond EOF is normalized to `file_lines_total` with `range_clamped:true`; a start beyond EOF remains invalid.
 
-**Errors**: `not_indexed`, `outside_root` (canonicalized path escapes approved root), `not_found` (file missing on disk), `invalid_arguments` (start beyond EOF, end_line < start_line, end_line without start_line). Binary files return `invalid_arguments` with a note; never raw bytes.
+**Errors**: `not_indexed`, `outside_root` (canonicalized path escapes approved root), `not_found` (file missing on disk), `invalid_arguments` (start beyond EOF, end_line < start_line, end_line without start_line). Binary files return `invalid_arguments` with a note; never raw bytes. `file_too_large` when the file exceeds 16 MiB (`MAX_READ_FILE_BYTES`, D77); line ranges of such files are refused too, because the whole file is decoded before a range is cut.
 
 **Scanner exclusions (review fix, E17)**: `compresso_read` refuses a file the repository scanner excludes (built-in policy exclusions such as `node_modules/`, `target/`, `dist/`, `.git/` and secret-file patterns, or any `.gitignore` rule, including nested `.gitignore` files and an excluded parent directory) unless that file is already in the index. The check runs on both the requested path and its canonical path, so a symlink or a different-case spelling on a case-insensitive filesystem cannot reach an excluded file. A refusal is the ordinary `not_found` error with the text "The requested file was not found on disk.", deliberately indistinguishable from a missing file. Unindexed files the scanner would accept stay readable. Known gaps: the CLI `compresso read` does not apply this check, and `compresso_outline` still reveals that an unindexed file exists.
 
@@ -260,7 +260,7 @@ Shipped verbatim as the rmcp server `instructions` (build-doc §13.4: brief, fac
 
 **Result shape**: `{ schema_version, operation_id, status: "found"|"ambiguous"|"not_found", symbol?, content?, stale, candidates, tokens_used, truncated }`. Candidates are bounded to 20 and contain `path`, `qualified_name`, `kind`, `signature_hash`, and line range. Ambiguity is a successful result and never selects an arbitrary match.
 
-**Errors**: `not_indexed`, `outside_root`, `invalid_arguments`. A missing identity returns `status: "not_found"`; it is not an MCP error. Tests cover overloads, repeated implementations, stale/moved/deleted symbols, bounds, and root escape.
+**Errors**: `not_indexed`, `outside_root`, `invalid_arguments`, `file_too_large` (source file grew past 16 MiB since indexing, D77). A missing identity returns `status: "not_found"`; it is not an MCP error. Tests cover overloads, repeated implementations, stale/moved/deleted symbols, bounds, and root escape.
 
 ### 1.8 compresso_context
 
@@ -313,7 +313,7 @@ The task-start surface applies the smallest sufficient serialized-response stage
 
 A pack is `task_pack_ready` only after it includes evidence from every distinct candidate file in the bounded ranked search result, not merely an arbitrary six-file threshold. The planner stops at the first stage that satisfies this condition and returns `next_action: answer_from_pack` with a zero targeted-follow-up limit. If coverage still does not fit at the caller's ceiling, it returns `targeted_follow_up_needed`, `next_action: targeted_follow_up`, and permits at most two precise Compresso follow-ups. No-match and stale results return at the initial stage without wasteful expansion. `truncated` alone never requires another broad scan. Broad follow-up is required only for no matches or stale results.
 
-**Errors**: `not_indexed`, `invalid_arguments`. If every derived search query yields no relevant symbol, success uses `retrieval_status: "no_matches"` and a `retrieval_note` stating explicitly that this is not proof of repository absence — never a guess.
+**Errors**: `not_indexed`, `invalid_arguments`. If every derived search query yields no relevant symbol, success uses `retrieval_status: "no_matches"` and a `retrieval_note` stating explicitly that this is not proof of repository absence — never a guess. A matched file that has grown past the 16 MiB read limit since indexing contributes no body excerpt (D77); it is not an error.
 
 **Predecessor compatibility**: counterpart of the predecessor `minimal_context` tool; not name-mapped in D7 but keeps the same budgeted-pack semantics.
 

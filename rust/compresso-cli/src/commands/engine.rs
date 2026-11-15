@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use clap::{ArgGroup, Args, ValueEnum};
 use compresso_core::{
-    CompressionBudget, ContextGraph, Engine, Lossiness, Mode, NodeKind, PriceTable, TokenProvider,
-    Trace, counter_for, is_plain_model_id,
+    CompressionBudget, ContextGraph, Engine, Lossiness, MAX_COMPRESSION_INPUT_BYTES, Mode,
+    NodeKind, PriceTable, TokenProvider, Trace, counter_for, is_plain_model_id,
 };
 use compresso_store::{DetailedStatsSummary, OperationRecord, StatsFilter, Store};
 use serde_json::{Value, json};
@@ -336,25 +336,42 @@ fn execute_stats(store: &Store, arguments: StatsArgs) -> Result<Rendered, Engine
     Ok(rendered(data, human))
 }
 
+/// Most bytes `compresso compress` reads from stdin or `--file` (SEC-005).
+///
+/// Equal to the engine's input limit: larger input is rejected with
+/// `input_too_large` before it is fully buffered or tokenized, and is never
+/// echoed back.
+const MAX_COMPRESSION_READ_BYTES: usize = MAX_COMPRESSION_INPUT_BYTES;
+
 fn read_input(input: &mut dyn Read, file: Option<&Path>) -> Result<String, EngineCommandError> {
-    if let Some(file) = file {
-        return fs::read_to_string(file).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::InvalidData {
-                EngineCommandError::invalid("compression file must contain UTF-8 text")
-            } else {
-                EngineCommandError::invalid("compression file could not be read")
-            }
-        });
-    }
-    let mut source = String::new();
-    input.read_to_string(&mut source).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::InvalidData {
-            EngineCommandError::invalid("compression input must contain UTF-8 text")
-        } else {
-            EngineCommandError::internal()
+    let label = if file.is_some() { "file" } else { "input" };
+    let bytes = match file {
+        Some(file) => {
+            let opened = fs::File::open(file)
+                .map_err(|_| EngineCommandError::invalid("compression file could not be read"))?;
+            read_capped(opened, MAX_COMPRESSION_READ_BYTES)
+                .map_err(|_| EngineCommandError::invalid("compression file could not be read"))?
         }
-    })?;
-    Ok(source)
+        None => read_capped(input, MAX_COMPRESSION_READ_BYTES)
+            .map_err(|_| EngineCommandError::internal())?,
+    };
+    let Some(bytes) = bytes else {
+        return Err(EngineCommandError::too_large(label));
+    };
+    String::from_utf8(bytes).map_err(|_| {
+        EngineCommandError::invalid(&format!("compression {label} must contain UTF-8 text"))
+    })
+}
+
+/// Reads at most `limit` bytes; `Ok(None)` means the source holds more.
+///
+/// Bytes are collected before UTF-8 decoding so a multibyte character split at
+/// the limit is reported as oversized input rather than invalid text.
+fn read_capped(source: impl Read, limit: usize) -> std::io::Result<Option<Vec<u8>>> {
+    let ceiling = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
+    let mut bytes = Vec::new();
+    source.take(ceiling).read_to_end(&mut bytes)?;
+    Ok((bytes.len() <= limit).then_some(bytes))
 }
 
 fn stats_json(stats: &DetailedStatsSummary) -> Value {
@@ -474,5 +491,44 @@ impl EngineCommandError {
             code: "internal",
             message: "local compression command failed".to_owned(),
         }
+    }
+
+    fn too_large(label: &str) -> Self {
+        Self {
+            code: "input_too_large",
+            message: format!("compression {label} exceeds the 8 MiB input limit"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{self, Read};
+
+    use super::read_capped;
+
+    #[test]
+    fn test_read_capped_accepts_input_at_limit() {
+        let bytes = read_capped(io::repeat(b'x').take(16), 16).expect("read should succeed");
+        assert_eq!(bytes.map(|bytes| bytes.len()), Some(16));
+    }
+
+    #[test]
+    fn test_read_capped_rejects_one_byte_over_limit() {
+        let bytes = read_capped(io::repeat(b'x').take(17), 16).expect("read should succeed");
+        assert!(bytes.is_none());
+    }
+
+    #[test]
+    fn test_read_capped_stops_reading_an_endless_source() {
+        let bytes = read_capped(io::repeat(b'x'), 1024).expect("read should succeed");
+        assert!(bytes.is_none());
+    }
+
+    #[test]
+    fn test_read_capped_reports_split_multibyte_text_as_oversized() {
+        let text = "\u{00e9}".repeat(9);
+        let bytes = read_capped(text.as_bytes(), 17).expect("read should succeed");
+        assert!(bytes.is_none());
     }
 }

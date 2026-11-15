@@ -13,6 +13,11 @@ use crate::AtlasError;
 use crate::parsers::{ParseError, ParserRegistry};
 use crate::scanner::is_secret_path;
 
+/// Largest repository file a bounded read, unfold, or gate will load (SEC-005).
+///
+/// Token budgets trim what is returned, but the whole file is decoded and
+/// counted first, so the read itself needs a byte ceiling.
+pub const MAX_READ_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const TOP_SYMBOLS_PER_FILE: usize = 3;
 const MAX_AMBIGUITY_CANDIDATES: usize = 20;
 const PLAN_CONTEXT_SEARCH_LIMIT: usize = 20;
@@ -212,6 +217,8 @@ pub enum QueryError {
         #[source]
         source: io::Error,
     },
+    #[error("repository file {path:?} exceeds the {limit_bytes}-byte read limit")]
+    FileTooLarge { path: PathBuf, limit_bytes: u64 },
     #[error("invalid inclusive line range {start_line}..={end_line} for {total_lines} lines")]
     InvalidRange {
         start_line: u32,
@@ -753,12 +760,18 @@ pub fn plan_context(
                 .map(|signature| blake3::hash(signature.as_bytes()).to_hex().to_string()),
             start_line_hint: Some(hit.symbol.start_line),
         };
+        // A file that grew past the read ceiling since indexing loses its
+        // body excerpt; the rest of the evidence pack is still served.
+        let unfolded = match unfold(store, repo, &selector) {
+            Err(AtlasError::Query(QueryError::FileTooLarge { .. })) => continue,
+            other => other?,
+        };
         if let UnfoldResult::Found {
             path,
             symbol,
             content,
             ..
-        } = unfold(store, repo, &selector)?
+        } = unfolded
         {
             path_bodies.push(ContextSymbolBody {
                 path,
@@ -1436,10 +1449,37 @@ fn ensure_contained(root: &Path, resolved: &Path) -> Result<(), AtlasError> {
 }
 
 fn read_utf8(path: &Path) -> Result<String, QueryError> {
-    fs::read_to_string(path).map_err(|source| QueryError::Read {
+    read_utf8_capped(path, MAX_READ_FILE_BYTES)
+}
+
+/// Reads at most `limit` bytes, failing closed when the file holds more.
+///
+/// The ceiling is enforced on the open handle rather than on metadata alone,
+/// so a file that grows after a size check still cannot exceed it.
+fn read_utf8_capped(path: &Path, limit: u64) -> Result<String, QueryError> {
+    use std::io::Read as _;
+
+    let read_error = |source| QueryError::Read {
         path: path.to_path_buf(),
         source,
-    })
+    };
+    let too_large = || QueryError::FileTooLarge {
+        path: path.to_path_buf(),
+        limit_bytes: limit,
+    };
+    let file = fs::File::open(path).map_err(read_error)?;
+    if file.metadata().map_err(read_error)?.len() > limit {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::new();
+    file.take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(read_error)?;
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > limit {
+        return Err(too_large());
+    }
+    String::from_utf8(bytes)
+        .map_err(|error| read_error(io::Error::new(io::ErrorKind::InvalidData, error)))
 }
 
 fn source_line_range<'a>(
@@ -1583,5 +1623,40 @@ fn render_directory(directory: &DirectoryNode, depth: usize, output: &mut String
     for (name, child) in &directory.directories {
         let _ = writeln!(output, "{indent}{name}/");
         render_directory(child, depth + 1, output);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::{QueryError, read_utf8_capped};
+
+    #[test]
+    fn test_read_utf8_capped_accepts_file_at_limit() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let path = directory.path().join("at-limit.txt");
+        fs::write(&path, "0123456789").expect("file should be written");
+
+        let text = read_utf8_capped(&path, 10).expect("file at the limit should read");
+
+        assert_eq!(text, "0123456789");
+    }
+
+    #[test]
+    fn test_read_utf8_capped_rejects_one_byte_over_limit() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let path = directory.path().join("over-limit.txt");
+        fs::write(&path, "0123456789A").expect("file should be written");
+
+        let error = read_utf8_capped(&path, 10).expect_err("oversized file should fail");
+
+        assert!(matches!(
+            error,
+            QueryError::FileTooLarge {
+                limit_bytes: 10,
+                ..
+            }
+        ));
     }
 }
