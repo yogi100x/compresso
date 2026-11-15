@@ -1,0 +1,37 @@
+security_best_practices_report.md
+  s_f3ae5462f697a3::t_470e68e029baaf 21
+rust/compresso-cli/src/commands/retrieval.rs
+  s_f3ae5462f697a3::t_09cacf7a168846 6-7,251-255,458,472-474,535
+rust/compresso-atlas/src/queries.rs
+  s_f3ae5462f697a3::t_2ad29d50228501 539-543,545-590,624-630,632-641,665
+  s_f3ae5462f697a3::t_431e40b4f5ae26 1863-1878,1881-1900,1904-1910,1912,1914-1915,1917-1920,1925-1932,1934-1946,1948,1950-1952,1954-1967,1971-1972,1974-1976,1978-1981
+  s_f3ae5462f697a3::t_d3ce5250ee1a7c 1879-1880,1901-1903,1911,1913,1916,1921-1924,1933,1947,1949,1953,1968-1970,1973,1977
+  s_f3ae5462f697a3::t_95bf1f91d2e65a 112-114,544,591-592
+decisions.md
+  s_f3ae5462f697a3::t_470e68e029baaf 110
+rust/compresso-mcp/src/tools/atlas_read.rs
+  s_f3ae5462f697a3::t_09cacf7a168846 2-3,184-185,205-209,222-223,288,295-297
+  s_f3ae5462f697a3::t_6b94284ec19bc8 168
+rust/compresso-atlas/src/lib.rs
+  s_f3ae5462f697a3::t_09cacf7a168846 14-18
+docs/plan/03-interfaces.md
+  s_f3ae5462f697a3::t_470e68e029baaf 282
+docs/plan/04-mcp-and-integrations.md
+  s_f3ae5462f697a3::t_52bd67b0272cbf 191-192
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9e53b51c1b58105b82d15741ceaae7d4bdd252a0",
+  "prompts": {},
+  "sessions": {
+    "s_f3ae5462f697a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7cc607c-32b2-4e30-bc4c-55ff6e2d2dd7",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
