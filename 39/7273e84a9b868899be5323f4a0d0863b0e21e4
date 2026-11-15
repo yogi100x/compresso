@@ -1,0 +1,43 @@
+rust/compresso-store/src/symbols.rs
+  s_f3ae5462f697a3::t_0d2d509a6b4197 66-75,79,82-84,411-428,433-436,438-444,447-450
+  s_f3ae5462f697a3::t_b7da6e9d10c486 1327,1401-1402,1405-1457
+  s_f3ae5462f697a3::t_faa9f866e64787 1403-1404
+  s_f3ae5462f697a3::t_ac38e551982f50 1458-1459
+rust/compresso-store/src/lib.rs
+  s_f3ae5462f697a3::t_0d2d509a6b4197 26-27
+rust/compresso-atlas/src/indexer.rs
+  s_f3ae5462f697a3::t_2761a97ca9b400 1159-1176
+  s_f3ae5462f697a3::t_2bbea8eeaf232a 593-599
+docs/plan/05-tickets.md
+  s_f3ae5462f697a3::t_024afb061c7e4e 2523
+rust/compresso-atlas/src/rust_imports.rs
+  s_f3ae5462f697a3::t_faa9f866e64787 163,732,848-849,851-882,888-891,955
+  s_f3ae5462f697a3::t_68ab75df751360 36-39,103-105,407,409-414,419,446-468,509-510,608-639,641-666,730-731,928-929,931
+  s_f3ae5462f697a3::t_4c4a50d00fdcb4 43-46,58-68,81-93,117-128,132-146,148-153,155-162,192,194,214-216,405-406,408,516,640,667-729,909-913,947-954
+  s_f3ae5462f697a3::t_d6fc1fe85a44b9 28-30
+  s_f3ae5462f697a3::t_2761a97ca9b400 792-804,809-810,815,826,831-847
+  s_f3ae5462f697a3::t_0d2d509a6b4197 22,24
+  s_f3ae5462f697a3::t_2bbea8eeaf232a 394-399,416-418,421
+  s_f3ae5462f697a3::t_2cac740e31e346 166-174,176-187,883-887
+  s_f3ae5462f697a3::t_62a0ed3b31a114 164-165,733,850
+docs/plan/04-mcp-and-integrations.md
+  s_f3ae5462f697a3::t_024afb061c7e4e 338
+rust/compresso-cli/src/commands/retrieval.rs
+  s_f3ae5462f697a3::t_0d2d509a6b4197 442,444
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "397273e84a9b868899be5323f4a0d0863b0e21e4",
+  "prompts": {},
+  "sessions": {
+    "s_f3ae5462f697a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7cc607c-32b2-4e30-bc4c-55ff6e2d2dd7",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
