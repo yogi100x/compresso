@@ -633,12 +633,12 @@ pub fn read_bounded(
         // use the totals, not an exact count of the returned text.
         content.len().div_ceil(4)
     };
-    let selected_tokens = if !truncated {
-        tokens_used
+    let (selected_tokens, selected_estimated) = if !truncated {
+        (tokens_used, false)
     } else if selected.len() == source.len() {
-        file_tokens_total
+        (file_tokens_total, file_tokens_estimated)
     } else {
-        token_total(selected, counter).0
+        token_total(selected, counter)
     };
     let end_line = if truncated {
         included_end_line(start_line, &content).min(selected_end_line)
@@ -646,10 +646,12 @@ pub fn read_bounded(
         selected_end_line
     };
     let elision = truncated.then(|| {
+        // An overage taken from an estimated total is worded as one.
         format!(
-            "[lines {}-{} elided: {} tokens over budget]",
+            "[lines {}-{} elided: {}{} tokens over budget]",
             end_line.max(start_line),
             selected_end_line,
+            if selected_estimated { "about " } else { "" },
             selected_tokens.saturating_sub(tokens_used)
         )
     });
@@ -1922,6 +1924,14 @@ mod tests {
             read.file_tokens_estimated,
             "a 4 MiB total is not counted exactly"
         );
+        let elision = read
+            .elision
+            .as_deref()
+            .expect("a truncated read explains itself");
+        assert!(
+            elision.contains("about ") && elision.ends_with("tokens over budget]"),
+            "an estimated overage must be worded as approximate: {elision}"
+        );
         assert!(
             budgeted.bytes() < source.len() / 8,
             "counted {} bytes to return {} bytes",
@@ -1959,6 +1969,64 @@ mod tests {
             // Up to the exact-count limit the total is the tokenizer's own.
             assert!(!read.file_tokens_estimated);
             assert_eq!(read.file_tokens_total, counter.count(&source));
+        }
+    }
+
+    #[test]
+    fn test_growing_window_stays_within_budget_and_close_to_counting_everything() {
+        let counter = compresso_core::counter_for(compresso_core::TokenProvider::OpenAiO200k);
+        let code = "fn handle(request: &Request) -> Result<Response, Error> {\n    let value = request.header(\"x-id\")?;\n    Ok(Response::new(value))\n}\n".repeat(700);
+        let compact_json = format!(
+            "[{}]",
+            (0..6000)
+                .map(|index| format!("{{\"id\":{index},\"ok\":true}}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let cjk =
+            "圧縮は完了しました。次の手順を実行してください、設定を確認します。\n".repeat(900);
+        let long_words = (0..4000)
+            .map(|index| format!("{}{index} ", "supercalifragilistic".repeat(1 + index % 7)))
+            .collect::<String>();
+        let blank_heavy = "alpha\n\n\n\n   \t  beta\n\n".repeat(5000);
+        let mixed = format!(
+            "{}\n{}\n{}",
+            "word ".repeat(9000),
+            "x".repeat(30_000),
+            "9".repeat(20_000)
+        );
+        let shapes = [
+            ("code", code),
+            ("compact json", compact_json),
+            ("cjk prose", cjk),
+            ("long words", long_words),
+            ("blank heavy", blank_heavy),
+            ("mixed", mixed),
+        ];
+
+        for (name, text) in &shapes {
+            let whole = counter.count(text);
+            for budget in [1, 2, 99, 1_000, 7_777, 20_000] {
+                let (content, truncated) = super::fit_within_budget(text, budget, counter);
+                let (expected, expected_truncated) = if whole <= budget {
+                    (text.clone(), false)
+                } else {
+                    (super::prefix_within_budget(text, budget, counter), true)
+                };
+
+                assert_eq!(truncated, expected_truncated, "{name}, budget {budget}");
+                // Token counts are not strictly monotonic in the length of a
+                // prefix, so the two searches can settle a few bytes apart.
+                // What a read promises is a prefix within the budget.
+                assert!(text.starts_with(&content), "{name}, budget {budget}");
+                assert!(counter.count(&content) <= budget, "{name}, budget {budget}");
+                assert!(
+                    content.len().abs_diff(expected.len()) <= 16,
+                    "{name}, budget {budget}: {} bytes against {}",
+                    content.len(),
+                    expected.len()
+                );
+            }
         }
     }
 

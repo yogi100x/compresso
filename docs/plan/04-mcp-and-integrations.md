@@ -188,7 +188,7 @@ Shipped verbatim as the rmcp server `instructions` (build-doc §13.4: brief, fac
 }
 ```
 
-`file_tokens_total` is the exact tokenizer count for a file up to 1,000,000 bytes, which covers every indexed file. Above that the file is not tokenized whole: the value is a byte-length estimate and the result (and the gate object) also carries `"file_tokens_total_estimated": true`. Returned `content` and `tokens_used` are always exact, and a read's work follows the size of what it returns rather than the size of the file (D82).
+`file_tokens_total` is the exact tokenizer count for a file up to 1,000,000 bytes, which covers every indexed file. Above that the file is not tokenized whole: the value is a byte-length estimate, the result (and the gate object) also carries `"file_tokens_total_estimated": true`, and an `elision` overage derived from it reads "about N tokens over budget". Returned `content` and `tokens_used` are always exact, and a read's work follows the size of what it returns rather than the size of the file (D82).
 
 `range` identifies the returned content. `resolved_range` identifies the normalized requested selection before token truncation. An `end_line` beyond EOF is normalized to `file_lines_total` with `range_clamped:true`; a start beyond EOF remains invalid.
 
