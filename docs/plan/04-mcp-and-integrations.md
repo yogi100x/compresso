@@ -335,7 +335,7 @@ A pack is `task_pack_ready` only after it includes evidence from every distinct 
 }
 ```
 
-**Result shape**: `{ schema_version, operation_id, path, dependents[], unresolved_edges, ambiguous_edges, complete, truncated }`. Dependents contain path, depth, and edge kind. `complete` is false whenever unresolved/ambiguous imports may alter closure.
+**Result shape**: `{ schema_version, operation_id, path, dependents[], unresolved_edges, ambiguous_edges, complete, truncated }`. Dependents contain path, depth, and edge kind. `complete` is false whenever unresolved/ambiguous imports may alter closure. An import known to point outside the repository (the Rust standard library, a dependency the importing crate declares in its `Cargo.toml`, a `node:` built-in) or at the importing file itself cannot alter closure: it is stored as unresolved with detail `external` or `same_file` and is counted in neither `unresolved_edges` nor `complete`. Rust `use` paths resolve across crates of the same Cargo workspace and to the module file that defines the path; an unknown first segment stays unresolved (partial E16-06).
 
 **Errors**: `not_indexed`, `outside_root`, `not_found`, `invalid_arguments`. Tests cover aliases, packages, ambiguity, cycles, deletion, depth, result bounds, and root escape.
 

@@ -63,11 +63,25 @@ pub struct ResolvedEdgeRecord {
     pub kind: EdgeKind,
 }
 
+/// Detail of an unresolved edge whose target lies outside the repository: the
+/// standard library or a dependency the importing crate declares.
+pub const EDGE_DETAIL_EXTERNAL: &str = "external";
+/// Detail of an unresolved edge that names the importing file itself.
+pub const EDGE_DETAIL_SAME_FILE: &str = "same_file";
+
+/// Unresolved edges with these details cannot change which repository files
+/// depend on each other, so they do not make a dependency answer incomplete.
+const CLOSURE_NEUTRAL_UNRESOLVED: &str = "(resolution_status = 'unresolved' AND COALESCE(resolution_detail, '') IN ('external', 'same_file'))";
+
 /// Counts unresolved and ambiguous dependency edges for completeness reporting.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct EdgeResolutionCounts {
+    /// Unresolved edges that may hide a dependent.
     pub unresolved: usize,
     pub ambiguous: usize,
+    /// Unresolved edges known to point outside the repository or at the
+    /// importing file; not counted in `unresolved`.
+    pub external: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -394,16 +408,46 @@ impl Store {
             .map_err(StoreError::from)
     }
 
+    /// Returns the files whose imports may hide a dependent: an ambiguous
+    /// edge, an unresolved edge that is not known to be external, or a
+    /// resolved edge whose target is gone.
+    pub fn incomplete_edge_sources(&self, repo: RepoId) -> Result<Vec<String>, StoreError> {
+        let connection = self.connection()?;
+        ensure_repo_exists(&connection, repo)?;
+        let neutral = CLOSURE_NEUTRAL_UNRESOLVED
+            .replace("resolution_status", "e.resolution_status")
+            .replace("resolution_detail", "e.resolution_detail");
+        let mut statement = connection.prepare(&format!(
+            "SELECT DISTINCT source.path FROM edges AS e JOIN files AS source ON source.id = e.from_file_id WHERE e.repo_id = ?1 AND (e.resolution_status != 'resolved' OR e.to_file_id IS NULL) AND NOT {neutral} ORDER BY source.path ASC"
+        ))?;
+        statement
+            .query_map([repo], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
     /// Returns separate unresolved and ambiguous edge counts for one repository.
     pub fn edge_resolution_counts(&self, repo: RepoId) -> Result<EdgeResolutionCounts, StoreError> {
         let connection = self.connection()?;
         ensure_repo_exists(&connection, repo)?;
-        let (unresolved, ambiguous) = connection.query_row(
-            "SELECT COALESCE(SUM(CASE WHEN resolution_status = 'unresolved' THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN resolution_status = 'ambiguous' THEN 1 ELSE 0 END), 0) FROM edges WHERE repo_id = ?1",
+        let (unresolved, ambiguous, external) = connection.query_row(
+            &format!(
+                "SELECT COALESCE(SUM(CASE WHEN resolution_status = 'unresolved' AND NOT {CLOSURE_NEUTRAL_UNRESOLVED} THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN resolution_status = 'ambiguous' THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN {CLOSURE_NEUTRAL_UNRESOLVED} THEN 1 ELSE 0 END), 0) FROM edges WHERE repo_id = ?1"
+            ),
             [repo],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
         )?;
         Ok(EdgeResolutionCounts {
+            external: usize::try_from(external).map_err(|_| StoreError::InvalidStoredValue {
+                field: "edges external count",
+                value: external.to_string(),
+            })?,
             unresolved: usize::try_from(unresolved).map_err(|_| {
                 StoreError::InvalidStoredValue {
                     field: "edges unresolved count",
@@ -1280,6 +1324,7 @@ mod tests {
             crate::EdgeResolutionCounts {
                 unresolved: 1,
                 ambiguous: 1,
+                external: 0,
             }
         );
     }
@@ -1350,6 +1395,65 @@ mod tests {
                 .unresolved_edge_sources(repo)
                 .expect("unresolved sources should load"),
             ["src/b.rs"]
+        );
+    }
+
+    #[test]
+    fn test_external_and_same_file_imports_do_not_count_against_completeness() {
+        use crate::{EDGE_DETAIL_EXTERNAL, EDGE_DETAIL_SAME_FILE};
+
+        let (_directory, store, repo) = setup();
+        let unresolved = |detail: &str| EdgeRecord {
+            to_path: format!("use::{detail}"),
+            kind: EdgeKind::Imports,
+            resolution: EdgeResolution::Unresolved(detail.to_owned()),
+        };
+        let only_external = store
+            .upsert_file(repo, &file("src/only_external.rs"))
+            .expect("file should insert");
+        store
+            .replace_symbols(
+                only_external,
+                &[],
+                &[
+                    unresolved(EDGE_DETAIL_EXTERNAL),
+                    unresolved(EDGE_DETAIL_SAME_FILE),
+                ],
+            )
+            .expect("external edges should insert");
+        let mixed = store
+            .upsert_file(repo, &file("src/mixed.rs"))
+            .expect("file should insert");
+        store
+            .replace_symbols(
+                mixed,
+                &[],
+                &[unresolved(EDGE_DETAIL_EXTERNAL), unresolved("not_indexed")],
+            )
+            .expect("mixed edges should insert");
+
+        assert_eq!(
+            store
+                .edge_resolution_counts(repo)
+                .expect("resolution counts should load"),
+            crate::EdgeResolutionCounts {
+                unresolved: 1,
+                ambiguous: 0,
+                external: 3,
+            }
+        );
+        assert_eq!(
+            store
+                .incomplete_edge_sources(repo)
+                .expect("incomplete sources should load"),
+            ["src/mixed.rs"]
+        );
+        // Reindexing still revisits every file with an unresolved edge.
+        assert_eq!(
+            store
+                .unresolved_edge_sources(repo)
+                .expect("unresolved sources should load"),
+            ["src/mixed.rs", "src/only_external.rs"]
         );
     }
 

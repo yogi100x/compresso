@@ -590,6 +590,13 @@ fn resolve_repository_imports(
             }
             Some("py") => python_candidates(importer, &import.raw),
             Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs") => {
+                // The `node:` scheme only ever names a runtime built-in.
+                if import.raw.starts_with("node:") {
+                    import.resolved_path = None;
+                    import.resolution =
+                        ImportResolution::Unresolved(rust_imports::EXTERNAL.to_owned());
+                    continue;
+                }
                 script_candidates(importer, &import.raw)
             }
             _ => BTreeSet::new(),
@@ -1147,6 +1154,24 @@ mod tests {
             &mut imports,
             &known,
             &RustWorkspace::default(),
+        );
+
+        let mut builtins = [ImportRecord {
+            raw: "node:fs/promises".to_owned(),
+            kind: ImportKind::Import,
+            resolved_path: None,
+            resolution: ImportResolution::Unresolved("not_indexed".to_owned()),
+        }];
+        resolve_repository_imports(
+            "src/app.ts",
+            &mut builtins,
+            &known,
+            &RustWorkspace::default(),
+        );
+        assert_eq!(
+            builtins[0].resolution,
+            ImportResolution::Unresolved("external".to_owned()),
+            "a node: specifier always names a runtime built-in"
         );
 
         assert_eq!(
