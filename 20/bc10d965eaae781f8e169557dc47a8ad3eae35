@@ -1,0 +1,26 @@
+rust/compresso-atlas/src/queries.rs
+  s_f3ae5462f697a3::t_cd2eacbfd8c4ad 1927-1934,1975,1977-2017,2029
+  s_f3ae5462f697a3::t_ed2bb0580db4d5 636-637,639,641,649,651,654,1976,2018-2028,2030-2032
+decisions.md
+  s_f3ae5462f697a3::t_5fd510326804a5 110
+docs/plan/04-mcp-and-integrations.md
+  s_f3ae5462f697a3::t_dcc7f6d7a93999 191
+docs/plan/05-tickets.md
+  s_f3ae5462f697a3::t_d29f7720f0fc25 2997-3002
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "20bc10d965eaae781f8e169557dc47a8ad3eae35",
+  "prompts": {},
+  "sessions": {
+    "s_f3ae5462f697a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7cc607c-32b2-4e30-bc4c-55ff6e2d2dd7",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
