@@ -285,7 +285,7 @@ fn test_decisions_redact_secrets_and_neutralize_untrusted_ledger_text() {
 }
 
 #[test]
-fn test_decisions_report_poster_failures_and_the_system_poster_never_posts() {
+fn test_decisions_report_poster_failures_and_dry_run_never_reaches_the_system_poster() {
     let fixture = Fixture::new();
     let missing = RecordingPoster::failing(PostError::GhNotFound);
 
@@ -299,8 +299,18 @@ fn test_decisions_report_poster_failures_and_the_system_poster_never_posts() {
     assert!(errors.contains("gh pr comment 12 --body-file -"));
     assert!(!errors.contains(SECRET_CANARY));
 
-    // The production wiring looks for `gh` but may not start it, so a
-    // confirmed post fails closed whether or not `gh` is installed.
+    // A stopped `gh` may already have delivered the comment, so the message
+    // must not claim that nothing was posted.
+    let stopped = RecordingPoster::failing(PostError::TimedOut);
+    let (exit, _, errors) = fixture.run(&stopped, &["--pr", "12", "--post", "--yes", "--json"]);
+    assert_eq!(exit, CliExitCode::Failure);
+    assert_eq!(error_code(&errors), "post_timed_out");
+    assert!(errors.contains("check the pull request before posting again"));
+    assert!(!errors.contains("nothing was posted"));
+
+    // The production wiring can now start `gh`, so this test must not ask
+    // it to post. With `--dry-run` the poster is never reached, whatever
+    // else is on the command line.
     let cli = Cli::try_parse_from([
         "compresso",
         "decisions",
@@ -308,6 +318,7 @@ fn test_decisions_report_poster_failures_and_the_system_poster_never_posts() {
         "12",
         "--post",
         "--yes",
+        "--dry-run",
         "--json",
     ])
     .expect("decisions should parse");
@@ -321,13 +332,11 @@ fn test_decisions_report_poster_failures_and_the_system_poster_never_posts() {
         &mut output,
         &mut errors,
     );
-    assert_eq!(exit, CliExitCode::Failure);
-    assert!(output.is_empty());
-    let code = error_code(&String::from_utf8(errors).expect("errors should be UTF-8"));
-    assert!(
-        matches!(code.as_str(), "gh_not_found" | "post_unavailable"),
-        "{code}"
-    );
+    assert_eq!(exit, CliExitCode::Success);
+    assert!(errors.is_empty());
+    let output: Value = serde_json::from_slice(&output).expect("output should be JSON");
+    assert_eq!(output["data"]["status"], "preview");
+    assert_eq!(output["data"]["posted"], false);
 }
 
 #[test]
