@@ -48,6 +48,10 @@ jobs:
           fetch-depth: 0
       - name: Require the release commit to be on main
         # Acceptance coverage: test_beta_release_commit_must_be_on_main
+        # This guards against a tag placed on the wrong commit by mistake. It
+        # runs from the tagged code, so it cannot stop someone who can push a
+        # tag and edit this file; that needs a tag ruleset and protection
+        # rules on the private-beta-release environment.
         shell: bash
         run: |
           set -euo pipefail

@@ -79,8 +79,17 @@ unsigned slice installer.
 - Trust is anchored in GitHub's OIDC issuer, the Sigstore root, and the
   integrity of the `ci.yml` workflow on `main`. A change to that workflow that
   reaches `main` can sign any manifest; branch protection is the control.
+- As of 2026-11-15 `main` has no branch protection, the repository has no
+  rulesets, and the `private-beta-release` environment has no protection
+  rules. Until the owner adds them, the signature proves "built by `ci.yml`
+  on `main`", and `main` accepts a direct push from anyone with write access.
 - The installer does not pin a commit or tag, so any manifest signed by a
-  main-branch CI run verifies. Rollback to an older signed release is not
-  prevented; that remains with the E12 updater.
+  main-branch CI run verifies. The manifest names each tarball with its
+  version, so a manifest for another version does not match the requested
+  file; but slice builds keep one version across many commits, so an origin
+  can serve an older signed build of the same version. Rollback protection
+  remains with the E12 updater. Signing only tagged releases and checking the
+  tag in the certificate would close this and is the natural next step once
+  releases are tagged.
 - E12-05 (owner-held ed25519 signature for Linux packages) is unaffected and
   can be added alongside.
