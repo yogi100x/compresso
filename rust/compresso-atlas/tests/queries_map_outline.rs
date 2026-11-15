@@ -229,6 +229,69 @@ fn test_outline_current_reports_hash_drift() {
 }
 
 #[test]
+fn test_repository_stale_trusts_an_untouched_file_and_rechecks_a_touched_one() {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    let fixture = Fixture::new();
+    let repository = fixture
+        .store
+        .repository(fixture.repo)
+        .expect("repository should load");
+    let relative = "src/tracked.rs";
+    let path = repository.root.join(relative);
+    fs::create_dir_all(path.parent().expect("file should have a parent"))
+        .expect("source directory should be created");
+    let original = "pub fn tracked() {}\n";
+    let same_size_edit = "pub fn changed() {}\n";
+    assert_eq!(original.len(), same_size_edit.len());
+    fs::write(&path, original).expect("source should be written");
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after the epoch")
+        .as_secs();
+    fixture
+        .store
+        .upsert_file(
+            fixture.repo,
+            &FileRecord {
+                path: relative.to_owned(),
+                hash: blake3::hash(original.as_bytes()).to_hex().to_string(),
+                language: Some(FileLanguage::Rust),
+                size_bytes: original.len() as u64,
+                token_estimate: 6,
+                indexed_at: i64::try_from(now).expect("timestamp should fit"),
+            },
+        )
+        .expect("indexed file should insert");
+    let set_modified = |seconds_before_index: u64| {
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .expect("source should open")
+            .set_modified(UNIX_EPOCH + Duration::from_secs(now - seconds_before_index))
+            .expect("modification time should be set");
+    };
+
+    // A same-size edit made in the same second as the index is hashed.
+    fs::write(&path, same_size_edit).expect("source should change");
+    set_modified(0);
+    assert!(repository_stale(&fixture.store, fixture.repo).expect("touched file should inspect"));
+
+    // A different size is stale whatever the modification time says.
+    fs::write(&path, "pub fn tracked_longer() {}\n").expect("source should grow");
+    set_modified(3600);
+    assert!(repository_stale(&fixture.store, fixture.repo).expect("resized file should inspect"));
+
+    // The documented limit of the fast path: the same size with a
+    // modification time well before the index is trusted without hashing.
+    fs::write(&path, same_size_edit).expect("source should change");
+    set_modified(3600);
+    assert!(
+        !repository_stale(&fixture.store, fixture.repo).expect("untouched file should inspect")
+    );
+}
+
+#[test]
 fn test_repository_stale_detects_changed_and_deleted_file() {
     let fixture = Fixture::new();
     let repository = fixture
