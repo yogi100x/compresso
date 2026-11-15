@@ -56,16 +56,66 @@ impl TokenCounter for TiktokenCounter {
 
     fn count(&self, text: &str) -> usize {
         if let Some((line, repeats)) = exact_repeated_line(text)
-            && let Some(total) = self
-                .tokenizer
-                .encode_ordinary(line)
-                .len()
-                .checked_mul(repeats)
+            && let Some(total) = self.count_pieces(line).checked_mul(repeats)
         {
             return total;
         }
-        self.tokenizer.encode_ordinary(text).len()
+        self.count_pieces(text)
     }
+}
+
+impl TiktokenCounter {
+    fn count_pieces(&self, text: &str) -> usize {
+        bounded_pieces(text).fold(0_usize, |total, piece| {
+            total.saturating_add(self.count_piece(piece))
+        })
+    }
+
+    /// Counts one bounded piece. A tokenizer panic must never take the
+    /// caller down (fail-open), so it degrades to the byte heuristic for
+    /// that piece.
+    fn count_piece(&self, piece: &str) -> usize {
+        catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.tokenizer.encode_ordinary(piece).len()
+        }))
+        .unwrap_or_else(|_| piece.len().div_ceil(4))
+    }
+}
+
+/// Longest run without whitespace handed to the tokenizer in one piece.
+///
+/// The tokenizer treats such a run as a single piece and merges it in
+/// quadratic time; past roughly a megabyte its matcher gives up and the
+/// library panics. Ordinary text and code never come near this length, so
+/// they are counted in one call and stay exact.
+pub(crate) const MAX_UNBROKEN_RUN_BYTES: usize = 1024;
+
+/// Splits `text` so that no piece holds a longer unbroken run than
+/// [`MAX_UNBROKEN_RUN_BYTES`] (plus the tail of one character). Text without
+/// such a run comes back as a single piece. Cuts fall on character
+/// boundaries, and each cut can add at most one token to the total.
+fn bounded_pieces(text: &str) -> impl Iterator<Item = &str> {
+    let mut piece_start = 0;
+    let mut run_start = 0;
+    let mut characters = text.char_indices();
+    std::iter::from_fn(move || {
+        if piece_start >= text.len() {
+            return None;
+        }
+        for (index, character) in characters.by_ref() {
+            if character.is_whitespace() {
+                run_start = index + character.len_utf8();
+            } else if index - run_start >= MAX_UNBROKEN_RUN_BYTES {
+                let piece = &text[piece_start..index];
+                piece_start = index;
+                run_start = index;
+                return Some(piece);
+            }
+        }
+        let piece = &text[piece_start..];
+        piece_start = text.len();
+        Some(piece)
+    })
 }
 
 /// Recognizes a byte-exact repeated nonblank line stream.
@@ -272,6 +322,84 @@ mod tests {
             counter_for(TokenProvider::OpenAiO200k).count("hello world"),
             2
         );
+    }
+
+    #[test]
+    fn test_megabyte_unbroken_letter_run_is_counted_instead_of_panicking() {
+        let run = "a".repeat(1024 * 1024);
+        let started = Instant::now();
+
+        let count = counter_for(TokenProvider::OpenAiO200k).count(&run);
+
+        assert!(count > 0);
+        assert!(count <= run.len());
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "counting took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn test_unbroken_cjk_run_is_counted_in_bounded_time() {
+        let run = "完了圧縮".repeat(32 * 1024);
+        let started = Instant::now();
+
+        let count = counter_for(TokenProvider::OpenAiCl100k).count(&run);
+
+        assert!(count > 0);
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "counting took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn test_run_at_the_unbroken_limit_stays_exact() {
+        let mut text = String::from("prefix ");
+        text.push_str(&"k".repeat(MAX_UNBROKEN_RUN_BYTES));
+        text.push_str(" suffix\n");
+
+        assert_eq!(
+            counter_for(TokenProvider::OpenAiO200k).count(&text),
+            raw_o200k().encode_ordinary(&text).len()
+        );
+    }
+
+    #[test]
+    fn test_split_long_run_overcounts_by_at_most_one_token_per_cut() {
+        let run = "résumé".repeat(1500);
+        let text = format!("before {run} after");
+        let exact = raw_o200k().encode_ordinary(&text).len();
+        let cuts = run.len() / MAX_UNBROKEN_RUN_BYTES + 1;
+
+        let counted = counter_for(TokenProvider::OpenAiO200k).count(&text);
+
+        assert!(
+            counted >= exact && counted <= exact + cuts,
+            "counted {counted}, exact {exact}, cuts {cuts}"
+        );
+    }
+
+    #[test]
+    fn test_bounded_pieces_cover_the_text_and_never_split_a_character() {
+        let text = format!("a b {} c\n{}", "é".repeat(3000), "z".repeat(10));
+        let pieces: Vec<&str> = bounded_pieces(&text).collect();
+
+        assert_eq!(pieces.concat(), text);
+        assert!(pieces.len() > 1);
+        for piece in &pieces {
+            let longest_run = piece
+                .split(char::is_whitespace)
+                .map(str::len)
+                .max()
+                .unwrap_or(0);
+            assert!(
+                longest_run <= MAX_UNBROKEN_RUN_BYTES + 4,
+                "run of {longest_run}"
+            );
+        }
     }
 
     #[test]
