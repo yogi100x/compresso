@@ -105,11 +105,20 @@ impl RustWorkspace {
                         .push(source_dir.to_owned());
                 }
             }
-            workspace
+            // A dependency inherited from the workspace is external only if
+            // the workspace declares it without a `path`.
+            let workspace_registry = manifest_at(workspace_root).workspace_registry_dependencies;
+            let declared = workspace
                 .dependencies
                 .entry(source_dir.to_owned())
-                .or_default()
-                .extend(manifest.dependencies);
+                .or_default();
+            declared.extend(manifest.dependencies);
+            declared.extend(
+                manifest
+                    .inherited
+                    .into_iter()
+                    .filter(|name| workspace_registry.contains(name)),
+            );
         }
         workspace
     }
@@ -194,13 +203,22 @@ struct Manifest {
     is_workspace: bool,
     package_name: Option<String>,
     library_name: Option<String>,
+    /// Dependencies declared without a `path`: they come from a registry or
+    /// a remote source, so they are outside the repository.
     dependencies: BTreeSet<String>,
+    /// Dependencies that take their definition from the workspace manifest.
+    inherited: BTreeSet<String>,
+    /// `[workspace.dependencies]` entries declared without a `path`.
+    workspace_registry_dependencies: BTreeSet<String>,
 }
 
 impl Manifest {
     fn parse(text: &str) -> Self {
         let mut manifest = Self::default();
+        let mut entries = BTreeMap::<(bool, String), DependencyEntry>::new();
         let mut section = String::new();
+        // The dependency a `[dependencies.<name>]` style table describes.
+        let mut table_entry: Option<(bool, String)> = None;
         for line in text.lines() {
             let line = line.split('#').next().unwrap_or("").trim();
             if line.is_empty() {
@@ -214,22 +232,45 @@ impl Manifest {
                 if section == "workspace" || section.starts_with("workspace.") {
                     manifest.is_workspace = true;
                 }
-                if let Some(name) = dependency_table_entry(&section) {
-                    manifest.dependencies.insert(use_name(name));
+                table_entry = dependency_table_entry(&section)
+                    .map(|name| (is_workspace_table(&section), use_name(name)));
+                if let Some(key) = &table_entry {
+                    entries.entry(key.clone()).or_default();
                 }
                 continue;
             }
             let Some((key, value)) = line.split_once('=') else {
                 continue;
             };
-            let key = key.trim();
-            if is_dependency_table(&section) {
-                let name = key.split('.').next().unwrap_or(key).trim_matches('"');
-                if !name.is_empty() {
-                    manifest.dependencies.insert(use_name(name));
+            let (key, value) = (key.trim(), value.trim());
+            if let Some(entry_key) = &table_entry {
+                let entry = entries.entry(entry_key.clone()).or_default();
+                match key {
+                    "path" => entry.has_path = true,
+                    "workspace" if value == "true" => entry.inherited = true,
+                    _ => {}
+                }
+            } else if is_dependency_table(&section) {
+                let mut parts = key.splitn(2, '.');
+                let name = parts.next().unwrap_or(key).trim().trim_matches('"');
+                if name.is_empty() {
+                    continue;
+                }
+                let entry = entries
+                    .entry((is_workspace_table(&section), use_name(name)))
+                    .or_default();
+                match parts.next().map(str::trim) {
+                    // `name.path = "…"` and `name.workspace = true`.
+                    Some("path") => entry.has_path = true,
+                    Some("workspace") if value == "true" => entry.inherited = true,
+                    Some(_) => {}
+                    None => {
+                        entry.has_path |= inline_table_has_key(value, "path");
+                        entry.inherited |= inline_table_has_key(value, "workspace");
+                    }
                 }
             } else if key == "name" {
-                let value = value.trim().trim_matches('"').to_owned();
+                let value = value.trim_matches('"').to_owned();
                 match section.as_str() {
                     "package" => manifest.package_name = Some(value),
                     "lib" => manifest.library_name = Some(value),
@@ -237,8 +278,44 @@ impl Manifest {
                 }
             }
         }
+        for ((in_workspace_table, name), entry) in entries {
+            // A `path` dependency is inside the repository by definition and
+            // is never recorded as external, whatever name it is used under.
+            if entry.has_path {
+                continue;
+            }
+            if in_workspace_table {
+                manifest.workspace_registry_dependencies.insert(name);
+            } else if entry.inherited {
+                manifest.inherited.insert(name);
+            } else {
+                manifest.dependencies.insert(name);
+            }
+        }
         manifest
     }
+}
+
+#[derive(Clone, Copy, Default)]
+struct DependencyEntry {
+    has_path: bool,
+    inherited: bool,
+}
+
+/// Whether an inline table such as `{ version = "1", path = "../x" }` sets
+/// `key`. A plain string value (`"1"`) sets nothing.
+fn inline_table_has_key(value: &str, key: &str) -> bool {
+    let Some(body) = value.strip_prefix('{') else {
+        return false;
+    };
+    body.trim_end_matches('}')
+        .split(',')
+        .filter_map(|pair| pair.split_once('='))
+        .any(|(name, _)| name.trim() == key)
+}
+
+fn is_workspace_table(section: &str) -> bool {
+    section.starts_with("workspace.")
 }
 
 const DEPENDENCY_TABLES: [&str; 3] = ["dependencies", "dev-dependencies", "build-dependencies"];
@@ -848,6 +925,60 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_path_dependencies_are_never_external() {
+        // A dependency declared with `path` lives in the repository, whatever
+        // name it is imported under. Calling it external could hide a
+        // dependent, so only registry dependencies count as external.
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let root = directory.path();
+        fs::create_dir_all(root.join("app/src")).expect("app should be created");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"app\"]\n\n[workspace.dependencies]\ninherited-local = { path = \"crates/inherited-local\" }\ninherited-registry = \"1\"\n\n[workspace.dependencies.inherited-table]\npath = \"crates/inherited-table\"\n",
+        )
+        .expect("workspace manifest should be written");
+        fs::write(
+            root.join("app/Cargo.toml"),
+            "[package]\nname = \"app\"\n\n[dependencies]\nserde = \"1\"\nlocal = { path = \"../local\" }\nrenamed = { package = \"real-name\", path = \"../real\" }\ninherited-local.workspace = true\ninherited-table = { workspace = true }\ninherited-registry.workspace = true\n\n[dependencies.tabled]\npath = \"../tabled\"\n\n[dev-dependencies.tabled-registry]\nversion = \"2\"\n",
+        )
+        .expect("app manifest should be written");
+        let known: BTreeSet<String> = ["app/src/lib.rs".to_owned()].into();
+
+        let workspace = RustWorkspace::discover(root, &known);
+
+        assert_eq!(
+            workspace.dependencies.get("app/src"),
+            Some(&BTreeSet::from([
+                "inherited_registry".to_owned(),
+                "serde".to_owned(),
+                "tabled_registry".to_owned(),
+            ]))
+        );
+        for raw in [
+            "local::Thing",
+            "renamed::Thing",
+            "inherited_local::Thing",
+            "inherited_table::Thing",
+            "tabled::Thing",
+        ] {
+            assert_eq!(
+                resolve("app/src/lib.rs", raw, &known, &workspace),
+                (None, ImportResolution::Unresolved(NOT_INDEXED.to_owned())),
+                "{raw}"
+            );
+        }
+        assert_eq!(
+            resolve(
+                "app/src/lib.rs",
+                "inherited_registry::Thing",
+                &known,
+                &workspace
+            ),
+            (None, ImportResolution::Unresolved(EXTERNAL.to_owned()))
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn test_workspace_discovery_ignores_manifests_the_scanner_would_not_read() {
@@ -933,9 +1064,10 @@ mod tests {
         );
         assert_eq!(
             workspace.dependencies.get("crates/app/src"),
+            // `my-store` is inherited from a workspace that does not declare
+            // it as a registry dependency, so it is not external.
             Some(&BTreeSet::from([
                 "clap".to_owned(),
-                "my_store".to_owned(),
                 "serde".to_owned(),
                 "tempfile".to_owned(),
             ]))
