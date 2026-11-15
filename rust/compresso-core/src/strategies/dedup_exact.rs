@@ -130,7 +130,7 @@ fn duplicate_plan<'a>(input: &'a ContextGraph, protected_kinds: &[NodeKind]) -> 
         }
 
         if let Some(&survivor_id) = survivors.get(node.content.as_str()) {
-            let stub = duplicate_stub(survivor_id);
+            let stub = duplicate_stub(survivor_id, &node.content);
             let after_tokens = counter_for(node.token_provider).count(&stub);
             if after_tokens < node.token_count {
                 duplicates.push(Duplicate {
@@ -209,6 +209,51 @@ mod tests {
             max_latency_ms: 200,
             allowed_lossiness: Lossiness::None,
             protected_kinds: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_dedup_stub_keeps_the_line_ending_of_the_text_it_replaces() {
+        for terminator in ["\n", "\r\n"] {
+            let repeated = format!(
+                "warning: unused variable\n  --> src/lib.rs:1:1\n   = note: repeated{terminator}"
+            );
+            let graph = ContextGraph {
+                schema_version: 1,
+                nodes: vec![
+                    node("first", NodeKind::ToolResponse, &repeated, false),
+                    node("second", NodeKind::ToolResponse, &repeated, false),
+                    node("after", NodeKind::ToolResponse, "    Finished dev\n", false),
+                ],
+                edges: Vec::new(),
+            };
+
+            let output = DedupExact
+                .execute(&graph, &budget())
+                .expect("exact dedup should execute");
+
+            let stub = &output.graph.nodes[1];
+            assert_eq!(
+                stub.content,
+                format!("[duplicate of node first]{terminator}")
+            );
+            assert_eq!(
+                stub.token_count,
+                counter_for(stub.token_provider).count(&stub.content)
+            );
+            assert!(duplicate_references_well_formed(&output.graph));
+            let rendered = output
+                .graph
+                .nodes
+                .iter()
+                .map(|node| node.content.as_str())
+                .collect::<String>();
+            assert!(
+                rendered.ends_with(&format!(
+                    "[duplicate of node first]{terminator}    Finished dev\n"
+                )),
+                "the next line must not be glued to the stub: {rendered:?}"
+            );
         }
     }
 

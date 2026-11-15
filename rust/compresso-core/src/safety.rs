@@ -357,12 +357,31 @@ fn refs_valid(
 
 const DUPLICATE_STUB_PREFIX: &str = "[duplicate of node ";
 
-pub(crate) fn duplicate_stub(target_id: &str) -> String {
-    format!("{DUPLICATE_STUB_PREFIX}{target_id}]")
+/// Builds the stub that stands in for `replaced`. The stub keeps the line
+/// ending of the text it replaces, so the line that follows is not joined to
+/// it when the nodes are rendered back into one text.
+pub(crate) fn duplicate_stub(target_id: &str, replaced: &str) -> String {
+    let terminator = line_ending(replaced);
+    format!("{DUPLICATE_STUB_PREFIX}{target_id}]{terminator}")
+}
+
+/// The line ending `text` finishes with, or nothing.
+fn line_ending(text: &str) -> &'static str {
+    if text.ends_with("\r\n") {
+        "\r\n"
+    } else if text.ends_with('\n') {
+        "\n"
+    } else {
+        ""
+    }
 }
 
 fn duplicate_stub_target(content: &str) -> Option<&str> {
-    let target = content
+    let body = content
+        .strip_suffix("\r\n")
+        .or_else(|| content.strip_suffix('\n'))
+        .unwrap_or(content);
+    let target = body
         .strip_prefix(DUPLICATE_STUB_PREFIX)?
         .strip_suffix(']')?;
     (!target.is_empty()).then_some(target)

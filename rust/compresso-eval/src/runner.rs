@@ -498,7 +498,8 @@ fn valid_json_duplicate_stub(
         return false;
     };
     if references.next().is_some()
-        || candidate_stub.content != format!("[duplicate of node {}]", reference.to)
+        || candidate_stub.content.trim_end_matches(['\r', '\n'])
+            != format!("[duplicate of node {}]", reference.to)
     {
         return false;
     }
