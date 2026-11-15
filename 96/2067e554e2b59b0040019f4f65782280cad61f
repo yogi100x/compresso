@@ -1,0 +1,29 @@
+rust/compresso-atlas/src/rust_imports.rs
+  s_f3ae5462f697a3::t_acaa9f307811a2 1-40,83,269-272,277,355-613
+  s_f3ae5462f697a3::t_af975d595f81d7 41-82,84-268,273-276,278-354
+rust/compresso-atlas/src/lib.rs
+  s_f3ae5462f697a3::t_8e16706e35c2ad 7
+docs/adr/0026-safe-shell-and-generic-text-indexing.md
+  s_f3ae5462f697a3::t_5745c7c136e575 58
+  s_f3ae5462f697a3::t_585d9a45170049 59-60
+rust/compresso-atlas/src/indexer.rs
+  s_f3ae5462f697a3::t_5745c7c136e575 20
+  s_f3ae5462f697a3::t_585d9a45170049 16,391-396,582,586-590,914,1145-1147
+  s_f3ae5462f697a3::t_b5b568453ae217 21-23,175,227,315,1148-1150
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "962067e554e2b59b0040019f4f65782280cad61f",
+  "prompts": {},
+  "sessions": {
+    "s_f3ae5462f697a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e7cc607c-32b2-4e30-bc4c-55ff6e2d2dd7",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
