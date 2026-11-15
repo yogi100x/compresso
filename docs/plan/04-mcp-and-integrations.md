@@ -65,7 +65,7 @@ Shipped verbatim as the rmcp server `instructions` (build-doc §13.4: brief, fac
 }
 ```
 
-**Errors**: `not_indexed` (with `compresso index` instruction), `outside_root`, `invalid_arguments`. `stale: true` (not an error) when file hashes have drifted since last index; the map is still served with a reindex hint appended.
+**Errors**: `not_indexed` (with `compresso index` instruction), `outside_root`, `invalid_arguments`. `stale: true` (not an error) when file hashes have drifted since last index (a file untouched since before it was indexed, with the indexed size, is trusted without hashing; D80); the map is still served with a reindex hint appended.
 
 **Predecessor compatibility**: functional counterpart of the predecessor `repo_map` tool; same purpose, `max_tokens` budget name retained.
 

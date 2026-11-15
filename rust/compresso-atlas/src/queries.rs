@@ -396,7 +396,7 @@ pub fn outline_current(
         }
         .into());
     };
-    let stale = !file_matches_index(&resolved, indexed.size_bytes, &indexed.hash)?;
+    let stale = !file_matches_index(&resolved, &indexed)?;
     Ok(CurrentOutline {
         outline,
         stale,
@@ -416,7 +416,7 @@ pub fn repository_stale(store: &Store, repo: RepoId) -> Result<bool, AtlasError>
             | Err(AtlasError::Query(QueryError::NotAFile { .. })) => return Ok(true),
             Err(error) => return Err(error),
         };
-        if !file_matches_index(&resolved, indexed.size_bytes, &indexed.hash)? {
+        if !file_matches_index(&resolved, &indexed)? {
             return Ok(true);
         }
     }
@@ -1443,25 +1443,77 @@ fn ensure_contained(root: &Path, resolved: &Path) -> Result<(), AtlasError> {
 /// Chunk size for staleness hashing; the only buffer that check allocates.
 const STALENESS_HASH_BUFFER_BYTES: usize = 64 * 1024;
 
-/// Reports whether the file at `path` still has the indexed size and hash.
+/// How long before the index a modification must be for the file to be
+/// trusted without hashing. Covers file systems that record modification
+/// times to two seconds.
+const STALENESS_MTIME_MARGIN_SECONDS: i64 = 2;
+
+/// What a file's metadata says about it relative to its index record.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Freshness {
+    /// The size differs: stale without reading.
+    Stale,
+    /// Same size and not modified since before it was indexed.
+    Unchanged,
+    /// Same size, but touched at or after indexing: only the content tells.
+    NeedsHash,
+}
+
+/// Decides from metadata alone whether a file must be hashed.
 ///
-/// The file is never loaded whole: a size that differs from the index is
-/// stale without reading, and otherwise the content is hashed through one
-/// fixed buffer.
+/// The index stamps `indexed_at` before it reads any file, so every edit
+/// made after a file was read has a modification time at or after the stamp
+/// and is hashed. The one thing this cannot see is an edit that keeps the
+/// size and also sets the modification time back to before the index.
+fn freshness_from_metadata(
+    size: u64,
+    modified_seconds: Option<i64>,
+    indexed_size: u64,
+    indexed_at: i64,
+) -> Freshness {
+    if size != indexed_size {
+        return Freshness::Stale;
+    }
+    match modified_seconds {
+        Some(modified) if modified.saturating_add(STALENESS_MTIME_MARGIN_SECONDS) <= indexed_at => {
+            Freshness::Unchanged
+        }
+        _ => Freshness::NeedsHash,
+    }
+}
+
+/// Reports whether the file at `path` still matches its index record.
+///
+/// A size that differs is stale without reading, a file untouched since
+/// before it was indexed is trusted without reading, and anything else is
+/// hashed through one fixed buffer. The file is never loaded whole.
 fn file_matches_index(
     path: &Path,
-    indexed_size: u64,
-    indexed_hash: &str,
+    indexed: &compresso_store::FileRecord,
 ) -> Result<bool, QueryError> {
     let read_error = |source| QueryError::Read {
         path: path.to_path_buf(),
         source,
     };
     let mut file = fs::File::open(path).map_err(read_error)?;
-    if file.metadata().map_err(read_error)?.len() != indexed_size {
-        return Ok(false);
+    let metadata = file.metadata().map_err(read_error)?;
+    let modified_seconds = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|elapsed| i64::try_from(elapsed.as_secs()).ok());
+    match freshness_from_metadata(
+        metadata.len(),
+        modified_seconds,
+        indexed.size_bytes,
+        indexed.indexed_at,
+    ) {
+        Freshness::Stale => Ok(false),
+        Freshness::Unchanged => Ok(true),
+        Freshness::NeedsHash => {
+            content_matches_index(&mut file, indexed.size_bytes, &indexed.hash).map_err(read_error)
+        }
     }
-    content_matches_index(&mut file, indexed_size, indexed_hash).map_err(read_error)
 }
 
 /// Hashes `reader` in fixed chunks and compares it with the indexed size and
@@ -1708,6 +1760,35 @@ mod tests {
 
     fn hash_of_zeros(length: usize) -> String {
         blake3::hash(&vec![0_u8; length]).to_hex().to_string()
+    }
+
+    #[test]
+    fn test_only_a_file_older_than_the_index_with_the_indexed_size_skips_hashing() {
+        use super::{Freshness, freshness_from_metadata};
+
+        let indexed_at = 1_000_i64;
+        let cases = [
+            // (size on disk, modified, expected)
+            (10, Some(900), Freshness::Unchanged),
+            (10, Some(998), Freshness::Unchanged),
+            // Within the clock-granularity margin, at, or after the index.
+            (10, Some(999), Freshness::NeedsHash),
+            (10, Some(1_000), Freshness::NeedsHash),
+            (10, Some(5_000), Freshness::NeedsHash),
+            // No readable modification time.
+            (10, None, Freshness::NeedsHash),
+            // A different size never needs hashing to be stale.
+            (11, Some(900), Freshness::Stale),
+            (9, None, Freshness::Stale),
+        ];
+
+        for (size, modified, expected) in cases {
+            assert_eq!(
+                freshness_from_metadata(size, modified, 10, indexed_at),
+                expected,
+                "size {size}, modified {modified:?}"
+            );
+        }
     }
 
     #[test]
