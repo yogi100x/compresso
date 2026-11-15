@@ -4,6 +4,7 @@ pub mod concurrency;
 pub mod indexer;
 pub mod parsers;
 pub mod queries;
+mod rust_imports;
 pub mod scanner;
 pub mod search;
 

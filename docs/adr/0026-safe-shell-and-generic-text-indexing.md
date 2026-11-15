@@ -55,6 +55,9 @@ default parser version becomes the package version plus
 `atlas-shell-text-v1`, causing a one-time full reparse for existing indexes
 without changing the public package version.
 
+(Since the Rust import resolver change the suffix is `atlas-shell-text-v1+rust-imports-v2`,
+which again causes one full reparse so stored import edges are rebuilt.)
+
 ## Consequences
 
 - Shell-backed operational workflows become discoverable in one context call

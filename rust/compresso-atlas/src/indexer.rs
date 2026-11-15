@@ -13,10 +13,14 @@ use compresso_store::{EdgeKind, EdgeRecord, EdgeResolution, FileRecord, Store, S
 
 use crate::concurrency::{Concurrency, ReadAhead};
 use crate::parsers::{ImportRecord, ImportResolution, ParseError, ParserRegistry};
+use crate::rust_imports::{self, RustWorkspace};
 use crate::scanner::{AtlasError, DEFAULT_MAX_FILE_BYTES, ScanOptions, scan_with_concurrency};
 
 const INDEX_SCHEMA_VERSION: u32 = 1;
-const DEFAULT_PARSER_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "+atlas-shell-text-v1");
+const DEFAULT_PARSER_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    "+atlas-shell-text-v1+rust-imports-v2"
+);
 /// Below this many candidates worker startup costs more than it saves.
 const PARALLEL_INDEX_MIN_CANDIDATES: usize = 8;
 /// Prepared files a worker may run ahead of the ordered commit.
@@ -168,6 +172,7 @@ impl<'a> Indexer<'a> {
         )?;
         let removed_set = scan.removed.iter().cloned().collect::<HashSet<_>>();
         let known_paths = known_repository_paths(&previous_hashes, &scan, &removed_set)?;
+        let rust_workspace = RustWorkspace::discover(&canonical_root, &known_paths);
         let paths_expanded = !scan.added.is_empty();
         let mut candidates = scan
             .added
@@ -219,6 +224,7 @@ impl<'a> Indexer<'a> {
         let context = PrepareContext {
             root: &canonical_root,
             known_paths: &known_paths,
+            rust_workspace: &rust_workspace,
             counter: self.counter,
             indexed_at,
         };
@@ -306,6 +312,7 @@ impl<'a> Indexer<'a> {
 struct PrepareContext<'a> {
     root: &'a Path,
     known_paths: &'a BTreeSet<String>,
+    rust_workspace: &'a RustWorkspace,
     counter: &'a dyn TokenCounter,
     indexed_at: i64,
 }
@@ -381,7 +388,12 @@ fn prepare_file(
                 source,
             })
         })?;
-        resolve_repository_imports(&relative_text, &mut extraction.imports, context.known_paths);
+        resolve_repository_imports(
+            &relative_text,
+            &mut extraction.imports,
+            context.known_paths,
+            context.rust_workspace,
+        );
         symbols = extraction.symbols;
         estimate_symbol_tokens(&source, relative, &mut symbols, context.counter)
             .map_err(PrepareFailure::during_parse)?;
@@ -567,10 +579,15 @@ fn resolve_repository_imports(
     importer: &str,
     imports: &mut [ImportRecord],
     known_paths: &BTreeSet<String>,
+    rust_workspace: &RustWorkspace,
 ) {
     for import in imports {
         let candidates = match importer.rsplit_once('.').map(|(_, extension)| extension) {
-            Some("rs") => rust_candidates(importer, &import.raw),
+            Some("rs") => {
+                (import.resolved_path, import.resolution) =
+                    rust_imports::resolve(importer, &import.raw, known_paths, rust_workspace);
+                continue;
+            }
             Some("py") => python_candidates(importer, &import.raw),
             Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs") => {
                 script_candidates(importer, &import.raw)
@@ -606,55 +623,6 @@ fn script_candidates(importer: &str, raw: &str) -> BTreeSet<String> {
         return BTreeSet::new();
     };
     extension_candidates(&stem, &["ts", "tsx", "js", "jsx", "mjs", "cjs"], "index")
-}
-
-fn rust_candidates(importer: &str, raw: &str) -> BTreeSet<String> {
-    let mut parts = raw
-        .split("::")
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>();
-    let importer_dir = parent_path(importer);
-    let source_root = rust_source_root(importer);
-    let mut bases = BTreeSet::new();
-    match parts.first().copied() {
-        Some("crate") => {
-            parts.remove(0);
-            bases.insert(source_root);
-        }
-        Some("self") => {
-            parts.remove(0);
-            bases.insert(importer_dir.to_owned());
-        }
-        Some("super") => {
-            let mut base = importer_dir.to_owned();
-            while parts.first() == Some(&"super") {
-                parts.remove(0);
-                base = parent_path(&base).to_owned();
-            }
-            bases.insert(base);
-        }
-        Some(_) => {
-            bases.insert(importer_dir.to_owned());
-            bases.insert(source_root);
-        }
-        None => return BTreeSet::new(),
-    }
-    if parts.last() == Some(&"self") {
-        parts.pop();
-    }
-
-    let mut candidates = BTreeSet::new();
-    for base in bases {
-        for length in (1..=parts.len()).rev() {
-            let module = parts[..length].join("/");
-            let Some(stem) = join_repo_path(&base, &module) else {
-                continue;
-            };
-            candidates.insert(format!("{stem}.rs"));
-            candidates.insert(format!("{stem}/mod.rs"));
-        }
-    }
-    candidates
 }
 
 fn python_candidates(importer: &str, raw: &str) -> BTreeSet<String> {
@@ -728,17 +696,6 @@ fn join_repo_path(base: &str, relative: &str) -> Option<String> {
 
 fn parent_path(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(parent, _)| parent)
-}
-
-fn rust_source_root(importer: &str) -> String {
-    let components = importer.split('/').collect::<Vec<_>>();
-    components
-        .iter()
-        .rposition(|component| *component == "src")
-        .map_or_else(
-            || parent_path(importer).to_owned(),
-            |index| components[..=index].join("/"),
-        )
 }
 
 fn resolve_candidate(root: &Path, relative: &Path) -> Result<PathBuf, AtlasError> {
@@ -954,6 +911,7 @@ mod tests {
         let context = PrepareContext {
             root: &root,
             known_paths: &known_paths,
+            rust_workspace: &RustWorkspace::default(),
             counter: counter_for(TokenProvider::Heuristic),
             indexed_at: 1,
         };
@@ -1184,7 +1142,12 @@ mod tests {
             },
         ];
 
-        resolve_repository_imports("src/app.ts", &mut imports, &known);
+        resolve_repository_imports(
+            "src/app.ts",
+            &mut imports,
+            &known,
+            &RustWorkspace::default(),
+        );
 
         assert_eq!(
             imports[0].resolution,
