@@ -3000,6 +3000,22 @@ Follow-up (D82), files rust/compresso-atlas/src/queries.rs, rust/compresso-mcp/s
 - `test_growing_window_stays_within_budget_and_close_to_counting_everything`
 - `test_file_line_count_matches_a_full_read_without_counting_tokens`
 
+### [x] E17-17: Context pack ranks by task concepts and reports honest readiness
+Owner: R2 · Estimate: 2d · Depends: E3-12, E5-03
+Files: rust/compresso-atlas/src/queries.rs, rust/compresso-atlas/tests/queries_impact_plan.rs, rust/compresso-mcp/src/tools/atlas_read.rs, rust/compresso-mcp/tests/tools_read.rs, rust/compresso-cli/src/commands/retrieval.rs, docs/plan/04-mcp-and-integrations.md, decisions.md
+Description: D83. `plan_context` scores symbols across every task query, adds compound-identifier queries and body-content scoring, lowers test code, drops single-common-word noise, and centres long excerpts on the matching lines. `ContextPlan` reports task-concept coverage; `compresso_context` and `compresso context --json` expose it as `task_coverage`, and a pack whose evidence misses half of the task's salient words is `targeted_follow_up_needed` without budget expansion.
+Acceptance criteria:
+- A symbol naming or containing a compound of adjacent task words leads the pack ahead of symbols matching one common word.
+- A body longer than its excerpt allowance is excerpted from the matching lines, and the evidence header cites the excerpt's own range.
+- Test code is lowered unless the task mentions tests.
+- Evidence matching only common words never yields `task_pack_ready`; uncovered words are listed; no budget expansion follows.
+- No store migration; reads only; existing context tests unchanged.
+Test cases:
+- `test_plan_context_ranks_compound_identifier_and_body_matches_above_generic_word_hits`: ranking, centred excerpt, header range.
+- `test_plan_context_reports_uncovered_concepts_when_only_generic_words_match`: coverage below half, uncovered words listed.
+- `test_plan_context_test_code_ranks_normally_when_the_task_asks_for_tests`: penalty lifted.
+- `test_context_tool_generic_word_matches_do_not_claim_a_ready_pack`: MCP status, `task_coverage`, no expansion.
+
 ## Execution order (flat, dependency-ordered)
 
 Slice: E1-01, E1-02, E1-03, E1-04, E1-05, E1-06, E2-01, E2-02, E2-02a, E3-01, E2-03, E3-02, E3-03, E2-04, E2-05, E2-06, E2-07, E2-08, E2-12, E2-13, E2-14, E3-04, E3-05, E3-06, E3-07, E3-08, E2-09, E7-01, E7-07, E2-10, E2-11, E3-09, E7-02, E3-10, E3-11, E3-12, E4-01, E4-02, E4-03, E4-04, E4-05, E5-01, E5-02, E5-03, E5-04, E5-05, E5-06, E2-15, E7-03, E7-04, E7-05, E7-06, E5-07, E6-01, E6-02, E6-03, E6-04, E6-05.
@@ -3046,6 +3062,6 @@ Parallelism notes:
 | E14 IP & secure deployment | 17 | 39 | ~8 wk | +E15 threat/sandbox gates |
 | E15 Clean-room advanced capabilities | 34 | 121.5 | ~24.5 engineer-wk | A-F incremental; G deferred |
 | E16 Full-product completion | 16 | 59 | ~12 engineer-wk, dependency-phased | |
-| E17 Session continuity & hardening | 16 | 34 | ~6.8 engineer-wk | E17-01..10 delivered 2026-11-14, E17-16 2026-11-15; E17-11..15 open |
-| **Post-slice + PB total** | **170** | **496 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
-| **Grand total** | **228** | **592 gross** | **~118.4 engineer-wk** | |
+| E17 Session continuity & hardening | 17 | 36 | ~7.2 engineer-wk | E17-01..10 delivered 2026-11-14, E17-16 2026-11-15, E17-17 2026-11-16; E17-11..15 open |
+| **Post-slice + PB total** | **171** | **498 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
+| **Grand total** | **229** | **594 gross** | **~118.8 engineer-wk** | |

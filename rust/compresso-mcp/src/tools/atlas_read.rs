@@ -344,7 +344,11 @@ fn context_tool(
         )?;
         let targeted_follow_up_required =
             payload["targeted_follow_up_required"].as_bool() == Some(true);
-        if !targeted_follow_up_required || budget_applied == budget_ceiling {
+        // A larger budget only helps when candidate files did not fit. A pack
+        // whose evidence misses the task's concepts is not improved by size.
+        let files_missing = payload["evidence_coverage"]["files_included"].as_u64()
+            < payload["evidence_coverage"]["files_required"].as_u64();
+        if !targeted_follow_up_required || !files_missing || budget_applied == budget_ceiling {
             return Ok(payload);
         }
         expanded = true;
@@ -421,8 +425,10 @@ fn compact_context_payload(
         "matched"
     };
     let evidence_files_required = plan.evidence_files_total;
-    let evidence_ready =
+    let files_ready =
         evidence_files_required > 0 && plan.evidence_files_included >= evidence_files_required;
+    let concepts_ready = plan.concept_coverage_sufficient();
+    let evidence_ready = files_ready && concepts_ready;
     let broad_follow_up_required = plan.matches_total == 0 || stale;
     let targeted_follow_up_required =
         !broad_follow_up_required && plan.matches_total > 0 && !evidence_ready;
@@ -448,6 +454,10 @@ fn compact_context_payload(
         Some(
             "No indexed symbols matched the derived task queries. This is not proof that the repository contains no relevant implementation.",
         )
+    } else if targeted_follow_up_required && !concepts_ready {
+        Some(
+            "The evidence found does not mention most of the task's terms (see task_coverage.uncovered). Use at most two precise Compresso follow-ups naming exact identifiers; do not repeat broad retrieval.",
+        )
     } else if targeted_follow_up_required {
         Some(
             "The pack could not fit enough distinct evidence files. Use at most two precise Compresso follow-ups; do not repeat broad retrieval.",
@@ -469,6 +479,11 @@ fn compact_context_payload(
             "files_included": plan.evidence_files_included,
             "files_required": evidence_files_required,
             "candidate_files": plan.evidence_files_total
+        },
+        "task_coverage": {
+            "concepts_covered": plan.task_concepts_covered,
+            "concepts_total": plan.task_concepts_total,
+            "uncovered": &plan.uncovered_concepts
         },
         "matches_total": plan.matches_total,
         "content_pack": plan.rendered,

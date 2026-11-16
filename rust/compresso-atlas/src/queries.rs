@@ -26,6 +26,24 @@ const PLAN_CONTEXT_HITS_PER_QUERY: usize = 8;
 const PLAN_CONTEXT_SYMBOLS_PER_FILE: usize = 3;
 const PLAN_CONTEXT_BODIES_PER_FILE: usize = 2;
 const PLAN_CONTEXT_EVIDENCE_CONTENT_TOKENS: usize = 48;
+/// Excerpt allowance for evidence that names or contains a compound task concept.
+const PLAN_CONTEXT_STRONG_EVIDENCE_TOKENS: usize = 96;
+/// Hits fetched per query for cross-query scoring; only the first
+/// [`PLAN_CONTEXT_HITS_PER_QUERY`] count toward `matches_total`.
+const PLAN_CONTEXT_SCORING_WINDOW: usize = 24;
+/// Scored hits whose bodies are read to rank by what the code contains.
+const PLAN_CONTEXT_RERANK_POOL: usize = 40;
+/// Compounds kept per window size (three-word, then two-word).
+const PLAN_CONTEXT_COMPOUND_LIMIT: usize = 12;
+const PLAN_CONTEXT_UNCOVERED_LIMIT: usize = 8;
+/// A hit scoring at least this much matched a compound concept by name or body.
+const PLAN_CONTEXT_STRONG_SCORE: f64 = 4.0;
+/// Generic-word hits scoring below this share of the best hit are dropped as noise.
+const PLAN_CONTEXT_SCORE_FLOOR_RATIO: f64 = 0.25;
+/// A hit scoring at least this much matched a specific concept and is kept
+/// whatever the best hit scored; only single generic-word matches are noise.
+const PLAN_CONTEXT_SPECIFIC_MATCH_SCORE: f64 = 2.0;
+const PLAN_CONTEXT_TEST_PENALTY: f64 = 0.4;
 const REINDEX_HINT: &str = "Repository index is stale; run `compresso index` and retry.";
 
 /// A deterministic, token-budgeted structural summary of an indexed repository.
@@ -159,6 +177,9 @@ pub struct ContextSymbolBody {
     pub path: String,
     pub symbol: SymbolRecord,
     pub content: String,
+    /// First source line of `content`; later than the symbol start when the
+    /// excerpt is centred on the lines matching the task.
+    pub excerpt_start_line: u32,
     pub excerpt_end_line: u32,
     pub truncated: bool,
 }
@@ -174,11 +195,28 @@ pub struct ContextPlan {
     pub matches_total: usize,
     pub evidence_files_total: usize,
     pub evidence_files_included: usize,
+    /// Distinct salient task words, and how many of them the included
+    /// evidence names or contains.
+    pub task_concepts_total: usize,
+    pub task_concepts_covered: usize,
+    /// Salient task words no included evidence mentions, in task order.
+    pub uncovered_concepts: Vec<String>,
     /// Modeled raw matched-evidence token baseline before excerpt packing.
     pub estimated_raw_source_tokens: usize,
     pub tokens_used: usize,
     pub token_provider: TokenProvider,
     pub truncated: bool,
+}
+
+impl ContextPlan {
+    /// Whether the included evidence mentions at least half of the task's
+    /// salient words. A pack that matched only generic words fails this even
+    /// when every candidate file fitted the budget.
+    #[must_use]
+    pub const fn concept_coverage_sufficient(&self) -> bool {
+        self.task_concepts_total == 0
+            || self.task_concepts_covered.saturating_mul(2) >= self.task_concepts_total
+    }
 }
 
 /// Typed structural-query and bounded-filesystem failures.
@@ -795,12 +833,73 @@ pub fn plan_context(
     budget_tokens: usize,
 ) -> Result<ContextPlan, AtlasError> {
     let counter = counter_for(TokenProvider::OpenAiO200k);
-    let (search_queries, hits, matches_total, search_truncated) =
-        search_task_concepts(store, repo, task)?;
+    let mut concepts = TaskConcepts::parse(task);
+    let (search_queries, pool, matches_total, search_truncated) =
+        search_task_concepts(store, repo, task, &mut concepts)?;
+
+    // Read each pooled symbol once: the body both ranks the hit by what the
+    // code contains and becomes its evidence excerpt.
+    let mut scored = Vec::with_capacity(pool.len());
+    for ranked in pool {
+        let selector = SymbolSelector {
+            path: ranked.hit.path.clone(),
+            qualified_name: ranked.hit.symbol.qualified_name.clone(),
+            kind: Some(ranked.hit.symbol.kind),
+            signature_hash: ranked
+                .hit
+                .symbol
+                .signature
+                .as_deref()
+                .map(|signature| blake3::hash(signature.as_bytes()).to_hex().to_string()),
+            start_line_hint: Some(ranked.hit.symbol.start_line),
+        };
+        // A file that grew past the read ceiling since indexing loses its
+        // body excerpt; the rest of the evidence pack is still served.
+        let unfolded = match unfold(store, repo, &selector) {
+            Err(AtlasError::Query(QueryError::FileTooLarge { .. })) => None,
+            other => Some(other?),
+        };
+        let body = match unfolded {
+            Some(UnfoldResult::Found {
+                path,
+                symbol,
+                content,
+                ..
+            }) => Some(ContextSymbolBody {
+                path,
+                excerpt_start_line: symbol.start_line,
+                excerpt_end_line: symbol.end_line,
+                truncated: false,
+                symbol,
+                content,
+            }),
+            _ => None,
+        };
+        let mut score = ranked.score;
+        if let Some(body) = &body {
+            score += concepts.body_score(&body.content);
+        }
+        if !concepts.wants_tests && is_test_hit(&ranked.hit) {
+            score *= PLAN_CONTEXT_TEST_PENALTY;
+        }
+        scored.push((score, ranked.order, ranked.hit, body));
+    }
+    scored.sort_by(|left, right| right.0.total_cmp(&left.0).then(left.1.cmp(&right.1)));
+    let score_floor = scored
+        .first()
+        .map_or(0.0, |best| best.0 * PLAN_CONTEXT_SCORE_FLOOR_RATIO);
+    scored.retain(|candidate| {
+        candidate.0 >= score_floor || candidate.0 >= PLAN_CONTEXT_SPECIFIC_MATCH_SCORE
+    });
+    scored.truncate(PLAN_CONTEXT_SEARCH_LIMIT);
+    let hits = scored
+        .iter()
+        .map(|candidate| candidate.2.clone())
+        .collect::<Vec<_>>();
 
     let candidate_outlines = matching_context_outlines(store, repo, &hits)?;
-    let mut bodies_by_path = Vec::<(String, Vec<ContextSymbolBody>)>::new();
-    for hit in &hits {
+    let mut bodies_by_path = Vec::<(String, Vec<(ContextSymbolBody, bool)>)>::new();
+    for (score, _, hit, body) in scored {
         let path_index = bodies_by_path
             .iter()
             .position(|(path, _)| path == &hit.path)
@@ -812,37 +911,8 @@ pub fn plan_context(
         if path_bodies.len() == PLAN_CONTEXT_BODIES_PER_FILE {
             continue;
         }
-        let selector = SymbolSelector {
-            path: hit.path.clone(),
-            qualified_name: hit.symbol.qualified_name.clone(),
-            kind: Some(hit.symbol.kind),
-            signature_hash: hit
-                .symbol
-                .signature
-                .as_deref()
-                .map(|signature| blake3::hash(signature.as_bytes()).to_hex().to_string()),
-            start_line_hint: Some(hit.symbol.start_line),
-        };
-        // A file that grew past the read ceiling since indexing loses its
-        // body excerpt; the rest of the evidence pack is still served.
-        let unfolded = match unfold(store, repo, &selector) {
-            Err(AtlasError::Query(QueryError::FileTooLarge { .. })) => continue,
-            other => other?,
-        };
-        if let UnfoldResult::Found {
-            path,
-            symbol,
-            content,
-            ..
-        } = unfolded
-        {
-            path_bodies.push(ContextSymbolBody {
-                path,
-                excerpt_end_line: symbol.end_line,
-                truncated: false,
-                symbol,
-                content,
-            });
+        if let Some(body) = body {
+            path_bodies.push((body, score >= PLAN_CONTEXT_STRONG_SCORE));
         }
     }
     let mut candidate_bodies = Vec::new();
@@ -857,7 +927,7 @@ pub fn plan_context(
         .iter()
         .filter(|(_, bodies)| !bodies.is_empty())
         .count();
-    let estimated_raw_source_tokens = candidate_bodies.iter().fold(0_usize, |total, body| {
+    let estimated_raw_source_tokens = candidate_bodies.iter().fold(0_usize, |total, (body, _)| {
         total.saturating_add(body.symbol.token_estimate)
     });
 
@@ -882,9 +952,13 @@ pub fn plan_context(
     }
 
     let mut symbol_bodies = Vec::new();
-    for body in &candidate_bodies {
-        let evidence =
-            compact_context_evidence(body, PLAN_CONTEXT_EVIDENCE_CONTENT_TOKENS, counter);
+    for (body, strong) in &candidate_bodies {
+        let content_budget = if *strong {
+            PLAN_CONTEXT_STRONG_EVIDENCE_TOKENS
+        } else {
+            PLAN_CONTEXT_EVIDENCE_CONTENT_TOKENS
+        };
+        let evidence = compact_context_evidence(body, content_budget, counter, &concepts);
         let item = render_context_evidence(&evidence);
         let trial = render_context_item(
             &rendered,
@@ -917,6 +991,9 @@ pub fn plan_context(
         })
         .collect::<Vec<_>>();
 
+    let uncovered_concepts = concepts.uncovered(&symbol_bodies);
+    let task_concepts_total = concepts.salient.len();
+    let task_concepts_covered = task_concepts_total - uncovered_concepts.len();
     let tokens_used = counter.count(&rendered);
     let truncated = search_truncated
         || map.truncated
@@ -931,6 +1008,12 @@ pub fn plan_context(
         matches_total,
         evidence_files_total,
         evidence_files_included,
+        task_concepts_total,
+        task_concepts_covered,
+        uncovered_concepts: uncovered_concepts
+            .into_iter()
+            .take(PLAN_CONTEXT_UNCOVERED_LIMIT)
+            .collect(),
         estimated_raw_source_tokens,
         tokens_used,
         token_provider: counter.provider(),
@@ -938,46 +1021,416 @@ pub fn plan_context(
     })
 }
 
+/// One pooled search hit with its cross-query score and its position in the
+/// rank-interleaved order, which breaks score ties.
+struct RankedHit {
+    hit: SearchHit,
+    score: f64,
+    order: usize,
+}
+
+type HitIdentity = (String, String, SymbolKind, u32, u32);
+
+fn hit_identity(hit: &SearchHit) -> HitIdentity {
+    (
+        hit.path.clone(),
+        hit.symbol.qualified_name.clone(),
+        hit.symbol.kind,
+        hit.symbol.start_line,
+        hit.symbol.end_line,
+    )
+}
+
 fn search_task_concepts(
     store: &Store,
     repo: RepoId,
     task: &str,
-) -> Result<(Vec<String>, Vec<SearchHit>, usize, bool), AtlasError> {
+    concepts: &mut TaskConcepts,
+) -> Result<(Vec<String>, Vec<RankedHit>, usize, bool), AtlasError> {
     let search_queries = task_search_queries(task);
     let text_requested = task_requests_text_evidence(task);
+    let mut exclude_text = !text_requested;
     let (mut query_hits, mut source_truncated) =
-        context_query_hits(store, repo, &search_queries, !text_requested)?;
+        context_query_hits(store, repo, &search_queries, exclude_text)?;
     if !text_requested && query_hits.iter().all(Vec::is_empty) {
+        exclude_text = false;
         (query_hits, source_truncated) = context_query_hits(store, repo, &search_queries, false)?;
     }
 
-    // Interleave queries by rank so one broad concept cannot crowd every
-    // other task concept out of the bounded context pack.
-    let mut merged = Vec::new();
-    let mut seen = BTreeSet::new();
-    let max_query_hits = query_hits.iter().map(Vec::len).max().unwrap_or_default();
-    for rank in 0..max_query_hits {
-        for hits in &query_hits {
-            let Some(hit) = hits.get(rank) else {
-                continue;
-            };
-            let identity = (
-                hit.path.clone(),
-                hit.symbol.qualified_name.clone(),
-                hit.symbol.kind,
-                hit.symbol.start_line,
-                hit.symbol.end_line,
-            );
-            if seen.insert(identity) {
-                merged.push(hit.clone());
+    // A symbol matched by several task concepts, or by a compound of adjacent
+    // task words, outranks one that matched a single generic word.
+    let mut scores = BTreeMap::<HitIdentity, f64>::new();
+    let phrase = task.trim();
+    for (query, hits) in search_queries.iter().zip(&query_hits) {
+        let weight = if query == phrase && query.contains(char::is_whitespace) {
+            3.0
+        } else if hits.len() <= PLAN_CONTEXT_HITS_PER_QUERY {
+            2.0
+        } else {
+            1.0
+        };
+        for hit in hits {
+            *scores.entry(hit_identity(hit)).or_default() += weight;
+        }
+    }
+    let mut compound_hits = Vec::new();
+    for compound in &mut concepts.compounds {
+        let mut matched = Vec::new();
+        for query in &compound.queries {
+            for hit in context_scoring_hits(store, repo, query, exclude_text)? {
+                if !matched
+                    .iter()
+                    .any(|known: &SearchHit| hit_identity(known) == hit_identity(&hit))
+                {
+                    matched.push(hit);
+                }
             }
+        }
+        // A compound naming many symbols (`mcp server`) is a broad concept,
+        // not an identifier: it must not outweigh a rare one (`too large`).
+        compound.specificity = if matched.len() <= PLAN_CONTEXT_HITS_PER_QUERY {
+            1.0
+        } else if matched.len() <= PLAN_CONTEXT_HITS_PER_QUERY * 2 {
+            0.5
+        } else {
+            0.25
+        };
+        for hit in matched {
+            *scores.entry(hit_identity(&hit)).or_default() += compound.weight();
+            compound_hits.push(hit);
         }
     }
 
-    let matches_total = merged.len();
+    // Interleave queries by rank so one broad concept cannot crowd every
+    // other task concept out of the bounded context pack. Only the leading
+    // hits of each query count as matches; the wider window adds candidates.
+    let mut merged = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut matches_total = 0;
+    for (start, end) in [
+        (0, PLAN_CONTEXT_HITS_PER_QUERY),
+        (PLAN_CONTEXT_HITS_PER_QUERY, PLAN_CONTEXT_SCORING_WINDOW),
+    ] {
+        for rank in start..end {
+            for hits in &query_hits {
+                let Some(hit) = hits.get(rank) else {
+                    continue;
+                };
+                if seen.insert(hit_identity(hit)) {
+                    merged.push(hit.clone());
+                }
+            }
+        }
+        if start == 0 {
+            matches_total = merged.len();
+        }
+    }
+    for hit in compound_hits {
+        if seen.insert(hit_identity(&hit)) {
+            merged.push(hit);
+            matches_total += 1;
+        }
+    }
+
     let truncated = source_truncated || matches_total > PLAN_CONTEXT_SEARCH_LIMIT;
-    merged.truncate(PLAN_CONTEXT_SEARCH_LIMIT);
-    Ok((search_queries, merged, matches_total, truncated))
+    let mut pool = merged
+        .into_iter()
+        .enumerate()
+        .map(|(order, hit)| RankedHit {
+            score: scores.get(&hit_identity(&hit)).copied().unwrap_or_default(),
+            hit,
+            order,
+        })
+        .collect::<Vec<_>>();
+    pool.sort_by(|left, right| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then(left.order.cmp(&right.order))
+    });
+    pool.truncate(PLAN_CONTEXT_RERANK_POOL);
+    Ok((search_queries, pool, matches_total, truncated))
+}
+
+fn context_scoring_hits(
+    store: &Store,
+    repo: RepoId,
+    query: &str,
+    exclude_text: bool,
+) -> Result<Vec<SearchHit>, AtlasError> {
+    if exclude_text {
+        search_excluding_language(
+            store,
+            repo,
+            query,
+            PLAN_CONTEXT_SCORING_WINDOW,
+            FileLanguage::Text,
+        )
+    } else {
+        search_literal(store, repo, query, PLAN_CONTEXT_SCORING_WINDOW)
+    }
+}
+
+/// The task's vocabulary beyond its per-word FTS queries: compounds of
+/// adjacent words that can name an identifier, and the salient words the
+/// evidence is expected to mention.
+struct TaskConcepts {
+    compounds: Vec<TaskCompound>,
+    salient: Vec<String>,
+    wants_tests: bool,
+}
+
+struct TaskCompound {
+    /// Identifier spellings searched in the symbol index.
+    queries: Vec<String>,
+    /// Lowercase words joined without separators, compared against
+    /// separator-free lowercase source text.
+    joined: String,
+    words: usize,
+    /// 1.0 for a compound naming few symbols, less for one naming many.
+    specificity: f64,
+}
+
+impl TaskCompound {
+    fn weight(&self) -> f64 {
+        let base = if self.words >= 3 { 6.0 } else { 4.0 };
+        base * self.specificity
+    }
+}
+
+impl TaskConcepts {
+    fn parse(task: &str) -> Self {
+        let words = task
+            .split(|character: char| !character.is_alphanumeric() && character != '_')
+            .filter(|word| !word.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect::<Vec<_>>();
+        let wants_tests = words
+            .iter()
+            .any(|word| matches!(word.as_str(), "test" | "tests" | "tested" | "testing"));
+
+        let mut salient = Vec::new();
+        for word in &words {
+            if word.chars().count() < 3 || is_context_stop_word(word) || is_generic_task_word(word)
+            {
+                continue;
+            }
+            let singular = singular_context_term(word);
+            let duplicate = salient.iter().any(|term: &String| {
+                term == word
+                    || singular.as_ref() == Some(term)
+                    || singular_context_term(term).as_ref() == Some(word)
+            });
+            if !duplicate {
+                salient.push(word.clone());
+            }
+        }
+
+        // Longer compounds first: `file too large` names `FileTooLarge` and
+        // `file_too_large` more precisely than either adjacent pair.
+        let mut compounds = Vec::<TaskCompound>::new();
+        for size in [3, 2] {
+            let mut taken = 0;
+            for window in words.windows(size) {
+                if taken == PLAN_CONTEXT_COMPOUND_LIMIT {
+                    break;
+                }
+                if window
+                    .iter()
+                    .any(|word| is_compound_break_word(word) || word.contains('_'))
+                {
+                    continue;
+                }
+                let joined = window.concat();
+                if joined.chars().count() < 6
+                    || compounds.iter().any(|compound| compound.joined == joined)
+                {
+                    continue;
+                }
+                taken += 1;
+                compounds.push(TaskCompound {
+                    queries: vec![joined.clone(), window.join("_")],
+                    joined,
+                    words: size,
+                    specificity: 1.0,
+                });
+            }
+        }
+        Self {
+            compounds,
+            salient,
+            wants_tests,
+        }
+    }
+
+    /// Score added for what a symbol body contains: compounds weigh most,
+    /// each distinct salient word a little, capped so prose cannot dominate.
+    fn body_score(&self, content: &str) -> f64 {
+        let lowercase = content.to_lowercase();
+        let squeezed = squeeze_separators(&lowercase);
+        let compound_score = self
+            .compounds
+            .iter()
+            .filter(|compound| squeezed.contains(&compound.joined))
+            .map(|compound| compound.weight() * 0.75)
+            .sum::<f64>();
+        let salient_matches = self
+            .salient
+            .iter()
+            .filter(|term| text_mentions(&lowercase, term))
+            .count();
+        compound_score + (salient_matches.min(6) as f64) * 0.5
+    }
+
+    /// Index of the first body line containing a compound concept.
+    fn focus_line(&self, content: &str) -> Option<usize> {
+        if self.compounds.is_empty() {
+            return None;
+        }
+        content.split_inclusive('\n').position(|line| {
+            let squeezed = squeeze_separators(&line.to_lowercase());
+            self.compounds
+                .iter()
+                .any(|compound| compound.specificity >= 1.0 && squeezed.contains(&compound.joined))
+        })
+    }
+
+    /// Salient words that no included evidence names or contains.
+    fn uncovered(&self, bodies: &[ContextSymbolBody]) -> Vec<String> {
+        let haystacks = bodies
+            .iter()
+            .map(|body| {
+                format!(
+                    "{}\n{}\n{}\n{}",
+                    body.path,
+                    body.symbol.qualified_name,
+                    body.symbol.signature.as_deref().unwrap_or_default(),
+                    body.content
+                )
+                .to_lowercase()
+            })
+            .collect::<Vec<_>>();
+        self.salient
+            .iter()
+            .filter(|term| !haystacks.iter().any(|text| text_mentions(text, term)))
+            .cloned()
+            .collect()
+    }
+}
+
+/// Whether lowercase `text` contains `term` or its singular form.
+fn text_mentions(text: &str, term: &str) -> bool {
+    text.contains(term)
+        || singular_context_term(term).is_some_and(|singular| text.contains(singular.as_str()))
+}
+
+fn squeeze_separators(lowercase: &str) -> String {
+    lowercase
+        .chars()
+        .filter(|character| !character.is_whitespace() && !matches!(character, '_' | '-'))
+        .collect()
+}
+
+/// Words that end a compound: stop words plus function words that never sit
+/// inside an identifier-shaped concept.
+fn is_compound_break_word(word: &str) -> bool {
+    is_context_stop_word(word)
+        || matches!(
+            word,
+            "a" | "an"
+                | "as"
+                | "at"
+                | "be"
+                | "by"
+                | "do"
+                | "does"
+                | "each"
+                | "every"
+                | "get"
+                | "gets"
+                | "has"
+                | "have"
+                | "in"
+                | "is"
+                | "it"
+                | "its"
+                | "no"
+                | "not"
+                | "on"
+                | "or"
+                | "to"
+                | "was"
+                | "when"
+                | "which"
+                | "why"
+        )
+}
+
+/// Question scaffolding that names no repository concept, so evidence is not
+/// expected to mention it.
+fn is_generic_task_word(word: &str) -> bool {
+    matches!(
+        word,
+        "also"
+            | "been"
+            | "before"
+            | "after"
+            | "cite"
+            | "decide"
+            | "decides"
+            | "defined"
+            | "definition"
+            | "does"
+            | "each"
+            | "every"
+            | "explain"
+            | "function"
+            | "functions"
+            | "get"
+            | "gets"
+            | "give"
+            | "happen"
+            | "happens"
+            | "has"
+            | "have"
+            | "its"
+            | "key"
+            | "list"
+            | "name"
+            | "names"
+            | "not"
+            | "path"
+            | "paths"
+            | "source"
+            | "string"
+            | "type"
+            | "types"
+            | "when"
+            | "which"
+            | "without"
+    )
+}
+
+fn is_test_hit(hit: &SearchHit) -> bool {
+    let path = hit.path.to_ascii_lowercase();
+    let in_test_directory = path
+        .split('/')
+        .any(|part| matches!(part, "test" | "tests" | "__tests__" | "testdata"));
+    let file_stem = path
+        .rsplit('/')
+        .next()
+        .and_then(|name| name.split('.').next())
+        .unwrap_or_default();
+    let test_file = file_stem.starts_with("test_")
+        || file_stem.ends_with("_test")
+        || path.contains(".test.")
+        || path.contains(".spec.");
+    let name = hit.symbol.qualified_name.to_ascii_lowercase();
+    in_test_directory
+        || test_file
+        || hit.symbol.name.to_ascii_lowercase().starts_with("test_")
+        || name.starts_with("tests::")
+        || name.contains("::tests::")
 }
 
 fn context_query_hits(
@@ -994,20 +1447,16 @@ fn context_query_hits(
                 store,
                 repo,
                 query,
-                PLAN_CONTEXT_HITS_PER_QUERY.saturating_add(1),
+                PLAN_CONTEXT_SCORING_WINDOW,
                 FileLanguage::Text,
             )?
         } else {
-            search_literal(
-                store,
-                repo,
-                query,
-                PLAN_CONTEXT_HITS_PER_QUERY.saturating_add(1),
-            )?
+            search_literal(store, repo, query, PLAN_CONTEXT_SCORING_WINDOW)?
         };
         source_truncated |= hits.len() > PLAN_CONTEXT_HITS_PER_QUERY;
-        hits.truncate(PLAN_CONTEXT_HITS_PER_QUERY);
-        hits.sort_by(|left, right| {
+        // Order only the leading hits; the rest keep their match rank.
+        let leading = hits.len().min(PLAN_CONTEXT_HITS_PER_QUERY);
+        hits[..leading].sort_by(|left, right| {
             context_language_order(left.language)
                 .cmp(&context_language_order(right.language))
                 .then_with(|| left.symbol.kind.cmp(&right.symbol.kind))
@@ -1320,32 +1769,50 @@ fn compact_context_evidence(
     body: &ContextSymbolBody,
     content_budget: usize,
     counter: &dyn TokenCounter,
+    concepts: &TaskConcepts,
 ) -> ContextSymbolBody {
+    let fits_whole = counter.count(&body.content) <= content_budget;
+    // A body too long for its allowance is excerpted from just above the
+    // first line that contains a compound task concept, not from its head.
+    let first_line = if fits_whole {
+        0
+    } else {
+        concepts
+            .focus_line(&body.content)
+            .map_or(0, |line| line.saturating_sub(1))
+    };
     let mut content = String::new();
-    for line in body.content.split_inclusive('\n') {
+    for line in body.content.split_inclusive('\n').skip(first_line) {
         let candidate = format!("{content}{line}");
         if counter.count(&candidate) > content_budget {
             break;
         }
         content = candidate;
     }
+    let mut first_line = first_line;
     if content.is_empty() && !body.content.is_empty() {
+        first_line = 0;
         content = prefix_within_budget(&body.content, content_budget, counter);
     }
+    let excerpt_start_line = body
+        .symbol
+        .start_line
+        .saturating_add(u32::try_from(first_line).unwrap_or(u32::MAX))
+        .min(body.symbol.end_line.max(body.symbol.start_line));
     let excerpt_lines = line_count(&content).max(u32::from(!content.is_empty()));
     let excerpt_end_line = if excerpt_lines == 0 {
-        body.symbol.start_line
+        excerpt_start_line
     } else {
-        body.symbol
-            .start_line
+        excerpt_start_line
             .saturating_add(excerpt_lines - 1)
-            .min(body.symbol.end_line)
+            .min(body.symbol.end_line.max(excerpt_start_line))
     };
     ContextSymbolBody {
         path: body.path.clone(),
         symbol: body.symbol.clone(),
         truncated: content != body.content,
         content,
+        excerpt_start_line,
         excerpt_end_line,
     }
 }
@@ -1354,7 +1821,7 @@ fn render_context_evidence(body: &ContextSymbolBody) -> String {
     let mut rendered = format!(
         "## {}:{}-{} — {} ({:?}",
         body.path,
-        body.symbol.start_line,
+        body.excerpt_start_line,
         body.excerpt_end_line,
         body.symbol.qualified_name,
         body.symbol.kind,

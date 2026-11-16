@@ -368,6 +368,107 @@ fn test_plan_context_symbol_bodies_are_task_fts_hits() {
     );
 }
 
+#[test]
+fn test_plan_context_ranks_compound_identifier_and_body_matches_above_generic_word_hits() {
+    let fixture = Fixture::new();
+    fixture.seed_oversize_repository();
+    let task = "How does a repository file read through the MCP server get rejected when the \
+                file is too large: size limit, error variant, where raised";
+
+    let plan =
+        plan_context(&fixture.store, fixture.repo, task, 1_600).expect("context should plan");
+    let evidence = plan
+        .symbol_bodies
+        .iter()
+        .map(|body| body.symbol.qualified_name.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(
+        evidence.len() >= 2,
+        "the pack must carry evidence: {evidence:?}"
+    );
+    let leading = &evidence[..2];
+    assert!(
+        leading.contains(&"file_too_large") && leading.contains(&"read_utf8_capped"),
+        "symbols naming or raising the task's compound concept must lead the pack: {evidence:?}"
+    );
+    let raised = plan
+        .symbol_bodies
+        .iter()
+        .find(|body| body.symbol.qualified_name == "read_utf8_capped")
+        .expect("the raising function must be included");
+    assert!(
+        raised.content.contains("FileTooLarge"),
+        "a long body's excerpt must be centred on the matching lines: {:?}",
+        raised.content
+    );
+    assert!(raised.excerpt_start_line > raised.symbol.start_line);
+    assert!(
+        plan.rendered.contains(&format!(
+            "## src/queries.rs:{}-{}",
+            raised.excerpt_start_line, raised.excerpt_end_line
+        )),
+        "the evidence header must cite the excerpt's own line range: {}",
+        plan.rendered
+    );
+    assert!(
+        !leading.contains(&"test_file_read_large"),
+        "a test matching three generic words must not lead product code: {evidence:?}"
+    );
+    assert!(plan.concept_coverage_sufficient());
+}
+
+#[test]
+fn test_plan_context_reports_uncovered_concepts_when_only_generic_words_match() {
+    let fixture = Fixture::new();
+    fixture.seed_oversize_repository();
+    let task = "How is the kerberos ticket renewal schedule read from a keytab file";
+
+    let plan =
+        plan_context(&fixture.store, fixture.repo, task, 1_600).expect("context should plan");
+
+    assert!(
+        plan.matches_total > 0,
+        "generic words still match decoy symbols"
+    );
+    assert!(plan.task_concepts_total >= 4);
+    assert!(
+        !plan.concept_coverage_sufficient(),
+        "evidence matching only generic words must not count as covering the task: covered {} of {}",
+        plan.task_concepts_covered,
+        plan.task_concepts_total
+    );
+    for missing in ["kerberos", "keytab", "renewal"] {
+        assert!(
+            plan.uncovered_concepts.iter().any(|term| term == missing),
+            "{missing} must be reported as uncovered: {:?}",
+            plan.uncovered_concepts
+        );
+    }
+}
+
+#[test]
+fn test_plan_context_test_code_ranks_normally_when_the_task_asks_for_tests() {
+    let fixture = Fixture::new();
+    fixture.seed_oversize_repository();
+
+    let plan = plan_context(
+        &fixture.store,
+        fixture.repo,
+        "which tests cover a large file read",
+        1_600,
+    )
+    .expect("context should plan");
+
+    assert_eq!(
+        plan.symbol_bodies
+            .first()
+            .map(|body| body.symbol.qualified_name.as_str()),
+        Some("test_file_read_large"),
+        "a task about tests must surface the test matching the most concepts first"
+    );
+}
+
 struct Fixture {
     _temp: TempDir,
     root: PathBuf,
@@ -551,6 +652,119 @@ impl Fixture {
                 1,
             )],
         );
+    }
+
+    fn seed_oversize_repository(&self) {
+        let raising_source = concat!(
+            "pub const MAX_READ_FILE_BYTES: u64 = 16 * 1024 * 1024;\n",
+            "\n",
+            "fn read_utf8_capped(path: &Path) -> Result<String, QueryError> {\n",
+            "    let metadata = fs::metadata(path)?;\n",
+            "    let length = metadata.len();\n",
+            "    let handle = File::open(path)?;\n",
+            "    let mut reader = BufReader::new(handle);\n",
+            "    let mut buffer = String::new();\n",
+            "    let capacity = usize::try_from(length).unwrap_or(0);\n",
+            "    buffer.reserve(capacity);\n",
+            "    let ceiling = MAX_READ_FILE_BYTES;\n",
+            "    let within = length <= ceiling;\n",
+            "    let checked = within;\n",
+            "    let allowed = checked;\n",
+            "    if !allowed {\n",
+            "        return Err(QueryError::FileTooLarge { path: path.to_owned(), limit_bytes: ceiling });\n",
+            "    }\n",
+            "    reader.read_to_string(&mut buffer)?;\n",
+            "    Ok(buffer)\n",
+            "}\n",
+        );
+        self.write_indexed_file(
+            "src/queries.rs",
+            raising_source,
+            &[
+                symbol(
+                    "MAX_READ_FILE_BYTES",
+                    "MAX_READ_FILE_BYTES",
+                    SymbolKind::Const,
+                    "pub const MAX_READ_FILE_BYTES: u64",
+                    1,
+                    1,
+                ),
+                symbol(
+                    "read_utf8_capped",
+                    "read_utf8_capped",
+                    SymbolKind::Function,
+                    "fn read_utf8_capped(path: &Path) -> Result<String, QueryError>",
+                    3,
+                    20,
+                ),
+            ],
+        );
+        self.write_indexed_file(
+            "src/retrieval.rs",
+            "fn file_too_large(limit_bytes: u64) -> RetrievalError {\n    RetrievalError::new(\"file_too_large\", limit_bytes)\n}\n",
+            &[symbol(
+                "file_too_large",
+                "file_too_large",
+                SymbolKind::Function,
+                "fn file_too_large(limit_bytes: u64) -> RetrievalError",
+                1,
+                3,
+            )],
+        );
+        self.write_indexed_file(
+            "tests/read_test.rs",
+            "fn test_file_read_large() {\n    assert!(large_file_read().is_err());\n}\n",
+            &[symbol(
+                "test_file_read_large",
+                "test_file_read_large",
+                SymbolKind::Function,
+                "fn test_file_read_large()",
+                1,
+                3,
+            )],
+        );
+        for (path, name, signature) in [
+            (
+                "src/mode.rs",
+                "file_mode",
+                "fn file_mode(path: &Path) -> u32",
+            ),
+            ("src/config.rs", "FileMcp", "struct FileMcp"),
+            ("src/input.rs", "large_input", "fn large_input() -> Vec<u8>"),
+            (
+                "src/server.rs",
+                "server_tools",
+                "fn server_tools() -> Vec<Tool>",
+            ),
+            (
+                "src/reader.rs",
+                "reader",
+                "fn reader(input: &[u8]) -> Reader",
+            ),
+            ("src/limits.rs", "RecallLimits", "struct RecallLimits"),
+            (
+                "src/errors.rs",
+                "map_error",
+                "fn map_error(error: Error) -> Failure",
+            ),
+            (
+                "src/variant.rs",
+                "variant_name",
+                "fn variant_name() -> &'static str",
+            ),
+            ("src/size.rs", "size_hint", "fn size_hint() -> usize"),
+            (
+                "src/repo.rs",
+                "repository_root",
+                "fn repository_root() -> PathBuf",
+            ),
+        ] {
+            self.write_indexed_file(
+                path,
+                &format!("{signature} {{ todo!() }}\n"),
+                &[symbol(name, name, SymbolKind::Function, signature, 1, 1)],
+            );
+        }
     }
 
     fn write_indexed_file(&self, path: &str, source: &str, symbols: &[SymbolRecord]) {

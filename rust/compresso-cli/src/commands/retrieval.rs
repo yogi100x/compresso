@@ -504,6 +504,7 @@ fn render_context(task: String, plan: ContextPlan) -> Rendered {
                 "path": body.path,
                 "symbol": symbol_json(&body.symbol),
                 "content": body.content,
+                "excerpt_start_line": body.excerpt_start_line,
                 "excerpt_end_line": body.excerpt_end_line,
                 "truncated": body.truncated,
             })
@@ -518,6 +519,12 @@ fn render_context(task: String, plan: ContextPlan) -> Rendered {
         "evidence_coverage": {
             "files_included": plan.evidence_files_included,
             "candidate_files": plan.evidence_files_total,
+        },
+        "task_coverage": {
+            "concepts_covered": plan.task_concepts_covered,
+            "concepts_total": plan.task_concepts_total,
+            "uncovered": &plan.uncovered_concepts,
+            "sufficient": plan.concept_coverage_sufficient(),
         },
         "plan": {
             "map_excerpt": map_excerpt,

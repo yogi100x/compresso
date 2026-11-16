@@ -1084,6 +1084,48 @@ async fn test_context_tool_only_advertises_two_calls_for_targeted_follow_up() {
 }
 
 #[tokio::test]
+async fn test_context_tool_generic_word_matches_do_not_claim_a_ready_pack() {
+    let fixture = IndexedFixture::new();
+    let mut harness = Harness::start(fixture.store.clone()).await;
+    let mut arguments = fixture.arguments();
+    arguments.insert(
+        "task".to_owned(),
+        json!("how does the session manager renew kerberos tickets from the keytab vault"),
+    );
+    arguments.insert("max_tokens".to_owned(), json!(4000));
+
+    let result = successful_json(
+        harness
+            .call("compresso_context", Value::Object(arguments))
+            .await,
+    );
+
+    assert_eq!(result["retrieval_status"], "matched");
+    assert_eq!(result["context_sufficiency"], "targeted_follow_up_needed");
+    assert_eq!(result["next_action"], "targeted_follow_up");
+    assert_eq!(result["targeted_follow_up_limit"], 2);
+    let uncovered = result["task_coverage"]["uncovered"]
+        .as_array()
+        .expect("uncovered concepts should be listed");
+    for missing in ["kerberos", "keytab", "vault"] {
+        assert!(
+            uncovered.iter().any(|term| term == missing),
+            "{missing} must be reported as uncovered: {uncovered:?}"
+        );
+    }
+    assert!(
+        result["task_coverage"]["concepts_covered"].as_u64()
+            < result["task_coverage"]["concepts_total"].as_u64()
+    );
+    assert_eq!(
+        result["budget_expanded"], false,
+        "a larger budget cannot add concepts the index did not match"
+    );
+    assert_eq!(result["budget_applied"], 800);
+    harness.close().await;
+}
+
+#[tokio::test]
 async fn test_context_tool_stale_pack_requests_reindex_without_targeted_calls() {
     let fixture = IndexedFixture::new();
     fs::write(
