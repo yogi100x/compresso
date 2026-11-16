@@ -11,6 +11,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use thiserror::Error;
 
+use crate::retrieval::{RETRIEVAL_DIRECTORY, RetrievalCorpus};
+
 const CONTEXT_GRAPH_SCHEMA: &str = include_str!("../../../schemas/context-graph/v1.json");
 const BENCHMARK_DIRECTORY: &str = "benchmarks";
 const INTEGRATION_DIRECTORY: &str = "integrations";
@@ -27,6 +29,8 @@ const CATEGORIES: [&str; 6] = [
 #[derive(Clone, Debug)]
 pub struct FixtureSet {
     pub fixtures: Vec<Fixture>,
+    /// The `retrieval/` corpus, when the fixture root has one.
+    pub retrieval: Option<RetrievalCorpus>,
 }
 
 /// One fully materialized fixture and its evaluation contract.
@@ -306,7 +310,11 @@ impl FixtureSet {
             .into_iter()
             .map(|manifest_path| load_fixture(&manifest_path, &validator))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self { fixtures })
+        let retrieval = RetrievalCorpus::load(root)?;
+        Ok(Self {
+            fixtures,
+            retrieval,
+        })
     }
 }
 
@@ -345,7 +353,7 @@ fn fixture_manifest_paths(root: &Path) -> Result<Vec<PathBuf>, EvalError> {
         let category_name = utf8_file_name(&category_path, root)?;
         if matches!(
             category_name.as_str(),
-            BENCHMARK_DIRECTORY | INTEGRATION_DIRECTORY
+            BENCHMARK_DIRECTORY | INTEGRATION_DIRECTORY | RETRIEVAL_DIRECTORY
         ) {
             continue;
         }

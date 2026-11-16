@@ -81,6 +81,7 @@ impl CampaignReport {
                     protected_probe_recall: 1.0,
                     overall_probe_recall: 1.0,
                 },
+                retrieval: None,
             },
             campaign: CampaignSummary {
                 schema_version: 1,

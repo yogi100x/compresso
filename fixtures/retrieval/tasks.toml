@@ -1,0 +1,123 @@
+schema_version = 1
+# Planner budget applied to every task, in openai_o200k tokens.
+budget_tokens = 1600
+
+[[task]]
+id = "payload-too-large"
+task = "Where do we reject a job whose payload is too large, and what error does the caller get back?"
+gold_files = ["engine/src/payload.rs"]
+expect_ready = true
+
+[[task]]
+id = "retry-backoff"
+task = "How is the retry backoff delay worked out between failed attempts?"
+gold_files = ["engine/src/retry.rs"]
+expect_ready = true
+
+[[task]]
+id = "lease-expiry"
+task = "What happens to a job when its worker's lease expires before the work is finished?"
+gold_files = ["engine/src/lease.rs"]
+expect_ready = true
+
+[[task]]
+id = "dead-letter"
+task = "When does a failing job get moved to the dead letter queue?"
+gold_files = ["engine/src/dead_letter.rs"]
+expect_ready = true
+
+[[task]]
+id = "token-bucket-throttle"
+task = "How does the token bucket decide that an enqueue request is throttled?"
+gold_files = ["engine/src/rate_limit.rs"]
+expect_ready = true
+
+[[task]]
+id = "scheduler-next-run"
+task = "How does the scheduler work out when a recurring job should run next?"
+gold_files = ["engine/src/scheduler.rs"]
+expect_ready = true
+
+[[task]]
+id = "access-token-expiry"
+task = "How do we verify an access token, and which error is raised for an expired token?"
+gold_files = ["auth/src/tokens.ts", "auth/src/errors.ts"]
+
+[[task]]
+id = "password-check"
+task = "Where is the password hashed and compared when someone logs in?"
+gold_files = ["auth/src/passwordHash.ts"]
+
+[[task]]
+id = "login-attempt-limit"
+task = "How do we limit repeated failed login attempts for one account?"
+gold_files = ["auth/src/rateLimiter.ts"]
+expect_ready = true
+
+[[task]]
+id = "role-permission"
+task = "How do we check whether a role has permission to cancel a job?"
+gold_files = ["auth/src/permissions.ts"]
+expect_ready = true
+
+[[task]]
+id = "blob-retention-purge"
+task = "Which code purges expired blobs under the retention policy?"
+gold_files = ["storage/retention.py"]
+expect_ready = true
+
+[[task]]
+id = "chunked-file-read"
+task = "How does the storage layer read a large file in chunks without loading it all?"
+gold_files = ["storage/file_reader.py"]
+expect_ready = true
+
+[[task]]
+id = "cli-enqueue-payload"
+task = "How does the CLI enqueue command read the payload file and submit the job to the server?"
+gold_files = ["cli/src/commands/enqueue.ts"]
+
+[[task]]
+id = "cli-server-url"
+task = "Where does the CLI decide which server URL to talk to?"
+gold_files = ["cli/src/config.ts"]
+expect_ready = true
+
+[[task]]
+id = "retention-tests"
+task = "Which tests cover purging expired blobs?"
+gold_files = ["storage/tests/test_retention.py"]
+
+# Known gap: the concept is written only inside a function body. No symbol
+# name, signature, or path carries it, and the planner searches symbol names.
+[[task]]
+id = "graceful-shutdown"
+task = "Where do we handle SIGTERM for a graceful shutdown?"
+gold_files = ["engine/src/worker.rs"]
+known_gap = "body_only"
+
+[[task]]
+id = "upload-checksum"
+task = "Where is the checksum of an upload verified before it is committed?"
+gold_files = ["storage/blobs.py"]
+known_gap = "body_only"
+
+# Absent concepts: nothing in the corpus answers these, so a ready pack would
+# be a false claim.
+[[task]]
+id = "absent-webhooks"
+task = "How do we send webhook notifications when a job completes?"
+gold_files = []
+expect_ready = false
+
+[[task]]
+id = "absent-billing-schema"
+task = "Where is the GraphQL schema for billing invoices defined?"
+gold_files = []
+expect_ready = false
+
+[[task]]
+id = "absent-autoscaler"
+task = "How does the autoscaler add replicas across regions?"
+gold_files = []
+expect_ready = false

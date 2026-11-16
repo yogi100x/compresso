@@ -3016,6 +3016,24 @@ Test cases:
 - `test_plan_context_test_code_ranks_normally_when_the_task_asks_for_tests`: penalty lifted.
 - `test_context_tool_generic_word_matches_do_not_claim_a_ready_pack`: MCP status, `task_coverage`, no expansion.
 
+### [x] E17-18: Retrieval eval gates context-pack quality
+Owner: PQ+R2 · Estimate: 2d · Depends: E17-17, E7-03
+Files: fixtures/retrieval/tasks.toml, fixtures/retrieval/repo/, fixtures/corpus.toml, rust/compresso-eval/src/retrieval.rs, rust/compresso-eval/src/gates.rs, rust/compresso-eval/src/runner.rs, rust/compresso-eval/src/fixtures.rs, rust/compresso-eval/tests/retrieval.rs, rust/compresso-eval/tests/corpus_integrity.rs, docs/plan/gates.toml, docs/plan/06-fixtures.md, decisions.md
+Description: D84. `compresso-eval` indexes the committed source corpus under `fixtures/retrieval/repo/` into a temporary store with the production indexer and runs `plan_context` at a fixed 1600-token budget for every task in `fixtures/retrieval/tasks.toml` (06 §12). Each task records gold-file recall, evidence precision, tokens, and readiness; the report gains an additive top-level `retrieval` section, and `gates.toml` gains a `[retrieval]` table that the existing `run --gates` CI step enforces. Tasks marked `known_gap = "body_only"` are reported but kept out of the gated aggregate.
+Acceptance criteria:
+- `compresso-eval run fixtures/ --gates docs/plan/gates.toml --json` includes `retrieval` and exits non-zero when a `[retrieval]` threshold is missed; a fixture root without `retrieval/` has no section and no retrieval rows.
+- The corpus holds decoys sharing single common words with targets, test files, compound-identifier targets, body-only targets, and absent-concept tasks; `fixtures/corpus.toml` pins its tree hash.
+- A corpus that cannot be indexed or planned, or a gold file with no indexed symbols, fails the gates instead of dropping the section.
+- A ready pack that lacks a gold file, or a ready pack for an absent concept, counts as `false_ready` with zero tolerance.
+- The report is deterministic; `schema_version` stays 1 because keys are only added; no network or process capability is added.
+Test cases:
+- `test_committed_retrieval_corpus_passes_committed_gates`: committed corpus against committed thresholds; absent concepts never ready.
+- `test_retrieval_ranking_regression_fails_recall_and_precision_gates`: a synthetic below-threshold report fails by name.
+- `test_retrieval_false_ready_fails_gate`, `test_ready_on_absent_concept_is_false_ready`: false-ready counting and gate.
+- `test_known_gap_tasks_are_reported_outside_the_gated_aggregate`: exclusion from gated aggregates.
+- `test_retrieval_corpus_that_was_not_evaluated_fails_closed`, `test_gold_file_without_indexed_symbols_fails_closed`: fail closed.
+- `test_retrieval_report_is_deterministic`, `test_retrieval_corpus_path_hash_and_size`: determinism and corpus lock.
+
 ## Execution order (flat, dependency-ordered)
 
 Slice: E1-01, E1-02, E1-03, E1-04, E1-05, E1-06, E2-01, E2-02, E2-02a, E3-01, E2-03, E3-02, E3-03, E2-04, E2-05, E2-06, E2-07, E2-08, E2-12, E2-13, E2-14, E3-04, E3-05, E3-06, E3-07, E3-08, E2-09, E7-01, E7-07, E2-10, E2-11, E3-09, E7-02, E3-10, E3-11, E3-12, E4-01, E4-02, E4-03, E4-04, E4-05, E5-01, E5-02, E5-03, E5-04, E5-05, E5-06, E2-15, E7-03, E7-04, E7-05, E7-06, E5-07, E6-01, E6-02, E6-03, E6-04, E6-05.
@@ -3062,6 +3080,6 @@ Parallelism notes:
 | E14 IP & secure deployment | 17 | 39 | ~8 wk | +E15 threat/sandbox gates |
 | E15 Clean-room advanced capabilities | 34 | 121.5 | ~24.5 engineer-wk | A-F incremental; G deferred |
 | E16 Full-product completion | 16 | 59 | ~12 engineer-wk, dependency-phased | |
-| E17 Session continuity & hardening | 17 | 36 | ~7.2 engineer-wk | E17-01..10 delivered 2026-11-14, E17-16 2026-11-15, E17-17 2026-11-16; E17-11..15 open |
-| **Post-slice + PB total** | **171** | **498 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
-| **Grand total** | **229** | **594 gross** | **~118.8 engineer-wk** | |
+| E17 Session continuity & hardening | 18 | 38 | ~7.6 engineer-wk | E17-01..10 delivered 2026-11-14, E17-16 2026-11-15, E17-17 and E17-18 2026-11-16; E17-11..15 open |
+| **Post-slice + PB total** | **172** | **500 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
+| **Grand total** | **230** | **596 gross** | **~119.2 engineer-wk** | |

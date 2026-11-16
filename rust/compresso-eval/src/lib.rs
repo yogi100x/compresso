@@ -7,6 +7,7 @@ pub mod fixtures;
 pub mod gates;
 pub mod latency;
 pub mod recall;
+pub mod retrieval;
 pub mod runner;
 
 pub use fixtures::{
@@ -15,9 +16,13 @@ pub use fixtures::{
 };
 pub use gates::{
     GateError, GateFailureReason, GateName, GateOperator, GateOutcome, GateReport, Gates,
-    LatencyGates, RecallGates, ReductionGates, SafetyGates,
+    LatencyGates, RecallGates, ReductionGates, RetrievalGates, SafetyGates,
 };
 pub use recall::{EvalRunError, FixtureRecallOutcome, RecallProbeOutcome, RecallReport};
+pub use retrieval::{
+    KnownGap, KnownGapAggregate, RetrievalAggregate, RetrievalCorpus, RetrievalReport,
+    RetrievalTask, RetrievalTaskOutcome,
+};
 pub use runner::{
     AggregateMetrics, AtlasMetrics, EvalReport, EvalRunner, EvaluationKind, ExpectationFailure,
     FixtureOutcome, RunnerStage,

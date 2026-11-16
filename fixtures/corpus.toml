@@ -119,3 +119,9 @@ size_bytes = 204800
 tokens_o200k = 66596
 generator = "node fixtures/benchmarks/generate.mjs"
 sha256 = "e03ccca590210b642e52f7c90f199407ad562e576543117b3ef181f4d9ec90a8"
+
+[retrieval]
+path = "retrieval"
+file_count = 38
+size_bytes = 34185
+sha256 = "b5f2f8f870d8fc775dc42e7abcd391872b40d7cbcb1932320a5a4406e331b746"
