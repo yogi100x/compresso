@@ -35,7 +35,7 @@ fn test_committed_retrieval_manifest_shape() {
     let corpus = committed_corpus();
 
     assert_eq!(corpus.budget_tokens, 1600);
-    assert_eq!(corpus.tasks.len(), 23);
+    assert_eq!(corpus.tasks.len(), 25);
     let gaps = corpus
         .tasks
         .iter()
@@ -76,9 +76,9 @@ fn test_committed_retrieval_corpus_passes_committed_gates() {
     let gates = Gates::load(&gates_path()).expect("committed gates should load");
 
     assert_eq!(retrieval.failure, None);
-    assert_eq!(retrieval.tasks.len(), 23);
-    assert_eq!(retrieval.aggregate.tasks, 23);
-    assert_eq!(retrieval.aggregate.gold_tasks, 20);
+    assert_eq!(retrieval.tasks.len(), 25);
+    assert_eq!(retrieval.aggregate.tasks, 25);
+    assert_eq!(retrieval.aggregate.gold_tasks, 22);
     assert_eq!(retrieval.known_gaps.tasks, 0);
     assert!(retrieval.aggregate.mean_recall >= gates.retrieval.mean_recall_min);
     assert!(retrieval.aggregate.mean_precision >= gates.retrieval.mean_precision_min);

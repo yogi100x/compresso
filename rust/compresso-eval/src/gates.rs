@@ -557,6 +557,7 @@ mod tests {
                 id: id.to_owned(),
                 task: "How does it work?".to_owned(),
                 gold_files: gold.iter().map(|path| (*path).to_owned()).collect(),
+                gold_symbols: Vec::new(),
                 expect_ready: gold.is_empty().then_some(false),
                 known_gap: None,
             },
@@ -573,11 +574,11 @@ mod tests {
     }
 
     #[test]
-    fn test_gates_toml_retrieval_thresholds_match_d85() {
+    fn test_gates_toml_retrieval_thresholds_match_d86() {
         let gates = Gates::load(&gates_path()).expect("committed gates should load");
 
         assert_eq!(gates.retrieval.mean_recall_min, 0.96);
-        assert_eq!(gates.retrieval.mean_precision_min, 0.30);
+        assert_eq!(gates.retrieval.mean_precision_min, 0.34);
         assert_eq!(gates.retrieval.false_ready_max, 0);
         assert_eq!(gates.retrieval.ready_mismatches_max, 1);
     }

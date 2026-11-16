@@ -28,6 +28,25 @@ const PLAN_CONTEXT_BODIES_PER_FILE: usize = 2;
 const PLAN_CONTEXT_EVIDENCE_CONTENT_TOKENS: usize = 48;
 /// Excerpt allowance for evidence that names or contains a compound task concept.
 const PLAN_CONTEXT_STRONG_EVIDENCE_TOKENS: usize = 96;
+/// Excerpt allowance for the best-scored strong evidence, at most
+/// [`PLAN_CONTEXT_TOP_EVIDENCE_ITEMS`] items. It is one twelfth of the pack
+/// budget between the strong allowance and this ceiling, so a small pack
+/// keeps its room for file diversity.
+const PLAN_CONTEXT_TOP_EVIDENCE_TOKENS: usize = 224;
+const PLAN_CONTEXT_TOP_EVIDENCE_ITEMS: usize = 3;
+const PLAN_CONTEXT_TOP_EVIDENCE_BUDGET_DIVISOR: usize = 12;
+/// Compound concepts that name a symbol whose other uses are treated as
+/// evidence: the first of the task's specific named compounds, longest first.
+const PLAN_CONTEXT_USE_SITE_CONCEPTS: usize = 3;
+/// Evidence items one file may hold when the extra ones define or use such a
+/// concept; other evidence stops at [`PLAN_CONTEXT_BODIES_PER_FILE`].
+const PLAN_CONTEXT_USE_SITE_BODIES_PER_FILE: usize = 3;
+/// Constant definitions one pack may add because an included excerpt
+/// references them, the tokens each may take, and the index lookups spent
+/// resolving them.
+const PLAN_CONTEXT_REFERENCED_CONSTANTS: usize = 4;
+const PLAN_CONTEXT_REFERENCED_CONSTANT_TOKENS: usize = 40;
+const PLAN_CONTEXT_REFERENCED_CONSTANT_LOOKUPS: usize = 16;
 /// Hits fetched per query for cross-query scoring; only the first
 /// [`PLAN_CONTEXT_HITS_PER_QUERY`] count toward `matches_total`.
 const PLAN_CONTEXT_SCORING_WINDOW: usize = 24;
@@ -40,8 +59,9 @@ const PLAN_CONTEXT_UNCOVERED_LIMIT: usize = 8;
 const PLAN_CONTEXT_STRONG_SCORE: f64 = 4.0;
 /// Generic-word hits scoring below this share of the best hit are dropped as noise.
 const PLAN_CONTEXT_SCORE_FLOOR_RATIO: f64 = 0.25;
-/// A hit scoring at least this much matched a specific concept and is kept
-/// whatever the best hit scored; only single generic-word matches are noise.
+/// A hit scoring at least this much is kept below the relative floor until
+/// the stronger evidence covers the task; then only one that defines or uses
+/// a named concept, or matched a specific task word, stays.
 const PLAN_CONTEXT_SPECIFIC_MATCH_SCORE: f64 = 2.0;
 const PLAN_CONTEXT_TEST_PENALTY: f64 = 0.4;
 /// Task concepts with no symbol-name match that one plan searches for in file content.
@@ -207,6 +227,10 @@ pub struct ContextPlan {
     pub repo_map: Option<RepoMap>,
     pub outlines: Vec<Outline>,
     pub symbol_bodies: Vec<ContextSymbolBody>,
+    /// Constant definitions an included excerpt references by name. They are
+    /// rendered after the referencing excerpt and count toward the budget,
+    /// but not toward evidence files, concept coverage, or `truncated`.
+    pub referenced_constants: Vec<ContextSymbolBody>,
     pub search_queries: Vec<String>,
     pub matches_total: usize,
     pub evidence_files_total: usize,
@@ -865,82 +889,122 @@ pub fn plan_context(
     // code contains and becomes its evidence excerpt.
     let mut scored = Vec::with_capacity(pool.len());
     for ranked in pool {
-        let selector = SymbolSelector {
-            path: ranked.hit.path.clone(),
-            qualified_name: ranked.hit.symbol.qualified_name.clone(),
-            kind: Some(ranked.hit.symbol.kind),
-            signature_hash: ranked
-                .hit
-                .symbol
-                .signature
-                .as_deref()
-                .map(|signature| blake3::hash(signature.as_bytes()).to_hex().to_string()),
-            start_line_hint: Some(ranked.hit.symbol.start_line),
-        };
-        // A file that grew past the read ceiling since indexing loses its
-        // body excerpt; the rest of the evidence pack is still served.
-        let unfolded = match unfold(store, repo, &selector) {
-            Err(AtlasError::Query(QueryError::FileTooLarge { .. })) => None,
-            other => Some(other?),
-        };
-        let body = match unfolded {
-            Some(UnfoldResult::Found {
-                path,
-                symbol,
-                content,
-                ..
-            }) => Some(ContextSymbolBody {
-                path,
-                excerpt_start_line: symbol.start_line,
-                excerpt_end_line: symbol.end_line,
-                truncated: false,
-                symbol,
-                content,
-            }),
-            _ => None,
-        };
+        let body = context_symbol_body(store, repo, &ranked.hit)?;
         let mut score = ranked.score;
+        let specific = ranked.specific;
+        let mut anchored = ranked.defines_use_site;
         if let Some(body) = &body {
             score += concepts.body_score(&body.content);
+            anchored |= concepts.mentions_use_site(&body.content);
         }
         if !concepts.wants_tests && is_test_hit(&ranked.hit) {
             score *= PLAN_CONTEXT_TEST_PENALTY;
         }
-        scored.push((score, ranked.order, ranked.hit, body));
+        scored.push(ContextCandidate {
+            score,
+            order: ranked.order,
+            hit: ranked.hit,
+            top: false,
+            raw_tokens: body.as_ref().map_or(0, |body| body.symbol.token_estimate),
+            evidence: body,
+            anchored,
+            specific,
+        });
     }
-    scored.sort_by(|left, right| right.0.total_cmp(&left.0).then(left.1.cmp(&right.1)));
+    scored.sort_by(|left, right| {
+        right
+            .score
+            .total_cmp(&left.score)
+            .then(left.order.cmp(&right.order))
+    });
     let score_floor = scored
         .first()
-        .map_or(0.0, |best| best.0 * PLAN_CONTEXT_SCORE_FLOOR_RATIO);
+        .map_or(0.0, |best| best.score * PLAN_CONTEXT_SCORE_FLOOR_RATIO);
     scored.retain(|candidate| {
-        candidate.0 >= score_floor || candidate.0 >= PLAN_CONTEXT_SPECIFIC_MATCH_SCORE
+        candidate.score >= score_floor || candidate.score >= PLAN_CONTEXT_SPECIFIC_MATCH_SCORE
     });
     scored.truncate(PLAN_CONTEXT_SEARCH_LIMIT);
+
+    // Excerpt every candidate once. The best strong items get the largest
+    // allowance; the same excerpts decide below whether the tail is needed.
+    let top_allowance = (budget_tokens / PLAN_CONTEXT_TOP_EVIDENCE_BUDGET_DIVISOR).clamp(
+        PLAN_CONTEXT_STRONG_EVIDENCE_TOKENS,
+        PLAN_CONTEXT_TOP_EVIDENCE_TOKENS,
+    );
+    for (rank, candidate) in scored.iter_mut().enumerate() {
+        let strong = candidate.score >= PLAN_CONTEXT_STRONG_SCORE;
+        candidate.top = strong && rank < PLAN_CONTEXT_TOP_EVIDENCE_ITEMS;
+        let content_budget = if candidate.top {
+            top_allowance
+        } else if strong {
+            PLAN_CONTEXT_STRONG_EVIDENCE_TOKENS
+        } else {
+            PLAN_CONTEXT_EVIDENCE_CONTENT_TOKENS
+        };
+        candidate.evidence = candidate
+            .evidence
+            .take()
+            .map(|body| compact_context_evidence(&body, content_budget, counter, &concepts));
+    }
+
+    // A candidate below the relative floor stayed only because its absolute
+    // score cleared the specific-match bar. Once the evidence that is above
+    // the floor, or defines or uses a named task concept, or matched a
+    // specific task word, covers the task, the rest matched nothing but
+    // broad words and is dropped.
+    let is_core = |candidate: &ContextCandidate| {
+        candidate.score >= score_floor || candidate.anchored || candidate.specific
+    };
+    if scored.iter().any(|candidate| !is_core(candidate)) {
+        let core_uncovered = concepts.uncovered(
+            scored
+                .iter()
+                .filter(|candidate| is_core(candidate))
+                .filter_map(|candidate| candidate.evidence.as_ref()),
+        );
+        if core_uncovered.len().saturating_mul(2) <= concepts.salient.len() {
+            scored.retain(is_core);
+        }
+    }
     let hits = scored
         .iter()
-        .map(|candidate| candidate.2.clone())
+        .map(|candidate| candidate.hit.clone())
         .collect::<Vec<_>>();
 
     let candidate_outlines = matching_context_outlines(store, repo, &hits)?;
-    let mut bodies_by_path = Vec::<(String, Vec<(ContextSymbolBody, bool)>)>::new();
-    for (score, _, hit, body) in scored {
+    let mut bodies_by_path = Vec::<(String, Vec<PackItem>)>::new();
+    let mut estimated_raw_source_tokens = 0_usize;
+    for candidate in scored {
         let path_index = bodies_by_path
             .iter()
-            .position(|(path, _)| path == &hit.path)
+            .position(|(path, _)| path == &candidate.hit.path)
             .unwrap_or_else(|| {
-                bodies_by_path.push((hit.path.clone(), Vec::new()));
+                bodies_by_path.push((candidate.hit.path.clone(), Vec::new()));
                 bodies_by_path.len() - 1
             });
         let path_bodies = &mut bodies_by_path[path_index].1;
-        if path_bodies.len() == PLAN_CONTEXT_BODIES_PER_FILE {
+        // A file already holding its share still admits what defines or uses
+        // a named task concept: the raise site next to the definition.
+        let file_limit = if candidate.anchored {
+            PLAN_CONTEXT_USE_SITE_BODIES_PER_FILE
+        } else {
+            PLAN_CONTEXT_BODIES_PER_FILE
+        };
+        if path_bodies.len() >= file_limit {
             continue;
         }
-        if let Some(body) = body {
-            path_bodies.push((body, score >= PLAN_CONTEXT_STRONG_SCORE));
+        if let Some(evidence) = candidate.evidence {
+            estimated_raw_source_tokens =
+                estimated_raw_source_tokens.saturating_add(candidate.raw_tokens);
+            path_bodies.push(PackItem {
+                evidence,
+                top: candidate.top,
+                anchored: candidate.anchored,
+            });
         }
     }
     let mut candidate_bodies = Vec::new();
-    for rank in 0..PLAN_CONTEXT_BODIES_PER_FILE {
+    for rank in 0..PLAN_CONTEXT_USE_SITE_BODIES_PER_FILE {
         for (_, bodies) in &bodies_by_path {
             if let Some(body) = bodies.get(rank) {
                 candidate_bodies.push(body.clone());
@@ -951,9 +1015,6 @@ pub fn plan_context(
         .iter()
         .filter(|(_, bodies)| !bodies.is_empty())
         .count();
-    let estimated_raw_source_tokens = candidate_bodies.iter().fold(0_usize, |total, (body, _)| {
-        total.saturating_add(body.symbol.token_estimate)
-    });
 
     let mut rendered = String::new();
     let mut included_map = None;
@@ -976,30 +1037,41 @@ pub fn plan_context(
     }
 
     let mut symbol_bodies = Vec::new();
-    for (body, strong) in &candidate_bodies {
-        let content_budget = if *strong {
-            PLAN_CONTEXT_STRONG_EVIDENCE_TOKENS
-        } else {
-            PLAN_CONTEXT_EVIDENCE_CONTENT_TOKENS
-        };
-        let evidence = compact_context_evidence(body, content_budget, counter, &concepts);
-        let item = render_context_evidence(&evidence);
+    let mut constants = ReferencedConstants::default();
+    // A file whose definition or use of a named task concept did not fit is
+    // not counted as included, so the pack is not reported ready without it.
+    let mut use_site_omitted = BTreeSet::new();
+    for item in &candidate_bodies {
+        let rendered_item = render_context_evidence(&item.evidence, false);
         let trial = render_context_item(
             &rendered,
             "# Matching evidence excerpts\n",
-            &item,
+            &rendered_item,
             symbol_bodies.is_empty(),
         );
         if counter.count(&trial) <= budget_tokens {
             rendered = trial;
-            symbol_bodies.push(evidence);
+            symbol_bodies.push(item.evidence.clone());
+            constants.append_referenced_by(
+                store,
+                repo,
+                item,
+                &candidate_bodies,
+                &concepts,
+                budget_tokens,
+                counter,
+                &mut rendered,
+            )?;
+        } else if item.anchored {
+            use_site_omitted.insert(item.evidence.path.as_str());
         }
     }
+    let referenced_constants = constants.included;
     let included_paths = symbol_bodies
         .iter()
         .map(|body| body.path.as_str())
         .collect::<BTreeSet<_>>();
-    let evidence_files_included = included_paths.len();
+    let evidence_files_included = included_paths.difference(&use_site_omitted).count();
     let outlines = candidate_outlines
         .into_iter()
         .filter_map(|mut outline| {
@@ -1029,6 +1101,7 @@ pub fn plan_context(
         repo_map: included_map,
         outlines,
         symbol_bodies,
+        referenced_constants,
         search_queries,
         matches_total,
         evidence_files_total,
@@ -1047,6 +1120,195 @@ pub fn plan_context(
     })
 }
 
+/// One ranked symbol on its way into the pack.
+struct ContextCandidate {
+    /// Excerpted with the largest allowance.
+    top: bool,
+    score: f64,
+    order: usize,
+    hit: SearchHit,
+    /// The whole body until the excerpt allowance is applied.
+    evidence: Option<ContextSymbolBody>,
+    raw_tokens: usize,
+    /// Defines or uses one of the task's use-site concepts.
+    anchored: bool,
+    /// Matched a specific task concept, not only broad words.
+    specific: bool,
+}
+
+/// One excerpt queued for the pack, in rendering order.
+#[derive(Clone)]
+struct PackItem {
+    evidence: ContextSymbolBody,
+    /// Excerpted with the largest allowance.
+    top: bool,
+    /// Defines or uses one of the task's use-site concepts.
+    anchored: bool,
+}
+
+/// Reads the current body of an indexed symbol; `None` when it can no longer
+/// be resolved or its file grew past the read ceiling since indexing, in
+/// which case the rest of the evidence pack is still served.
+fn context_symbol_body(
+    store: &Store,
+    repo: RepoId,
+    hit: &SearchHit,
+) -> Result<Option<ContextSymbolBody>, AtlasError> {
+    let selector = SymbolSelector {
+        path: hit.path.clone(),
+        qualified_name: hit.symbol.qualified_name.clone(),
+        kind: Some(hit.symbol.kind),
+        signature_hash: hit
+            .symbol
+            .signature
+            .as_deref()
+            .map(|signature| blake3::hash(signature.as_bytes()).to_hex().to_string()),
+        start_line_hint: Some(hit.symbol.start_line),
+    };
+    let unfolded = match unfold(store, repo, &selector) {
+        Err(AtlasError::Query(QueryError::FileTooLarge { .. })) => return Ok(None),
+        other => other?,
+    };
+    Ok(match unfolded {
+        UnfoldResult::Found {
+            path,
+            symbol,
+            content,
+            ..
+        } => Some(ContextSymbolBody {
+            path,
+            excerpt_start_line: symbol.start_line,
+            excerpt_end_line: symbol.end_line,
+            truncated: false,
+            symbol,
+            content,
+        }),
+        _ => None,
+    })
+}
+
+/// Constant definitions added because an included excerpt references them.
+#[derive(Default)]
+struct ReferencedConstants {
+    included: Vec<ContextSymbolBody>,
+    /// Identifiers already looked up, found or not.
+    seen: BTreeSet<String>,
+    lookups: usize,
+}
+
+impl ReferencedConstants {
+    /// Appends to `rendered` the definition of each constant `evidence`
+    /// references, while the pack budget, the constant cap, and the lookup
+    /// cap allow. An excerpt with the largest allowance brings every constant
+    /// it references; any other brings only those whose name spells a
+    /// salient task word. A constant that is a candidate in its own right is
+    /// left to its own place in the pack.
+    #[allow(clippy::too_many_arguments)]
+    fn append_referenced_by(
+        &mut self,
+        store: &Store,
+        repo: RepoId,
+        item: &PackItem,
+        candidates: &[PackItem],
+        concepts: &TaskConcepts,
+        budget_tokens: usize,
+        counter: &dyn TokenCounter,
+        rendered: &mut String,
+    ) -> Result<(), AtlasError> {
+        let evidence = &item.evidence;
+        for identifier in constant_style_identifiers(&evidence.content) {
+            let on_task = item.top
+                || concepts
+                    .salient
+                    .iter()
+                    .any(|word| line_spells_word(identifier, word));
+            if !on_task {
+                continue;
+            }
+            if self.included.len() == PLAN_CONTEXT_REFERENCED_CONSTANTS
+                || self.lookups == PLAN_CONTEXT_REFERENCED_CONSTANT_LOOKUPS
+            {
+                break;
+            }
+            if identifier == evidence.symbol.name || !self.seen.insert(identifier.to_owned()) {
+                continue;
+            }
+            self.lookups += 1;
+            let Some(hit) = resolve_constant(store, repo, identifier, &evidence.path)? else {
+                continue;
+            };
+            if candidates.iter().any(|known| {
+                known.evidence.path == hit.path && same_symbol(&known.evidence.symbol, &hit.symbol)
+            }) {
+                continue;
+            }
+            let Some(body) = context_symbol_body(store, repo, &hit)? else {
+                continue;
+            };
+            let constant =
+                prefix_context_evidence(&body, PLAN_CONTEXT_REFERENCED_CONSTANT_TOKENS, counter);
+            let trial = format!("{rendered}{}", render_context_evidence(&constant, true));
+            if counter.count(&trial) <= budget_tokens {
+                *rendered = trial;
+                self.included.push(constant);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Identifiers in `content` spelled the way constants are: at least three
+/// characters, starting with an ASCII capital, and made of ASCII capitals,
+/// digits, and underscores with at least two capitals. In order of first
+/// appearance, without repeats.
+fn constant_style_identifiers(content: &str) -> Vec<&str> {
+    let mut identifiers = Vec::new();
+    for word in content.split(|character: char| !character.is_alphanumeric() && character != '_') {
+        let constant_style = word.len() >= 3
+            && word.starts_with(|first: char| first.is_ascii_uppercase())
+            && word.chars().all(|character| {
+                character.is_ascii_uppercase() || character.is_ascii_digit() || character == '_'
+            })
+            && word
+                .chars()
+                .filter(|character| character.is_ascii_uppercase())
+                .count()
+                >= 2;
+        if constant_style && !identifiers.contains(&word) {
+            identifiers.push(word);
+        }
+    }
+    identifiers
+}
+
+/// The indexed constant or static named exactly `identifier`. Among several,
+/// the one sharing the longest directory prefix with the referencing file,
+/// then the first by path and line.
+fn resolve_constant(
+    store: &Store,
+    repo: RepoId,
+    identifier: &str,
+    referencing_path: &str,
+) -> Result<Option<SearchHit>, AtlasError> {
+    let shared_prefix = |path: &str| {
+        path.split('/')
+            .zip(referencing_path.split('/'))
+            .take_while(|(left, right)| left == right)
+            .count()
+    };
+    let mut matches = search_literal(store, repo, identifier, PLAN_CONTEXT_SCORING_WINDOW)?
+        .into_iter()
+        .filter(|hit| hit.symbol.kind == SymbolKind::Const && hit.symbol.name == identifier)
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| {
+        shared_prefix(&right.path)
+            .cmp(&shared_prefix(&left.path))
+            .then_with(|| left.path.cmp(&right.path))
+            .then_with(|| left.symbol.start_line.cmp(&right.symbol.start_line))
+    });
+    Ok(matches.into_iter().next())
+}
+
 /// What the symbol-name queries and the content scan found for one task.
 struct ConceptSearch {
     search_queries: Vec<String>,
@@ -1062,6 +1324,12 @@ struct RankedHit {
     hit: SearchHit,
     score: f64,
     order: usize,
+    /// Named after one of the task's use-site concepts.
+    defines_use_site: bool,
+    /// Named after a specific compound or a salient word that names few
+    /// symbols, matched the whole task phrase, or contains a salient word
+    /// the content scan found in few bodies.
+    specific: bool,
 }
 
 type HitIdentity = (String, String, SymbolKind, u32, u32);
@@ -1109,6 +1377,9 @@ fn search_task_concepts(
         }
     }
     let mut compound_hits = Vec::new();
+    let mut use_site_concepts = 0;
+    let mut use_site_definitions = BTreeSet::new();
+    let mut specific_hits = BTreeSet::new();
     for compound in &mut concepts.compounds {
         let mut matched = Vec::new();
         for query in &compound.queries {
@@ -1131,7 +1402,22 @@ fn search_task_concepts(
             0.25
         };
         compound.name_hits = matched.len();
+        // A compound that names a few symbols is a proven identifier whose
+        // other uses sit in bodies. Compounds are ordered longest first, so
+        // the first ones are the most specific.
+        compound.use_site = compound.name_hits > 0
+            && compound.specificity >= 1.0
+            && use_site_concepts < PLAN_CONTEXT_USE_SITE_CONCEPTS;
+        if compound.use_site {
+            use_site_concepts += 1;
+        }
         for hit in matched {
+            if compound.use_site {
+                use_site_definitions.insert(hit_identity(&hit));
+            }
+            if compound.specificity >= 1.0 {
+                specific_hits.insert(hit_identity(&hit));
+            }
             *scores.entry(hit_identity(&hit)).or_default() += compound.weight();
             compound_hits.push(hit);
         }
@@ -1149,6 +1435,19 @@ fn search_task_concepts(
     )?;
     let scan = scan_content_terms(store, repo, &terms, text_requested, concepts)?;
     concepts.content_words = scan.words;
+    // A query naming only a few symbols is specific when it is the whole
+    // task phrase or a salient word; one naming many is broad.
+    for (query, hits) in search_queries.iter().zip(&query_hits) {
+        let salient = concepts
+            .salient
+            .iter()
+            .any(|word| word == query || singular_context_term(word).as_ref() == Some(query));
+        if hits.len() <= PLAN_CONTEXT_HITS_PER_QUERY
+            && (salient || (query == phrase && query.contains(char::is_whitespace)))
+        {
+            specific_hits.extend(hits.iter().map(hit_identity));
+        }
+    }
 
     // Interleave queries by rank so one broad concept cannot crowd every
     // other task concept out of the bounded context pack. Only the leading
@@ -1181,7 +1480,10 @@ fn search_task_concepts(
         }
     }
     let mut content_hits = BTreeSet::new();
-    for (hit, score) in scan.candidates {
+    for (hit, score, word_match) in scan.candidates {
+        if word_match {
+            specific_hits.insert(hit_identity(&hit));
+        }
         *scores.entry(hit_identity(&hit)).or_default() += score;
         content_hits.insert(hit_identity(&hit));
         if seen.insert(hit_identity(&hit)) {
@@ -1196,6 +1498,8 @@ fn search_task_concepts(
         .enumerate()
         .map(|(order, hit)| RankedHit {
             score: scores.get(&hit_identity(&hit)).copied().unwrap_or_default(),
+            defines_use_site: use_site_definitions.contains(&hit_identity(&hit)),
+            specific: specific_hits.contains(&hit_identity(&hit)),
             hit,
             order,
         })
@@ -1262,12 +1566,12 @@ fn unresolved_content_terms(
     exclude_text: bool,
 ) -> Result<Vec<ContentTerm>, AtlasError> {
     let mut terms = Vec::new();
-    // A compound that names a few symbols is a proven identifier whose other
-    // uses sit in bodies; one that names none is only a guess at one.
+    // The use-site concepts are proven identifiers whose other uses sit in
+    // bodies; a compound that names no symbol is only a guess at one.
     let named = concepts
         .compounds
         .iter()
-        .filter(|compound| compound.name_hits > 0 && compound.specificity >= 1.0);
+        .filter(|compound| compound.use_site);
     // Shorter guesses first: whatever spells a three-word compound also
     // spells the two-word compounds inside it.
     let unnamed = [2, 3].into_iter().flat_map(|words| {
@@ -1315,8 +1619,10 @@ fn unresolved_content_terms(
 /// Symbols whose bodies contain an unresolved task concept.
 #[derive(Default)]
 struct ContentScan {
-    /// Best-scored first; at most `PLAN_CONTEXT_CONTENT_CANDIDATES`.
-    candidates: Vec<(SearchHit, f64)>,
+    /// Best-scored first; at most `PLAN_CONTEXT_CONTENT_CANDIDATES`. The
+    /// flag marks a symbol containing a scanned single word, which is found
+    /// in few bodies or adds nothing.
+    candidates: Vec<(SearchHit, f64, bool)>,
     /// Scanned single words that produced a candidate.
     words: Vec<String>,
     /// A file or byte cap ended the scan before every indexed file was read.
@@ -1448,6 +1754,7 @@ fn scan_content_terms(
     }
 
     let mut scores = vec![0.0_f64; hits.len()];
+    let mut word_matches = vec![false; hits.len()];
     for (term, found) in terms.iter().zip(&term_hits) {
         let breadth = if found.len() <= PLAN_CONTEXT_HITS_PER_QUERY {
             1.0
@@ -1463,19 +1770,20 @@ fn scan_content_terms(
         }
         for &hit in found {
             scores[hit] += term.score * breadth;
+            word_matches[hit] |= !term.compound;
         }
     }
     // Rank as the planner will: test code yields to the code it tests.
     let mut ranked = hits
         .into_iter()
-        .zip(scores.into_iter().zip(body_scores))
-        .filter(|(_, (score, _))| *score > 0.0)
-        .map(|(hit, (score, body_score))| {
+        .zip(scores.into_iter().zip(body_scores).zip(word_matches))
+        .filter(|(_, ((score, _), _))| *score > 0.0)
+        .map(|(hit, ((score, body_score), word_match))| {
             let mut rank = score + body_score;
             if !concepts.wants_tests && is_test_hit(&hit) {
                 rank *= PLAN_CONTEXT_TEST_PENALTY;
             }
-            (rank, hit, score)
+            (rank, hit, score, word_match)
         })
         .collect::<Vec<_>>();
     ranked.sort_by(|left, right| {
@@ -1495,7 +1803,7 @@ fn scan_content_terms(
     ranked.truncate(PLAN_CONTEXT_CONTENT_CANDIDATES);
     scan.candidates = ranked
         .into_iter()
-        .map(|(_, hit, score)| (hit, score))
+        .map(|(_, hit, score, word_match)| (hit, score, word_match))
         .collect();
     Ok(scan)
 }
@@ -1593,6 +1901,9 @@ struct TaskCompound {
     name_hits: usize,
     /// 1.0 for a compound naming few symbols, less for one naming many.
     specificity: f64,
+    /// One of the few specific named compounds whose uses in other symbols'
+    /// bodies are evidence too.
+    use_site: bool,
 }
 
 impl TaskCompound {
@@ -1659,6 +1970,7 @@ impl TaskConcepts {
                     words: size,
                     name_hits: 0,
                     specificity: 1.0,
+                    use_site: false,
                 });
             }
         }
@@ -1689,6 +2001,17 @@ impl TaskConcepts {
         compound_score + (salient_matches.min(6) as f64) * 0.5
     }
 
+    /// Whether `content` spells a use-site concept in any identifier case.
+    fn mentions_use_site(&self, content: &str) -> bool {
+        if !self.compounds.iter().any(|compound| compound.use_site) {
+            return false;
+        }
+        let squeezed = squeeze_separators(&content.to_lowercase());
+        self.compounds
+            .iter()
+            .any(|compound| compound.use_site && squeezed.contains(&compound.joined))
+    }
+
     /// Index of the first body line containing a compound concept, or else
     /// a word only the content scan found.
     fn focus_line(&self, content: &str) -> Option<usize> {
@@ -1708,26 +2031,30 @@ impl TaskConcepts {
     }
 
     /// Salient words that no included evidence names or contains.
-    fn uncovered(&self, bodies: &[ContextSymbolBody]) -> Vec<String> {
-        let haystacks = bodies
-            .iter()
-            .map(|body| {
-                format!(
-                    "{}\n{}\n{}\n{}",
-                    body.path,
-                    body.symbol.qualified_name,
-                    body.symbol.signature.as_deref().unwrap_or_default(),
-                    body.content
-                )
-                .to_lowercase()
-            })
-            .collect::<Vec<_>>();
+    fn uncovered<'a>(
+        &self,
+        bodies: impl IntoIterator<Item = &'a ContextSymbolBody>,
+    ) -> Vec<String> {
+        let haystacks = bodies.into_iter().map(evidence_text).collect::<Vec<_>>();
         self.salient
             .iter()
             .filter(|term| !haystacks.iter().any(|text| text_mentions(text, term)))
             .cloned()
             .collect()
     }
+}
+
+/// Lowercase text in which an evidence item can mention a task word: its
+/// path, qualified name, signature, and excerpt.
+fn evidence_text(body: &ContextSymbolBody) -> String {
+    format!(
+        "{}\n{}\n{}\n{}",
+        body.path,
+        body.symbol.qualified_name,
+        body.symbol.signature.as_deref().unwrap_or_default(),
+        body.content
+    )
+    .to_lowercase()
 }
 
 /// Whether lowercase `text` contains `term` or its singular form.
@@ -2186,22 +2513,54 @@ fn compact_context_evidence(
     let fits_whole = counter.count(&body.content) <= content_budget;
     // A body too long for its allowance is excerpted from just above the
     // first line that contains a compound task concept, not from its head.
-    let first_line = if fits_whole {
+    let focus_line = if fits_whole {
         0
     } else {
         concepts
             .focus_line(&body.content)
             .map_or(0, |line| line.saturating_sub(1))
     };
+    excerpt_context_evidence(body, focus_line, content_budget, counter)
+}
+
+/// The leading lines of `body` that fit `content_budget`.
+fn prefix_context_evidence(
+    body: &ContextSymbolBody,
+    content_budget: usize,
+    counter: &dyn TokenCounter,
+) -> ContextSymbolBody {
+    excerpt_context_evidence(body, 0, content_budget, counter)
+}
+
+/// Whole lines of `body` from `first_line` on that fit `content_budget`.
+/// When the body ends before the allowance does, the excerpt grows upward
+/// with the lines above `first_line`, so a match near the end of a long body
+/// still arrives with its context.
+fn excerpt_context_evidence(
+    body: &ContextSymbolBody,
+    mut first_line: usize,
+    content_budget: usize,
+    counter: &dyn TokenCounter,
+) -> ContextSymbolBody {
+    let lines = body.content.split_inclusive('\n').collect::<Vec<_>>();
     let mut content = String::new();
-    for line in body.content.split_inclusive('\n').skip(first_line) {
+    let mut reached_end = true;
+    for line in lines.iter().skip(first_line) {
         let candidate = format!("{content}{line}");
         if counter.count(&candidate) > content_budget {
+            reached_end = false;
             break;
         }
         content = candidate;
     }
-    let mut first_line = first_line;
+    while reached_end && !content.is_empty() && first_line > 0 {
+        let candidate = format!("{}{content}", lines[first_line - 1]);
+        if counter.count(&candidate) > content_budget {
+            break;
+        }
+        content = candidate;
+        first_line -= 1;
+    }
     if content.is_empty() && !body.content.is_empty() {
         first_line = 0;
         content = prefix_within_budget(&body.content, content_budget, counter);
@@ -2229,7 +2588,9 @@ fn compact_context_evidence(
     }
 }
 
-fn render_context_evidence(body: &ContextSymbolBody) -> String {
+/// One evidence item. `referenced` marks a constant included because the
+/// excerpt above it uses the name.
+fn render_context_evidence(body: &ContextSymbolBody, referenced: bool) -> String {
     let mut rendered = format!(
         "## {}:{}-{} — {} ({:?}",
         body.path,
@@ -2238,6 +2599,9 @@ fn render_context_evidence(body: &ContextSymbolBody) -> String {
         body.symbol.qualified_name,
         body.symbol.kind,
     );
+    if referenced {
+        rendered.push_str(", referenced above");
+    }
     if body.truncated {
         let _ = write!(
             rendered,

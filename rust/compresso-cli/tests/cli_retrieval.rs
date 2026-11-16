@@ -220,6 +220,7 @@ fn test_map_outline_and_context_use_approved_cwd_and_canonical_queries() {
     assert!(context["data"]["tokens_used"].as_u64().unwrap() <= 800);
     assert!(context["data"]["plan"]["outlines"].is_array());
     assert!(context["data"]["plan"]["bodies"].is_array());
+    assert!(context["data"]["plan"]["referenced_constants"].is_array());
 }
 
 #[test]

@@ -123,6 +123,26 @@ task = "Where do we execute the vacuum statement?"
 gold_files = ["storage/maintenance.py"]
 expect_ready = true
 
+# Use site: `tenant suspended` names a status helper in another file. The enum
+# variant, an operator report that reads it, and the function that raises it
+# share one file; the report names more task words than the raise site, so a
+# flat two-per-file share leaves the raise site out. The file alone is not the
+# answer: the raising symbol is gold.
+[[task]]
+id = "tenant-suspended-raise"
+task = "Where is the tenant suspended error raised?"
+gold_files = ["engine/src/tenancy.rs"]
+gold_symbols = ["engine/src/tenancy.rs::gate_submission"]
+expect_ready = true
+
+# Referenced constant: the limit lives in a file no task word names, behind a
+# constant the top excerpt compares against.
+[[task]]
+id = "multipart-part-ceiling"
+task = "How big can one multipart upload part be before it is refused?"
+gold_files = ["storage/multipart.py", "storage/limits.py"]
+expect_ready = true
+
 # Absent concepts: nothing in the corpus answers these, so a ready pack would
 # be a false claim.
 [[task]]

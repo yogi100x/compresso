@@ -3053,7 +3053,31 @@ Test cases:
 - `test_plan_context_content_scan_file_cap_sets_truncated`: file cap and both flags.
 - `test_plan_context_content_scan_ignores_a_word_common_to_many_bodies`: common-word rule.
 - `test_line_spells_word_matches_whole_identifier_words_only`: whole-word matching.
-- `test_committed_retrieval_corpus_passes_committed_gates`, `test_gates_toml_retrieval_thresholds_match_d85`: 20 gated gold tasks against the raised thresholds.
+- `test_committed_retrieval_corpus_passes_committed_gates`, `test_gates_toml_retrieval_thresholds_match_d85` (renamed `..._match_d86` by E17-20): 20 gated gold tasks against the raised thresholds.
+
+### [x] E17-20: Context pack carries use sites and referenced constants, not a broad-word tail
+Owner: R2+PQ · Estimate: 2d · Depends: E17-17, E17-18, E17-19
+Files: rust/compresso-atlas/src/queries.rs, rust/compresso-atlas/tests/queries_impact_plan.rs, rust/compresso-cli/src/commands/retrieval.rs, rust/compresso-cli/tests/cli_retrieval.rs, rust/compresso-eval/src/retrieval.rs, rust/compresso-eval/src/gates.rs, rust/compresso-eval/tests/retrieval.rs, fixtures/retrieval/tasks.toml, fixtures/retrieval/repo/, fixtures/corpus.toml, docs/plan/gates.toml, docs/plan/04-mcp-and-integrations.md, docs/plan/06-fixtures.md, decisions.md
+Description: D86. Four changes to how `plan_context` fills its budget, none adding a scan pass or a dependency. (A) Up to three specific named compounds are use-site concepts: a symbol that defines or uses one may take a third evidence slot in its file, and a file missing such an excerpt does not count as included. (B) Constants that included excerpts reference by name are added after the referencing excerpt: at most four per pack, 40 tokens each, 16 index lookups. (C) Once the evidence that is above the score floor, uses a use-site concept, or matched a specific task word covers the task, candidates that matched only broad words are dropped. (D) The three best strong excerpts get one twelfth of the pack budget, between 96 and 224 tokens, and an excerpt that reaches the end of its body grows upward. The retrieval corpus gains `gold_symbols` and two tasks.
+Acceptance criteria:
+- A raise site that shares a file with the definition and another user of a named concept is in the pack; a file never holds more than three excerpts, and more than two only for use-site evidence.
+- Use-site evidence comes from the one bounded content scan: a use site in a file above the per-file cap or past the file cap is not read, and the cap still sets `content_scan_truncated`.
+- A pack that left a use-site excerpt out reports fewer included files than candidate files, so it is not `task_pack_ready` and `compresso_context` expands the budget.
+- A constant an included excerpt references is rendered after it as `(Const, referenced above)`; it is listed in `ContextPlan.referenced_constants` and `plan.referenced_constants` of `compresso context --json`, and never counts toward evidence files, coverage, or `truncated`.
+- Broad-word tail candidates are dropped only when the remaining evidence covers at least half of the task's salient words; a symbol named after a specific task word is kept.
+- Every budget is hard: `tokens_used` never exceeds the requested budget, and two runs return equal plans.
+- `[retrieval]` precision threshold is raised to the new measured value minus a margin; no threshold is lowered.
+Test cases:
+- `test_plan_context_use_site_of_a_named_concept_joins_its_definition_in_one_file`: definition leads, third slot for the raise site, two-per-file share for other symbols.
+- `test_plan_context_is_not_file_complete_while_a_use_site_excerpt_is_left_out`: file completeness withheld at tight budgets.
+- `test_plan_context_use_site_expansion_stays_within_the_content_scan_caps`: oversize file and file cap.
+- `test_plan_context_includes_the_definition_of_a_constant_an_excerpt_references`: definition line, placement, accounting.
+- `test_plan_context_referenced_constants_are_capped_in_count_and_tokens`: four constants, 40 tokens, tight budgets.
+- `test_plan_context_drops_broad_word_tail_only_when_specific_evidence_covers_the_task`: tail dropped when covered, kept when not, specific-word symbol kept.
+- `test_plan_context_top_evidence_gets_a_larger_excerpt_that_scales_with_the_budget`: 224-token ceiling, one twelfth of the budget, upward growth.
+- `test_plan_context_expansion_never_exceeds_any_budget_and_is_deterministic`: eighteen budgets from 0 to 4,000, determinism, no store writes.
+- `test_score_evidence_requires_each_gold_symbol_not_only_its_file`: gold-symbol scoring.
+- `test_committed_retrieval_corpus_passes_committed_gates`, `test_gates_toml_retrieval_thresholds_match_d86`: 22 gated gold tasks against the raised threshold.
 
 ## Execution order (flat, dependency-ordered)
 
@@ -3101,6 +3125,6 @@ Parallelism notes:
 | E14 IP & secure deployment | 17 | 39 | ~8 wk | +E15 threat/sandbox gates |
 | E15 Clean-room advanced capabilities | 34 | 121.5 | ~24.5 engineer-wk | A-F incremental; G deferred |
 | E16 Full-product completion | 16 | 59 | ~12 engineer-wk, dependency-phased | |
-| E17 Session continuity & hardening | 19 | 40 | ~8.0 engineer-wk | E17-01..10 delivered 2026-11-14, E17-16 2026-11-15, E17-17, E17-18, and E17-19 2026-11-16; E17-11..15 open |
-| **Post-slice + PB total** | **173** | **502 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
-| **Grand total** | **231** | **598 gross** | **~119.6 engineer-wk** | |
+| E17 Session continuity & hardening | 20 | 42 | ~8.4 engineer-wk | E17-01..10 delivered 2026-11-14, E17-16 2026-11-15, E17-17, E17-18, E17-19, and E17-20 2026-11-16; E17-11..15 open |
+| **Post-slice + PB total** | **174** | **504 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
+| **Grand total** | **232** | **600 gross** | **~120.0 engineer-wk** | |

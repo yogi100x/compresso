@@ -1,3 +1,4 @@
+pub mod admission_status;
 pub mod config;
 pub mod dead_letter;
 pub mod errors;
@@ -10,4 +11,5 @@ pub mod rate_limit;
 pub mod retry;
 pub mod scheduler;
 pub mod server;
+pub mod tenancy;
 pub mod worker;

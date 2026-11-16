@@ -496,19 +496,21 @@ fn render_context(task: String, plan: ContextPlan) -> Rendered {
             })
         })
         .collect::<Vec<_>>();
-    let bodies = plan
-        .symbol_bodies
-        .iter()
-        .map(|body| {
-            json!({
-                "path": body.path,
-                "symbol": symbol_json(&body.symbol),
-                "content": body.content,
-                "excerpt_start_line": body.excerpt_start_line,
-                "excerpt_end_line": body.excerpt_end_line,
-                "truncated": body.truncated,
-            })
+    let body_json = |body: &compresso_atlas::ContextSymbolBody| {
+        json!({
+            "path": body.path,
+            "symbol": symbol_json(&body.symbol),
+            "content": body.content,
+            "excerpt_start_line": body.excerpt_start_line,
+            "excerpt_end_line": body.excerpt_end_line,
+            "truncated": body.truncated,
         })
+    };
+    let bodies = plan.symbol_bodies.iter().map(body_json).collect::<Vec<_>>();
+    let referenced_constants = plan
+        .referenced_constants
+        .iter()
+        .map(body_json)
         .collect::<Vec<_>>();
     let data = json!({
         "task": task,
@@ -530,6 +532,7 @@ fn render_context(task: String, plan: ContextPlan) -> Rendered {
             "map_excerpt": map_excerpt,
             "outlines": outlines,
             "bodies": bodies,
+            "referenced_constants": referenced_constants,
         },
         "tokens_used": plan.tokens_used,
         "token_provider": plan.token_provider,

@@ -36,6 +36,10 @@ pub struct RetrievalTask {
     pub task: String,
     /// Corpus-relative paths; empty for a concept the corpus does not contain.
     pub gold_files: Vec<String>,
+    /// `<gold file>::<qualified name>` entries: symbols that must appear as
+    /// evidence themselves, where the file alone would not answer the task.
+    #[serde(default)]
+    pub gold_symbols: Vec<String>,
     #[serde(default)]
     pub expect_ready: Option<bool>,
     #[serde(default)]
@@ -104,8 +108,15 @@ pub struct RetrievalTaskOutcome {
     pub gold_files: usize,
     pub gold_files_found: usize,
     pub missing_gold_files: Vec<String>,
+    #[serde(default)]
+    pub gold_symbols: usize,
+    #[serde(default)]
+    pub gold_symbols_found: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_gold_symbols: Vec<String>,
     pub evidence_items: usize,
-    /// Share of gold files present as evidence; zero without gold files.
+    /// Share of gold files and gold symbols present as evidence; zero
+    /// without gold files.
     pub recall: f64,
     /// Share of evidence items whose path is a gold file; zero without evidence.
     pub precision: f64,
@@ -113,8 +124,14 @@ pub struct RetrievalTaskOutcome {
     pub ready: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expect_ready: Option<bool>,
-    /// Ready while a gold file is missing, or ready on an absent concept.
+    /// Ready while a gold file or symbol is missing, or ready on an absent concept.
     pub false_ready: bool,
+}
+
+impl RetrievalTaskOutcome {
+    fn full_recall(&self) -> bool {
+        self.gold_files_found == self.gold_files && self.gold_symbols_found == self.gold_symbols
+    }
 }
 
 impl RetrievalCorpus {
@@ -217,6 +234,24 @@ fn validate_task(task: &RetrievalTask, repository: &Path) -> Result<(), String> 
             ));
         }
     }
+    let mut seen_symbols = BTreeSet::new();
+    for gold in &task.gold_symbols {
+        let in_gold_file = gold_symbol_parts(gold).is_some_and(|(path, name)| {
+            !name.is_empty() && task.gold_files.iter().any(|file| file == path)
+        });
+        if !in_gold_file {
+            return Err(format!(
+                "retrieval task {} gold symbol {gold:?} is not <gold file>::<qualified name>",
+                task.id
+            ));
+        }
+        if !seen_symbols.insert(gold.as_str()) {
+            return Err(format!(
+                "retrieval task {} lists gold symbol {gold} twice",
+                task.id
+            ));
+        }
+    }
     if task.gold_files.is_empty() {
         if task.expect_ready != Some(false) {
             return Err(format!(
@@ -275,6 +310,15 @@ fn run_tasks(corpus: &RetrievalCorpus) -> Result<(usize, Vec<RetrievalTaskOutcom
             if symbols.is_empty() {
                 return Err(RunnerStage::ValidateFixture);
             }
+            let indexed = task
+                .gold_symbols
+                .iter()
+                .filter_map(|symbol| gold_symbol_parts(symbol))
+                .filter(|(path, _)| path == gold)
+                .all(|(_, name)| symbols.iter().any(|symbol| symbol.qualified_name == name));
+            if !indexed {
+                return Err(RunnerStage::ValidateFixture);
+            }
         }
     }
 
@@ -294,48 +338,88 @@ fn plan_ready(plan: &ContextPlan) -> bool {
         && plan.concept_coverage_sufficient()
 }
 
-fn task_outcome(task: &RetrievalTask, plan: &ContextPlan) -> RetrievalTaskOutcome {
-    let evidence_paths = plan
-        .symbol_bodies
-        .iter()
-        .map(|body| body.path.as_str())
-        .collect::<Vec<_>>();
-    score_task(task, &evidence_paths, plan.tokens_used, plan_ready(plan))
+/// Splits `<path>::<qualified name>` at the first `::`; a path has none.
+fn gold_symbol_parts(gold: &str) -> Option<(&str, &str)> {
+    gold.split_once("::")
 }
 
-/// Scores one task from the evidence paths the planner returned.
+/// Evidence is every excerpt the pack carries: the ranked symbol bodies and
+/// the constants they reference.
+fn task_outcome(task: &RetrievalTask, plan: &ContextPlan) -> RetrievalTaskOutcome {
+    let evidence = plan
+        .symbol_bodies
+        .iter()
+        .chain(&plan.referenced_constants)
+        .map(|body| (body.path.as_str(), body.symbol.qualified_name.as_str()))
+        .collect::<Vec<_>>();
+    score_evidence(task, &evidence, plan.tokens_used, plan_ready(plan))
+}
+
+/// Scores one task from the evidence paths the planner returned. No evidence
+/// symbol is known, so every gold symbol counts as missing.
 pub fn score_task(
     task: &RetrievalTask,
     evidence_paths: &[&str],
     tokens_used: usize,
     ready: bool,
 ) -> RetrievalTaskOutcome {
+    let evidence = evidence_paths
+        .iter()
+        .map(|path| (*path, ""))
+        .collect::<Vec<_>>();
+    score_evidence(task, &evidence, tokens_used, ready)
+}
+
+/// Scores one task from the `(path, qualified name)` of each evidence item.
+pub fn score_evidence(
+    task: &RetrievalTask,
+    evidence: &[(&str, &str)],
+    tokens_used: usize,
+    ready: bool,
+) -> RetrievalTaskOutcome {
     let missing_gold_files = task
         .gold_files
         .iter()
-        .filter(|gold| !evidence_paths.contains(&gold.as_str()))
+        .filter(|gold| !evidence.iter().any(|(path, _)| path == gold))
+        .cloned()
+        .collect::<Vec<_>>();
+    let missing_gold_symbols = task
+        .gold_symbols
+        .iter()
+        .filter(|gold| gold_symbol_parts(gold).is_none_or(|parts| !evidence.contains(&parts)))
         .cloned()
         .collect::<Vec<_>>();
     let gold_files = task.gold_files.len();
     let gold_files_found = gold_files - missing_gold_files.len();
-    let gold_evidence = evidence_paths
+    let gold_symbols = task.gold_symbols.len();
+    let gold_symbols_found = gold_symbols - missing_gold_symbols.len();
+    let gold_evidence = evidence
         .iter()
-        .filter(|path| task.gold_files.iter().any(|gold| gold == *path))
+        .filter(|(path, _)| task.gold_files.iter().any(|gold| gold == path))
         .count();
-    let recall = ratio(gold_files_found, gold_files);
+    let recall = ratio(
+        gold_files_found + gold_symbols_found,
+        gold_files + gold_symbols,
+    );
     RetrievalTaskOutcome {
         id: task.id.clone(),
         known_gap: task.known_gap,
         gold_files,
         gold_files_found,
         missing_gold_files,
-        evidence_items: evidence_paths.len(),
+        gold_symbols,
+        gold_symbols_found,
+        missing_gold_symbols,
+        evidence_items: evidence.len(),
         recall,
-        precision: ratio(gold_evidence, evidence_paths.len()),
+        precision: ratio(gold_evidence, evidence.len()),
         tokens_used,
         ready,
         expect_ready: task.expect_ready,
-        false_ready: ready && (gold_files == 0 || gold_files_found < gold_files),
+        false_ready: ready
+            && (gold_files == 0
+                || gold_files_found < gold_files
+                || gold_symbols_found < gold_symbols),
     }
 }
 
@@ -375,10 +459,7 @@ impl RetrievalReport {
         let aggregate = RetrievalAggregate {
             tasks: gated.len(),
             gold_tasks: gold.len(),
-            full_recall_tasks: gold
-                .iter()
-                .filter(|task| task.gold_files_found == task.gold_files)
-                .count(),
+            full_recall_tasks: gold.iter().filter(|task| task.full_recall()).count(),
             mean_recall: mean(gold.iter().map(|task| task.recall)),
             mean_precision: mean(gold.iter().map(|task| task.precision)),
             false_ready: gated.iter().filter(|task| task.false_ready).count(),
@@ -397,10 +478,7 @@ impl RetrievalReport {
             .collect::<Vec<_>>();
         let known_gaps = KnownGapAggregate {
             tasks: gaps.len(),
-            full_recall_tasks: gaps
-                .iter()
-                .filter(|task| task.gold_files_found == task.gold_files)
-                .count(),
+            full_recall_tasks: gaps.iter().filter(|task| task.full_recall()).count(),
             mean_recall: mean(gaps.iter().map(|task| task.recall)),
         };
         Self {
@@ -423,6 +501,7 @@ mod tests {
             id: id.to_owned(),
             task: "How does it work?".to_owned(),
             gold_files: gold_files.iter().map(|gold| (*gold).to_owned()).collect(),
+            gold_symbols: Vec::new(),
             expect_ready: gold_files.is_empty().then_some(false),
             known_gap: None,
         }
@@ -442,6 +521,31 @@ mod tests {
         assert_eq!(outcome.recall, 0.5);
         assert_eq!(outcome.precision, 0.5);
         assert!(!outcome.false_ready);
+    }
+
+    #[test]
+    fn test_score_evidence_requires_each_gold_symbol_not_only_its_file() {
+        let mut raised = task("raised", &["a.rs"]);
+        raised.gold_symbols = vec!["a.rs::Queue::reject".to_owned()];
+
+        let file_only = score_evidence(&raised, &[("a.rs", "Queue::describe")], 10, true);
+        let with_symbol = score_evidence(
+            &raised,
+            &[("a.rs", "Queue::describe"), ("a.rs", "Queue::reject")],
+            10,
+            true,
+        );
+
+        assert_eq!(file_only.gold_files_found, 1);
+        assert_eq!(file_only.gold_symbols_found, 0);
+        assert_eq!(file_only.missing_gold_symbols, ["a.rs::Queue::reject"]);
+        assert_eq!(file_only.recall, 0.5);
+        assert!(file_only.false_ready);
+        assert_eq!(with_symbol.recall, 1.0);
+        assert!(with_symbol.missing_gold_symbols.is_empty());
+        assert!(!with_symbol.false_ready);
+        let report = RetrievalReport::from_outcomes(1600, 1, vec![file_only]);
+        assert_eq!(report.aggregate.full_recall_tasks, 0);
     }
 
     #[test]
