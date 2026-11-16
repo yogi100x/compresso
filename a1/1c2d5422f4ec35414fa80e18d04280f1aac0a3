@@ -1,0 +1,129 @@
+fixtures/corpus.toml
+  s_89a704cfae63f5::t_ad5a531954ba9a 122-127
+fixtures/retrieval/repo/storage/blobs.py
+  s_89a704cfae63f5::t_3faadfde6438c7 1-39
+rust/compresso-eval/src/fixtures.rs
+  s_89a704cfae63f5::t_d9fa1b8558746c 14-15,32-33,313-317,356
+decisions.md
+  s_89a704cfae63f5::t_6932a504eb1372 110
+docs/plan/06-fixtures.md
+  s_89a704cfae63f5::t_6932a504eb1372 137,215-218,1181-1270
+fixtures/retrieval/repo/engine/src/payload.rs
+  s_89a704cfae63f5::t_5bb7658a56d724 1-32
+fixtures/retrieval/repo/cli/src/config.ts
+  s_89a704cfae63f5::t_3faadfde6438c7 1-23
+fixtures/retrieval/repo/auth/src/rateLimiter.test.ts
+  s_89a704cfae63f5::t_3faadfde6438c7 1-17
+fixtures/retrieval/repo/engine/src/dead_letter.rs
+  s_89a704cfae63f5::t_5bb7658a56d724 1-32
+fixtures/retrieval/repo/engine/src/lib.rs
+  s_89a704cfae63f5::t_5bb7658a56d724 1-12
+fixtures/retrieval/repo/engine/src/errors.rs
+  s_89a704cfae63f5::t_5bb7658a56d724 1-31
+fixtures/retrieval/repo/auth/src/errors.ts
+  s_89a704cfae63f5::t_3faadfde6438c7 1-29
+fixtures/retrieval/repo/engine/src/worker.rs
+  s_89a704cfae63f5::t_5bb7658a56d724 1-18,20-24,26-31,35-38
+  s_89a704cfae63f5::t_1663f4619f054e 19,25
+  s_89a704cfae63f5::t_7d0f90840399fc 32-34
+fixtures/retrieval/repo/auth/src/sessions.ts
+  s_89a704cfae63f5::t_3faadfde6438c7 1-32
+fixtures/retrieval/repo/cli/src/main.ts
+  s_89a704cfae63f5::t_3faadfde6438c7 1-38
+fixtures/retrieval/repo/engine/src/metrics.rs
+  s_89a704cfae63f5::t_5bb7658a56d724 1-35
+fixtures/retrieval/repo/storage/tests/test_blobs.py
+  s_89a704cfae63f5::t_3faadfde6438c7 1-34
+fixtures/retrieval/repo/engine/src/rate_limit.rs
+  s_89a704cfae63f5::t_5bb7658a56d724 1-37
+rust/compresso-eval/tests/retrieval.rs
+  s_89a704cfae63f5::t_8b4bad1133bcde 1-218
+fixtures/retrieval/repo/engine/src/scheduler.rs
+  s_89a704cfae63f5::t_5bb7658a56d724 1-29
+fixtures/retrieval/repo/engine/src/config.rs
+  s_89a704cfae63f5::t_5bb7658a56d724 1-36
+fixtures/retrieval/repo/auth/src/tokens.ts
+  s_89a704cfae63f5::t_3faadfde6438c7 1-36
+fixtures/retrieval/repo/cli/src/output.ts
+  s_89a704cfae63f5::t_3faadfde6438c7 1-19
+fixtures/retrieval/repo/engine/src/retry.rs
+  s_89a704cfae63f5::t_5bb7658a56d724 1-22
+fixtures/retrieval/repo/auth/src/permissions.ts
+  s_89a704cfae63f5::t_3faadfde6438c7 1-19
+rust/compresso-eval/src/cli.rs
+  s_89a704cfae63f5::t_d9fa1b8558746c 428
+fixtures/retrieval/repo/cli/src/transport.ts
+  s_89a704cfae63f5::t_3faadfde6438c7 1-18
+fixtures/retrieval/repo/cli/src/commands/enqueue.ts
+  s_89a704cfae63f5::t_3faadfde6438c7 1-28
+fixtures/retrieval/repo/storage/file_reader.py
+  s_89a704cfae63f5::t_3faadfde6438c7 1-23
+fixtures/retrieval/repo/storage/errors.py
+  s_89a704cfae63f5::t_3faadfde6438c7 1-24
+fixtures/retrieval/repo/storage/retention.py
+  s_89a704cfae63f5::t_3faadfde6438c7 1-24
+fixtures/retrieval/repo/engine/tests/queue_test.rs
+  s_89a704cfae63f5::t_5bb7658a56d724 1-35
+fixtures/retrieval/repo/storage/manifest.py
+  s_89a704cfae63f5::t_3faadfde6438c7 1-16
+fixtures/retrieval/repo/storage/tests/test_retention.py
+  s_89a704cfae63f5::t_3faadfde6438c7 1-15
+rust/compresso-eval/src/campaign/report.rs
+  s_89a704cfae63f5::t_d9fa1b8558746c 84
+fixtures/retrieval/repo/engine/src/lease.rs
+  s_89a704cfae63f5::t_5bb7658a56d724 1-37
+rust/compresso-eval/src/lib.rs
+  s_89a704cfae63f5::t_d9fa1b8558746c 10,19,22-25
+fixtures/retrieval/tasks.toml
+  s_89a704cfae63f5::t_b7a99a11fc780b 1-123
+rust/compresso-eval/tests/corpus_integrity.rs
+  s_89a704cfae63f5::t_ad5a531954ba9a 39-48,208-219
+  s_89a704cfae63f5::t_95d13aa8e204a5 220-221
+fixtures/retrieval/repo/cli/src/commands/status.ts
+  s_89a704cfae63f5::t_3faadfde6438c7 1-21
+fixtures/retrieval/repo/engine/src/server.rs
+  s_89a704cfae63f5::t_5bb7658a56d724 1-46
+rust/compresso-eval/tests/runner.rs
+  s_89a704cfae63f5::t_d9fa1b8558746c 121,177,243
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_6932a504eb1372 3019-3036,3083-3085
+rust/compresso-eval/src/gates.rs
+  s_89a704cfae63f5::t_c678521b8d83f7 8,23,56-65,121-124,133,147-148,185,225-227,288-298,303-341,423-426,436,448,458,517
+  s_89a704cfae63f5::t_8b4bad1133bcde 549-689
+fixtures/retrieval/repo/storage/settings.py
+  s_89a704cfae63f5::t_3faadfde6438c7 1-26
+fixtures/retrieval/repo/auth/src/rateLimiter.ts
+  s_89a704cfae63f5::t_3faadfde6438c7 1-25
+fixtures/retrieval/repo/auth/src/server.ts
+  s_89a704cfae63f5::t_3faadfde6438c7 1-33
+fixtures/retrieval/repo/engine/src/queue.rs
+  s_89a704cfae63f5::t_5bb7658a56d724 1-54
+fixtures/retrieval/repo/auth/src/passwordHash.ts
+  s_89a704cfae63f5::t_3faadfde6438c7 1-25
+rust/compresso-eval/src/retrieval.rs
+  s_89a704cfae63f5::t_45b908014e17b6 1-132,135-136,138-148,152-240,244-500
+  s_89a704cfae63f5::t_8b4bad1133bcde 133-134,137,149-151,241-243
+docs/plan/gates.toml
+  s_89a704cfae63f5::t_c678521b8d83f7 22-23
+  s_89a704cfae63f5::t_8b4bad1133bcde 24-32
+fixtures/retrieval/repo/auth/src/tokens.test.ts
+  s_89a704cfae63f5::t_3faadfde6438c7 1-15
+rust/compresso-eval/src/runner.rs
+  s_89a704cfae63f5::t_d9fa1b8558746c 19,34-36,146,196,202,649-650,654,677
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a11c2d5422f4ec35414fa80e18d04280f1aac0a3",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
