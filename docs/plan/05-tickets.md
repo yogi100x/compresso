@@ -3079,6 +3079,18 @@ Test cases:
 - `test_score_evidence_requires_each_gold_symbol_not_only_its_file`: gold-symbol scoring.
 - `test_committed_retrieval_corpus_passes_committed_gates`, `test_gates_toml_retrieval_thresholds_match_d86`: 22 gated gold tasks against the raised threshold.
 
+
+### [x] E17-21: One malformed import cannot abort a repository index
+Owner: R2 · Estimate: 0.5d · Depends: E3-04
+Files: rust/compresso-atlas/src/parsers.rs, rust/compresso-atlas/tests/parsers_python.rs, rust/compresso-atlas/tests/indexer_incremental.rs
+Description: Parser error recovery can yield an import whose module name is a zero-width placeholder (a Python file containing `import ,`). The empty edge target was rejected by the store (`edge to_path must not be empty`) and `compresso index` failed for the whole repository with `index_failed`; found indexing a public 7,788-file repository whose parser test corpus contains such a file. Imports that name nothing are dropped at extraction, for every language. No parser version bump: a repository holding such a file could not be indexed before, so no stored index changes meaning.
+Acceptance criteria:
+- A repository containing a source file whose import statement has no module name indexes successfully; the other imports in that file are still recorded.
+- No extracted import has an empty or whitespace-only `raw` value.
+Test cases:
+- `test_python_import_with_no_module_name_is_not_extracted`: `import ,\nimport x, y,\n` extracts exactly `x` and `y`.
+- `test_index_survives_python_import_statement_with_no_module_name`: the fixture repository plus that file indexes nine files and records the file's named imports as unresolved edges.
+
 ## Execution order (flat, dependency-ordered)
 
 Slice: E1-01, E1-02, E1-03, E1-04, E1-05, E1-06, E2-01, E2-02, E2-02a, E3-01, E2-03, E3-02, E3-03, E2-04, E2-05, E2-06, E2-07, E2-08, E2-12, E2-13, E2-14, E3-04, E3-05, E3-06, E3-07, E3-08, E2-09, E7-01, E7-07, E2-10, E2-11, E3-09, E7-02, E3-10, E3-11, E3-12, E4-01, E4-02, E4-03, E4-04, E4-05, E5-01, E5-02, E5-03, E5-04, E5-05, E5-06, E2-15, E7-03, E7-04, E7-05, E7-06, E5-07, E6-01, E6-02, E6-03, E6-04, E6-05.
@@ -3125,6 +3137,6 @@ Parallelism notes:
 | E14 IP & secure deployment | 17 | 39 | ~8 wk | +E15 threat/sandbox gates |
 | E15 Clean-room advanced capabilities | 34 | 121.5 | ~24.5 engineer-wk | A-F incremental; G deferred |
 | E16 Full-product completion | 16 | 59 | ~12 engineer-wk, dependency-phased | |
-| E17 Session continuity & hardening | 20 | 42 | ~8.4 engineer-wk | E17-01..10 delivered 2026-11-14, E17-16 2026-11-15, E17-17, E17-18, E17-19, and E17-20 2026-11-16; E17-11..15 open |
+| E17 Session continuity & hardening | 21 | 42.5 | ~8.5 engineer-wk | E17-01..10 delivered 2026-11-14, E17-16 2026-11-15, E17-17, E17-18, E17-19, E17-20, and E17-21 2026-11-16; E17-11..15 open |
 | **Post-slice + PB total** | **174** | **504 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
-| **Grand total** | **232** | **600 gross** | **~120.0 engineer-wk** | |
+| **Grand total** | **233** | **600.5 gross** | **~120.1 engineer-wk** | |
