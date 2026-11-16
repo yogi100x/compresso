@@ -760,6 +760,48 @@ fn test_plan_context_content_scan_reads_text_files_only_when_the_task_asks_for_d
     );
 }
 
+#[test]
+fn test_plan_context_content_scan_work_stays_linear_on_one_very_long_line() {
+    let fixture = Fixture::new();
+    // One 400 KiB line repeating the scanned word, outside every symbol: each
+    // match must not rescan the line from its start.
+    let long_line = "sigterm ".repeat(50_000);
+    let source = format!("// {long_line}\nfn drain() {{ stop(); }}\n");
+    fixture.write_indexed_file(
+        "src/drain.rs",
+        &source,
+        &[symbol(
+            "drain",
+            "drain",
+            SymbolKind::Function,
+            "fn drain()",
+            2,
+            2,
+        )],
+    );
+
+    let started = std::time::Instant::now();
+    let plan = plan_context(
+        &fixture.store,
+        fixture.repo,
+        "where is sigterm handled while draining",
+        1_600,
+    )
+    .expect("context should plan");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "scanning one long line took {elapsed:?}; work must be linear in file size"
+    );
+    assert!(
+        plan.symbol_bodies
+            .iter()
+            .all(|body| !body.content.contains("sigterm")),
+        "a line outside every symbol is never evidence"
+    );
+}
+
 struct Fixture {
     _temp: TempDir,
     root: PathBuf,

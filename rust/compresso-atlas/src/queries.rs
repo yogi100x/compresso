@@ -1380,24 +1380,28 @@ fn scan_content_terms(
         let mut starts = None;
         let mut symbols = None;
         for (term, found) in terms.iter().zip(&mut term_hits) {
-            let mut checked_line = None;
+            // End of the last line examined. Matches arrive in ascending
+            // offset order, so a match before it lies on that line, and the
+            // search for a line start never looks behind it: each byte is
+            // visited a bounded number of times however long a line is.
+            let mut examined_end = 0_usize;
             for (offset, _) in lowercase.match_indices(term.anchor.as_str()) {
                 if content_term_saturated(term, found) || fresh == Some(false) {
                     break;
                 }
-                let bytes = lowercase.as_bytes();
-                let start = bytes[..offset]
-                    .iter()
-                    .rposition(|byte| *byte == b'\n')
-                    .map_or(0, |newline| newline + 1);
-                if checked_line == Some(start) {
+                if offset < examined_end {
                     continue;
                 }
-                checked_line = Some(start);
+                let bytes = lowercase.as_bytes();
+                let start = bytes[examined_end..offset]
+                    .iter()
+                    .rposition(|byte| *byte == b'\n')
+                    .map_or(examined_end, |newline| examined_end + newline + 1);
                 let end = bytes[offset..]
                     .iter()
                     .position(|byte| *byte == b'\n')
                     .map_or(bytes.len(), |newline| offset + newline);
+                examined_end = end;
                 if !term.matches_line(&source[start..end], &lowercase[start..end]) {
                     continue;
                 }
