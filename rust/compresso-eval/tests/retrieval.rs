@@ -35,7 +35,7 @@ fn test_committed_retrieval_manifest_shape() {
     let corpus = committed_corpus();
 
     assert_eq!(corpus.budget_tokens, 1600);
-    assert!((14..=20).contains(&corpus.tasks.len()));
+    assert_eq!(corpus.tasks.len(), 23);
     let gaps = corpus
         .tasks
         .iter()
@@ -46,7 +46,22 @@ fn test_committed_retrieval_manifest_shape() {
         .iter()
         .filter(|task| task.gold_files.is_empty())
         .count();
-    assert!(gaps >= 2);
+    assert_eq!(gaps, 0, "D85 gates every body-only task");
+    for body_only in [
+        "graceful-shutdown",
+        "upload-checksum",
+        "clock-skew",
+        "reconnect-jitter",
+        "vacuum-statement",
+    ] {
+        assert!(
+            corpus
+                .tasks
+                .iter()
+                .any(|task| task.id == body_only && task.expect_ready == Some(true)),
+            "{body_only} must be a gated body-only task"
+        );
+    }
     assert!(absent >= 2);
 }
 
@@ -61,10 +76,10 @@ fn test_committed_retrieval_corpus_passes_committed_gates() {
     let gates = Gates::load(&gates_path()).expect("committed gates should load");
 
     assert_eq!(retrieval.failure, None);
-    assert_eq!(retrieval.tasks.len(), 20);
-    assert_eq!(retrieval.aggregate.tasks, 18);
-    assert_eq!(retrieval.aggregate.gold_tasks, 15);
-    assert_eq!(retrieval.known_gaps.tasks, 2);
+    assert_eq!(retrieval.tasks.len(), 23);
+    assert_eq!(retrieval.aggregate.tasks, 23);
+    assert_eq!(retrieval.aggregate.gold_tasks, 20);
+    assert_eq!(retrieval.known_gaps.tasks, 0);
     assert!(retrieval.aggregate.mean_recall >= gates.retrieval.mean_recall_min);
     assert!(retrieval.aggregate.mean_precision >= gates.retrieval.mean_precision_min);
     assert!(retrieval.aggregate.false_ready <= gates.retrieval.false_ready_max);

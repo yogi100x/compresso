@@ -88,19 +88,40 @@ id = "retention-tests"
 task = "Which tests cover purging expired blobs?"
 gold_files = ["storage/tests/test_retention.py"]
 
-# Known gap: the concept is written only inside a function body. No symbol
-# name, signature, or path carries it, and the planner searches symbol names.
+# Body-only: the concept is written only inside a function body. No symbol
+# name, signature, or path carries it; the planner's content scan finds it.
 [[task]]
 id = "graceful-shutdown"
 task = "Where do we handle SIGTERM for a graceful shutdown?"
 gold_files = ["engine/src/worker.rs"]
-known_gap = "body_only"
+expect_ready = true
 
 [[task]]
 id = "upload-checksum"
 task = "Where is the checksum of an upload verified before it is committed?"
 gold_files = ["storage/blobs.py"]
-known_gap = "body_only"
+expect_ready = true
+
+[[task]]
+id = "clock-skew"
+task = "Where do we allow for clock skew across hosts?"
+gold_files = ["engine/src/liveness.rs"]
+expect_ready = true
+
+[[task]]
+id = "reconnect-jitter"
+task = "Where is jitter used to spread reconnects?"
+gold_files = ["storage/mirror.py"]
+expect_ready = true
+
+# Body-only with a decoy: `execute` is in no symbol name and in more bodies
+# than a specific name query returns (every migration step). It is a common
+# word, not evidence: it must add nothing, or this task's pack floods.
+[[task]]
+id = "vacuum-statement"
+task = "Where do we execute the vacuum statement?"
+gold_files = ["storage/maintenance.py"]
+expect_ready = true
 
 # Absent concepts: nothing in the corpus answers these, so a ready pack would
 # be a false claim.

@@ -1195,8 +1195,11 @@ The corpus is authored for this purpose and is never compiled or executed. It
 contains target symbols, decoys that share one common word with a target
 (`file`, `read`, `error`, `server`, `config`, `limit`, `token`), test files that
 repeat the same words, targets whose concept exists only as a compound
-identifier (`PayloadTooLarge`, `retry_backoff`), and targets whose concept is
-written only inside a function body.
+identifier (`PayloadTooLarge`, `retry_backoff`), targets whose concept is
+written only inside a function body (a compound such as `graceful shutdown`
+or `clock skew`, or a single word such as `checksum` or `jitter`), and a
+body-only target whose task also uses a word found in more bodies than a
+specific query returns (`execute`, in every migration step).
 
 ```toml
 schema_version = 1
@@ -1251,8 +1254,8 @@ is present:
 
 | Gate | Rule | Committed | Measured |
 |---|---|---|---|
-| `retrieval_mean_recall` | `>= mean_recall_min` | 0.95 | 1.0 (15 of 15) |
-| `retrieval_mean_precision` | `>= mean_precision_min` | 0.22 | 0.2557 |
+| `retrieval_mean_recall` | `>= mean_recall_min` | 0.96 | 1.0 (20 of 20) |
+| `retrieval_mean_precision` | `>= mean_precision_min` | 0.30 | 0.3400 |
 | `retrieval_false_ready` | `<= false_ready_max` | 0 | 0 |
 | `retrieval_ready_mismatches` | `<= ready_mismatches_max` | 1 | 1 |
 
@@ -1261,10 +1264,15 @@ symbols, sets `failure` and fails every retrieval row with reason
 `retrieval_not_evaluated`. Thresholds are the measured values minus a small
 margin; raise them when the planner improves, never lower them to pass.
 
-Known gap `body_only`: the index covers symbol names and signatures, so a
-concept written only in a body is unreachable (D83). The two such tasks are
-missed today. When content search lands, remove the marker so they join the
-gated aggregate.
+Body-only tasks (D85): the index covers symbol names and signatures, so a
+concept written only in a body is reached by the planner's bounded content
+scan (04 §`compresso_context`). Five tasks cover it and all are gated:
+`graceful-shutdown` and `upload-checksum` (missed before D85, recall 0),
+`clock-skew`, `reconnect-jitter`, and the decoy `vacuum-statement`. With the
+common-word rule removed the decoy returns 11 evidence items instead of 1 and
+mean precision falls to 0.2945, below the committed floor. No committed task
+carries `known_gap` any more, so `retrieval.known_gaps` reports zero tasks;
+the key stays in the schema for a future measured gap.
 
 Changing any file below `fixtures/retrieval/` requires updating the
 `[retrieval]` pin in `fixtures/corpus.toml` and re-measuring the thresholds.

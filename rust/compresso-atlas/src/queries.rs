@@ -44,6 +44,22 @@ const PLAN_CONTEXT_SCORE_FLOOR_RATIO: f64 = 0.25;
 /// whatever the best hit scored; only single generic-word matches are noise.
 const PLAN_CONTEXT_SPECIFIC_MATCH_SCORE: f64 = 2.0;
 const PLAN_CONTEXT_TEST_PENALTY: f64 = 0.4;
+/// Task concepts with no symbol-name match that one plan searches for in file content.
+const PLAN_CONTEXT_CONTENT_TERMS: usize = 8;
+/// How many of those may be compounds, leaving room for single words.
+const PLAN_CONTEXT_CONTENT_COMPOUND_TERMS: usize = 5;
+/// Symbols the content scan may add to the candidate pool.
+const PLAN_CONTEXT_CONTENT_CANDIDATES: usize = 12;
+/// Largest file the content scan reads. Half the indexer's file-size limit:
+/// hand-written source sits far below it, and what lies above is generated
+/// or data text whose symbols are not useful evidence.
+const PLAN_CONTEXT_CONTENT_MAX_FILE_BYTES: u64 = 512 * 1024;
+/// Hard caps on one content scan. They are counts and bytes, never a clock,
+/// so the same index and files always produce the same plan.
+const PLAN_CONTEXT_CONTENT_MAX_FILES: usize = 2_000;
+const PLAN_CONTEXT_CONTENT_MAX_BYTES: u64 = 32 * 1024 * 1024;
+/// Pool score of a symbol whose body contains an otherwise unmatched task word.
+const PLAN_CONTEXT_CONTENT_WORD_SCORE: f64 = 1.0;
 const REINDEX_HINT: &str = "Repository index is stale; run `compresso index` and retry.";
 
 /// A deterministic, token-budgeted structural summary of an indexed repository.
@@ -206,6 +222,9 @@ pub struct ContextPlan {
     pub tokens_used: usize,
     pub token_provider: TokenProvider,
     pub truncated: bool,
+    /// The content scan stopped at its file or byte cap before reading every
+    /// indexed file, so body-only evidence may be missing.
+    pub content_scan_truncated: bool,
 }
 
 impl ContextPlan {
@@ -834,8 +853,13 @@ pub fn plan_context(
 ) -> Result<ContextPlan, AtlasError> {
     let counter = counter_for(TokenProvider::OpenAiO200k);
     let mut concepts = TaskConcepts::parse(task);
-    let (search_queries, pool, matches_total, search_truncated) =
-        search_task_concepts(store, repo, task, &mut concepts)?;
+    let ConceptSearch {
+        search_queries,
+        pool,
+        matches_total,
+        truncated: search_truncated,
+        content_scan_truncated,
+    } = search_task_concepts(store, repo, task, &mut concepts)?;
 
     // Read each pooled symbol once: the body both ranks the hit by what the
     // code contains and becomes its evidence excerpt.
@@ -996,6 +1020,7 @@ pub fn plan_context(
     let task_concepts_covered = task_concepts_total - uncovered_concepts.len();
     let tokens_used = counter.count(&rendered);
     let truncated = search_truncated
+        || content_scan_truncated
         || map.truncated
         || included_map.is_none()
         || symbol_bodies.len() < candidate_bodies.len();
@@ -1018,7 +1043,17 @@ pub fn plan_context(
         tokens_used,
         token_provider: counter.provider(),
         truncated,
+        content_scan_truncated,
     })
+}
+
+/// What the symbol-name queries and the content scan found for one task.
+struct ConceptSearch {
+    search_queries: Vec<String>,
+    pool: Vec<RankedHit>,
+    matches_total: usize,
+    truncated: bool,
+    content_scan_truncated: bool,
 }
 
 /// One pooled search hit with its cross-query score and its position in the
@@ -1046,7 +1081,7 @@ fn search_task_concepts(
     repo: RepoId,
     task: &str,
     concepts: &mut TaskConcepts,
-) -> Result<(Vec<String>, Vec<RankedHit>, usize, bool), AtlasError> {
+) -> Result<ConceptSearch, AtlasError> {
     let search_queries = task_search_queries(task);
     let text_requested = task_requests_text_evidence(task);
     let mut exclude_text = !text_requested;
@@ -1095,11 +1130,25 @@ fn search_task_concepts(
         } else {
             0.25
         };
+        compound.name_hits = matched.len();
         for hit in matched {
             *scores.entry(hit_identity(&hit)).or_default() += compound.weight();
             compound_hits.push(hit);
         }
     }
+
+    // A concept no symbol is named after can still be written in a body:
+    // look for those, and only those, in the indexed files themselves.
+    let terms = unresolved_content_terms(
+        store,
+        repo,
+        concepts,
+        &search_queries,
+        &query_hits,
+        exclude_text,
+    )?;
+    let scan = scan_content_terms(store, repo, &terms, text_requested, concepts)?;
+    concepts.content_words = scan.words;
 
     // Interleave queries by rank so one broad concept cannot crowd every
     // other task concept out of the bounded context pack. Only the leading
@@ -1131,6 +1180,15 @@ fn search_task_concepts(
             matches_total += 1;
         }
     }
+    let mut content_hits = BTreeSet::new();
+    for (hit, score) in scan.candidates {
+        *scores.entry(hit_identity(&hit)).or_default() += score;
+        content_hits.insert(hit_identity(&hit));
+        if seen.insert(hit_identity(&hit)) {
+            merged.push(hit);
+            matches_total += 1;
+        }
+    }
 
     let truncated = source_truncated || matches_total > PLAN_CONTEXT_SEARCH_LIMIT;
     let mut pool = merged
@@ -1148,8 +1206,343 @@ fn search_task_concepts(
             .total_cmp(&left.score)
             .then(left.order.cmp(&right.order))
     });
-    pool.truncate(PLAN_CONTEXT_RERANK_POOL);
-    Ok((search_queries, pool, matches_total, truncated))
+    // Content candidates are already capped and known to contain a task
+    // concept, so the name-hit bound does not drop them.
+    let mut name_hits = 0;
+    pool.retain(|ranked| {
+        if content_hits.contains(&hit_identity(&ranked.hit)) {
+            return true;
+        }
+        name_hits += 1;
+        name_hits <= PLAN_CONTEXT_RERANK_POOL
+    });
+    Ok(ConceptSearch {
+        search_queries,
+        pool,
+        matches_total,
+        truncated,
+        content_scan_truncated: scan.truncated,
+    })
+}
+
+/// One task concept searched for in file content because no symbol name,
+/// qualified name, or signature matched it.
+struct ContentTerm {
+    /// Lowercase text to find: a compound's separator-free spelling, or one word.
+    needle: String,
+    /// Lowercase text every matching line contains: the compound's first
+    /// word, or the word's shortest spelling.
+    anchor: String,
+    compound: bool,
+    /// Pool score of a symbol containing the term, before breadth scaling.
+    score: f64,
+}
+
+impl ContentTerm {
+    /// `line` is one source line that contains the anchor, and
+    /// `lowercase_line` the same line in ASCII lowercase.
+    fn matches_line(&self, line: &str, lowercase_line: &str) -> bool {
+        if self.compound {
+            squeeze_separators(lowercase_line).contains(&self.needle)
+        } else {
+            line_spells_word(line, &self.needle)
+        }
+    }
+}
+
+/// The concepts the content scan looks for, at most
+/// `PLAN_CONTEXT_CONTENT_TERMS`: compounds first, then salient words, each in
+/// task order.
+fn unresolved_content_terms(
+    store: &Store,
+    repo: RepoId,
+    concepts: &TaskConcepts,
+    search_queries: &[String],
+    query_hits: &[Vec<SearchHit>],
+    exclude_text: bool,
+) -> Result<Vec<ContentTerm>, AtlasError> {
+    let mut terms = Vec::new();
+    // A compound that names a few symbols is a proven identifier whose other
+    // uses sit in bodies; one that names none is only a guess at one.
+    let named = concepts
+        .compounds
+        .iter()
+        .filter(|compound| compound.name_hits > 0 && compound.specificity >= 1.0);
+    // Shorter guesses first: whatever spells a three-word compound also
+    // spells the two-word compounds inside it.
+    let unnamed = [2, 3].into_iter().flat_map(|words| {
+        concepts
+            .compounds
+            .iter()
+            .filter(move |compound| compound.name_hits == 0 && compound.words == words)
+    });
+    for compound in named
+        .chain(unnamed)
+        .take(PLAN_CONTEXT_CONTENT_COMPOUND_TERMS)
+    {
+        terms.push(ContentTerm {
+            needle: compound.joined.clone(),
+            anchor: compound.leading.clone(),
+            compound: true,
+            score: compound.weight() * 0.75,
+        });
+    }
+    for word in &concepts.salient {
+        if terms.len() >= PLAN_CONTEXT_CONTENT_TERMS {
+            break;
+        }
+        let singular = singular_context_term(word);
+        let mut named = false;
+        for spelling in std::iter::once(word).chain(singular.as_ref()) {
+            named |= match search_queries.iter().position(|query| query == spelling) {
+                Some(index) => !query_hits[index].is_empty(),
+                None => !context_scoring_hits(store, repo, spelling, exclude_text)?.is_empty(),
+            };
+        }
+        if !named {
+            terms.push(ContentTerm {
+                needle: word.clone(),
+                anchor: singular.unwrap_or_else(|| word.clone()),
+                compound: false,
+                score: PLAN_CONTEXT_CONTENT_WORD_SCORE,
+            });
+        }
+    }
+    terms.truncate(PLAN_CONTEXT_CONTENT_TERMS);
+    Ok(terms)
+}
+
+/// Symbols whose bodies contain an unresolved task concept.
+#[derive(Default)]
+struct ContentScan {
+    /// Best-scored first; at most `PLAN_CONTEXT_CONTENT_CANDIDATES`.
+    candidates: Vec<(SearchHit, f64)>,
+    /// Scanned single words that produced a candidate.
+    words: Vec<String>,
+    /// A file or byte cap ended the scan before every indexed file was read.
+    truncated: bool,
+}
+
+/// Searches the bound repository's indexed files for `terms` and maps every
+/// matching line to the smallest indexed symbol containing it.
+///
+/// Read-only and deterministic: files come from the index in path order and
+/// the scan stops at count and byte caps, never at a deadline. Secret paths,
+/// text files the task did not ask for, files above the per-file cap, files
+/// that changed since indexing, and files that cannot be read as UTF-8 below
+/// the repository root are skipped. Lines outside every symbol are ignored.
+fn scan_content_terms(
+    store: &Store,
+    repo: RepoId,
+    terms: &[ContentTerm],
+    include_text: bool,
+    concepts: &TaskConcepts,
+) -> Result<ContentScan, AtlasError> {
+    let mut scan = ContentScan::default();
+    if terms.is_empty() {
+        return Ok(scan);
+    }
+    let repository = store.repository(repo)?;
+    let Ok(root) = canonical_query_root(&repository.root) else {
+        return Ok(scan);
+    };
+    let mut hits = Vec::<SearchHit>::new();
+    // What the planner's body rerank will add for each hit, so the candidate
+    // cap keeps the symbols it would rank highest.
+    let mut body_scores = Vec::<f64>::new();
+    let mut term_hits = vec![Vec::<usize>::new(); terms.len()];
+    let mut files_scanned = 0_usize;
+    let mut bytes_read = 0_u64;
+    for record in store.indexed_files(repo)? {
+        if record.language.is_none()
+            || (record.language == Some(FileLanguage::Text) && !include_text)
+            || record.size_bytes > PLAN_CONTEXT_CONTENT_MAX_FILE_BYTES
+            || is_secret_path(Path::new(&record.path))
+        {
+            continue;
+        }
+        if files_scanned == PLAN_CONTEXT_CONTENT_MAX_FILES
+            || bytes_read >= PLAN_CONTEXT_CONTENT_MAX_BYTES
+        {
+            scan.truncated = true;
+            break;
+        }
+        files_scanned += 1;
+        let Ok(ResolvedEntry::File(path)) = resolve_under_root(&root, &record.path) else {
+            continue;
+        };
+        let Ok(source) = read_utf8_capped(&path, PLAN_CONTEXT_CONTENT_MAX_FILE_BYTES) else {
+            continue;
+        };
+        bytes_read = bytes_read.saturating_add(u64::try_from(source.len()).unwrap_or(u64::MAX));
+        let lowercase = source.to_ascii_lowercase();
+        let mut fresh = None;
+        let mut starts = None;
+        let mut symbols = None;
+        for (term, found) in terms.iter().zip(&mut term_hits) {
+            let mut checked_line = None;
+            for (offset, _) in lowercase.match_indices(term.anchor.as_str()) {
+                if content_term_saturated(term, found) || fresh == Some(false) {
+                    break;
+                }
+                let bytes = lowercase.as_bytes();
+                let start = bytes[..offset]
+                    .iter()
+                    .rposition(|byte| *byte == b'\n')
+                    .map_or(0, |newline| newline + 1);
+                if checked_line == Some(start) {
+                    continue;
+                }
+                checked_line = Some(start);
+                let end = bytes[offset..]
+                    .iter()
+                    .position(|byte| *byte == b'\n')
+                    .map_or(bytes.len(), |newline| offset + newline);
+                if !term.matches_line(&source[start..end], &lowercase[start..end]) {
+                    continue;
+                }
+                // The stored outline maps lines to symbols only for the
+                // bytes that were indexed.
+                let fresh = *fresh.get_or_insert_with(|| {
+                    blake3::hash(source.as_bytes()).to_hex().as_str() == record.hash
+                });
+                if !fresh {
+                    break;
+                }
+                let starts = starts.get_or_insert_with(|| line_starts(&source));
+                let index = starts.partition_point(|&line_start| line_start <= start) - 1;
+                let symbols = match &symbols {
+                    Some(symbols) => symbols,
+                    None => symbols.insert(store.symbols_in_file(repo, &record.path)?),
+                };
+                let line_number = u32::try_from(index + 1).unwrap_or(u32::MAX);
+                let Some(symbol) = smallest_enclosing_symbol(symbols, line_number) else {
+                    continue;
+                };
+                let hit = hits
+                    .iter()
+                    .position(|known| {
+                        known.path == record.path && same_symbol(&known.symbol, symbol)
+                    })
+                    .unwrap_or_else(|| {
+                        let body =
+                            source_line_range(&source, &path, symbol.start_line, symbol.end_line);
+                        body_scores.push(body.map_or(0.0, |body| concepts.body_score(body)));
+                        hits.push(SearchHit {
+                            path: record.path.clone(),
+                            language: record.language,
+                            symbol: symbol.clone(),
+                            score: 0.0,
+                        });
+                        hits.len() - 1
+                    });
+                if !found.contains(&hit) {
+                    found.push(hit);
+                }
+            }
+        }
+    }
+
+    let mut scores = vec![0.0_f64; hits.len()];
+    for (term, found) in terms.iter().zip(&term_hits) {
+        let breadth = if found.len() <= PLAN_CONTEXT_HITS_PER_QUERY {
+            1.0
+        } else if content_term_saturated(term, found) {
+            continue;
+        } else if found.len() <= PLAN_CONTEXT_HITS_PER_QUERY * 2 {
+            0.5
+        } else {
+            0.25
+        };
+        if !term.compound && !found.is_empty() {
+            scan.words.push(term.needle.clone());
+        }
+        for &hit in found {
+            scores[hit] += term.score * breadth;
+        }
+    }
+    // Rank as the planner will: test code yields to the code it tests.
+    let mut ranked = hits
+        .into_iter()
+        .zip(scores.into_iter().zip(body_scores))
+        .filter(|(_, (score, _))| *score > 0.0)
+        .map(|(hit, (score, body_score))| {
+            let mut rank = score + body_score;
+            if !concepts.wants_tests && is_test_hit(&hit) {
+                rank *= PLAN_CONTEXT_TEST_PENALTY;
+            }
+            (rank, hit, score)
+        })
+        .collect::<Vec<_>>();
+    ranked.sort_by(|left, right| {
+        right
+            .0
+            .total_cmp(&left.0)
+            .then_with(|| left.1.path.cmp(&right.1.path))
+            .then_with(|| left.1.symbol.start_line.cmp(&right.1.symbol.start_line))
+            .then_with(|| left.1.symbol.end_line.cmp(&right.1.symbol.end_line))
+            .then_with(|| {
+                left.1
+                    .symbol
+                    .qualified_name
+                    .cmp(&right.1.symbol.qualified_name)
+            })
+    });
+    ranked.truncate(PLAN_CONTEXT_CONTENT_CANDIDATES);
+    scan.candidates = ranked
+        .into_iter()
+        .map(|(_, hit, score)| (hit, score))
+        .collect();
+    Ok(scan)
+}
+
+/// A single word found in more symbols than a specific name query returns is
+/// a common word, not evidence: it stops being collected and adds nothing.
+fn content_term_saturated(term: &ContentTerm, found: &[usize]) -> bool {
+    !term.compound && found.len() > PLAN_CONTEXT_HITS_PER_QUERY
+}
+
+/// Whether `line` spells `word`, or its singular or plural, as a whole word:
+/// alone, or as one part of a `snake_case`, `kebab-case`, or `camelCase`
+/// identifier. `one` is not spelled by `done`, nor `check` by `checksum`.
+fn line_spells_word(line: &str, word: &str) -> bool {
+    let singular = singular_context_term(word);
+    let spelled = |part: &str| {
+        let part = part.to_ascii_lowercase();
+        part == word
+            || singular.as_deref() == Some(part.as_str())
+            || singular_context_term(&part).as_deref() == Some(word)
+    };
+    line.split(|character: char| !character.is_alphanumeric())
+        .filter(|chunk| !chunk.is_empty())
+        .any(|chunk| {
+            // Split `verifyChecksum` and `HTTPServer` where the case turns.
+            let characters = chunk.char_indices().collect::<Vec<_>>();
+            let mut start = 0;
+            for window in 1..characters.len() {
+                let (offset, current) = characters[window];
+                let previous = characters[window - 1].1;
+                let next_is_lower = characters
+                    .get(window + 1)
+                    .is_some_and(|(_, next)| next.is_lowercase());
+                let boundary = current.is_uppercase()
+                    && (previous.is_lowercase() || (previous.is_uppercase() && next_is_lower));
+                if boundary {
+                    if spelled(&chunk[start..offset]) {
+                        return true;
+                    }
+                    start = offset;
+                }
+            }
+            spelled(&chunk[start..]) || (start > 0 && spelled(chunk))
+        })
+}
+
+fn smallest_enclosing_symbol(symbols: &[SymbolRecord], line: u32) -> Option<&SymbolRecord> {
+    symbols
+        .iter()
+        .filter(|symbol| symbol.start_line <= line && line <= symbol.end_line)
+        .min_by_key(|symbol| symbol.end_line - symbol.start_line)
 }
 
 fn context_scoring_hits(
@@ -1177,6 +1570,9 @@ fn context_scoring_hits(
 struct TaskConcepts {
     compounds: Vec<TaskCompound>,
     salient: Vec<String>,
+    /// Salient words no symbol is named after that the content scan found in
+    /// a symbol body.
+    content_words: Vec<String>,
     wants_tests: bool,
 }
 
@@ -1186,7 +1582,11 @@ struct TaskCompound {
     /// Lowercase words joined without separators, compared against
     /// separator-free lowercase source text.
     joined: String,
+    /// First word of the compound; any line spelling the compound contains it.
+    leading: String,
     words: usize,
+    /// Symbols whose name, qualified name, or signature spell the compound.
+    name_hits: usize,
     /// 1.0 for a compound naming few symbols, less for one naming many.
     specificity: f64,
 }
@@ -1251,7 +1651,9 @@ impl TaskConcepts {
                 compounds.push(TaskCompound {
                     queries: vec![joined.clone(), window.join("_")],
                     joined,
+                    leading: window[0].clone(),
                     words: size,
+                    name_hits: 0,
                     specificity: 1.0,
                 });
             }
@@ -1259,6 +1661,7 @@ impl TaskConcepts {
         Self {
             compounds,
             salient,
+            content_words: Vec::new(),
             wants_tests,
         }
     }
@@ -1282,16 +1685,21 @@ impl TaskConcepts {
         compound_score + (salient_matches.min(6) as f64) * 0.5
     }
 
-    /// Index of the first body line containing a compound concept.
+    /// Index of the first body line containing a compound concept, or else
+    /// a word only the content scan found.
     fn focus_line(&self, content: &str) -> Option<usize> {
-        if self.compounds.is_empty() {
-            return None;
-        }
-        content.split_inclusive('\n').position(|line| {
+        let compound_line = content.split_inclusive('\n').position(|line| {
             let squeezed = squeeze_separators(&line.to_lowercase());
             self.compounds
                 .iter()
                 .any(|compound| compound.specificity >= 1.0 && squeezed.contains(&compound.joined))
+        });
+        compound_line.or_else(|| {
+            content.split_inclusive('\n').position(|line| {
+                self.content_words
+                    .iter()
+                    .any(|word| line_spells_word(line, word))
+            })
         })
     }
 
@@ -2263,7 +2671,10 @@ fn render_directory(directory: &DirectoryNode, depth: usize, output: &mut String
 mod tests {
     use std::fs;
 
-    use super::{QueryError, STALENESS_HASH_BUFFER_BYTES, content_matches_index, read_utf8_capped};
+    use super::{
+        QueryError, STALENESS_HASH_BUFFER_BYTES, content_matches_index, line_spells_word,
+        read_utf8_capped,
+    };
 
     /// Serves `total` zero bytes and records how it was read.
     struct MeteredZeros {
@@ -2495,6 +2906,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_line_spells_word_matches_whole_identifier_words_only() {
+        for line in [
+            "// 15 is SIGTERM, which asks for a stop",
+            "let sigterm_seen = true;",
+            "onSigtermReceived();",
+            "handle-sigterm",
+        ] {
+            assert!(line_spells_word(line, "sigterm"), "{line}");
+        }
+        assert!(line_spells_word("verify the checksums", "checksum"));
+        assert!(line_spells_word("verifyChecksum(data)", "checksums"));
+        assert!(line_spells_word(
+            "let server = HTTPServer::new();",
+            "server"
+        ));
+        assert!(!line_spells_word("if done { return none; }", "one"));
+        assert!(!line_spells_word("let checksum = digest(data);", "check"));
+        assert!(!line_spells_word("record_completion(now)", "completes"));
     }
 
     #[test]

@@ -2,6 +2,7 @@ pub mod config;
 pub mod dead_letter;
 pub mod errors;
 pub mod lease;
+pub mod liveness;
 pub mod metrics;
 pub mod payload;
 pub mod queue;

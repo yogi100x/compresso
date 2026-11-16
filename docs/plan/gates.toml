@@ -22,10 +22,11 @@ overall_min = 0.99
 
 [retrieval]
 # D84 / 06-fixtures.md §12: gated tasks of fixtures/retrieval/, known_gap tasks excluded.
-# Measured 1.0 on 15 gold tasks; one fully missed task (0.933) fails.
-mean_recall_min = 0.95
-# D84: measured 0.2557; the margin absorbs one extra evidence item per task, not a ranking loss.
-mean_precision_min = 0.22
+# D85: measured 1.0 on 20 gold tasks, body-only tasks included; one fully missed task (0.95) fails.
+mean_recall_min = 0.96
+# D85: measured 0.3400 (D84: 0.2557 on 15 gold tasks, floor 0.22). The margin absorbs one extra
+# evidence item per task; a common body word flooding the decoy task (0.2945) fails.
+mean_precision_min = 0.30
 # D84: a ready pack that lacks a gold file, or answers an absent concept, has zero tolerance.
 false_ready_max = 0
 # D84: measured 1 (role-permission is withheld although its gold file is present).

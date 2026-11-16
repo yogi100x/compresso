@@ -573,11 +573,11 @@ mod tests {
     }
 
     #[test]
-    fn test_gates_toml_retrieval_thresholds_match_d84() {
+    fn test_gates_toml_retrieval_thresholds_match_d85() {
         let gates = Gates::load(&gates_path()).expect("committed gates should load");
 
-        assert_eq!(gates.retrieval.mean_recall_min, 0.95);
-        assert_eq!(gates.retrieval.mean_precision_min, 0.22);
+        assert_eq!(gates.retrieval.mean_recall_min, 0.96);
+        assert_eq!(gates.retrieval.mean_precision_min, 0.30);
         assert_eq!(gates.retrieval.false_ready_max, 0);
         assert_eq!(gates.retrieval.ready_mismatches_max, 1);
     }

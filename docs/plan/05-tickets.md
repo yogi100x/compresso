@@ -3034,6 +3034,27 @@ Test cases:
 - `test_retrieval_corpus_that_was_not_evaluated_fails_closed`, `test_gold_file_without_indexed_symbols_fails_closed`: fail closed.
 - `test_retrieval_report_is_deterministic`, `test_retrieval_corpus_path_hash_and_size`: determinism and corpus lock.
 
+### [x] E17-19: Bounded content scan feeds the context planner
+Owner: R2+PQ · Estimate: 2d · Depends: E17-17, E17-18
+Files: rust/compresso-atlas/src/queries.rs, rust/compresso-atlas/tests/queries_impact_plan.rs, fixtures/retrieval/tasks.toml, fixtures/retrieval/repo/, fixtures/corpus.toml, rust/compresso-eval/src/gates.rs, rust/compresso-eval/tests/retrieval.rs, docs/plan/gates.toml, docs/plan/04-mcp-and-integrations.md, docs/plan/06-fixtures.md, decisions.md
+Description: D85. `plan_context` searches the bound repository's indexed files for task concepts no symbol is named after — at most eight per task: compounds, then salient words whose name query returned nothing — and adds the smallest indexed symbol containing each matching line to the candidate pool, where the D83 ranking, penalty, floor, and readiness rules apply unchanged. The scan is literal, read-only, and bounded by counts and bytes (512 KiB per file, 2,000 files, 32 MiB), never by time. The two `known_gap` retrieval tasks become gated and three body-only tasks, one with a common-word decoy, join the corpus.
+Acceptance criteria:
+- A symbol whose body alone spells a task compound reaches the pack and leads it; one whose body alone contains a salient task word reaches the pack; in both the excerpt shows the matching line.
+- Secret paths, files above the per-file cap, text files for a task that does not ask for documentation, files changed since indexing, and unreadable or non-UTF-8 files are never scanned and never fail the plan; root resolution rejects paths outside the repository as for every other read.
+- Reaching the file or byte cap sets `content_scan_truncated` and `truncated`; there is no wall-clock limit and two runs return equal plans.
+- A single word found in more than eight symbols adds no evidence; an absent-concept task stays not ready.
+- No store write, schema migration, or response field; D83's readiness rule is unchanged.
+- `[retrieval]` thresholds are raised to the new measured values minus a margin and no threshold is lowered.
+Test cases:
+- `test_plan_context_body_only_compound_reaches_the_pack_and_leads_it`: compound in a body, smallest enclosing symbol, centred excerpt, determinism, no store writes.
+- `test_plan_context_body_only_single_word_reaches_the_pack_with_the_matching_line`: single word, centred excerpt, coverage.
+- `test_plan_context_content_scan_never_reads_secret_or_oversize_files`: secret path, file above the cap, missing file.
+- `test_plan_context_content_scan_reads_text_files_only_when_the_task_asks_for_docs`: text files.
+- `test_plan_context_content_scan_file_cap_sets_truncated`: file cap and both flags.
+- `test_plan_context_content_scan_ignores_a_word_common_to_many_bodies`: common-word rule.
+- `test_line_spells_word_matches_whole_identifier_words_only`: whole-word matching.
+- `test_committed_retrieval_corpus_passes_committed_gates`, `test_gates_toml_retrieval_thresholds_match_d85`: 20 gated gold tasks against the raised thresholds.
+
 ## Execution order (flat, dependency-ordered)
 
 Slice: E1-01, E1-02, E1-03, E1-04, E1-05, E1-06, E2-01, E2-02, E2-02a, E3-01, E2-03, E3-02, E3-03, E2-04, E2-05, E2-06, E2-07, E2-08, E2-12, E2-13, E2-14, E3-04, E3-05, E3-06, E3-07, E3-08, E2-09, E7-01, E7-07, E2-10, E2-11, E3-09, E7-02, E3-10, E3-11, E3-12, E4-01, E4-02, E4-03, E4-04, E4-05, E5-01, E5-02, E5-03, E5-04, E5-05, E5-06, E2-15, E7-03, E7-04, E7-05, E7-06, E5-07, E6-01, E6-02, E6-03, E6-04, E6-05.
@@ -3080,6 +3101,6 @@ Parallelism notes:
 | E14 IP & secure deployment | 17 | 39 | ~8 wk | +E15 threat/sandbox gates |
 | E15 Clean-room advanced capabilities | 34 | 121.5 | ~24.5 engineer-wk | A-F incremental; G deferred |
 | E16 Full-product completion | 16 | 59 | ~12 engineer-wk, dependency-phased | |
-| E17 Session continuity & hardening | 18 | 38 | ~7.6 engineer-wk | E17-01..10 delivered 2026-11-14, E17-16 2026-11-15, E17-17 and E17-18 2026-11-16; E17-11..15 open |
-| **Post-slice + PB total** | **172** | **500 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
-| **Grand total** | **230** | **596 gross** | **~119.2 engineer-wk** | |
+| E17 Session continuity & hardening | 19 | 40 | ~8.0 engineer-wk | E17-01..10 delivered 2026-11-14, E17-16 2026-11-15, E17-17, E17-18, and E17-19 2026-11-16; E17-11..15 open |
+| **Post-slice + PB total** | **173** | **502 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
+| **Grand total** | **231** | **598 gross** | **~119.6 engineer-wk** | |
