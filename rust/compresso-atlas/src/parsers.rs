@@ -218,6 +218,12 @@ fn extract_with_query(
     for candidate in candidates {
         process_candidate(candidate, source, &mut extraction);
     }
+    // Error recovery can yield an import whose module name is a zero-width
+    // placeholder (`import ,`). It names nothing, and an empty edge target is
+    // rejected by the store, which would abort the whole repository index.
+    extraction
+        .imports
+        .retain(|import| !import.raw.trim().is_empty());
 
     Ok(extraction)
 }

@@ -464,3 +464,31 @@ fn copy_dir(source: &Path, destination: &Path) {
         }
     }
 }
+
+#[test]
+fn test_index_survives_python_import_statement_with_no_module_name() {
+    let fixture = Fixture::new();
+    // A syntactically invalid import (as found in parser test corpora) must
+    // not abort indexing of the whole repository.
+    fs::write(
+        fixture.root.join("src/broken_import.py"),
+        "import ,\nimport x, y,\n",
+    )
+    .expect("fixture file should be written");
+
+    let report = fixture
+        .indexer()
+        .index(&fixture.root, |_| {})
+        .expect("a malformed import must not fail the index");
+
+    assert_eq!(report.files_indexed, 9);
+    assert!(
+        fixture
+            .store
+            .unresolved_edge_sources(fixture.repo())
+            .expect("unresolved edge sources should load")
+            .iter()
+            .any(|path| path == "src/broken_import.py"),
+        "the named imports on the malformed file's second line are still recorded"
+    );
+}
