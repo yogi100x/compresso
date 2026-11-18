@@ -1,0 +1,34 @@
+rust/compresso-mcp/src/profile.rs
+  s_89a704cfae63f5::t_8c15b7aedcfacf 1-136
+rust/compresso-mcp/tests/tool_profile.rs
+  s_89a704cfae63f5::t_a49db0e56ee473 1-324,326
+  s_89a704cfae63f5::t_d8437e7f77da26 325,327-329
+rust/compresso-mcp/src/server.rs
+  s_89a704cfae63f5::t_205b18d9e5a040 366,390,431,438-478
+  s_89a704cfae63f5::t_7697d2960913f1 275,711-726,728
+  s_89a704cfae63f5::t_e6ecce14d739d6 28,191-192,203,208,215-216,226,273-274,276,284-291,432-437,515,542,570,588,619-622,727
+docs/plan/03-interfaces.md
+  s_89a704cfae63f5::t_6cb58f5abf28c7 459-464
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_a9756ce6fdae84 33-43
+rust/compresso-cli/src/commands/mcp.rs
+  s_89a704cfae63f5::t_dcfc51478d9947 6-8,15,23-24,103,105-106,117-120,122-129,156,187-197,255,267-285
+rust/compresso-mcp/src/lib.rs
+  s_89a704cfae63f5::t_93394d8f361e77 4,11,14-18
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1d328e7583241c8fd2e35810a848344ca49810ba",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
