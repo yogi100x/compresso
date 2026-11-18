@@ -1,3 +1,4 @@
+pub(crate) mod atlas_grep;
 pub(crate) mod atlas_nav;
 pub(crate) mod atlas_read;
 pub(crate) mod common;
@@ -21,6 +22,7 @@ pub(crate) struct ToolSuccess {
 
 pub(crate) fn handles(name: &str) -> bool {
     atlas_nav::handles(name)
+        || atlas_grep::handles(name)
         || atlas_read::handles(name)
         || engine_tools::handles(name)
         || recall::handles(name)
@@ -45,6 +47,9 @@ pub(crate) fn dispatch(
         .map(|repository| repository.id);
     let outcome = if atlas_nav::handles(name) {
         atlas_nav::dispatch(store, repository_root, name, arguments)
+            .and_then(|payload| retrieval_outcome(payload, name, engine.mode(), repository_id))
+    } else if atlas_grep::handles(name) {
+        atlas_grep::dispatch(store, repository_root, arguments)
             .and_then(|payload| retrieval_outcome(payload, name, engine.mode(), repository_id))
     } else if atlas_read::handles(name) {
         atlas_read::dispatch(store, repository_root, name, arguments)

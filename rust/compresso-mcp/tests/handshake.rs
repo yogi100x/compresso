@@ -11,10 +11,11 @@ use tokio::time::timeout;
 
 const IO_TIMEOUT: Duration = Duration::from_secs(3);
 const PROTOCOL_VERSION: &str = "2024-11-05";
-const TOOL_NAMES: [&str; 10] = [
+const TOOL_NAMES: [&str; 11] = [
     "compresso_compress",
     "compresso_context",
     "compresso_explain",
+    "compresso_grep",
     "compresso_impact",
     "compresso_outline",
     "compresso_read",

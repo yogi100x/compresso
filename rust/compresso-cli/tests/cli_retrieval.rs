@@ -327,6 +327,53 @@ fn test_search_multi_word_query_matches_symbols_containing_all_terms() {
 }
 
 #[test]
+fn test_grep_lists_use_sites_per_pattern_and_rejects_invalid_patterns() {
+    let fixture = Fixture::new();
+
+    let (exit, output, errors) = fixture.run_json(&[
+        "grep",
+        "SessionManager",
+        "fn importer",
+        "--path",
+        "src/*.rs",
+        "--root",
+        fixture.root_str(),
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success);
+    assert!(errors.is_null());
+    let results = &output["data"]["results"];
+    assert_eq!(results[0]["pattern"], "SessionManager");
+    assert_eq!(results[0]["files"][0]["path"], "src/session.rs");
+    assert_eq!(results[0]["files"][0]["lines"][0]["line"], 1);
+    assert_eq!(results[1]["files"][0]["path"], "src/importer.rs");
+    assert_eq!(output["data"]["complete"], true);
+
+    let (exit, _, ignored) = fixture.run_json(&[
+        "grep",
+        "sessionmanager",
+        "-i",
+        "--root",
+        fixture.root_str(),
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success);
+    assert!(ignored.is_null());
+
+    let (exit, output, errors) = fixture.run_json(&[
+        "grep",
+        "(",
+        "--regex",
+        "--root",
+        fixture.root_str(),
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Failure);
+    assert!(output.is_null());
+    assert_eq!(errors["error"]["code"], "invalid_arguments");
+}
+
+#[test]
 fn test_malformed_read_range_is_invalid_arguments() {
     let fixture = Fixture::new();
 

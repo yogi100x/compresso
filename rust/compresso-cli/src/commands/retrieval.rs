@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args, ValueEnum};
 use compresso_atlas::{
-    AtlasError, BoundedRead, ContextPlan, QueryError, SearchOptions, UnfoldResult, file_line_count,
-    impact, outline, plan_context, read_bounded, repo_map, search_with_diagnostics, unfold,
+    AtlasError, BoundedRead, ContextPlan, GrepOptions, QueryError, SearchOptions, UnfoldResult,
+    file_line_count, grep, impact, outline, plan_context, read_bounded, repo_map, repository_stale,
+    search_with_diagnostics, unfold,
 };
 use compresso_core::{TokenProvider, counter_for};
 use compresso_store::{
@@ -20,6 +21,9 @@ const DEFAULT_UNFOLD_TOKENS: usize = 4_000;
 const DEFAULT_CONTEXT_TOKENS: usize = 800;
 const DEFAULT_SEARCH_LIMIT: usize = 20;
 const DEFAULT_IMPACT_RESULTS: usize = 100;
+const DEFAULT_GREP_FILES: usize = 20;
+const DEFAULT_GREP_MATCHES_PER_FILE: usize = 5;
+const DEFAULT_GREP_TOKENS: usize = 1_500;
 const MIN_TOKEN_BUDGET: usize = 100;
 const MAX_TOKEN_BUDGET: usize = 100_000;
 
@@ -50,6 +54,34 @@ pub struct SearchArgs {
     pub path: Option<String>,
     #[arg(long, default_value_t = DEFAULT_SEARCH_LIMIT)]
     pub limit: usize,
+    #[command(flatten)]
+    pub output: OutputArgs,
+}
+
+#[derive(Args, Debug)]
+pub struct GrepArgs {
+    /// One to eight patterns, searched in one pass.
+    #[arg(required = true, num_args = 1..)]
+    pub patterns: Vec<String>,
+    #[command(flatten)]
+    pub repository: RepositoryArgs,
+    /// Treat patterns as regular expressions instead of literal text.
+    #[arg(long)]
+    pub regex: bool,
+    /// Match letters in any case.
+    #[arg(long, short = 'i')]
+    pub ignore_case: bool,
+    /// Repository-relative file or directory prefix, or a glob (`*`, `**`, `?`).
+    #[arg(long, value_name = "PATH_OR_GLOB")]
+    pub path: Option<String>,
+    /// Files listed per pattern (1-100).
+    #[arg(long, default_value_t = DEFAULT_GREP_FILES)]
+    pub max_files: usize,
+    /// Matching lines listed per file (1-50).
+    #[arg(long, default_value_t = DEFAULT_GREP_MATCHES_PER_FILE)]
+    pub max_matches_per_file: usize,
+    #[arg(long, default_value_t = DEFAULT_GREP_TOKENS)]
+    pub max_tokens: usize,
     #[command(flatten)]
     pub output: OutputArgs,
 }
@@ -152,6 +184,7 @@ pub(crate) fn execute(
     match command {
         RootCommand::Map(arguments) => execute_map(store, cwd, arguments),
         RootCommand::Search(arguments) => execute_search(store, cwd, arguments),
+        RootCommand::Grep(arguments) => execute_grep(store, cwd, arguments),
         RootCommand::Read(arguments) => execute_read(store, cwd, arguments),
         RootCommand::Outline(arguments) => execute_outline(store, cwd, arguments),
         RootCommand::Unfold(arguments) => execute_unfold(store, cwd, arguments),
@@ -228,6 +261,72 @@ fn execute_search(
         "truncated": false,
     });
     Ok(rendered_pretty(data))
+}
+
+fn execute_grep(
+    store: &Store,
+    cwd: &Path,
+    arguments: GrepArgs,
+) -> Result<Rendered, RetrievalError> {
+    validate_budget(arguments.max_tokens)?;
+    let options = GrepOptions {
+        patterns: &arguments.patterns,
+        regex: arguments.regex,
+        case_insensitive: arguments.ignore_case,
+        path: arguments.path.as_deref(),
+        max_files: arguments.max_files,
+        max_matches_per_file: arguments.max_matches_per_file,
+    };
+    compresso_atlas::validate_grep(&options)
+        .map_err(|error| RetrievalError::invalid(&error.to_string()))?;
+    let repository = resolve_repository(store, arguments.repository.root.as_deref(), cwd)?;
+    let report = grep(store, repository.id, &options).map_err(map_atlas_error)?;
+    let stale = repository_stale(store, repository.id).map_err(map_atlas_error)?;
+    let counter = counter_for(TokenProvider::OpenAiO200k);
+    let report = report.fit_to_budget(arguments.max_tokens, counter);
+    let human = report.render_text();
+    let results = report
+        .results
+        .iter()
+        .map(|result| {
+            json!({
+                "pattern": result.pattern,
+                "matches_total": result.matches_total,
+                "files_total": result.files_total,
+                "files": result.files.iter().map(|file| json!({
+                    "path": file.path,
+                    "matches_total": file.matches_total,
+                    "stale": file.stale,
+                    "lines": file.lines.iter().map(|line| json!({
+                        "line": line.line,
+                        "snippet": line.snippet,
+                        "symbol": line.symbol,
+                        "definition": line.definition,
+                    })).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let data = json!({
+        "mode": if arguments.regex { "regex" } else { "literal" },
+        "case_insensitive": arguments.ignore_case,
+        "path": arguments.path,
+        "results": results,
+        "scan": {
+            "files_in_scope": report.files_in_scope,
+            "files_scanned": report.files_scanned,
+            "files_skipped_oversize": report.files_skipped_oversize,
+            "files_skipped_unreadable": report.files_skipped_unreadable,
+            "stale_files": report.stale_files,
+            "scan_truncated": report.scan_truncated,
+        },
+        "complete": report.complete(),
+        "stale": stale,
+        "tokens_used": counter.count(&human),
+        "token_provider": counter.provider(),
+        "truncated": !report.complete(),
+    });
+    Ok(rendered(data, human))
 }
 
 fn execute_read(
@@ -676,6 +775,7 @@ fn map_atlas_error(error: AtlasError) -> RetrievalError {
         AtlasError::OutsideRoot { .. } => RetrievalError::outside_root(),
         AtlasError::FileNotIndexed { .. } => RetrievalError::not_found(),
         AtlasError::Query(error) => map_query_error(error),
+        AtlasError::Grep(error) => RetrievalError::invalid(&error.to_string()),
         AtlasError::Store(error) => map_store_error(error),
         AtlasError::Scan(_) | AtlasError::Index(_) => RetrievalError::internal(),
     }

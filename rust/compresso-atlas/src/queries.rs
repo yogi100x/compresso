@@ -1850,7 +1850,10 @@ fn line_spells_word(line: &str, word: &str) -> bool {
         })
 }
 
-fn smallest_enclosing_symbol(symbols: &[SymbolRecord], line: u32) -> Option<&SymbolRecord> {
+pub(crate) fn smallest_enclosing_symbol(
+    symbols: &[SymbolRecord],
+    line: u32,
+) -> Option<&SymbolRecord> {
     symbols
         .iter()
         .filter(|symbol| symbol.start_line <= line && line <= symbol.end_line)
@@ -2674,12 +2677,12 @@ fn symbol_identity(path: &str, symbol: &SymbolRecord) -> SymbolIdentity {
     }
 }
 
-enum ResolvedEntry {
+pub(crate) enum ResolvedEntry {
     File(PathBuf),
     Missing,
 }
 
-fn canonical_query_root(root: &Path) -> Result<PathBuf, AtlasError> {
+pub(crate) fn canonical_query_root(root: &Path) -> Result<PathBuf, AtlasError> {
     let canonical = fs::canonicalize(root).map_err(|source| QueryError::CanonicalizeRoot {
         path: root.to_path_buf(),
         source,
@@ -2696,7 +2699,10 @@ fn canonical_query_root(root: &Path) -> Result<PathBuf, AtlasError> {
     Ok(canonical)
 }
 
-fn resolve_under_root(root: &Path, requested: &str) -> Result<ResolvedEntry, AtlasError> {
+pub(crate) fn resolve_under_root(
+    root: &Path,
+    requested: &str,
+) -> Result<ResolvedEntry, AtlasError> {
     if is_secret_path(Path::new(requested)) {
         return Ok(ResolvedEntry::Missing);
     }
@@ -2857,7 +2863,7 @@ fn content_matches_index(
     Ok(total == indexed_size && hasher.finalize().to_hex().as_str() == indexed_hash)
 }
 
-fn read_utf8(path: &Path) -> Result<String, QueryError> {
+pub(crate) fn read_utf8(path: &Path) -> Result<String, QueryError> {
     read_utf8_capped(path, MAX_READ_FILE_BYTES)
 }
 

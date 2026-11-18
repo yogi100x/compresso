@@ -340,6 +340,7 @@ dependencies = [
  "compresso-store",
  "criterion",
  "ignore",
+ "regex",
  "tempfile",
  "thiserror",
  "tree-sitter",
@@ -424,6 +425,7 @@ name = "compresso-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "chrono",
  "compresso-atlas",
  "compresso-core",

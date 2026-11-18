@@ -14,9 +14,10 @@ use serde_json::Value;
 use crate::pricing::{PriceTable, is_plain_model_id};
 
 /// The Compresso MCP tools whose results carry an operation id.
-pub const COMPRESSO_TOOL_NAMES: [&str; 11] = [
+pub const COMPRESSO_TOOL_NAMES: [&str; 12] = [
     "compresso_repo_map",
     "compresso_search",
+    "compresso_grep",
     "compresso_outline",
     "compresso_unfold",
     "compresso_read",
