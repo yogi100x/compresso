@@ -1,0 +1,45 @@
+decisions.md
+  s_89a704cfae63f5::t_0ff09a73e763d1 110
+  s_89a704cfae63f5::t_ea5ea60fc8c438 117
+  s_89a704cfae63f5::t_b541b9f58c98ee 112
+  s_89a704cfae63f5::t_01359ffe35fcf0 111
+  s_89a704cfae63f5::t_8807f2e1afa2e2 113-114,116
+  s_89a704cfae63f5::t_a18c95c68762d9 118-120
+  s_89a704cfae63f5::t_41d1d94cc26be3 121
+  s_89a704cfae63f5::t_03d7eb23e4d88a 115
+docs/plan/03-interfaces.md
+  s_89a704cfae63f5::t_9707cf167f0aff 479
+  s_89a704cfae63f5::t_a128a55e059d33 325
+docs/runbooks/install-local.md
+  s_89a704cfae63f5::t_b0d9798e0d54fe 90-93
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_e18674344185ac 29-33
+  s_89a704cfae63f5::t_df7be89ddb39fb 44
+docs/adr/0034-whole-file-agent-definition-ownership.md
+  s_89a704cfae63f5::t_b8044c49484a04 5
+docs/adr/0033-call-sites-resolved-at-query-time.md
+  s_89a704cfae63f5::t_352a98a46136ca 5-6
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_58e8ea9a66f5a0 2702
+  s_89a704cfae63f5::t_7ad2bc8695808b 3106
+docs/plan/02-schemas.md
+  s_89a704cfae63f5::t_17a91698350ef5 360-364
+docs/adr/0007-mcp-primary-integration-rmcp.md
+  s_89a704cfae63f5::t_ec1e6d513f9593 20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a172499ff1f0efc9ada4008ad20efad4a23c9c50",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
