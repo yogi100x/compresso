@@ -12,6 +12,9 @@ use compresso_store::{
 use crate::AtlasError;
 use crate::parsers::{ParseError, ParserRegistry};
 use crate::scanner::is_secret_path;
+use crate::task_identifiers::{
+    NamedRank, TaskIdentifier, line_has_number, named_symbols, task_identifiers, task_numbers,
+};
 
 /// Largest repository file a bounded read, unfold, or gate will load (SEC-005).
 ///
@@ -80,6 +83,14 @@ const PLAN_CONTEXT_CONTENT_MAX_FILES: usize = 2_000;
 const PLAN_CONTEXT_CONTENT_MAX_BYTES: u64 = 32 * 1024 * 1024;
 /// Pool score of a symbol whose body contains an otherwise unmatched task word.
 const PLAN_CONTEXT_CONTENT_WORD_SCORE: f64 = 1.0;
+/// Pool score of a symbol containing a numeric literal from the task (D88).
+const PLAN_CONTEXT_CONTENT_NUMBER_SCORE: f64 = 2.0;
+/// Pool score of a symbol whose body uses an identifier the task names (D88).
+const PLAN_CONTEXT_CONTENT_IDENTIFIER_SCORE: f64 = 3.0;
+/// Named identifiers whose use sites the content scan looks for (D88).
+const PLAN_CONTEXT_USE_SITE_IDENTIFIERS: usize = 2;
+/// Pool score of a symbol the task names verbatim (D88); strong on its own.
+const PLAN_CONTEXT_NAMED_SCORE: f64 = 8.0;
 const REINDEX_HINT: &str = "Repository index is stale; run `compresso index` and retry.";
 
 /// A deterministic, token-budgeted structural summary of an indexed repository.
@@ -902,6 +913,7 @@ pub fn plan_context(
         }
         scored.push(ContextCandidate {
             score,
+            named: ranked.named,
             order: ranked.order,
             hit: ranked.hit,
             top: false,
@@ -911,10 +923,12 @@ pub fn plan_context(
             specific,
         });
     }
+    // What the task names verbatim leads, whatever prose words score.
     scored.sort_by(|left, right| {
         right
-            .score
-            .total_cmp(&left.score)
+            .named
+            .cmp(&left.named)
+            .then(right.score.total_cmp(&left.score))
             .then(left.order.cmp(&right.order))
     });
     let score_floor = scored
@@ -1125,6 +1139,7 @@ struct ContextCandidate {
     /// Excerpted with the largest allowance.
     top: bool,
     score: f64,
+    named: Option<NamedRank>,
     order: usize,
     hit: SearchHit,
     /// The whole body until the excerpt allowance is applied.
@@ -1330,6 +1345,8 @@ struct RankedHit {
     /// symbols, matched the whole task phrase, or contains a salient word
     /// the content scan found in few bodies.
     specific: bool,
+    /// Defined under, or in a file at, a name the task spells verbatim.
+    named: Option<NamedRank>,
 }
 
 type HitIdentity = (String, String, SymbolKind, u32, u32);
@@ -1423,6 +1440,25 @@ fn search_task_concepts(
         }
     }
 
+    // A name copied from the code outranks any number of prose words.
+    let mut named_ranks = BTreeMap::<HitIdentity, NamedRank>::new();
+    let mut named_hits = Vec::new();
+    for (hit, rank) in named_symbols(store, repo, task, exclude_text)? {
+        let identity = hit_identity(&hit);
+        let known = named_ranks.entry(identity.clone()).or_insert(rank);
+        if *known < rank {
+            *known = rank;
+        }
+        if !named_hits
+            .iter()
+            .any(|known: &SearchHit| hit_identity(known) == identity)
+        {
+            *scores.entry(identity.clone()).or_default() += PLAN_CONTEXT_NAMED_SCORE;
+            specific_hits.insert(identity);
+            named_hits.push(hit);
+        }
+    }
+
     // A concept no symbol is named after can still be written in a body:
     // look for those, and only those, in the indexed files themselves.
     let terms = unresolved_content_terms(
@@ -1473,7 +1509,7 @@ fn search_task_concepts(
             matches_total = merged.len();
         }
     }
-    for hit in compound_hits {
+    for hit in compound_hits.into_iter().chain(named_hits) {
         if seen.insert(hit_identity(&hit)) {
             merged.push(hit);
             matches_total += 1;
@@ -1500,6 +1536,7 @@ fn search_task_concepts(
             score: scores.get(&hit_identity(&hit)).copied().unwrap_or_default(),
             defines_use_site: use_site_definitions.contains(&hit_identity(&hit)),
             specific: specific_hits.contains(&hit_identity(&hit)),
+            named: named_ranks.get(&hit_identity(&hit)).copied(),
             hit,
             order,
         })
@@ -1511,10 +1548,10 @@ fn search_task_concepts(
             .then(left.order.cmp(&right.order))
     });
     // Content candidates are already capped and known to contain a task
-    // concept, so the name-hit bound does not drop them.
+    // concept, and named symbols are few, so the name-hit bound drops neither.
     let mut name_hits = 0;
     pool.retain(|ranked| {
-        if content_hits.contains(&hit_identity(&ranked.hit)) {
+        if ranked.named.is_some() || content_hits.contains(&hit_identity(&ranked.hit)) {
             return true;
         }
         name_hits += 1;
@@ -1538,6 +1575,8 @@ struct ContentTerm {
     /// word, or the word's shortest spelling.
     anchor: String,
     compound: bool,
+    /// A numeric literal from the task, matched only as a whole number (D88).
+    numeric: bool,
     /// Pool score of a symbol containing the term, before breadth scaling.
     score: f64,
 }
@@ -1546,7 +1585,9 @@ impl ContentTerm {
     /// `line` is one source line that contains the anchor, and
     /// `lowercase_line` the same line in ASCII lowercase.
     fn matches_line(&self, line: &str, lowercase_line: &str) -> bool {
-        if self.compound {
+        if self.numeric {
+            line_has_number(line, &self.needle)
+        } else if self.compound {
             squeeze_separators(lowercase_line).contains(&self.needle)
         } else {
             line_spells_word(line, &self.needle)
@@ -1554,9 +1595,10 @@ impl ContentTerm {
     }
 }
 
-/// The concepts the content scan looks for, at most
-/// `PLAN_CONTEXT_CONTENT_TERMS`: compounds first, then salient words, each in
-/// task order.
+/// The concepts the content scan looks for: at most
+/// `PLAN_CONTEXT_CONTENT_TERMS` compounds and salient words, each in task
+/// order, then the task's numeric literals and verbatim identifiers in slots
+/// of their own (D88).
 fn unresolved_content_terms(
     store: &Store,
     repo: RepoId,
@@ -1588,12 +1630,17 @@ fn unresolved_content_terms(
             needle: compound.joined.clone(),
             anchor: compound.leading.clone(),
             compound: true,
+            numeric: false,
             score: compound.weight() * 0.75,
         });
     }
     for word in &concepts.salient {
         if terms.len() >= PLAN_CONTEXT_CONTENT_TERMS {
             break;
+        }
+        // Numbers are scanned below, as whole literals only.
+        if word.bytes().all(|byte| byte.is_ascii_digit()) {
+            continue;
         }
         let singular = singular_context_term(word);
         let mut named = false;
@@ -1608,11 +1655,29 @@ fn unresolved_content_terms(
                 needle: word.clone(),
                 anchor: singular.unwrap_or_else(|| word.clone()),
                 compound: false,
+                numeric: false,
                 score: PLAN_CONTEXT_CONTENT_WORD_SCORE,
             });
         }
     }
     terms.truncate(PLAN_CONTEXT_CONTENT_TERMS);
+    // Numeric literals have their own slots: no symbol is named after one,
+    // and a body that holds the exact number is strong evidence.
+    terms.extend(concepts.numbers.iter().map(|number| ContentTerm {
+        needle: number.clone(),
+        anchor: number.clone(),
+        compound: false,
+        numeric: true,
+        score: PLAN_CONTEXT_CONTENT_NUMBER_SCORE,
+    }));
+    // So do identifiers the task names verbatim: their use sites are bodies.
+    terms.extend(concepts.identifiers.iter().map(|name| ContentTerm {
+        needle: squeeze_separators(&name.to_ascii_lowercase()),
+        anchor: name.to_ascii_lowercase(),
+        compound: true,
+        numeric: false,
+        score: PLAN_CONTEXT_CONTENT_IDENTIFIER_SCORE,
+    }));
     Ok(terms)
 }
 
@@ -1888,6 +1953,10 @@ struct TaskConcepts {
     /// Salient words no symbol is named after that the content scan found in
     /// a symbol body.
     content_words: Vec<String>,
+    /// Integer literals of two or more digits written in the task (D88).
+    numbers: Vec<String>,
+    /// Symbol identifiers written verbatim in the task, for use sites (D88).
+    identifiers: Vec<String>,
     wants_tests: bool,
 }
 
@@ -1981,6 +2050,15 @@ impl TaskConcepts {
             compounds,
             salient,
             content_words: Vec::new(),
+            numbers: task_numbers(task),
+            identifiers: task_identifiers(task)
+                .into_iter()
+                .filter_map(|identifier| match identifier {
+                    TaskIdentifier::Symbol(name) => Some(name),
+                    TaskIdentifier::Path(_) => None,
+                })
+                .take(PLAN_CONTEXT_USE_SITE_IDENTIFIERS)
+                .collect(),
             wants_tests,
         }
     }

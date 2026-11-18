@@ -8,6 +8,7 @@ pub mod queries;
 mod rust_imports;
 pub mod scanner;
 pub mod search;
+mod task_identifiers;
 
 pub use concurrency::{Concurrency, DEFAULT_MEMORY_BUDGET_BYTES};
 pub use grep::{

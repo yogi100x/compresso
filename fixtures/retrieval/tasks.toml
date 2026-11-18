@@ -143,6 +143,27 @@ task = "How big can one multipart upload part be before it is refused?"
 gold_files = ["storage/multipart.py", "storage/limits.py"]
 expect_ready = true
 
+# Verbatim names and numbers (D88): the task copies a literal or a type name
+# from the code. The literal sits only in a body, and the type's raise site is
+# a body that no task word names.
+[[task]]
+id = "status-literal"
+task = "Which response sends status 423, and when?"
+gold_files = ["engine/src/admission_status.rs"]
+expect_ready = true
+
+[[task]]
+id = "two-digit-literal"
+task = "Which setting falls back to 14 when it is not configured?"
+gold_files = ["storage/settings.py"]
+expect_ready = true
+
+[[task]]
+id = "named-error-raise"
+task = "Where is TooManyAttemptsError thrown?"
+gold_files = ["auth/src/errors.ts", "auth/src/rateLimiter.ts"]
+expect_ready = true
+
 # Absent concepts: nothing in the corpus answers these, so a ready pack would
 # be a false claim.
 [[task]]
