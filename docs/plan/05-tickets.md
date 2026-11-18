@@ -2699,7 +2699,7 @@ Test cases:
 
 ## E17 — Session continuity, savings fidelity, and platform hardening
 
-Added 2026-11-14 (D70). Clean-room follow-ups to the local slice; E17-01..10 landed together through `integration/e17`, E17-11..14 are open follow-ups; E17-15 is open and E17-16 landed 2026-11-15 (D77).
+Added 2026-11-14 (D70). Clean-room follow-ups to the local slice; E17-01..10 landed together through `integration/e17`, E17-11..14 are open follow-ups; E17-15 is open and E17-16 landed 2026-11-15 (D77). E17-17..21 landed 2026-11-16 (D83–D86); E17-22..28 landed 2026-11-18 (D87–D93, awaiting owner confirmation).
 
 ### [x] E17-01: Re-assert tool routing after client compaction
 Owner: D1 · Estimate: 2d · Depends: E5-01, E6-01, E6-02, E6-03
@@ -3091,6 +3091,118 @@ Test cases:
 - `test_python_import_with_no_module_name_is_not_extracted`: `import ,\nimport x, y,\n` extracts exactly `x` and `y`.
 - `test_index_survives_python_import_statement_with_no_module_name`: the fixture repository plus that file indexes nine files and records the file's named imports as unresolved edges.
 
+### [x] E17-22: Bounded content search replaces shell grep for the bound repository
+Owner: R2 · Estimate: 2d · Depends: E17-19, E17-07
+Files: rust/compresso-atlas/src/grep.rs, rust/compresso-atlas/src/lib.rs, rust/compresso-atlas/src/queries.rs, rust/compresso-atlas/src/scanner.rs, rust/compresso-atlas/Cargo.toml, rust/compresso-atlas/tests/grep_content.rs, rust/compresso-mcp/src/tools/atlas_grep.rs, rust/compresso-mcp/src/tools/mod.rs, rust/compresso-mcp/src/server.rs, rust/compresso-mcp/Cargo.toml, rust/compresso-mcp/tests/tools_grep.rs, rust/compresso-mcp/tests/handshake.rs, rust/compresso-mcp/tests/tools_recall.rs, rust/compresso-cli/src/commands.rs, rust/compresso-cli/src/commands/retrieval.rs, rust/compresso-cli/tests/cli_retrieval.rs, rust/compresso-cli/tests/cli_app.rs, rust/compresso-core/src/transcript.rs, rust/compresso-store/src/ops.rs, rust/compresso-integrations/src/cursor.rs, rust/compresso-integrations/tests/launcher_upgrade.rs, Cargo.toml, Cargo.lock, docs/plan/03-interfaces.md, docs/plan/04-mcp-and-integrations.md, docs/runbooks/mcp-manual-verification.md
+Description: D87. Benchmarks showed models calling Compresso and then running shell grep, because `compresso_search` is an exact symbol lookup and cannot return use sites; with shell search removed, 28 of 64 calls were `compresso_search` fanned out one identifier at a time and repeated with larger limits. A new read-only `compresso_grep` MCP tool and `compresso grep` CLI command search the bound repository's indexed files for one to eight literal or regular-expression patterns in one pass. Results are grouped per pattern, then per file, ranked (definition on a listed line first, non-test before test, more matches, path), each line as `LINE [SYMBOL] SNIPPET` with the enclosing indexed symbol. Exact `matches_total`/`files_total` are reported however far the listing is capped, with `complete`, `truncated`, and a note that says not to repeat with larger limits. Reads go through the existing gates; matching uses the linear-time `regex` crate (new workspace dependency, already in the lock graph). No existing tool is renamed or removed.
+Acceptance criteria:
+- Only indexed files are searched, in index path order, through canonical-root resolution; secret paths are never read even when an index lists them; files over 16 MiB and missing or non-UTF-8 files are skipped and counted.
+- A file changed since indexing is searched as it is now, marked stale, and given no symbol names; the payload carries `stale` and `reindex_hint`.
+- At most 8 patterns of 512 bytes; snippets at most 160 bytes; `max_files` (1-100, default 20), `max_matches_per_file` (1-50, default 5), and `max_tokens` (300-10,000, default 1,500) are hard caps; the scan stops at 20,000 files or 256 MiB, never at a deadline.
+- Totals count every in-scope match; any cap sets `truncated` and clears `complete`.
+- A long line, a pathological pattern, or a regular expression that could cross line breaks is searched in linear time (regular expressions are matched within each line); an invalid pattern or path filter is a typed `GrepError` (`invalid_arguments`) before any file is read.
+- `tokens_used` never exceeds `max_tokens`; a budget too small for every pattern's totals is rejected.
+- Path filter: a repository-relative prefix or a glob (`*`, `**`, `?`; no `/` means file name); case-insensitive flag.
+- The tool description says it replaces shell text search for this repository; the default server instructions list it policy-neutrally as "text search of indexed files with use sites" (instructions that direct the client away from shell search exist only in the opt-in lean profile, D92).
+Test cases:
+- `test_grep_returns_use_sites_with_enclosing_symbols_grouped_and_ranked`, `test_grep_never_reads_secret_paths`, `test_grep_skips_files_above_the_read_ceiling`, `test_grep_reports_caps_and_totals_when_output_is_truncated`, `test_grep_stays_linear_on_one_very_long_line`, `test_grep_regex_never_runs_past_a_line_end`, `test_grep_rejects_invalid_patterns_with_a_typed_error`, `test_grep_case_flag`, `test_grep_path_filter_prefix_and_glob`, `test_grep_searches_changed_files_as_they_are_now_without_symbols`, `test_grep_skips_missing_and_non_utf8_files` (Atlas).
+- `test_grep_tool_returns_use_sites_for_several_patterns_in_one_call`, `test_grep_tool_reports_totals_and_truncation_under_caps_and_budget`, `test_grep_tool_never_returns_secret_or_oversize_file_content`, `test_grep_tool_rejects_invalid_patterns_and_arguments`, `test_grep_tool_case_flag_and_path_filter`, `test_grep_tool_stays_linear_on_a_long_line_and_a_pathological_pattern`, `test_grep_tool_marks_changed_files_and_the_stale_index` (MCP).
+- `test_grep_lists_use_sites_per_pattern_and_rejects_invalid_patterns` (CLI); tool-list, runbook, transcript, store-classification, and client-integration tool-set tests updated for the added tool (eleven tools on this branch; twelve, thirteen with recall, once merged with E17-25).
+
+### [x] E17-23: Verbatim identifiers lead the context pack and numeric literals are searched
+Owner: R2+PQ · Estimate: 1.5d · Depends: E17-20, E17-22
+Files: rust/compresso-atlas/src/task_identifiers.rs, rust/compresso-atlas/src/queries.rs, rust/compresso-atlas/src/lib.rs, rust/compresso-atlas/tests/queries_task_named.rs, rust/compresso-store/src/symbols.rs, rust/compresso-eval/tests/retrieval.rs, fixtures/retrieval/tasks.toml, fixtures/corpus.toml, docs/plan/03-interfaces.md, docs/plan/04-mcp-and-integrations.md, docs/plan/06-fixtures.md
+Description: D88. The planner lowercased the task before reading it, so a type named verbatim scored like any prose word (it ranked about thirteenth on a large repository), and numbers of two digits were never searched. `plan_context` now reads identifiers from the raw task (`CamelCase`, inner `_`, `::`-qualified, paths), resolves them through a new exact-name store lookup (`Store::symbols_named(repo, name, limit)`; not the call-graph lookup `Store::indexed_symbols_named` added by E17-24), and orders named symbols first in the pack; the first two also get use-site content-scan slots. Integer literals of two or more digits get two reserved content-scan slots with digit-boundary matching. The retrieval corpus gains three tasks.
+Acceptance criteria:
+- A type, function, or constant the task names verbatim leads the pack in an index where ninety files match the task's prose; a path the task names leads with that file's symbols.
+- A name defined more than three times, or a bare file name more than two files end with, does not lead.
+- A body holding a task literal (`320`, `45`) is evidence; `1320`, `3200`, `450` are not matches.
+- The 22 earlier retrieval tasks are unchanged; every gate passes and none is lowered.
+Test cases:
+- `test_plan_context_named_type_leads_the_pack_in_a_large_index`, `test_plan_context_snake_screaming_and_path_identifiers_lead_prose_matches`, `test_plan_context_common_name_defined_many_times_does_not_lead`, `test_plan_context_bare_file_name_many_files_share_names_nothing`, `test_plan_context_numeric_literal_sites_become_evidence` (all fail without the change).
+- `test_task_identifiers_keep_code_shaped_words_only`, `test_task_numbers_take_standalone_integers_of_two_or_more_digits`, `test_line_has_number_respects_digit_boundaries`, `test_symbols_named_matches_the_exact_name_only`.
+- `test_committed_retrieval_corpus_passes_committed_gates`: 28 tasks, 25 gold; `two-digit-literal` (recall 0 before) and `named-error-raise` (false-ready before) pass.
+
+### [x] E17-24: Record call sites in the index
+Owner: R2 · Estimate: 2d · Depends: E3-04, E17-21
+Files: rust/compresso-store/migrations/0008_call_sites.sql, rust/compresso-store/src/calls.rs, rust/compresso-store/src/lib.rs, rust/compresso-store/src/symbols.rs, rust/compresso-store/src/files.rs, rust/compresso-store/tests/migrations.rs, rust/compresso-atlas/src/parsers.rs, rust/compresso-atlas/src/parsers/calls.rs, rust/compresso-atlas/src/parsers/shell.rs, rust/compresso-atlas/src/parsers/text.rs, rust/compresso-atlas/src/indexer.rs, rust/compresso-atlas/tests/parsers_calls.rs, rust/compresso-atlas/tests/indexer_incremental.rs, rust/compresso-cli/src/commands/index.rs, rust/compresso-eval/src/runner.rs, docs/adr/0033-call-sites-resolved-at-query-time.md, docs/adr/0026-safe-shell-and-generic-text-indexing.md, docs/plan/02-schemas.md, docs/plan/03-interfaces.md
+Description: D89. Multi-file trace tasks cost about twenty model turns because the index had symbols and file imports but no calls. The parsers walk the syntax tree they already built and record each call inside an indexed Rust, Python, JavaScript, TypeScript, or TSX function or method: callee name as written, optional qualifier, call form (`plain`, `path`, `self`, `receiver`, or `reference` for a bare name passed as a call argument, a function used as a value), and the line of the callee name; Rust calls inside macro arguments are read from the token tree. Migration `0008_call_sites.sql` adds `call_sites`, written in the caller file's transaction and cascading with its file and caller symbol. Rows hold no callee symbol id; the callee is resolved at query time (ADR-0033) through `Store::indexed_symbols_named(repo, name)` (every exact-name definition with its path; distinct from E17-23's bounded `Store::symbols_named(repo, name, limit)`). The parser-version suffix gains `+calls-v1`, so existing indexes reparse once.
+Acceptance criteria:
+- Every call inside an indexed function or method is recorded once per caller, callee name, qualifier, and form, with the first call site; calls at module level or in class bodies, macro invocations, and calls whose callee is not a name are not.
+- A malformed file never yields an empty, garbled, or over-long callee name or qualifier and never aborts an index.
+- Per-file bounds: 4,096 kept records and 65,536 examined call expressions; reaching either is reported (`Extraction.calls_truncated`, `IndexReport.call_site_files_truncated`). Tree and member-chain walks are iterative; the enclosing caller is found in O(1) per call.
+- Re-indexing or deleting a file replaces or removes its call sites; no row ever names a callee symbol id.
+- A store at migration 7 with indexed rows opens, migrates to 8, and keeps its rows; an index stamped by the previous parser version reparses every file.
+- Full index time on this repository stays within 25% of the previous build (measured: about 15%).
+Test cases:
+- `test_rust_calls_record_form_qualifier_caller_and_line`, `test_python_calls_record_self_dotted_and_receiver_forms`, `test_script_calls_record_this_member_new_and_skip_require`, `test_rust_calls_inside_macro_arguments_are_recorded`: forms, qualifiers, callers, lines per language.
+- `test_names_passed_as_call_arguments_are_recorded_as_references`: Rust and Python, including keyword arguments.
+- `test_repeated_calls_keep_the_first_site_per_caller_and_form`, `test_calls_per_file_are_capped`, `test_shell_and_text_record_no_calls`.
+- `test_malformed_calls_never_yield_empty_or_garbled_names`: Rust, Python, JavaScript, TypeScript, TSX.
+- `test_very_deep_member_chain_does_not_overflow_and_is_a_receiver_call`: 40,000-deep chain on a 256 KiB stack.
+- `test_huge_number_of_calls_and_functions_is_bounded_and_reports_truncation`, `test_a_file_with_a_huge_number_of_calls_never_aborts_the_index`.
+- `test_index_records_call_sites_and_survives_malformed_calls`, `test_default_parser_version_marks_call_site_extraction`.
+- `test_call_sites_are_replaced_with_their_file_and_cascade_on_delete`, `test_invalid_call_sites_are_rejected_before_any_write`, `test_indexed_symbols_named_and_by_ids_stay_inside_the_repository`.
+- `test_migration_8_opens_a_store_indexed_before_call_sites`, `test_open_fresh_creates_all_tables` (14 tables), migration-ledger tests updated for version 8.
+
+### [x] E17-25: One call answers who calls X, what X calls, and how A reaches B
+Owner: R2 · Estimate: 2d · Depends: E17-24, E5-02
+Files: rust/compresso-atlas/src/trace.rs, rust/compresso-atlas/src/lib.rs, rust/compresso-atlas/src/queries.rs, rust/compresso-atlas/tests/queries_trace.rs, rust/compresso-mcp/src/tools/atlas_trace.rs, rust/compresso-mcp/src/tools/mod.rs, rust/compresso-mcp/src/server.rs, rust/compresso-mcp/tests/tools_trace.rs, rust/compresso-mcp/tests/handshake.rs, rust/compresso-cli/src/commands.rs, rust/compresso-cli/src/commands/retrieval.rs, rust/compresso-cli/src/commands/retrieval/trace.rs, rust/compresso-cli/src/lib.rs, rust/compresso-cli/tests/cli_trace.rs, rust/compresso-cli/tests/cli_app.rs, rust/compresso-core/src/transcript.rs, rust/compresso-store/src/ops.rs, rust/compresso-integrations/src/cursor.rs, rust/compresso-integrations/tests/launcher_upgrade.rs, docs/plan/03-interfaces.md, docs/plan/04-mcp-and-integrations.md, docs/runbooks/mcp-manual-verification.md
+Description: D90. New Atlas query `trace`, MCP tool `compresso_trace`, and CLI `compresso trace`. `to` alone lists callers, `from` alone lists callees (breadth first, default depth 1), both give the shortest call paths (default depth 6). Each hop carries symbol, kind, definition `path:line`, call-site `path:line`, a one-line signature, and the resolution rule. Call sites are resolved at query time: candidates by name narrowed by call form, then the only candidate in the caller's file, in a file it imports, or in the repository (`name_only` for a method call on an expression of unknown type). Only resolved calls are followed; ambiguous calls are listed, library calls ignored. No existing tool is renamed or removed.
+Acceptance criteria:
+- Bounds: `max_depth` 1–8, `max_paths` 1–10, `max_results` 1–500, 2,000 visited symbols, 10,000 path-enumeration steps, `max_tokens` (default 4,000) over the returned list; `total`, `shown`, `truncated`, `depth_limited`, and `complete` let one call stand as the answer.
+- An ambiguous name returns candidates and traces nothing; `path:name` and `Type::name` select one.
+- Cycles and recursion terminate and are marked `cycle`; a symbol is never expanded twice.
+- A function passed by name as a call argument is listed as a caller with `reference: true`; a call never resolves across languages; `depth_limited` is reported for path searches and explicit depths only; `unfollowed` shares the token budget.
+- An index stamped before call sites returns `reindex_required`; a stale index is answered with `stale: true` and the reindex hint.
+- Same repository binding, approval, and indexed-repository gates as the other repository tools; secret paths are never returned; nothing is executed or written to the store; the MCP call records one retrieval operation.
+Test cases:
+- Atlas: `test_trace_finds_the_shortest_call_path_across_files`, `test_trace_reports_no_path_when_none_exists`, `test_trace_returns_candidates_for_an_ambiguous_name_and_labels_ambiguous_calls`, `test_trace_depth_cap_stops_the_search_and_says_so`, `test_trace_is_cycle_safe_and_marks_recursion`, `test_trace_callers_report_call_sites_totals_and_truncation`, `test_trace_resolves_self_type_and_python_calls`, `test_trace_labels_a_receiver_call_resolved_only_by_a_unique_name`, `test_trace_never_resolves_a_call_across_languages`, `test_trace_lists_a_function_passed_as_a_value_as_a_reference_caller`, `test_trace_reports_unknown_names_and_invalid_options`, `test_trace_requires_a_reindex_when_the_index_predates_call_sites`, `test_trace_writes_nothing_to_the_store`.
+- MCP: `test_trace_tool_returns_a_call_path_with_sites_and_signatures`, `test_trace_tool_reports_no_path`, `test_trace_tool_returns_candidates_for_an_ambiguous_name`, `test_trace_tool_depth_cap_is_reported`, `test_trace_tool_is_cycle_safe_and_marks_recursion`, `test_trace_tool_callers_report_total_and_truncation_in_one_call`, `test_trace_tool_reports_a_stale_index`, `test_trace_tool_requires_reindex_when_the_index_predates_call_sites`, `test_trace_tool_rejects_invalid_arguments_and_unbound_sessions`, `test_trace_tool_is_listed_and_records_a_retrieval_operation`; handshake tool list and runbook row.
+- CLI: `test_cli_trace_prints_a_call_path_as_json_and_text`, `test_cli_trace_requires_an_end_and_valid_bounds`, `test_canonical_command_snapshot`.
+
+### [x] E17-26: Module cards give cheap, deterministic orientation
+Owner: R2 · Estimate: 1.5d · Depends: E3-12, E5-02
+Files: rust/compresso-atlas/src/cards.rs, rust/compresso-atlas/src/lib.rs, rust/compresso-atlas/src/queries.rs, rust/compresso-atlas/tests/module_cards.rs, rust/compresso-mcp/src/tools/atlas_nav.rs, rust/compresso-mcp/src/server.rs, rust/compresso-mcp/tests/tools_nav.rs, rust/compresso-cli/src/commands/retrieval.rs, rust/compresso-cli/tests/cli_retrieval.rs, scripts/doc-drift-lint.config.json
+Description: On unfamiliar repositories, conceptual questions ("how does recovery work") need an orientation layer cheaper than reading files. `compresso_repo_map` (and `compresso map`) gains opt-in per-directory module cards built only from the index (D91): a purpose line from the module or file doc comment, top public symbols with kinds, entry points, internal dependencies and dependents from resolved import edges, and file and symbol counts. No model call; bounded by card count and token budget; `path` zooms into a subtree. The existing result is unchanged unless cards are requested.
+Acceptance criteria:
+- Without `cards`/`path` the MCP and CLI map results are byte-for-byte the previous contract; card fields are additive and opt-in.
+- Cards are deterministic for one index, write nothing to SQLite, and never include secret paths or edges that touch them.
+- Cards plus map stay within `max_tokens`; cards take at most three quarters of it; at most 12 cards (CLI `--max-cards` 1-50); `cards_truncated` reports omission.
+- Purpose text comes only from in-root, non-secret files that still match their index record, reading at most 4 KiB of at most three files per card.
+- Approval, session-root, `not_indexed`, and `stale` behavior are unchanged; an unsafe `path` is `invalid_arguments`.
+Test cases:
+- `test_cards_summarize_each_directory_deterministically`, `test_card_dependencies_come_from_import_edges`, `test_cards_exclude_secret_paths_and_their_edges`, `test_cards_respect_card_cap_and_token_budget`, `test_card_path_zooms_into_a_subtree_and_rejects_unsafe_prefixes`, `test_stale_files_never_contribute_a_purpose_line`, `test_cards_leave_the_existing_repo_map_unchanged` (Atlas); four `cards::tests` unit tests for doc extraction and visibility.
+- `test_repo_map_omits_card_fields_unless_requested`, `test_repo_map_cards_are_bounded_and_zoomable`, `test_repo_map_cards_require_an_indexed_bound_repository` (MCP); `test_map_cards_are_opt_in_bounded_and_zoomable` (CLI).
+
+### [x] E17-27: Opt-in lean MCP tool profile
+Owner: R2 · Estimate: 1d · Depends: E5-01, E17-02
+Files: rust/compresso-mcp/src/profile.rs, rust/compresso-mcp/src/server.rs, rust/compresso-mcp/src/lib.rs, rust/compresso-mcp/tests/tool_profile.rs, rust/compresso-cli/src/commands/mcp.rs
+Description: Preloading every Compresso tool schema adds fixed cost to each session. `compresso mcp serve --tools lean` (D92) advertises only a data-driven exploration allowlist (`LEAN_TOOLS` in `profile.rs`: context, repo_map, search, grep, trace, outline, unfold, read, and recall only when `--recall-source` enables it) with one-sentence descriptions, no compatibility-only `root` argument, and shorter instructions generated from the served rows. `compresso_grep` and `compresso_trace` joined the allowlist as one `LeanTool` row each when E17-22 and E17-25 merged. The default profile, tool list, descriptions, and instructions are unchanged.
+Acceptance criteria:
+- `mcp serve` without `--tools`, and every installed client entry, serves exactly the default tools (twelve after the E17-22/E17-25 merge, thirteen with recall) and the default instructions.
+- `--tools lean` lists exactly the allowlist, in order; every allowlisted name is a registered tool.
+- Calling a registered tool that lean does not serve returns `isError` text starting `[tool_unavailable]`, naming the tool and the restart remedy, and dispatches nothing; unknown names keep the protocol error.
+- Lean instructions keep the no-network, model-provider, and untrusted-content disclosures and name only served tools.
+- Lean fixed cost (tools/list payload plus instructions) is under half of full for both counters. Measured after the merge (eight lean tools, twelve full): o200k 3,847 → 1,904 tokens; Anthropic-calibrated 4,425 → 2,191 (about 49.5% of full; at the E17-27 commit, before grep and trace: 2,801 → 1,224 and 3,222 → 1,408).
+Test cases:
+- `test_default_profile_tool_list_and_instructions_are_unchanged`, `test_lean_profile_advertises_exactly_the_allowlist`, `test_lean_initialize_sends_the_lean_instructions`, `test_lean_profile_rejects_a_hidden_tool_with_a_clean_error`, `test_lean_profile_with_operator_enabled_recall_serves_recall_last`, `test_lean_allowlist_names_only_registered_tools`, `test_lean_instructions_keep_the_mandatory_disclosures_and_name_only_served_tools`, `test_lean_schema_and_instructions_cost_less_than_half_of_default`, `test_profile_names_round_trip`; CLI `test_tool_profile_is_full_by_default_and_lean_only_explicitly`.
+
+### [x] E17-28: Opt-in Claude Code exploration agent definition
+Owner: D1 · Estimate: 1.5d · Depends: E6-02, E17-27
+Files: rust/compresso-integrations/src/explore_agent.rs, rust/compresso-integrations/src/plan.rs, rust/compresso-integrations/src/server_entry.rs, rust/compresso-integrations/src/lib.rs, schemas/integrations/v1.json, rust/compresso-cli/src/commands.rs, rust/compresso-cli/src/commands/integrations.rs, rust/compresso-cli/tests/cli_explore_agent.rs, docs/adr/0034-whole-file-agent-definition-ownership.md
+Description: Models use Compresso in addition to shell search, not instead of it. `compresso integrations install claude-code --explore-agent` (D93, ADR-0034) writes `<project>/.claude/agents/compresso-explorer.md`: a Claude Code subagent whose `tools` are the lean exploration allowlist (minus recall) as `mcp__compresso__*` plus `Read, Edit, Write`, and whose instructions route exploration through Compresso. The integration framework gains a whole-file `ConfigFormat::Markdown` whose uninstall deletes the file, with the same preview, receipt, journal, and recovery guarantees. Never installed by default.
+Acceptance criteria:
+- `setup` and plain `integrations install` never create the file; `--dry-run` writes nothing.
+- Install creates the file with a receipt; re-install is a no-op; a same-named file Compresso did not write is refused with `user_file_present` and unchanged; symlinked `.claude` or `.claude/agents` is refused.
+- Uninstall deletes an unchanged file with no backup left behind and retains an edited one with `key_modified`; crash recovery after deletion, before or after receipt persistence, completes without recreating the file.
+- `status`/`verify --explore-agent` report presence, marker, and currency; other clients are `unsupported`; the flag conflicts with `--compaction-hook` and `--no-recall`.
+- Tests use only temporary home and project directories.
+Test cases:
+- `explore_agent::tests` (7): render shape, install/uninstall tree restore, preview writes nothing, user file refused, edited file retained, idempotent reinstall, symlink refused.
+- `plan::tests::test_whole_file_uninstall_recovers_after_deletion_before_or_after_receipt_save`, `test_whole_file_format_owns_exactly_one_path`.
+- `cli_explore_agent` (5): `test_setup_and_default_installs_never_create_the_agent`, `test_agent_dry_run_previews_and_writes_nothing`, `test_agent_install_status_verify_and_uninstall_round_trip` (tools tied to the lean allowlist), `test_agent_is_claude_code_only_and_exclusive_with_other_surfaces`, `test_agent_install_refuses_a_user_agent_of_the_same_name`.
+
 ## Execution order (flat, dependency-ordered)
 
 Slice: E1-01, E1-02, E1-03, E1-04, E1-05, E1-06, E2-01, E2-02, E2-02a, E3-01, E2-03, E3-02, E3-03, E2-04, E2-05, E2-06, E2-07, E2-08, E2-12, E2-13, E2-14, E3-04, E3-05, E3-06, E3-07, E3-08, E2-09, E7-01, E7-07, E2-10, E2-11, E3-09, E7-02, E3-10, E3-11, E3-12, E4-01, E4-02, E4-03, E4-04, E4-05, E5-01, E5-02, E5-03, E5-04, E5-05, E5-06, E2-15, E7-03, E7-04, E7-05, E7-06, E5-07, E6-01, E6-02, E6-03, E6-04, E6-05.
@@ -3106,7 +3218,7 @@ Wave 6 — release engineering and hardening close-out: E12-01, E13-32, E12-02, 
 Wave 7 — E15 A-F plus threat-model and sandbox foundations: E15-01, E14-17, E14-18, E15-02, E15-03, E15-05, E15-09, E15-11, E15-14, E15-19, E15-06..E15-17, E15-18, E15-18b, E15-18c, E15-20..E15-30 subject to dependencies.
 Wave 8 — full-product completion: E16-01..E16-16 subject to listed dependencies.
 Wave 9 — deferred sandbox actions: E14-19, E14-20, E15-04, E15-31, E15-32.
-E17 (delivered after the slice, independent of waves 1–9): E17-05, E17-03, E17-04, E17-07, E17-02, E17-09, E17-01, E17-06, E17-10, E17-08; follow-ups E17-11, E17-12, E17-13, E17-14, E17-15; E17-16 delivered 2026-11-15.
+E17 (delivered after the slice, independent of waves 1–9): E17-05, E17-03, E17-04, E17-07, E17-02, E17-09, E17-01, E17-06, E17-10, E17-08; follow-ups E17-11, E17-12, E17-13, E17-14, E17-15; E17-16 delivered 2026-11-15; E17-17, E17-18, E17-19, E17-20, E17-21 delivered 2026-11-16; E17-22, E17-23, E17-24, E17-25, E17-26, E17-27, E17-28 delivered 2026-11-18.
 
 Parallelism notes:
 - Slice: E2 (R1) and E3 (R2) run concurrently after E1; E7-01/E7-02 (PQ/R1) overlap E2's tail; E4 (D1) starts once E2-09 and E3-12 land; E5 (R2) follows E3; E6 (D1) follows E5-01 and overlaps E5-02..07; E1-06 and E4-05 (I1) slot in any time after E1-02/E4-04. E2-02a is a maintainer task (needs an Anthropic API key) and can land any time after E2-02 without blocking anything — until it lands, the interim 1.15 factor applies.
@@ -3137,6 +3249,6 @@ Parallelism notes:
 | E14 IP & secure deployment | 17 | 39 | ~8 wk | +E15 threat/sandbox gates |
 | E15 Clean-room advanced capabilities | 34 | 121.5 | ~24.5 engineer-wk | A-F incremental; G deferred |
 | E16 Full-product completion | 16 | 59 | ~12 engineer-wk, dependency-phased | |
-| E17 Session continuity & hardening | 21 | 42.5 | ~8.5 engineer-wk | E17-01..10 delivered 2026-11-14, E17-16 2026-11-15, E17-17, E17-18, E17-19, E17-20, and E17-21 2026-11-16; E17-11..15 open |
-| **Post-slice + PB total** | **174** | **504 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
-| **Grand total** | **233** | **600.5 gross** | **~120.1 engineer-wk** | |
+| E17 Session continuity & hardening | 28 | 54 | ~10.8 engineer-wk | E17-01..10 delivered 2026-11-14, E17-16 2026-11-15, E17-17, E17-18, E17-19, E17-20, and E17-21 2026-11-16, E17-22..28 2026-11-18; E17-11..15 open |
+| **Post-slice + PB total** | **182** | **516 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
+| **Grand total** | **240** | **612 gross** | **~122.4 engineer-wk** | |

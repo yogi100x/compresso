@@ -47,7 +47,7 @@ E16 Full-product completion (routing, modes, languages, integrations, operations
 | E2 Core engine | ContextGraph, tokenizers, strategies, safety, engine, traces | 2 | ~5 wk |
 | E3 Atlas | Store, scanner, tree-sitter parsers, incremental indexer, queries | 3 | 4 wk |
 | E4 CLI | `compresso` binary, all slice commands, JSON output | 3–4 | ~1.5 wk |
-| E5 MCP server | rmcp stdio server, 10 read-only tools, sessions/ledger | 4 | ~2 wk |
+| E5 MCP server | rmcp stdio server, 10 read-only tools (12 after E17, 13 with recall), sessions/ledger | 4 | ~2 wk |
 | E6 Integrations | Framework + Claude Code, Codex, Cursor adapters | 5 (pulled in) | ~2 wk |
 | E7 Eval & fixtures | Fixture corpus, eval runner, release gates | 2–3 | ~2.5 wk (overlaps) |
 | E8–E12 | Supervisor, desktop, cloud, proxy, release eng | 4–9 | full tickets in 05 |
@@ -56,7 +56,7 @@ E16 Full-product completion (routing, modes, languages, integrations, operations
 | E15 Clean-room advanced capabilities | Search, transactional edit, SQL, recall, knowledge, review, deferred browser/terminal | future | 34 tickets in 05 |
 | E16 Full-product completion | Remaining routing, modes, languages, clients, desktop/cloud operations | future | 16 tickets / 59d |
 
-Slice total (E1–E7, 58 tickets): ~19 solo engineer-weeks; 2 engineers approximately 9–10 calendar weeks; solo approximately 3–3.5 months. Full backlog: 220 tickets (plus the 8-ticket PB lane); rollup at the end of `05-tickets.md`.
+Slice total (E1–E7, 58 tickets): ~19 solo engineer-weeks; 2 engineers approximately 9–10 calendar weeks; solo approximately 3–3.5 months. Full backlog: 232 tickets (plus the 8-ticket PB lane); rollup at the end of `05-tickets.md`.
 
 ## Staffing and ownership
 
@@ -91,4 +91,4 @@ Roles from build-doc §27, used as `owner` on tickets. Solo mode: all roles = ow
 
 ## Audit-r2 planning baseline
 
-The authoritative post-audit backlog is 220 tickets: 58 slice and 162 post-slice (including E17), totaling 575.5 gross engineer-days before contingency. E16 closes every full-product deliverable previously present only in `compresso-build.md`. Role aliases are `PO` (product owner) and `LEGAL` (qualified external counsel); they are advisory/approval owners, not engineering implementers.
+The authoritative post-audit backlog is 232 tickets: 58 slice and 174 post-slice (including E17), totaling 595.5 gross engineer-days before contingency (plus the 8-ticket, 16.5-day PB lane: 240 tickets and 612 days in the `05-tickets.md` rollup). E16 closes every full-product deliverable previously present only in `compresso-build.md`. Role aliases are `PO` (product owner) and `LEGAL` (qualified external counsel); they are advisory/approval owners, not engineering implementers.
