@@ -1,0 +1,49 @@
+rust/compresso-atlas/src/queries.rs
+  s_89a704cfae63f5::t_1680c0aece8954 3453-3465
+rust/compresso-atlas/src/edit.rs
+  s_89a704cfae63f5::t_534d387783e9fd 1-1659
+  s_89a704cfae63f5::t_90393c5f8a5d9e 1660-1662
+  s_4f2f665d3f9d40::t_b35facda501aee 1663-1706
+rust/compresso-atlas/tests/edit.rs
+  s_89a704cfae63f5::t_bc2194fff265ec 1-35,37-161,163-169,173-227,229-233,235-397,399-497,499-502,504-528,530-533,535-575,577,580-676
+  s_89a704cfae63f5::t_410ee8503a1a50 36
+  s_89a704cfae63f5::t_bb3739a0f7af86 162
+  s_89a704cfae63f5::t_0a03836e5ca0a3 170-172
+  s_89a704cfae63f5::t_b47924e0add536 228
+  s_89a704cfae63f5::t_3e4610f6f09866 234
+  s_89a704cfae63f5::t_0945e461d423c9 398
+  s_89a704cfae63f5::t_64c7a0ac8ff68d 498
+  s_89a704cfae63f5::t_5ca0baee00afdf 503
+  s_89a704cfae63f5::t_fafeda53fae537 529
+  s_89a704cfae63f5::t_ad4eed28187c43 534
+  s_89a704cfae63f5::t_e25446becd0490 576
+  s_89a704cfae63f5::t_5e8da34cb8eb8b 578-579
+rust/compresso-atlas/src/grep.rs
+  s_4f2f665d3f9d40::t_ccd084367020de 380,391,441
+rust/compresso-atlas/src/lib.rs
+  s_4f2f665d3f9d40::t_3559be32dfc029 5,21-28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f474d87f35dae8a40ebc917d5e251b62fa4ac272",
+  "prompts": {},
+  "sessions": {
+    "s_4f2f665d3f9d40": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ab9aa35752b0f6bbc",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
