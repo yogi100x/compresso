@@ -442,7 +442,8 @@ async fn transcript(fixture: &Fixture, options: McpServeOptions) -> String {
 /// exists once per key order and each build is checked byte for byte.
 fn json_keeps_insertion_order() -> bool {
     let value: Value = serde_json::from_str(r#"{"b":1,"a":2}"#).expect("valid JSON");
-    value.to_string() == r#"{"b":1,"a":2}"#
+    let serialized = serde_json::to_string(&value).expect("serializes");
+    serialized.starts_with(r#"{"b""#)
 }
 
 fn check_golden(name: &str, actual: &str) {
