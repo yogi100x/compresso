@@ -297,6 +297,7 @@ fn test_lean_instructions_keep_the_mandatory_disclosures_and_name_only_served_to
             }
         }
         assert!(instructions.len() < server_instructions().len());
+        assert!(instructions.split_whitespace().count() <= 200);
     }
 }
 
