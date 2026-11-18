@@ -456,3 +456,9 @@ Public surfaces added by E17. Every one is local: none opens a network connectio
 - **`compresso-mcp`**: `tool_names()` (the served tool list, used by the drift-lint inventory) and `reminder::routing_reminder()` with `ROUTING_REMINDER_MAX_BYTES` = 640 (E17-01). The `compresso_recall` tool is served only when the server starts with `--recall-source`.
 - **`compresso-cli::surface`** (E17-08): `surface_inventory() -> serde_json::Value` (`SURFACE_SCHEMA_VERSION` = 1). It generates the CLI/MCP/config inventory consumed by `scripts/doc-drift-lint.ts`.
 - **`compresso-eval::campaign`** (E17-10): `CampaignRunner`, `CampaignPolicy`, `CampaignOutcome`, `StartMode`, `Checkpoint`, `TaskState`, `SuiteAdapter`, `SuiteDescriptor`, `TaskSpec`, `TaskContext`, `AdapterKind`, `resolve_adapter`, `FixtureSuiteAdapter`, and `CampaignReport`, exposed by the separate `compresso-eval-campaign` binary. Adapters for external suites are opt-in and not built in.
+
+## 12. E17-26..28 interfaces (awaits owner confirmation)
+
+Opt-in surfaces for lower fixed overhead, tool substitution, and orientation (D91-D93). Defaults are unchanged; none adds a network or process capability.
+
+- **`compresso-mcp::profile`** (E17-27, D92): `McpToolProfile::{Full (default), Lean}` with `parse("full"|"lean")` and `name()`; `lean_tool_allowlist()`; `McpServeOptions { root, recall, tools }` with `serve_stdio_with_options` / `serve_io_with_options` (the older `serve_*` entry points keep the full profile); `advertised_surface(profile, recall_enabled) -> (Vec<Tool>, String)` returns the exact advertised tools and instructions. `tool_names()` is unchanged and still lists every registered tool. CLI: `compresso mcp serve --tools full|lean`, combinable with `--root` and `--recall-source`.

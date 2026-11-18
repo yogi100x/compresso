@@ -25,6 +25,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{Mutex, Notify};
 
 use crate::framing::{BoundedLineReader, Frame, MAX_INCOMING_MESSAGE_BYTES};
+use crate::profile::{McpToolProfile, lean_instructions, lean_tools};
 use crate::session::{DiagnosticSink, OperationWriter, SessionRuntime, StderrDiagnosticSink};
 use crate::tools::recall::McpRecallOptions;
 
@@ -187,6 +188,8 @@ struct CompressoServer {
     session: SessionRuntime,
     recall: Option<Arc<McpRecallOptions>>,
     tools: Vec<Tool>,
+    profile: McpToolProfile,
+    instructions: String,
 }
 
 struct PreparedMcpDeps(McpDeps);
@@ -197,20 +200,20 @@ impl CompressoServer {
         repository_root: Option<PathBuf>,
         session: SessionRuntime,
         recall: Option<McpRecallOptions>,
+        profile: McpToolProfile,
     ) -> Self {
         // The recall tool is advertised only after an operator enables a
         // verified source, so the default tool surface is unchanged.
         let recall = recall.filter(McpRecallOptions::is_enabled).map(Arc::new);
-        let mut tools = tool_declarations();
-        if recall.is_some() {
-            tools.push(recall_tool_declaration());
-        }
+        let (tools, instructions) = advertised_surface(profile, recall.is_some());
         Self {
             deps: Arc::new(deps.0),
             repository_root,
             session,
             recall,
             tools,
+            profile,
+            instructions,
         }
     }
 }
@@ -220,7 +223,7 @@ impl ServerHandler for CompressoServer {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2025_06_18)
             .with_server_info(Implementation::new("compresso", env!("CARGO_PKG_VERSION")))
-            .with_instructions(INSTRUCTIONS)
+            .with_instructions(self.instructions.clone())
     }
 
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
@@ -267,6 +270,10 @@ impl ServerHandler for CompressoServer {
     ) -> impl Future<Output = Result<CallToolResponse, McpError>> + Send + '_ {
         let registered = self.tools.iter().any(|tool| tool.name == request.name);
         let handled = crate::tools::handles(&request.name);
+        // A reduced profile serves only what it advertises; the default
+        // profile keeps its historical dispatch unchanged.
+        let hidden = self.profile != McpToolProfile::Full && handled && !registered;
+        let profile = self.profile;
         let deps = Arc::clone(&self.deps);
         let repository_root = self.repository_root.clone();
         let session = self.session.clone();
@@ -274,6 +281,14 @@ impl ServerHandler for CompressoServer {
         // Every Compresso tool completes in one response; none asks the client
         // for input or creates a task.
         let completed = async move {
+            if hidden {
+                return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                    "[tool_unavailable] Tool '{}' is not served by the {} tool profile; the operator can restart the server without `--tools {}` to use it.",
+                    request.name,
+                    profile.name(),
+                    profile.name()
+                ))]));
+            }
             if handled {
                 let Some(_call_guard) = session.acquire_call().await else {
                     return Ok(CallToolResult::error(vec![ContentBlock::text(
@@ -348,6 +363,7 @@ where
         None,
         RootSource::Cwd,
         None,
+        McpToolProfile::Full,
     )
     .await
 }
@@ -371,6 +387,7 @@ where
         None,
         RootSource::Explicit(root),
         None,
+        McpToolProfile::Full,
     )
     .await
 }
@@ -411,6 +428,54 @@ where
         None,
         root.map_or(RootSource::Cwd, RootSource::Explicit),
         Some(recall),
+        McpToolProfile::Full,
+    )
+    .await
+}
+
+/// Operator-selected options for one MCP server process.
+///
+/// `Default` is the historical server: cwd-bound, recall disabled, and the
+/// full tool profile.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct McpServeOptions {
+    /// Explicit repository root; `None` binds through the working directory.
+    pub root: Option<PathBuf>,
+    /// Operator-enabled recall sources, if any.
+    pub recall: Option<McpRecallOptions>,
+    /// Which tools the process advertises and serves.
+    pub tools: McpToolProfile,
+}
+
+/// Starts the MCP server over process stdin/stdout with explicit options.
+pub async fn serve_stdio_with_options(
+    deps: McpDeps,
+    options: McpServeOptions,
+) -> anyhow::Result<()> {
+    let (reader, writer) = (tokio::io::stdin(), tokio::io::stdout());
+    serve_io_with_options(deps, reader, writer, options).await
+}
+
+/// Starts the MCP server on injected streams with explicit options.
+pub async fn serve_io_with_options<R, W>(
+    deps: McpDeps,
+    reader: R,
+    writer: W,
+    options: McpServeOptions,
+) -> anyhow::Result<()>
+where
+    R: AsyncRead + Send + Unpin + 'static,
+    W: AsyncWrite + Send + Unpin + 'static,
+{
+    serve_io_configured(
+        deps,
+        reader,
+        writer,
+        default_tokenizer_startup,
+        None,
+        options.root.map_or(RootSource::Cwd, RootSource::Explicit),
+        options.recall,
+        options.tools,
     )
     .await
 }
@@ -447,6 +512,7 @@ where
         None,
         RootSource::Cwd,
         None,
+        McpToolProfile::Full,
     )
     .await
 }
@@ -473,6 +539,7 @@ where
         Some(hooks),
         RootSource::Cwd,
         None,
+        McpToolProfile::Full,
     )
     .await
 }
@@ -500,6 +567,7 @@ where
         Some(hooks),
         RootSource::Explicit(root),
         None,
+        McpToolProfile::Full,
     )
     .await
 }
@@ -509,6 +577,7 @@ enum RootSource {
     Explicit(PathBuf),
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn serve_io_configured<R, W, F>(
     deps: McpDeps,
     reader: R,
@@ -517,6 +586,7 @@ async fn serve_io_configured<R, W, F>(
     hooks: Option<McpLedgerHooks>,
     root_source: RootSource,
     recall: Option<McpRecallOptions>,
+    profile: McpToolProfile,
 ) -> anyhow::Result<()>
 where
     R: AsyncRead + Send + Unpin + 'static,
@@ -547,9 +617,10 @@ where
         diagnostics,
     );
     let outcome: anyhow::Result<()> = async {
-        let service_result = CompressoServer::new(deps, repository_root, session.clone(), recall)
-            .serve(transport)
-            .await;
+        let service_result =
+            CompressoServer::new(deps, repository_root, session.clone(), recall, profile)
+                .serve(transport)
+                .await;
         let service = match service_result {
             Ok(service) => service,
             Err(ServerInitializeError::ConnectionClosed(_)) => {
@@ -636,6 +707,24 @@ fn prepare_dependencies(mut deps: McpDeps, startup: TokenizerInitialization) -> 
 /// Returns the exact neutral instructions sent during MCP initialization.
 pub const fn server_instructions() -> &'static str {
     INSTRUCTIONS
+}
+
+/// The exact tools/list payload and initialization instructions a server with
+/// `profile` advertises, with recall enabled or not. Used to measure and test
+/// the fixed per-session schema cost of each profile.
+pub fn advertised_surface(profile: McpToolProfile, recall_enabled: bool) -> (Vec<Tool>, String) {
+    let mut tools = tool_declarations();
+    if recall_enabled {
+        tools.push(recall_tool_declaration());
+    }
+    match profile {
+        McpToolProfile::Full => (tools, INSTRUCTIONS.to_owned()),
+        McpToolProfile::Lean => {
+            let tools = lean_tools(tools);
+            let instructions = lean_instructions(tools.iter().map(|tool| tool.name.as_ref()));
+            (tools, instructions)
+        }
+    }
 }
 
 /// Names of every tool the server can advertise, in declaration order. The
