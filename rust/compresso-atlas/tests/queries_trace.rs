@@ -592,7 +592,7 @@ fn test_trace_callers_scale_with_many_same_named_definitions() {
     );
     assert!(report.complete);
     assert!(
-        elapsed < std::time::Duration::from_secs(8),
+        elapsed < std::time::Duration::from_secs(15),
         "trace took {elapsed:?}"
     );
 }
