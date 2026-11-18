@@ -353,3 +353,35 @@ fn test_an_oversized_or_garbled_qualifier_drops_only_that_call() {
         }
     }
 }
+
+#[test]
+fn test_functions_sharing_a_line_each_own_their_calls() {
+    let script = ParserRegistry::extract(
+        Language::JavaScript,
+        "function a(){first()}function b(){second()}class C{m(){third()}n(){fourth()}}\n",
+    )
+    .expect("JavaScript should extract");
+    assert_eq!(
+        rows(&script),
+        [
+            ("a", "first", None, CallForm::Plain, 1),
+            ("b", "second", None, CallForm::Plain, 1),
+            ("C::m", "third", None, CallForm::Plain, 1),
+            ("C::n", "fourth", None, CallForm::Plain, 1),
+        ]
+    );
+    let rust = ParserRegistry::extract(
+        Language::Rust,
+        "fn a() { first() } fn b() { second(); fn inner() { third() } fourth() }\n",
+    )
+    .expect("Rust should extract");
+    assert_eq!(
+        rows(&rust),
+        [
+            ("a", "first", None, CallForm::Plain, 1),
+            ("b", "second", None, CallForm::Plain, 1),
+            ("inner", "third", None, CallForm::Plain, 1),
+            ("b", "fourth", None, CallForm::Plain, 1),
+        ]
+    );
+}

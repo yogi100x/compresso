@@ -232,8 +232,19 @@ fn extract_with_query(
         calls: Vec::new(),
         calls_truncated: false,
     };
+    // The byte range of each symbol's node, when its recorded lines are the
+    // node's lines, so call attribution can tell apart functions that share
+    // a line (minified script). Not stored: the store keeps lines only.
+    let mut symbol_bytes = Vec::new();
     for candidate in candidates {
+        let before = extraction.symbols.len();
         process_candidate(candidate, source, &mut extraction);
+        let node = candidate.node;
+        for symbol in &extraction.symbols[before..] {
+            let same_lines = symbol.start_line == line_number(node.start_position().row)
+                && symbol.end_line == line_number(node.end_position().row);
+            symbol_bytes.push(same_lines.then(|| (node.start_byte(), node.end_byte())));
+        }
     }
     // Error recovery can yield an import whose module name is a zero-width
     // placeholder (`import ,`). It names nothing, and an empty edge target is
@@ -241,7 +252,13 @@ fn extract_with_query(
     extraction
         .imports
         .retain(|import| !import.raw.trim().is_empty());
-    let calls = calls::extract(call_syntax, tree.root_node(), source, &extraction.symbols);
+    let calls = calls::extract(
+        call_syntax,
+        tree.root_node(),
+        source,
+        &extraction.symbols,
+        &symbol_bytes,
+    );
     extraction.calls = calls.calls;
     extraction.calls_truncated = calls.truncated;
 

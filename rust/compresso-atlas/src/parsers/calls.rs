@@ -50,8 +50,9 @@ pub(super) fn extract(
     root: Node<'_>,
     source: &str,
     symbols: &[SymbolRecord],
+    symbol_bytes: &[Option<(usize, usize)>],
 ) -> ExtractedCalls {
-    let Some(enclosing) = EnclosingCallers::new(symbols) else {
+    let Some(enclosing) = EnclosingCallers::new(symbols, symbol_bytes) else {
         return ExtractedCalls {
             calls: Vec::new(),
             truncated: false,
@@ -170,24 +171,81 @@ const fn const_eq(left: &str, right: &str) -> bool {
     true
 }
 
-/// The innermost indexed function or method for every source line, computed
-/// once per file in O(lines + symbols log symbols) with a sweep over the
-/// symbol ranges, so each call finds its caller in O(1).
-struct EnclosingCallers {
-    by_line: Vec<Option<usize>>,
+/// The innermost indexed function or method enclosing a call.
+///
+/// When every function and method carries its node's byte range, a call is
+/// attributed by the byte where its name starts, so two functions on one
+/// line (minified script) each own their calls. Otherwise it falls back to
+/// lines: the innermost range covering the call's line, computed once per
+/// file with a sweep over the symbol ranges. Either way a lookup is O(log n)
+/// or better after O(n log n) setup.
+enum EnclosingCallers {
+    Bytes {
+        /// (start, end, symbol index), outer before inner at equal starts.
+        ranges: Vec<(usize, usize, usize)>,
+        /// Index into `ranges` of the innermost range containing each one.
+        parents: Vec<Option<usize>>,
+    },
+    Lines {
+        by_line: Vec<Option<usize>>,
+    },
 }
 
 impl EnclosingCallers {
-    fn new(symbols: &[SymbolRecord]) -> Option<Self> {
-        let mut ranges = symbols
+    fn new(symbols: &[SymbolRecord], symbol_bytes: &[Option<(usize, usize)>]) -> Option<Self> {
+        let callable = symbols
             .iter()
             .enumerate()
             .filter(|(_, symbol)| matches!(symbol.kind, SymbolKind::Function | SymbolKind::Method))
-            .map(|(index, symbol)| (symbol.start_line, symbol.end_line, index))
             .collect::<Vec<_>>();
-        if ranges.is_empty() {
+        if callable.is_empty() {
             return None;
         }
+        let bytes = callable
+            .iter()
+            .map(|(index, _)| {
+                symbol_bytes
+                    .get(*index)
+                    .copied()
+                    .flatten()
+                    .map(|(start, end)| (start, end, *index))
+            })
+            .collect::<Option<Vec<_>>>();
+        if let Some(ranges) = bytes {
+            return Some(Self::by_bytes(ranges));
+        }
+        Some(Self::by_lines(&callable))
+    }
+
+    fn by_bytes(mut ranges: Vec<(usize, usize, usize)>) -> Self {
+        // Outer ranges first at each start, so the inner one is nested last;
+        // among equal ranges the first symbol is innermost.
+        ranges.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| right.1.cmp(&left.1))
+                .then_with(|| right.2.cmp(&left.2))
+        });
+        let mut parents = Vec::with_capacity(ranges.len());
+        let mut stack: Vec<usize> = Vec::new();
+        for (position, range) in ranges.iter().enumerate() {
+            while stack
+                .last()
+                .is_some_and(|top| ranges[*top].1 < range.1 || ranges[*top].1 <= range.0)
+            {
+                stack.pop();
+            }
+            parents.push(stack.last().copied());
+            stack.push(position);
+        }
+        Self::Bytes { ranges, parents }
+    }
+
+    fn by_lines(callable: &[(usize, &SymbolRecord)]) -> Self {
+        let mut ranges = callable
+            .iter()
+            .map(|(index, symbol)| (symbol.start_line, symbol.end_line, *index))
+            .collect::<Vec<_>>();
         // Outer ranges first at each start line, so the inner one ends on top;
         // among equal ranges the first symbol ends on top.
         ranges.sort_by(|left, right| {
@@ -211,11 +269,24 @@ impl EnclosingCallers {
             }
             by_line.push(stack.last().map(|top| top.2));
         }
-        Some(Self { by_line })
+        Self::Lines { by_line }
     }
 
-    fn at(&self, line: u32) -> Option<usize> {
-        self.by_line.get(line as usize).copied().flatten()
+    fn at(&self, line: u32, byte: usize) -> Option<usize> {
+        match self {
+            Self::Lines { by_line } => by_line.get(line as usize).copied().flatten(),
+            Self::Bytes { ranges, parents } => {
+                let mut position = ranges
+                    .partition_point(|range| range.0 <= byte)
+                    .checked_sub(1)?;
+                // The last range starting at or before the byte, or the
+                // nearest one enclosing it.
+                while ranges[position].1 <= byte {
+                    position = parents[position]?;
+                }
+                Some(ranges[position].2)
+            }
+        }
     }
 }
 
@@ -225,7 +296,7 @@ fn record(
     enclosing: &EnclosingCallers,
 ) -> Option<(CallSiteRecord, usize)> {
     let line = line_number(callee.name.start_position().row);
-    let caller = enclosing.at(line)?;
+    let caller = enclosing.at(line, callee.name.start_byte())?;
     let name = node_text(callee.name, source)?;
     // Every call form passes this one check, so no extraction path can hand
     // the store a name or qualifier it would reject and abort the index with.
