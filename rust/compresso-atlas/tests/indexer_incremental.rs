@@ -532,7 +532,7 @@ fn test_index_records_call_sites_and_survives_malformed_calls() {
     );
     let inner = fixture
         .store
-        .call_sites_named(repo, "inner")
+        .call_sites_named(repo, "inner", usize::MAX)
         .expect("call sites should load");
     assert!(inner.iter().any(|call| call.from_path == "src/calls.rs"
         && call.caller_qualified_name == "outer"
@@ -548,7 +548,7 @@ fn test_index_records_call_sites_and_survives_malformed_calls() {
     assert!(
         fixture
             .store
-            .call_sites_named(repo, "inner")
+            .call_sites_named(repo, "inner", usize::MAX)
             .expect("call sites should load")
             .iter()
             .all(|call| call.from_path != "src/calls.rs")
@@ -623,7 +623,7 @@ fn test_an_oversized_macro_call_qualifier_never_aborts_the_index() {
     assert_eq!(report.call_site_files_rejected, 0);
     let calls = fixture
         .store
-        .call_sites_named(fixture.repo(), "helper")
+        .call_sites_named(fixture.repo(), "helper", usize::MAX)
         .expect("calls should load");
     assert!(calls.iter().any(|call| call.from_path == "src/hostile.rs"));
 }

@@ -92,6 +92,8 @@ pub struct StoredCallSite {
 }
 
 const SYMBOL_COLUMNS: &str = "s.id, s.name, s.qualified_name, s.kind, s.signature, s.start_line, s.end_line, s.token_estimate, f.path, f.language";
+/// A total order over call rows, so a `LIMIT` always keeps the same rows.
+const CALL_ORDER: &str = "f.path ASC, c.line ASC, c.caller_symbol_id ASC, c.callee_name ASC, c.call_form ASC, c.callee_qualifier ASC, c.id ASC";
 const CALL_COLUMNS: &str = "c.caller_symbol_id, caller.qualified_name, f.path, c.callee_name, c.callee_qualifier, c.call_form, c.line";
 
 impl Store {
@@ -139,20 +141,28 @@ impl Store {
         Ok(output)
     }
 
-    /// Lists the call sites inside the given caller symbols, in caller, line,
-    /// and name order.
+    /// Lists at most `limit` call sites inside the given caller symbols, in
+    /// path, line, and name order. Rows are cut in a fixed order (per chunk
+    /// of 400 callers, in the order given), so the same arguments always
+    /// return the same rows.
     pub fn call_sites_from(
         &self,
         repo: RepoId,
         caller_ids: &[i64],
+        limit: usize,
     ) -> Result<Vec<StoredCallSite>, StoreError> {
         let connection = self.connection()?;
         ensure_repo_exists(&connection, repo)?;
         let mut output = Vec::new();
         for chunk in caller_ids.chunks(ID_CHUNK) {
+            let remaining = limit.saturating_sub(output.len());
+            if remaining == 0 {
+                break;
+            }
             let placeholders = placeholders(chunk.len());
             let mut statement = connection.prepare(&format!(
-                "SELECT {CALL_COLUMNS} FROM call_sites AS c JOIN symbols AS caller ON caller.id = c.caller_symbol_id JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 AND c.caller_symbol_id IN ({placeholders})"
+                "SELECT {CALL_COLUMNS} FROM call_sites AS c JOIN symbols AS caller ON caller.id = c.caller_symbol_id JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 AND c.caller_symbol_id IN ({placeholders}) ORDER BY {CALL_ORDER} LIMIT {}",
+                sqlite_limit(remaining)
             ))?;
             let parameters = std::iter::once(repo).chain(chunk.iter().copied());
             let raw = statement
@@ -166,19 +176,21 @@ impl Store {
         Ok(output)
     }
 
-    /// Lists every call site in the repository that names `callee_name`.
+    /// Lists at most `limit` call sites in the repository that name
+    /// `callee_name`, cut in path, line, and name order.
     pub fn call_sites_named(
         &self,
         repo: RepoId,
         callee_name: &str,
+        limit: usize,
     ) -> Result<Vec<StoredCallSite>, StoreError> {
         let connection = self.connection()?;
         ensure_repo_exists(&connection, repo)?;
         let mut statement = connection.prepare_cached(&format!(
-            "SELECT {CALL_COLUMNS} FROM call_sites AS c JOIN symbols AS caller ON caller.id = c.caller_symbol_id JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 AND c.callee_name = ?2"
+            "SELECT {CALL_COLUMNS} FROM call_sites AS c JOIN symbols AS caller ON caller.id = c.caller_symbol_id JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 AND c.callee_name = ?2 ORDER BY {CALL_ORDER} LIMIT ?3"
         ))?;
         let raw = statement
-            .query_map(params![repo, callee_name], call_row)?
+            .query_map(params![repo, callee_name, sqlite_limit(limit)], call_row)?
             .collect::<Result<Vec<_>, _>>()?;
         let mut output = raw
             .into_iter()
@@ -275,6 +287,11 @@ pub(crate) fn insert_call_sites(
         ])?;
     }
     Ok(())
+}
+
+/// A row limit SQLite accepts; larger limits mean "every row".
+fn sqlite_limit(limit: usize) -> i64 {
+    i64::try_from(limit).unwrap_or(i64::MAX)
 }
 
 fn placeholders(count: usize) -> String {
@@ -406,16 +423,22 @@ mod tests {
             )
             .expect("file with calls should be written");
         assert_eq!(store.call_site_count(repo).expect("count"), 2);
-        let named = store.call_sites_named(repo, "second").expect("named");
+        let named = store.call_sites_named(repo, "second", 10).expect("named");
         assert_eq!(named.len(), 1);
         assert_eq!(named[0].caller_qualified_name, "first");
         assert_eq!(named[0].from_path, "src/a.rs");
         assert_eq!(named[0].line, 2);
 
         let callees = store
-            .call_sites_from(repo, &[named[0].caller_symbol_id])
+            .call_sites_from(repo, &[named[0].caller_symbol_id], 10)
             .expect("from");
         assert_eq!(callees, named);
+        assert!(
+            store
+                .call_sites_from(repo, &[named[0].caller_symbol_id], 0)
+                .expect("from")
+                .is_empty()
+        );
 
         store
             .replace_indexed_file(repo, &file("src/a.rs"), &[function("first", 1)], &[])

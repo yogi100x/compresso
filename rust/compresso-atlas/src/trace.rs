@@ -9,6 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
+use std::rc::Rc;
 
 use compresso_store::{
     CallForm, FileLanguage, IndexedSymbol, RepoId, Store, StoredCallSite, SymbolKind,
@@ -35,6 +36,11 @@ const TRACE_CANDIDATES_LISTED: usize = 10;
 const SIGNATURE_MAX_CHARS: usize = 160;
 /// Partial paths examined while enumerating shortest paths.
 const TRACE_PATH_ENUMERATION_STEPS: usize = 10_000;
+/// Stored call-site rows one trace reads, across every depth, name, and
+/// direction. `max_nodes` bounds the symbols found; this bounds the work
+/// spent finding them (a popular name can have many call sites that resolve
+/// elsewhere). Reaching it sets `truncated`.
+pub const TRACE_MAX_CALL_SITE_ROWS: usize = 100_000;
 
 /// Explicit bounds for one trace. `max_depth: None` uses
 /// [`TRACE_DEFAULT_PATH_DEPTH`] for a path search and
@@ -223,6 +229,18 @@ pub fn trace(
     to: Option<&str>,
     options: TraceOptions,
 ) -> Result<TraceReport, AtlasError> {
+    trace_with_row_budget(store, repo, from, to, options, TRACE_MAX_CALL_SITE_ROWS)
+}
+
+/// [`trace`] with an explicit call-site row budget.
+fn trace_with_row_budget(
+    store: &Store,
+    repo: RepoId,
+    from: Option<&str>,
+    to: Option<&str>,
+    options: TraceOptions,
+    call_site_rows: usize,
+) -> Result<TraceReport, AtlasError> {
     let max_depth = validate_options(from, to, options)?;
     let empty = |result| TraceReport {
         result,
@@ -274,7 +292,7 @@ pub fn trace(
         }
     }
     let (from, to) = (ends[0].take(), ends[1].take());
-    let mut walk = Walk::new(max_depth, options);
+    let mut walk = Walk::new(max_depth, options, call_site_rows);
     let result = match (from, to) {
         (Some(from), Some(to)) => walk.paths(&mut resolver, &from, &to)?,
         (Some(from), None) => walk.callees(&mut resolver, &from)?,
@@ -475,18 +493,56 @@ fn written_call(call: &StoredCallSite) -> String {
 #[derive(Clone, Debug)]
 enum Resolution {
     Resolved(i64, CallResolution),
-    Ambiguous(Vec<i64>),
+    /// Shared, so a cached ambiguous answer is cloned without its ids.
+    Ambiguous(Rc<[i64]>),
     Unresolved(&'static str),
 }
 
-/// Resolves stored call sites against current symbols and import edges,
-/// caching name lookups and the import map for one trace.
+/// What one call shape resolves against, independent of the calling file:
+/// either an answer that needs no file (`no_owner`, `external_path`,
+/// `not_found`) or the candidates left after the form's filter, grouped by
+/// path so the same-file and import tiers are lookups, not scans.
+enum Filtered {
+    Early(Resolution),
+    Candidates {
+        /// Candidate ids in path and line order.
+        all: Vec<i64>,
+        by_path: HashMap<String, Vec<i64>>,
+        name_only: bool,
+    },
+}
+
+/// The parts of a call that decide its candidates (the calling file's
+/// language family, not the file itself).
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct ShapeKey {
+    name: String,
+    family: Option<u8>,
+    form: CallForm,
+    qualifier: Option<String>,
+    caller_owner: Option<String>,
+}
+
+/// The parts of a call that decide its resolution: the shape plus the file.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct CallKey {
+    from_path: String,
+    shape: ShapeKey,
+}
+
+/// Resolves stored call sites against current symbols and import edges for
+/// one trace. Symbols are loaded once per name and held by id; a call's
+/// candidates are filtered once per call shape, and its resolution is
+/// cached per calling file, so resolving many call sites costs about one
+/// lookup each, however many symbols share the name.
 struct Resolver<'a> {
     store: &'a Store,
     repo: RepoId,
-    by_name: HashMap<String, Vec<IndexedSymbol>>,
+    by_name: HashMap<String, Vec<i64>>,
     imports: Option<HashMap<String, HashSet<String>>>,
     symbols: HashMap<i64, IndexedSymbol>,
+    shapes: HashMap<ShapeKey, Rc<Filtered>>,
+    resolved: HashMap<CallKey, Resolution>,
 }
 
 impl<'a> Resolver<'a> {
@@ -497,26 +553,29 @@ impl<'a> Resolver<'a> {
             by_name: HashMap::new(),
             imports: None,
             symbols: HashMap::new(),
+            shapes: HashMap::new(),
+            resolved: HashMap::new(),
         }
     }
 
-    fn named(&mut self, name: &str) -> Result<&[IndexedSymbol], AtlasError> {
+    /// Ids of the repository's non-secret symbols named `name`, in path and
+    /// line order; each symbol is loaded once and kept by id.
+    fn named(&mut self, name: &str) -> Result<&[i64], AtlasError> {
         if !self.by_name.contains_key(name) {
-            let found = self
-                .store
-                .indexed_symbols_named(self.repo, name)?
-                .into_iter()
-                .filter(|symbol| !is_secret_path(Path::new(&symbol.path)))
-                .collect::<Vec<_>>();
-            for symbol in &found {
-                self.symbols.insert(symbol.id, symbol.clone());
+            let mut ids = Vec::new();
+            for symbol in self.store.indexed_symbols_named(self.repo, name)? {
+                if is_secret_path(Path::new(&symbol.path)) {
+                    continue;
+                }
+                ids.push(symbol.id);
+                self.symbols.insert(symbol.id, symbol);
             }
-            self.by_name.insert(name.to_owned(), found);
+            self.by_name.insert(name.to_owned(), ids);
         }
         Ok(self.by_name.get(name).map_or(&[], Vec::as_slice))
     }
 
-    fn imports_of(&mut self, path: &str) -> Result<HashSet<String>, AtlasError> {
+    fn load_imports(&mut self) -> Result<(), AtlasError> {
         if self.imports.is_none() {
             let mut imports = HashMap::<String, HashSet<String>>::new();
             for edge in self.store.resolved_edges(self.repo)? {
@@ -527,12 +586,7 @@ impl<'a> Resolver<'a> {
             }
             self.imports = Some(imports);
         }
-        Ok(self
-            .imports
-            .as_ref()
-            .and_then(|imports| imports.get(path))
-            .cloned()
-            .unwrap_or_default())
+        Ok(())
     }
 
     fn symbol(&self, id: i64) -> Option<&IndexedSymbol> {
@@ -544,131 +598,169 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve(&mut self, call: &StoredCallSite) -> Result<Resolution, AtlasError> {
-        let rust = call.from_path.ends_with(".rs");
-        let caller_owner = owner_base(&call.caller_qualified_name);
         // A call never crosses languages: Rust, Python, and the script
         // family (JavaScript, TypeScript, TSX) resolve only within themselves.
-        let family = language_family(ParserRegistry::for_path(Path::new(&call.from_path)));
-        let candidates = self
-            .named(&call.callee_name)?
-            .iter()
-            .filter(|candidate| family.is_some() && language_family(candidate.language) == family)
-            .cloned()
-            .collect::<Vec<_>>();
-        let methods = |candidates: &[IndexedSymbol]| {
-            candidates
-                .iter()
-                .filter(|candidate| candidate.symbol.kind == SymbolKind::Method)
-                .cloned()
-                .collect::<Vec<_>>()
+        let shape = ShapeKey {
+            name: call.callee_name.clone(),
+            family: language_family(ParserRegistry::for_path(Path::new(&call.from_path))),
+            form: call.form,
+            qualifier: call.qualifier.clone(),
+            caller_owner: owner_base(&call.caller_qualified_name),
         };
-        let mut name_only = call.form == CallForm::Receiver;
-        let filtered = match call.form {
-            CallForm::Plain => candidates
-                .iter()
-                .filter(|candidate| {
-                    matches!(
-                        candidate.symbol.kind,
-                        SymbolKind::Function | SymbolKind::Class | SymbolKind::Struct
-                    )
-                })
-                .cloned()
-                .collect::<Vec<_>>(),
-            CallForm::SelfRef => {
-                let Some(owner) = caller_owner else {
-                    return Ok(Resolution::Unresolved("no_owner"));
-                };
-                candidates
-                    .iter()
-                    .filter(|candidate| {
-                        candidate.symbol.kind == SymbolKind::Method
-                            && owner_base(&candidate.symbol.qualified_name).as_deref()
-                                == Some(owner.as_str())
-                    })
-                    .cloned()
-                    .collect()
-            }
-            CallForm::Path => {
-                let qualifier = call.qualifier.as_deref().unwrap_or_default();
-                let last = qualifier
-                    .rsplit("::")
-                    .next()
-                    .and_then(|segment| segment.rsplit('.').next())
-                    .unwrap_or(qualifier);
-                let filtered = if matches!(last, "crate" | "super" | "self") {
-                    candidates
-                        .iter()
-                        .filter(|candidate| candidate.symbol.kind == SymbolKind::Function)
-                        .cloned()
-                        .collect::<Vec<_>>()
-                } else {
-                    candidates
-                        .iter()
-                        .filter(|candidate| {
-                            owner_base(&candidate.symbol.qualified_name).as_deref() == Some(last)
-                                || (matches!(
-                                    candidate.symbol.kind,
-                                    SymbolKind::Function | SymbolKind::Class | SymbolKind::Struct
-                                ) && module_name(&candidate.path) == last.replace('-', "_"))
-                        })
-                        .cloned()
-                        .collect()
-                };
-                if filtered.is_empty() {
-                    if rust {
-                        return Ok(Resolution::Unresolved("external_path"));
-                    }
-                    // A Python or script variable, not a module or type.
-                    name_only = true;
-                    methods(&candidates)
-                } else {
-                    filtered
-                }
-            }
-            CallForm::Receiver => methods(&candidates),
-            CallForm::Reference => candidates
-                .iter()
-                .filter(|candidate| candidate.symbol.kind == SymbolKind::Function)
-                .cloned()
-                .collect(),
+        let key = CallKey {
+            from_path: call.from_path.clone(),
+            shape,
         };
-        if filtered.is_empty() {
-            return Ok(Resolution::Unresolved("not_found"));
+        if let Some(resolution) = self.resolved.get(&key) {
+            return Ok(resolution.clone());
         }
+        let resolution = self.resolve_uncached(&key)?;
+        self.resolved.insert(key, resolution.clone());
+        Ok(resolution)
+    }
 
-        let same_file = filtered
-            .iter()
-            .filter(|candidate| candidate.path == call.from_path)
-            .map(|candidate| candidate.id)
-            .collect::<Vec<_>>();
-        if let Some(resolution) = tier(&same_file, CallResolution::SameFile) {
-            return Ok(silent_reference_ambiguity(call.form, resolution));
+    fn resolve_uncached(&mut self, key: &CallKey) -> Result<Resolution, AtlasError> {
+        let filtered = self.filtered(&key.shape)?;
+        let (all, by_path, name_only) = match filtered.as_ref() {
+            Filtered::Early(resolution) => return Ok(resolution.clone()),
+            Filtered::Candidates {
+                all,
+                by_path,
+                name_only,
+            } => (all, by_path, *name_only),
+        };
+        let form = key.shape.form;
+        let same_file = by_path.get(&key.from_path).map_or(&[][..], Vec::as_slice);
+        if let Some(resolution) = tier(same_file, CallResolution::SameFile) {
+            return Ok(silent_reference_ambiguity(form, resolution));
         }
-        let imports = self.imports_of(&call.from_path)?;
-        let imported = filtered
-            .iter()
-            .filter(|candidate| imports.contains(&candidate.path))
-            .map(|candidate| candidate.id)
+        self.load_imports()?;
+        let mut imported_paths = self
+            .imports
+            .as_ref()
+            .and_then(|imports| imports.get(&key.from_path))
+            .into_iter()
+            .flatten()
+            .filter(|path| by_path.contains_key(*path))
+            .collect::<Vec<_>>();
+        // Path order, as the candidates themselves are ordered.
+        imported_paths.sort();
+        let imported = imported_paths
+            .into_iter()
+            .flat_map(|path| by_path[path].iter().copied())
             .collect::<Vec<_>>();
         if let Some(resolution) = tier(&imported, CallResolution::Import) {
-            return Ok(silent_reference_ambiguity(call.form, resolution));
+            return Ok(silent_reference_ambiguity(form, resolution));
         }
-        if call.form == CallForm::Reference {
+        if form == CallForm::Reference {
             // Most bare arguments are variables: a name counts as a function
             // reference only when one function of that name is in the
             // caller's file or a file it imports; anything else is silent.
             return Ok(Resolution::Unresolved("not_found"));
         }
-        let all = filtered
-            .iter()
-            .map(|candidate| candidate.id)
-            .collect::<Vec<_>>();
         let rule = if name_only {
             CallResolution::NameOnly
         } else {
             CallResolution::UniqueName
         };
-        Ok(tier(&all, rule).unwrap_or(Resolution::Unresolved("not_found")))
+        Ok(tier(all, rule).unwrap_or(Resolution::Unresolved("not_found")))
+    }
+
+    /// The candidates a call shape may reach, computed once per shape.
+    fn filtered(&mut self, shape: &ShapeKey) -> Result<Rc<Filtered>, AtlasError> {
+        if let Some(filtered) = self.shapes.get(shape) {
+            return Ok(Rc::clone(filtered));
+        }
+        let ids = self.named(&shape.name)?.to_vec();
+        let candidates = ids
+            .iter()
+            .filter_map(|id| self.symbols.get(id))
+            .filter(|candidate| {
+                shape.family.is_some() && language_family(candidate.language) == shape.family
+            })
+            .collect::<Vec<_>>();
+        let filtered = Rc::new(filter_shape(shape, &candidates));
+        self.shapes.insert(shape.clone(), Rc::clone(&filtered));
+        Ok(filtered)
+    }
+}
+
+/// Applies a call form's candidate rule to the same-family symbols of its
+/// name (path and line ordered).
+fn filter_shape(shape: &ShapeKey, candidates: &[&IndexedSymbol]) -> Filtered {
+    let rust = shape.family == Some(0);
+    let keep = |predicate: &dyn Fn(&IndexedSymbol) -> bool| {
+        candidates
+            .iter()
+            .copied()
+            .filter(|candidate| predicate(candidate))
+            .collect::<Vec<_>>()
+    };
+    let is_method = |candidate: &IndexedSymbol| candidate.symbol.kind == SymbolKind::Method;
+    let mut name_only = shape.form == CallForm::Receiver;
+    let filtered = match shape.form {
+        CallForm::Plain => keep(&|candidate| {
+            matches!(
+                candidate.symbol.kind,
+                SymbolKind::Function | SymbolKind::Class | SymbolKind::Struct
+            )
+        }),
+        CallForm::SelfRef => {
+            let Some(owner) = shape.caller_owner.as_deref() else {
+                return Filtered::Early(Resolution::Unresolved("no_owner"));
+            };
+            keep(&|candidate| {
+                candidate.symbol.kind == SymbolKind::Method
+                    && owner_base(&candidate.symbol.qualified_name).as_deref() == Some(owner)
+            })
+        }
+        CallForm::Path => {
+            let qualifier = shape.qualifier.as_deref().unwrap_or_default();
+            let last = qualifier
+                .rsplit("::")
+                .next()
+                .and_then(|segment| segment.rsplit('.').next())
+                .unwrap_or(qualifier);
+            let filtered = if matches!(last, "crate" | "super" | "self") {
+                keep(&|candidate| candidate.symbol.kind == SymbolKind::Function)
+            } else {
+                let module = last.replace('-', "_");
+                keep(&|candidate| {
+                    owner_base(&candidate.symbol.qualified_name).as_deref() == Some(last)
+                        || (matches!(
+                            candidate.symbol.kind,
+                            SymbolKind::Function | SymbolKind::Class | SymbolKind::Struct
+                        ) && module_name(&candidate.path) == module)
+                })
+            };
+            if filtered.is_empty() {
+                if rust {
+                    return Filtered::Early(Resolution::Unresolved("external_path"));
+                }
+                // A Python or script variable, not a module or type.
+                name_only = true;
+                keep(&is_method)
+            } else {
+                filtered
+            }
+        }
+        CallForm::Receiver => keep(&is_method),
+        CallForm::Reference => keep(&|candidate| candidate.symbol.kind == SymbolKind::Function),
+    };
+    if filtered.is_empty() {
+        return Filtered::Early(Resolution::Unresolved("not_found"));
+    }
+    let mut by_path = HashMap::<String, Vec<i64>>::new();
+    for candidate in &filtered {
+        by_path
+            .entry(candidate.path.clone())
+            .or_default()
+            .push(candidate.id);
+    }
+    Filtered::Candidates {
+        all: filtered.iter().map(|candidate| candidate.id).collect(),
+        by_path,
+        name_only,
     }
 }
 
@@ -694,7 +786,7 @@ fn tier(ids: &[i64], rule: CallResolution) -> Option<Resolution> {
     match ids {
         [] => None,
         [id] => Some(Resolution::Resolved(*id, rule)),
-        _ => Some(Resolution::Ambiguous(ids.to_vec())),
+        _ => Some(Resolution::Ambiguous(Rc::from(ids))),
     }
 }
 
@@ -724,11 +816,14 @@ struct Walk {
     total: usize,
     unfollowed: Vec<UnfollowedCall>,
     unfollowed_total: usize,
+    /// Call-site rows this trace may still read.
+    rows_left: usize,
 }
 
 impl Walk {
-    fn new(max_depth: u8, options: TraceOptions) -> Self {
+    fn new(max_depth: u8, options: TraceOptions, call_site_rows: usize) -> Self {
         Self {
+            rows_left: call_site_rows,
             max_depth,
             options,
             visited: 1,
@@ -815,13 +910,30 @@ impl Walk {
         }
     }
 
+    /// Charges `rows` (fetched with a limit one above the budget left)
+    /// against the trace's row budget, cutting and marking the trace
+    /// truncated when they exceed it.
+    fn charge_rows(&mut self, mut rows: Vec<StoredCallSite>) -> Vec<StoredCallSite> {
+        if rows.len() > self.rows_left {
+            rows.truncate(self.rows_left);
+            self.truncated = true;
+        }
+        self.rows_left -= rows.len();
+        rows
+    }
+
     /// Resolved calls out of `callers`, one link per caller and callee.
     fn links_from(
         &mut self,
         resolver: &mut Resolver<'_>,
         callers: &[i64],
     ) -> Result<Vec<Link>, AtlasError> {
-        let calls = resolver.store.call_sites_from(resolver.repo, callers)?;
+        let calls = resolver.store.call_sites_from(
+            resolver.repo,
+            callers,
+            self.rows_left.saturating_add(1),
+        )?;
+        let calls = self.charge_rows(calls);
         let mut links = Vec::new();
         let mut seen = HashSet::new();
         for call in calls {
@@ -872,7 +984,12 @@ impl Walk {
         let mut links = Vec::new();
         let mut seen = HashSet::new();
         for name in names {
-            for call in resolver.store.call_sites_named(resolver.repo, &name)? {
+            let calls = resolver.store.call_sites_named(
+                resolver.repo,
+                &name,
+                self.rows_left.saturating_add(1),
+            )?;
+            for call in self.charge_rows(calls) {
                 if is_secret_path(Path::new(&call.from_path)) {
                     continue;
                 }
@@ -1150,6 +1267,62 @@ impl Walk {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_call_site_row_budget_truncates_a_trace_deterministically() {
+        use compresso_core::{TokenProvider, counter_for};
+
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let root = temp.path().join("repo");
+        std::fs::create_dir_all(&root).expect("root");
+        let mut source = String::from("def handle():\n    pass\n");
+        for caller in 0..30 {
+            source.push_str(&format!("def c{caller:02}():\n    handle()\n"));
+        }
+        std::fs::write(root.join("app.py"), source).expect("module");
+        let store = Store::open(&temp.path().join("compresso.db")).expect("store");
+        crate::Indexer::new(&store, counter_for(TokenProvider::Heuristic))
+            .index(&root, |_| {})
+            .expect("index");
+        let repo = store
+            .repo_by_root(&std::fs::canonicalize(&root).expect("canonical"))
+            .expect("lookup")
+            .expect("repository")
+            .id;
+        let run = |rows| {
+            trace_with_row_budget(
+                &store,
+                repo,
+                None,
+                Some("handle"),
+                TraceOptions::default(),
+                rows,
+            )
+            .expect("trace")
+        };
+
+        let full = run(TRACE_MAX_CALL_SITE_ROWS);
+        assert!(full.complete && !full.truncated);
+        assert_eq!(full.total, 30);
+
+        let cut = run(10);
+        assert!(cut.truncated && !cut.complete);
+        let TraceResult::Callers(callers) = &cut.result else {
+            panic!("expected callers, got {:?}", cut.result);
+        };
+        let names = callers
+            .iter()
+            .map(|caller| caller.symbol.qualified_name.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            (0..10).map(|i| format!("c{i:02}")).collect::<Vec<_>>()
+        );
+        assert_eq!(run(10), cut);
+
+        // A budget the rows exactly fill is not a cut.
+        assert!(!run(30).truncated);
+    }
 
     #[test]
     fn test_split_path_ignores_double_colons() {

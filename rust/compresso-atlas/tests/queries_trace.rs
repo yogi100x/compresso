@@ -543,3 +543,56 @@ fn test_trace_lists_a_function_passed_as_a_value_as_a_reference_caller() {
         .collect::<Vec<_>>();
     assert_eq!(names, [("apply", false), ("local_target", true)]);
 }
+
+/// Who calls one of many same-named definitions: every file defines
+/// `handle()` and twenty functions calling it. Resolution must not cost
+/// call sites times definitions; the bound is generous for debug CI builds,
+/// while the quadratic resolver took tens of seconds here.
+#[test]
+fn test_trace_callers_scale_with_many_same_named_definitions() {
+    const FILES: usize = 1_500;
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let root = temp.path().join("repo");
+    fs::create_dir_all(root.join("pkg")).expect("package directory");
+    for file in 0..FILES {
+        let mut source = String::from("def handle():\n    pass\n");
+        for caller in 0..20 {
+            source.push_str(&format!("def c{caller}():\n    handle()\n"));
+        }
+        fs::write(root.join(format!("pkg/m{file}.py")), source).expect("module");
+    }
+    let store = Store::open(&temp.path().join("compresso.db")).expect("store");
+    Indexer::new(&store, counter_for(TokenProvider::Heuristic))
+        .index(&root, |_| {})
+        .expect("index");
+    let repo = store
+        .repo_by_root(&fs::canonicalize(&root).expect("canonical"))
+        .expect("lookup")
+        .expect("repository")
+        .id;
+
+    let started = std::time::Instant::now();
+    let report = trace(
+        &store,
+        repo,
+        None,
+        Some("pkg/m0.py:handle"),
+        TraceOptions::default(),
+    )
+    .expect("trace");
+    let elapsed = started.elapsed();
+    let TraceResult::Callers(callers) = &report.result else {
+        panic!("expected callers, got {:?}", report.result);
+    };
+    assert_eq!(callers.len(), 20);
+    assert!(
+        callers
+            .iter()
+            .all(|caller| caller.symbol.path == "pkg/m0.py")
+    );
+    assert!(report.complete);
+    assert!(
+        elapsed < std::time::Duration::from_secs(8),
+        "trace took {elapsed:?}"
+    );
+}

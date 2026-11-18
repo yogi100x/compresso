@@ -38,7 +38,7 @@ pub use search::{
     search_with_diagnostics, validate_search_query,
 };
 pub use trace::{
-    CallResolution, TRACE_DEFAULT_NEIGHBOR_DEPTH, TRACE_DEFAULT_PATH_DEPTH, TRACE_MAX_DEPTH,
-    TraceCallSite, TraceEnd, TraceHop, TraceNeighbor, TraceOptions, TraceReport, TraceResult,
-    TraceSymbol, UnfollowedCall, trace,
+    CallResolution, TRACE_DEFAULT_NEIGHBOR_DEPTH, TRACE_DEFAULT_PATH_DEPTH,
+    TRACE_MAX_CALL_SITE_ROWS, TRACE_MAX_DEPTH, TraceCallSite, TraceEnd, TraceHop, TraceNeighbor,
+    TraceOptions, TraceReport, TraceResult, TraceSymbol, UnfollowedCall, trace,
 };
