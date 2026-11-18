@@ -75,6 +75,11 @@ pub(crate) const LEAN_TOOLS: &[LeanTool] = &[
         hint: "compresso_search for exact symbols",
     },
     LeanTool {
+        name: "compresso_grep",
+        description: "Text or regex search of indexed files, up to 8 patterns per call; returns use sites as path, line, enclosing symbol, with exact totals.",
+        hint: "compresso_grep for text and use sites",
+    },
+    LeanTool {
         name: "compresso_outline",
         description: "Symbol skeleton of one file: kinds, signatures, line ranges, no bodies.",
         hint: "compresso_outline for a file's structure",
