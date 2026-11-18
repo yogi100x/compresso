@@ -284,12 +284,9 @@ impl ServerHandler for CompressoServer {
         // for input or creates a task.
         let completed = async move {
             if hidden {
-                return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                    "[tool_unavailable] Tool '{}' is not served by the {} tool profile; the operator can restart the server without `--tools {}` to use it.",
-                    request.name,
-                    profile.name(),
-                    profile.name()
-                ))]));
+                return Ok(CallToolResult::error(vec![ContentBlock::text(
+                    hidden_tool_message(&request.name, profile),
+                )]));
             }
             if handled {
                 let Some(_call_guard) = session.acquire_call().await else {
@@ -977,6 +974,25 @@ impl OutputHealth {
             .unwrap_or_else(PoisonError::into_inner)
             .take()
     }
+}
+
+/// Why a known tool is not served here. A tool on the profile's allowlist
+/// that is still unregistered is conditional and not enabled for this
+/// process: restarting with the full profile would not help.
+fn hidden_tool_message(name: &str, profile: McpToolProfile) -> String {
+    if crate::profile::lean_tool_allowlist().contains(&name) {
+        let enable = match name {
+            "compresso_recall" => "start the server with `--recall-source`",
+            _ => "enable it when starting the server",
+        };
+        return format!(
+            "[tool_unavailable] Tool '{name}' is not enabled for this server process; the operator can {enable} to use it."
+        );
+    }
+    format!(
+        "[tool_unavailable] Tool '{name}' is not served by the {profile} tool profile; the operator can restart the server without `--tools {profile}` to use it.",
+        profile = profile.name()
+    )
 }
 
 /// Records an input failure that ends the session after it closes cleanly.

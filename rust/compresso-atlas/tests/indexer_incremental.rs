@@ -135,7 +135,7 @@ fn test_parser_version_bump_flags_stale_and_reparses_all() {
         .latest_index_version(fixture.repo())
         .expect("version lookup should succeed")
         .expect("version should exist");
-    assert_eq!(version.parser_version, "0.0.2");
+    assert_eq!(version.parser_version, "0.0.2+calls-v1");
     assert_eq!(version.schema_version, 1);
 }
 

@@ -97,7 +97,15 @@ const CALL_ORDER: &str = "f.path ASC, c.line ASC, c.caller_symbol_id ASC, c.call
 const CALL_COLUMNS: &str = "c.caller_symbol_id, caller.qualified_name, f.path, c.callee_name, c.callee_qualifier, c.call_form, c.line";
 
 impl Store {
-    /// Lists the repository's symbols with exactly this name, in path and line order.
+    /// Lists every repository symbol with exactly this name, in path and
+    /// line order, with its row id, path, and language.
+    ///
+    /// Distinct from [`Store::symbols_named`] on purpose: that one serves
+    /// search (a validated query, a row limit, full file records, no row
+    /// id); this one serves call resolution, which needs the row id to link
+    /// call sites and every definition of the name, since an unlisted one
+    /// could change ambiguity into a wrong answer. Its size is bounded by the
+    /// number of definitions of one name.
     pub fn indexed_symbols_named(
         &self,
         repo: RepoId,

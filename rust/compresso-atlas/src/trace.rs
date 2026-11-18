@@ -254,9 +254,13 @@ fn trace_with_row_budget(
         unfollowed: Vec::new(),
         unfollowed_total: 0,
     };
-    let current = store
-        .latest_index_version(repo)?
-        .is_some_and(|version| version.parser_version == crate::indexer::DEFAULT_PARSER_VERSION);
+    // Any index stamped by a parser that records call sites carries the
+    // marker, whatever its exact version.
+    let current = store.latest_index_version(repo)?.is_some_and(|version| {
+        version
+            .parser_version
+            .contains(crate::indexer::CALL_GRAPH_MARKER)
+    });
     if !current {
         return Ok(TraceReport {
             complete: false,

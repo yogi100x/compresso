@@ -23,6 +23,11 @@ pub(crate) const DEFAULT_PARSER_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     "+atlas-shell-text-v1+rust-imports-v2+calls-v1"
 );
+/// Marks an index whose parser recorded call sites (D89). Every version this
+/// indexer stamps carries it, including one set with
+/// [`Indexer::with_parser_version`], so `trace` can tell a call graph exists
+/// without knowing the exact parser version.
+pub(crate) const CALL_GRAPH_MARKER: &str = "+calls-v1";
 /// Below this many candidates worker startup costs more than it saves.
 const PARALLEL_INDEX_MIN_CANDIDATES: usize = 8;
 /// Prepared files a worker may run ahead of the ordered commit.
@@ -132,9 +137,15 @@ impl<'a> Indexer<'a> {
         self
     }
 
-    /// Overrides the parser version used for staleness checks and version stamps.
+    /// Overrides the parser version used for staleness checks and version
+    /// stamps. The call-graph marker (`+calls-v1`) is appended when the given
+    /// version lacks it, because this indexer always records call sites.
     pub fn with_parser_version(mut self, parser_version: impl Into<String>) -> Self {
-        self.parser_version = parser_version.into();
+        let mut parser_version = parser_version.into();
+        if !parser_version.contains(CALL_GRAPH_MARKER) {
+            parser_version.push_str(CALL_GRAPH_MARKER);
+        }
+        self.parser_version = parser_version;
         self
     }
 
@@ -846,6 +857,26 @@ mod tests {
     use crate::parsers::ImportKind;
 
     use super::*;
+
+    #[test]
+    fn test_every_stamped_parser_version_carries_the_call_graph_marker() {
+        assert!(DEFAULT_PARSER_VERSION.ends_with(CALL_GRAPH_MARKER));
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let store = Store::open(&directory.path().join("compresso.db")).expect("store should open");
+        let counter = counter_for(TokenProvider::Heuristic);
+        assert_eq!(
+            Indexer::new(&store, counter)
+                .with_parser_version("custom-1")
+                .parser_version,
+            "custom-1+calls-v1"
+        );
+        assert_eq!(
+            Indexer::new(&store, counter)
+                .with_parser_version("custom-1+calls-v1")
+                .parser_version,
+            "custom-1+calls-v1"
+        );
+    }
 
     #[test]
     fn test_call_sites_the_store_rejects_are_dropped_without_failing_the_file() {

@@ -596,3 +596,18 @@ fn test_trace_callers_scale_with_many_same_named_definitions() {
         "trace took {elapsed:?}"
     );
 }
+
+#[test]
+fn test_trace_works_on_an_index_built_with_a_custom_parser_version() {
+    let fixture = Fixture::new();
+    Indexer::new(&fixture.store, counter_for(TokenProvider::Heuristic))
+        .with_parser_version("embedder-7")
+        .index(&fixture.root, |_| {})
+        .expect("re-index under a custom version should succeed");
+    let report = fixture.trace(Some("entry"), Some("write"), TraceOptions::default());
+    assert!(
+        matches!(report.result, TraceResult::Paths(_)),
+        "{:?}",
+        report.result
+    );
+}
