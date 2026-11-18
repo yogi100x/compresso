@@ -1,0 +1,20 @@
+rust/compresso-mcp/src/tools/text.rs
+  s_89a704cfae63f5::t_41bd68ee3c5736 805-810,812-820
+  s_89a704cfae63f5::t_6e44b4215557f5 538-539,542-543
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6fac03ec543cd1f4b3a72592ea4efd0c47cc01d5",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
