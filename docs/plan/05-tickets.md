@@ -2699,7 +2699,7 @@ Test cases:
 
 ## E17 — Session continuity, savings fidelity, and platform hardening
 
-Added 2026-11-14 (D70). Clean-room follow-ups to the local slice; E17-01..10 landed together through `integration/e17`, E17-11..14 are open follow-ups; E17-15 is open and E17-16 landed 2026-11-15 (D77). E17-17..21 landed 2026-11-16 (D83–D86); E17-22..28 landed 2026-11-18 (D87–D93, awaiting owner confirmation).
+Added 2026-11-14 (D70). Clean-room follow-ups to the local slice; E17-01..10 landed together through `integration/e17`, E17-11..14 are open follow-ups; E17-15 is open and E17-16 landed 2026-11-15 (D77). E17-17..21 landed 2026-11-16 (D83–D86); E17-22..29 landed 2026-11-18 (D87–D94, awaiting owner confirmation).
 
 ### [x] E17-01: Re-assert tool routing after client compaction
 Owner: D1 · Estimate: 2d · Depends: E5-01, E6-01, E6-02, E6-03
@@ -3203,6 +3203,32 @@ Test cases:
 - `plan::tests::test_whole_file_uninstall_recovers_after_deletion_before_or_after_receipt_save`, `test_whole_file_format_owns_exactly_one_path`.
 - `cli_explore_agent` (5): `test_setup_and_default_installs_never_create_the_agent`, `test_agent_dry_run_previews_and_writes_nothing`, `test_agent_install_status_verify_and_uninstall_round_trip` (tools tied to the lean allowlist), `test_agent_is_claude_code_only_and_exclusive_with_other_surfaces`, `test_agent_install_refuses_a_user_agent_of_the_same_name`.
 
+### [x] E17-29: Review-round hardening, grep context lines, and multi-range read
+Owner: R2 · Estimate: 2.5d · Depends: E17-22, E17-24, E17-25, E17-27, E17-28
+Files: rust/compresso-atlas/src/parsers.rs, rust/compresso-atlas/src/parsers/calls.rs, rust/compresso-atlas/src/indexer.rs, rust/compresso-atlas/src/trace.rs, rust/compresso-atlas/src/queries.rs, rust/compresso-atlas/src/grep.rs, rust/compresso-atlas/src/cards.rs, rust/compresso-atlas/src/lib.rs, rust/compresso-atlas/tests/{parsers_calls,indexer_incremental,queries_trace,symlink_swap,grep_content,queries_unfold_search_read}.rs, rust/compresso-store/src/{calls,symbols,lib}.rs, rust/compresso-mcp/src/{server,profile}.rs, rust/compresso-mcp/src/tools/{atlas_read,atlas_grep,common}.rs, rust/compresso-mcp/tests/{tools_read,tools_grep,tool_profile}.rs, rust/compresso-integrations/src/explore_agent.rs, rust/compresso-cli/src/commands/{index,retrieval}.rs, rust/compresso-cli/tests/{cli_index,cli_retrieval}.rs, rust/compresso-eval/src/runner.rs, docs/plan/03-interfaces.md, docs/plan/04-mcp-and-integrations.md
+Description: A review of the E17 call-graph, grep, lean-profile, and explorer-agent work found that untrusted repository content could abort indexing, make a trace quadratic, or reach a secret file through a symbolic link, plus several smaller defects. All are fixed. Benchmark traces also showed about 2 `compresso_grep` calls followed by about 3.7 single-range `compresso_read` calls per task; `compresso_grep` gains `context_lines` and `compresso_read` gains `ranges` so one call returns what took several turns.
+Acceptance criteria:
+- A call qualifier written in macro arguments (`assert!(<300 A's>::make())`) is dropped by the one record path that every call form passes (valid names joined by `::` or `.`, at most 256 bytes). If the store would still reject a file's call sites, that file is indexed without call sites and counted in `IndexReport.call_site_files_rejected`. `index_failed` names its cause chain on one line of at most 512 bytes.
+- Callers of one of many same-named definitions resolve in about one lookup per call site: candidates are held by id, filtered once per call shape and grouped by path, and resolutions are cached per calling file. A trace reads at most 100,000 call-site rows (`TRACE_MAX_CALL_SITE_ROWS`) in a fixed SQL order and sets `truncated` when it reaches the cap. On the generated 1,000- and 2,000-file repositories, `trace --to pkg/m0.py:handle` drops from 6.0 s and 23.4 s to 0.19 s and 0.36 s (release build).
+- Repository files are served only through `resolve_under_root`. It refuses a secret canonical target and any symbolic-link component below the root, and reports both as `not_found`. On Unix the reader opens only the inode the gate approved, so a file or parent swapped for a link after the check is never read. A link that escapes the root is still `outside_root`. Hard links are served (04 §1.5a). Read, grep, unfold, outline staleness, the context-pack content scan, and module-card purpose lines all pass this gate.
+- Grep reports `complete: false` when in-scope files were skipped, and the MCP `note` names the skipped count. Snippets and a symbol lookup are kept only for files that can still rank within `max_files`, and the result equals sort-then-truncate. The compiled regex limit is 256 KiB, and each regex pattern searches at most 64 MiB, after which `scan_truncated` is set.
+- A call is attributed to its enclosing function by byte range, so functions that share a line each own their calls. Lines remain the fallback. There is no parser version bump.
+- `trace` checks for the `+calls-v1` marker, which `with_parser_version` appends, instead of the default version string.
+- A lean server asked for `compresso_recall` without `--recall-source` says to start the server with `--recall-source`.
+- The explorer agent's instructions name every tool in the 8-tool lean list, and its test checks that list.
+- The store's two lookups by symbol name are documented as distinct: search versus call resolution.
+- `compresso_grep` and `compresso grep -C` accept `context_lines` from 0 to 10. Context lines are merged, cut like snippets, and counted with their match inside `max_tokens`. With the default 0 the output is unchanged.
+- `compresso_read` accepts `ranges`, up to 8 `{path, start_line, end_line}` (CLI: `--range PATH[:START[-END]]`). Each range passes every read gate on its own and fails on its own with the single-read error code. The budget is shared in request order as equal shares of what is left. `gate` and the single-path arguments are refused alongside `ranges`, and the single form is unchanged.
+- The full and lean descriptions mention both features. The lean surface stays under half of the full one.
+Test cases:
+- `test_an_oversized_or_garbled_qualifier_drops_only_that_call`, `test_an_oversized_macro_call_qualifier_never_aborts_the_index`, `test_call_sites_the_store_rejects_are_dropped_without_failing_the_file`, and `test_index_failed_names_the_cause_chain_on_one_bounded_line`.
+- `test_trace_callers_scale_with_many_same_named_definitions` (1,500 files under an 8 s bound in debug; 19.8 s before the fix), `test_call_site_row_budget_truncates_a_trace_deterministically`, `test_trace_works_on_an_index_built_with_a_custom_parser_version`, and `test_every_stamped_parser_version_carries_the_call_graph_marker`.
+- `symlink_swap.rs` (four tests covering read, grep, unfold, outline, context, cards, staleness, internal links, directory links, and escapes), `test_a_file_swapped_for_a_symlink_after_resolution_is_never_opened`, `test_a_parent_directory_swapped_for_a_symlink_after_resolution_is_never_opened`, `test_hard_linked_ordinary_files_are_served`, and `test_indexed_file_swapped_for_a_symlink_to_a_secret_is_never_served` (MCP).
+- `test_grep_keeps_only_the_files_that_rank_and_matches_sort_then_truncate`, `test_grep_context_lines_surround_each_match_and_merge_when_overlapping`, `test_regex_byte_budget_stops_a_pattern_and_marks_the_scan_truncated`, `test_grep_tool_context_lines_surround_matches_within_the_token_cap` (MCP), and the skipped-file assertions in the existing oversize and unreadable tests.
+- `test_functions_sharing_a_line_each_own_their_calls`.
+- `test_read_bounded_ranges_share_one_budget_and_gate_each_range`, `test_read_ranges_reads_several_ranges_under_one_budget_and_gates_each` (MCP), and `test_grep_context_lines_and_multi_range_read` (CLI).
+- `test_lean_profile_rejects_a_hidden_tool_with_a_clean_error` (recall message) and the explorer render test (8 tools, every granted tool mentioned).
+
 ## Execution order (flat, dependency-ordered)
 
 Slice: E1-01, E1-02, E1-03, E1-04, E1-05, E1-06, E2-01, E2-02, E2-02a, E3-01, E2-03, E3-02, E3-03, E2-04, E2-05, E2-06, E2-07, E2-08, E2-12, E2-13, E2-14, E3-04, E3-05, E3-06, E3-07, E3-08, E2-09, E7-01, E7-07, E2-10, E2-11, E3-09, E7-02, E3-10, E3-11, E3-12, E4-01, E4-02, E4-03, E4-04, E4-05, E5-01, E5-02, E5-03, E5-04, E5-05, E5-06, E2-15, E7-03, E7-04, E7-05, E7-06, E5-07, E6-01, E6-02, E6-03, E6-04, E6-05.
@@ -3218,7 +3244,7 @@ Wave 6 — release engineering and hardening close-out: E12-01, E13-32, E12-02, 
 Wave 7 — E15 A-F plus threat-model and sandbox foundations: E15-01, E14-17, E14-18, E15-02, E15-03, E15-05, E15-09, E15-11, E15-14, E15-19, E15-06..E15-17, E15-18, E15-18b, E15-18c, E15-20..E15-30 subject to dependencies.
 Wave 8 — full-product completion: E16-01..E16-16 subject to listed dependencies.
 Wave 9 — deferred sandbox actions: E14-19, E14-20, E15-04, E15-31, E15-32.
-E17 (delivered after the slice, independent of waves 1–9): E17-05, E17-03, E17-04, E17-07, E17-02, E17-09, E17-01, E17-06, E17-10, E17-08; follow-ups E17-11, E17-12, E17-13, E17-14, E17-15; E17-16 delivered 2026-11-15; E17-17, E17-18, E17-19, E17-20, E17-21 delivered 2026-11-16; E17-22, E17-23, E17-24, E17-25, E17-26, E17-27, E17-28 delivered 2026-11-18.
+E17 (delivered after the slice, independent of waves 1–9): E17-05, E17-03, E17-04, E17-07, E17-02, E17-09, E17-01, E17-06, E17-10, E17-08; follow-ups E17-11, E17-12, E17-13, E17-14, E17-15; E17-16 delivered 2026-11-15; E17-17, E17-18, E17-19, E17-20, E17-21 delivered 2026-11-16; E17-22, E17-23, E17-24, E17-25, E17-26, E17-27, E17-28, E17-29 delivered 2026-11-18.
 
 Parallelism notes:
 - Slice: E2 (R1) and E3 (R2) run concurrently after E1; E7-01/E7-02 (PQ/R1) overlap E2's tail; E4 (D1) starts once E2-09 and E3-12 land; E5 (R2) follows E3; E6 (D1) follows E5-01 and overlaps E5-02..07; E1-06 and E4-05 (I1) slot in any time after E1-02/E4-04. E2-02a is a maintainer task (needs an Anthropic API key) and can land any time after E2-02 without blocking anything — until it lands, the interim 1.15 factor applies.
@@ -3249,6 +3275,6 @@ Parallelism notes:
 | E14 IP & secure deployment | 17 | 39 | ~8 wk | +E15 threat/sandbox gates |
 | E15 Clean-room advanced capabilities | 34 | 121.5 | ~24.5 engineer-wk | A-F incremental; G deferred |
 | E16 Full-product completion | 16 | 59 | ~12 engineer-wk, dependency-phased | |
-| E17 Session continuity & hardening | 28 | 54 | ~10.8 engineer-wk | E17-01..10 delivered 2026-11-14, E17-16 2026-11-15, E17-17, E17-18, E17-19, E17-20, and E17-21 2026-11-16, E17-22..28 2026-11-18; E17-11..15 open |
-| **Post-slice + PB total** | **182** | **516 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
-| **Grand total** | **240** | **612 gross** | **~122.4 engineer-wk** | |
+| E17 Session continuity & hardening | 29 | 56.5 | ~11.3 engineer-wk | E17-01..10 delivered 2026-11-14, E17-16 2026-11-15, E17-17, E17-18, E17-19, E17-20, and E17-21 2026-11-16, E17-22..29 2026-11-18; E17-11..15 open |
+| **Post-slice + PB total** | **183** | **518.5 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
+| **Grand total** | **241** | **614.5 gross** | **~122.9 engineer-wk** | |
