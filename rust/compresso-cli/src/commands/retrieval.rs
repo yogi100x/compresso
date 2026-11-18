@@ -14,6 +14,9 @@ use serde_json::{Value, json};
 
 use super::{OutputArgs, RootCommand};
 
+mod trace;
+pub use trace::TraceArgs;
+
 const DEFAULT_MAP_TOKENS: usize = 2_000;
 const DEFAULT_READ_TOKENS: usize = 2_000;
 const DEFAULT_UNFOLD_TOKENS: usize = 4_000;
@@ -157,6 +160,7 @@ pub(crate) fn execute(
         RootCommand::Unfold(arguments) => execute_unfold(store, cwd, arguments),
         RootCommand::Context(arguments) => execute_context(store, cwd, arguments),
         RootCommand::Impact(arguments) => execute_impact(store, cwd, arguments),
+        RootCommand::Trace(arguments) => trace::execute_trace(store, cwd, arguments),
         _ => Err(RetrievalError::internal()),
     }
 }
@@ -688,6 +692,7 @@ fn map_query_error(error: QueryError) -> RetrievalError {
         | QueryError::InvalidSearchQuery { .. }
         | QueryError::InvalidSearchPath { .. }
         | QueryError::InvalidImpactOptions { .. }
+        | QueryError::InvalidTraceOptions { .. }
         | QueryError::InvalidRange { .. }
         | QueryError::InvalidSymbolRange { .. }) => RetrievalError::invalid(&invalid.to_string()),
         QueryError::NotAFile { .. } => {

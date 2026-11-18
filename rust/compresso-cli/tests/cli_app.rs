@@ -29,6 +29,7 @@ fn test_canonical_command_snapshot() {
             "unfold",
             "context",
             "impact",
+            "trace",
             "compress",
             "explain",
             "stats",

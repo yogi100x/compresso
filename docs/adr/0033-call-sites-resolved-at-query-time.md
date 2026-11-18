@@ -45,12 +45,17 @@ Option 2.
   walk and the dotted-qualifier check are iterative, and a qualifier longer
   than 256 bytes is rejected before it is walked, so nesting depth cannot
   exhaust the stack; the enclosing caller of each line is computed once per
-  file by a sweep over the symbol ranges. Names must be identifier characters and at most 256 bytes;
-  anything else from error recovery is dropped, so a malformed file cannot
-  abort an index (as in E17-21). Covered: Rust, Python, JavaScript,
-  TypeScript, TSX. Not covered: shell, text, macros, calls at module level or
-  in class bodies, and calls whose callee is not a name (closures, call
-  results, subscripts).
+  file by a sweep over the symbol ranges. Names must be identifier
+  characters and at most 256 bytes; anything else from error recovery is
+  dropped, so a malformed file cannot abort an index (as in E17-21).
+  Covered: Rust, Python, JavaScript, TypeScript, TSX. Rust macro arguments
+  are a flat token tree, so calls inside them (`assert!(run())`,
+  `format!("{}", self.name())`) are read from tokens: a name followed by a
+  parenthesized group, optionally behind `Type::`, `self.`, or `expr.`; a
+  multi-segment path inside a macro is skipped. Not covered: shell, text,
+  macro invocations themselves, calls at module level or in class bodies,
+  and calls whose callee is not a name (closures, call results,
+  subscripts).
 - **Call forms.** `plain` (`run()`, `new Widget()`), `path` (`Store::open()`,
   `os.path.join()`, `api.v1.fetch()`), `self` (`self.x()`, `Self::x()`,
   `this.x()`, `cls.x()`), `receiver` (any other `expr.method()`).
@@ -66,17 +71,22 @@ Option 2.
   that has any is `ambiguous` and lists the candidates; none is
   `unresolved`. A `receiver` call resolved only by a repository-unique name is
   labelled `name_only`, because the receiver's type is unknown and a standard
-  library method can share the name.
+  library method can share the name. Only resolved calls are followed. A
+  library call (no repository symbol of that name, or a Rust path naming no
+  repository type or module) cannot lead to a repository symbol and is not
+  reported; an ambiguous call, or a `self` call outside any type, is listed
+  and makes the answer incomplete.
 - **Parser version.** The suffix gains `+calls-v1`, so an index built before
   this change reparses every file once and fills the table.
 
 ## Consequences
 
 - An incremental index never leaves a call pointing at a deleted symbol, and
-  indexing needs no repository-wide pass. Measured on this repository (386
-  files, release build, macOS arm64): full index 1.13-1.15 s before and
-  1.31-1.43 s after; no-op index 0.25 s before and 0.26-0.28 s after; store
-  8.2 MB before and 9.7 MB after.
+  indexing needs no repository-wide pass. Measured on a pinned snapshot of
+  this repository (386 files, 7,103 symbols, 24,288 call sites), release
+  build, macOS arm64, five interleaved full-index runs each: median 1,325 ms
+  before and 1,525 ms after (about 15%); no-op index 0.25 s before and
+  0.26-0.28 s after; store 7.9-8.2 MB before and 9.7 MB after.
 - Resolution cost moves to the trace query, which bounds it by visited nodes.
 - Resolution is by name, not by type. It can miss a call through a trait
   object, a function value, a re-export, or an inherited method, and a

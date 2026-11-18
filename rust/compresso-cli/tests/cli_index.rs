@@ -184,6 +184,8 @@ fn test_index_json_shape_is_versioned_and_stable() {
     assert_eq!(
         report.keys().map(String::as_str).collect::<Vec<_>>(),
         [
+            "call_site_files_truncated",
+            "call_sites",
             "duration_ms",
             "files_indexed",
             "files_removed",

@@ -19,7 +19,7 @@ use crate::rust_imports::{self, RustWorkspace};
 use crate::scanner::{AtlasError, DEFAULT_MAX_FILE_BYTES, ScanOptions, scan_with_concurrency};
 
 const INDEX_SCHEMA_VERSION: u32 = 1;
-const DEFAULT_PARSER_VERSION: &str = concat!(
+pub(crate) const DEFAULT_PARSER_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     "+atlas-shell-text-v1+rust-imports-v2+calls-v1"
 );

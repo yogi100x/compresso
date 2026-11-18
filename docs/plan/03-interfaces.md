@@ -299,6 +299,10 @@ pub fn validate_search_query(query: &str) -> Result<(), QueryError>; // QueryErr
 pub fn search_with_diagnostics(store: &Store, repo: RepoId, query: &str, options: SearchOptions<'_>) -> Result<SearchReport>; // errors only for InvalidSearchQuery / InvalidSearchPath
 pub fn read_bounded(root: &Path, path: &str, range: Option<(u32, u32)>, budget_tokens: usize, counter: &dyn TokenCounter) -> Result<BoundedRead>; // path canonicalized, MUST be under approved root; files over MAX_READ_FILE_BYTES (16 MiB) fail with QueryError::FileTooLarge before loading (D77) (symlink-resolved)
 pub fn impact(store: &Store, repo: RepoId, path: &str) -> Result<ImpactReport>;              // reverse-edge closure, depth 2
+// trace.rs (D90) — call sites resolved at query time (ADR-0033); reads only
+pub fn trace(store: &Store, repo: RepoId, from: Option<&str>, to: Option<&str>, options: TraceOptions) -> Result<TraceReport>; // both: shortest paths; from: callees; to: callers. TraceOptions { max_depth: Option<u8> /* 1..=8; None = 6 path, 1 neighbors */, max_paths /* 1..=10 */, max_nodes /* 1..=20000 */, max_results /* 1..=500 */ }; QueryError::InvalidTraceOptions on bad bounds
+pub enum TraceResult { Paths(Vec<Vec<TraceHop>>), NoPath, Callees(Vec<TraceNeighbor>), Callers(Vec<TraceNeighbor>), Ambiguous { end, candidates, total }, NotFound { end, name }, CallGraphMissing }
+pub struct TraceReport { pub result: TraceResult, pub total: usize, pub nodes_visited: usize, pub depth_reached: u8, pub max_depth: u8, pub truncated: bool, pub depth_limited: bool, pub complete: bool, pub unfollowed: Vec<UnfollowedCall>, pub unfollowed_total: usize }
 pub fn plan_context(store: &Store, repo: RepoId, task: &str, budget_tokens: usize) -> Result<ContextPlan>; // search-driven pack: focused map + file-diverse evidence excerpts within budget
 ```
 

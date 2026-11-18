@@ -277,6 +277,8 @@ pub enum QueryError {
     InvalidSearchPath { path: String },
     #[error("invalid impact options: {reason}")]
     InvalidImpactOptions { reason: &'static str },
+    #[error("invalid trace options: {reason}")]
+    InvalidTraceOptions { reason: &'static str },
     #[error("failed to canonicalize repository query root {path:?}")]
     CanonicalizeRoot {
         path: PathBuf,
