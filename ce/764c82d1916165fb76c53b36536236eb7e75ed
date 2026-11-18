@@ -1,0 +1,21 @@
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_5002c4d279f4c0 29,31
+rust/compresso-mcp/src/server.rs
+  s_89a704cfae63f5::t_4aa341c179a81a 118,122
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ce764c82d1916165fb76c53b36536236eb7e75ed",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
