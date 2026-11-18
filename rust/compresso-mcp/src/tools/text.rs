@@ -534,10 +534,28 @@ fn context(payload: &Value, out: &mut Out) {
             coverage.push_str("; uncovered: ");
             coverage.push_str(&uncovered.join(", "));
         }
+        // Task parts are named only when some are uncovered, so a fully
+        // covered task adds nothing to the state line; a single-part task's
+        // terms are already named by the concept coverage above.
+        let parts_total = number(task, "facets_total");
+        let parts_covered = number(task, "facets_covered");
+        if parts_total > 1 && parts_covered < parts_total {
+            coverage.push_str(&format!("; task parts {parts_covered}/{parts_total}"));
+            let parts = array(task, "uncovered_facets")
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>();
+            if !parts.is_empty() {
+                coverage.push_str("; uncovered parts: ");
+                coverage.push_str(&parts.join(" | "));
+            }
+        }
         out.note(coverage);
     }
     if let Some(note) = string(payload, "retrieval_note") {
-        out.note(note);
+        // The JSON note points at a field the text form does not carry; the
+        // state line above already names the uncovered parts.
+        out.note(note.replace(" (see task_coverage.uncovered_facets)", ""));
     }
     if flag(payload, "truncated") {
         out.note("pack cut to its token budget");
@@ -741,5 +759,50 @@ mod tests {
             "@@ a.rs:1-1 of 1\nx\n"
         );
         assert!(render("compresso_stats", &payload).is_none());
+    }
+
+    fn context_payload(covered: u64, total: u64, uncovered: &[&str]) -> Value {
+        json!({
+            "context_sufficiency": "targeted_follow_up_needed",
+            "next_action": "targeted_follow_up",
+            "targeted_follow_up_limit": 2,
+            "content_pack": "# pack\n",
+            "evidence_coverage": { "files_included": 1, "files_required": 1, "candidate_files": 1 },
+            "task_coverage": {
+                "concepts_covered": 2, "concepts_total": 2, "uncovered": [],
+                "facets_covered": covered, "facets_total": total, "uncovered_facets": uncovered
+            },
+            "retrieval_note": "The evidence found does not cover every part of the task (see task_coverage.uncovered_facets). Answer only the covered parts.",
+            "truncated": false
+        })
+    }
+
+    #[test]
+    fn test_context_names_uncovered_task_parts_in_the_state_line() {
+        let text = render(
+            "compresso_context",
+            &context_payload(1, 3, &["retry backoff", "store migration"]),
+        )
+        .expect("text form");
+        assert!(
+            text.contains(
+                "task concepts 2/2; task parts 1/3; uncovered parts: retry backoff | store migration]"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("task_coverage."), "{text}");
+        assert!(
+            text.contains("does not cover every part of the task. Answer"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn test_context_omits_task_parts_when_all_are_covered() {
+        let text = render("compresso_context", &context_payload(2, 2, &[])).expect("text form");
+        assert!(!text.contains("task parts"), "{text}");
+        let single =
+            render("compresso_context", &context_payload(0, 1, &["retry"])).expect("text form");
+        assert!(!single.contains("task parts"), "{single}");
     }
 }
