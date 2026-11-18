@@ -3184,7 +3184,7 @@ Acceptance criteria:
 - `--tools lean` lists exactly the allowlist, in order; every allowlisted name is a registered tool.
 - Calling a registered tool that lean does not serve returns `isError` text starting `[tool_unavailable]`, naming the tool and the restart remedy, and dispatches nothing; unknown names keep the protocol error.
 - Lean instructions keep the no-network, model-provider, and untrusted-content disclosures and name only served tools.
-- Lean fixed cost (tools/list payload plus instructions) is under half of full for both counters. Measured after the merge (eight lean tools, twelve full): o200k 3,847 → 1,904 tokens; Anthropic-calibrated 4,425 → 2,191 (about 49.5% of full; at the E17-27 commit, before grep and trace: 2,801 → 1,224 and 3,222 → 1,408).
+- Lean fixed cost (tools/list payload plus instructions) is under half of full for both counters. Measured after the merge (eight lean tools, twelve full): o200k 4,033 → 2,011 tokens; Anthropic-calibrated 4,639 → 2,314 (about 49.9% of full; at the E17-27 commit, before grep and trace: 2,801 → 1,224 and 3,222 → 1,408).
 Test cases:
 - `test_default_profile_tool_list_and_instructions_are_unchanged`, `test_lean_profile_advertises_exactly_the_allowlist`, `test_lean_initialize_sends_the_lean_instructions`, `test_lean_profile_rejects_a_hidden_tool_with_a_clean_error`, `test_lean_profile_with_operator_enabled_recall_serves_recall_last`, `test_lean_allowlist_names_only_registered_tools`, `test_lean_instructions_keep_the_mandatory_disclosures_and_name_only_served_tools`, `test_lean_schema_and_instructions_cost_less_than_half_of_default`, `test_profile_names_round_trip`; CLI `test_tool_profile_is_full_by_default_and_lean_only_explicitly`.
 

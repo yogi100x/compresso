@@ -86,6 +86,16 @@ Option 2.
 - **Parser version.** The suffix gains `+calls-v1`, so an index built before
   this change reparses every file once and fills the table.
 
+Review-round amendments (E17-29, D94): the enclosing caller is attributed by
+byte position, so two functions sharing one line each keep their own calls
+(files indexed earlier are corrected when next re-indexed; no version bump). A
+qualifier that fails the name rule or the 256-byte cap drops only that call. If
+the store still rejects a file's call sites, the file is indexed without them
+and counted in `call_site_files_rejected`; one file never aborts the index.
+Each trace reads at most 100,000 call-site rows and reports `truncated` when it
+reaches that cap; resolutions are cached per trace. Trace availability is
+gated on the `+calls-v1` parser-version marker, not on the default version.
+
 ## Consequences
 
 - An incremental index never leaves a call pointing at a deleted symbol, and
