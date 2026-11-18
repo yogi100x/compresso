@@ -535,11 +535,12 @@ fn context(payload: &Value, out: &mut Out) {
             coverage.push_str(&uncovered.join(", "));
         }
         // Task parts are named only when some are uncovered, so a fully
-        // covered task adds nothing to the state line; a single-part task's
-        // terms are already named by the concept coverage above.
+        // covered task adds nothing to the state line. A single-part task
+        // whose uncovered terms are already listed above is not repeated.
         let parts_total = number(task, "facets_total");
         let parts_covered = number(task, "facets_covered");
-        if parts_total > 1 && parts_covered < parts_total {
+        let already_named = parts_total == 1 && !uncovered.is_empty();
+        if parts_covered < parts_total && !already_named {
             coverage.push_str(&format!("; task parts {parts_covered}/{parts_total}"));
             let parts = array(task, "uncovered_facets")
                 .iter()
@@ -801,8 +802,21 @@ mod tests {
     fn test_context_omits_task_parts_when_all_are_covered() {
         let text = render("compresso_context", &context_payload(2, 2, &[])).expect("text form");
         assert!(!text.contains("task parts"), "{text}");
-        let single =
+    }
+
+    #[test]
+    fn test_context_names_a_single_uncovered_part_only_when_its_terms_are_not_listed() {
+        // Concepts all covered, part uncovered: the part must be named.
+        let text =
             render("compresso_context", &context_payload(0, 1, &["retry"])).expect("text form");
-        assert!(!single.contains("task parts"), "{single}");
+        assert!(
+            text.contains("task parts 0/1; uncovered parts: retry]"),
+            "{text}"
+        );
+        // The uncovered concepts already name the part's terms.
+        let mut payload = context_payload(0, 1, &["retry"]);
+        payload["task_coverage"]["uncovered"] = json!(["retry"]);
+        let text = render("compresso_context", &payload).expect("text form");
+        assert!(!text.contains("task parts"), "{text}");
     }
 }
