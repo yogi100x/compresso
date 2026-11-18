@@ -845,6 +845,7 @@ mod tests {
             symbols: 1,
             imports_resolved: 1,
             imports_unresolved: 0,
+            call_sites: 0,
             duration_ms: 1,
             stale: false,
         };

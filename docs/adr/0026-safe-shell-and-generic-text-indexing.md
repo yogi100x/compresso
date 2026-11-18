@@ -58,6 +58,10 @@ without changing the public package version.
 (Since the Rust import resolver change the suffix is `atlas-shell-text-v1+rust-imports-v2`,
 which again causes one full reparse so stored import edges are rebuilt.)
 
+(Since call-site extraction, D89 and ADR-0033, the suffix is
+`atlas-shell-text-v1+rust-imports-v2+calls-v1`; the one full reparse fills
+the new `call_sites` table for indexes built before it.)
+
 ## Consequences
 
 - Shell-backed operational workflows become discoverable in one context call

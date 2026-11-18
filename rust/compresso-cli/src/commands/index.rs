@@ -80,6 +80,7 @@ fn render(
     let root = root.to_string_lossy().into_owned();
     let report_json = report.as_ref().map(|report| {
         json!({
+            "call_sites": report.call_sites,
             "duration_ms": report.duration_ms,
             "files_indexed": report.files_indexed,
             "files_removed": report.files_removed,

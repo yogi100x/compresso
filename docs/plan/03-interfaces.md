@@ -210,6 +210,12 @@ impl Store {
     // files & symbols (used only by atlas)
     pub fn upsert_file(&self, repo: RepoId, rec: &FileRecord) -> Result<FileId>;
     pub fn replace_indexed_file(&self, repo: RepoId, rec: &FileRecord, symbols: &[SymbolRecord], edges: &[EdgeRecord]) -> Result<FileId>; // one per-file transaction
+    pub fn replace_indexed_file_with_calls(&self, repo: RepoId, rec: &FileRecord, symbols: &[SymbolRecord], edges: &[EdgeRecord], calls: &[CallSiteRecord]) -> Result<FileId>; // same transaction also replaces the file's call_sites (D89); replace_indexed_file == calls: &[]
+    pub fn symbols_named(&self, repo: RepoId, name: &str) -> Result<Vec<IndexedSymbol>>; // exact name, path/line order; IndexedSymbol { id, path, language, symbol }
+    pub fn symbols_by_ids(&self, repo: RepoId, ids: &[i64]) -> Result<Vec<IndexedSymbol>>; // other repositories' ids skipped
+    pub fn call_sites_from(&self, repo: RepoId, caller_ids: &[i64]) -> Result<Vec<StoredCallSite>>; // calls inside these callers
+    pub fn call_sites_named(&self, repo: RepoId, callee_name: &str) -> Result<Vec<StoredCallSite>>; // every call naming callee_name
+    pub fn call_site_count(&self, repo: RepoId) -> Result<usize>;
     pub fn file_hashes(&self, repo: RepoId) -> Result<HashMap<String, String>>;  // path -> blake3
     pub fn indexed_files(&self, repo: RepoId) -> Result<Vec<FileRecord>>; // deterministic path order
     pub fn indexed_file(&self, repo: RepoId, path: &str) -> Result<Option<FileRecord>>;
@@ -260,7 +266,7 @@ impl ParserRegistry {
 pub enum ImportKind { Use, Import, ExportFrom, Require, FromImport }
 pub struct ImportRecord { pub raw: String, pub kind: ImportKind, pub resolved_path: Option<String>, pub resolution: ImportResolution }
 pub enum ImportResolution { Resolved, Ambiguous(Vec<String>), Unresolved(String) }
-pub struct Extraction { pub symbols: Vec<SymbolRecord>, pub imports: Vec<ImportRecord> }
+pub struct Extraction { pub symbols: Vec<SymbolRecord>, pub imports: Vec<ImportRecord>, pub calls: Vec<CallSiteRecord> } // calls: D89; CallSiteRecord { caller /* index into symbols */, callee_name, qualifier, form: CallForm /* Plain|Path|SelfRef|Receiver */, line }; at most MAX_CALLS_PER_FILE (4,096)
 // code languages use pinned tree-sitter queries in queries/<lang>.scm; shell and inert text use bounded, non-executing structural scanners; all kinds normalize to store vocabulary
 
 // indexer.rs
@@ -271,7 +277,7 @@ impl Indexer<'_> {
     // pipeline: canonicalize+approve root -> scan -> parse ONLY added/changed -> replace_indexed_file per file transaction -> delete removed -> stamp index_versions
 }
 pub enum IndexProgress { Parsing { path: PathBuf }, Removed { path: String } }
-pub struct IndexReport { pub files_indexed: usize, pub files_removed: usize, pub files_skipped: usize, pub symbols: usize, pub imports_resolved: usize, pub imports_unresolved: usize, pub duration_ms: u64, pub stale: bool }
+pub struct IndexReport { pub files_indexed: usize, pub files_removed: usize, pub files_skipped: usize, pub symbols: usize, pub imports_resolved: usize, pub imports_unresolved: usize, pub call_sites: usize, pub duration_ms: u64, pub stale: bool }
 
 // queries.rs — all read-only, all bounded by token budget
 pub struct RepoMap { pub rendered: String, pub files_total: usize, pub files_shown: usize, pub truncated: bool, pub tokens_used: usize, pub token_provider: TokenProvider }

@@ -334,6 +334,28 @@ historical baselines produce zero modeled retrieval avoidance (D69).
 Migration `0007_reset_unqualified_retrieval_baselines.sql` conservatively
 resets baselines written by the initial whole-file estimator; corrected
 matched-evidence estimates are recorded only after that migration.
+Migration `0008_call_sites.sql` (D89, ADR-0033) adds the call graph:
+
+```sql
+CREATE TABLE call_sites (
+  id INTEGER PRIMARY KEY,
+  repo_id INTEGER NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+  from_file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+  caller_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+  callee_name TEXT NOT NULL,            -- as written, identifier characters, <= 256 bytes
+  callee_qualifier TEXT,                -- Store in Store::open(), os.path in os.path.join(), self/Self/this/cls
+  call_form TEXT NOT NULL CHECK (call_form IN ('plain','path','self','receiver')),
+  line INTEGER NOT NULL CHECK (line >= 1)  -- 1-based line of the callee name
+);
+CREATE INDEX idx_call_sites_caller ON call_sites(caller_symbol_id);
+CREATE INDEX idx_call_sites_callee ON call_sites(repo_id, callee_name);
+CREATE INDEX idx_call_sites_file ON call_sites(from_file_id);
+```
+
+Rows are written in the caller file's `replace_indexed_file` transaction and
+never name a callee symbol id; the callee is resolved at query time
+(`compresso_trace`, 04 §`compresso_trace`). Indexes stamped before the
+`+calls-v1` parser-version suffix hold no rows and are reparsed once.
 
 `integration_receipts` is a query/reporting projection, not the E6 safety
 receipt. Migration identifiers `0002`–`0005` are reserved by D60, and this
@@ -503,5 +525,8 @@ Migration numbers are reserved centrally and never introduced conditionally insi
 | `0003` | E13 | Provider state, capability evidence, and observed usage |
 | `0004` | E15 | Advanced local capabilities |
 | `0005` | E16-06 | Import-resolution status/detail migration |
+| `0006` | E7/D69 | Retrieval savings metrics |
+| `0007` | D69 | Reset unqualified retrieval baselines |
+| `0008` | E17-24 | Call sites (D89) |
 
 E15 adds strict boundary schemas under `schemas/search/v1.json`, `schemas/edit/v1.json`, `schemas/sql/v1.json`, `schemas/recall/v1.json`, `schemas/knowledge/v1.json`, and `schemas/review/v1.json`. Apply requests contain plan hashes and approvals, never credentials. Migration `0004_advanced_capabilities.sql` adds `edit_transactions`, `sql_connection_profiles`, `recall_sources`, `recall_chunks`, `knowledge_items`, `review_runs`, and `review_findings`. Recall, knowledge, rollback, and review content is encrypted with keychain-held keys; rows store ciphertext, hashes, provenance, states, and retention metadata. SQL profiles store only opaque keychain references. Migration `0003_model_runtime.sql` adds normalized E13 provider state and usage without prompts or reasoning. Exact DDL and invariants are owned by E15-01 and validated by E15-30 before release.

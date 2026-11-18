@@ -9,7 +9,9 @@ use std::thread;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use compresso_core::TokenCounter;
-use compresso_store::{EdgeKind, EdgeRecord, EdgeResolution, FileRecord, Store, SymbolRecord};
+use compresso_store::{
+    CallSiteRecord, EdgeKind, EdgeRecord, EdgeResolution, FileRecord, Store, SymbolRecord,
+};
 
 use crate::concurrency::{Concurrency, ReadAhead};
 use crate::parsers::{ImportRecord, ImportResolution, ParseError, ParserRegistry};
@@ -19,7 +21,7 @@ use crate::scanner::{AtlasError, DEFAULT_MAX_FILE_BYTES, ScanOptions, scan_with_
 const INDEX_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_PARSER_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
-    "+atlas-shell-text-v1+rust-imports-v2"
+    "+atlas-shell-text-v1+rust-imports-v2+calls-v1"
 );
 /// Below this many candidates worker startup costs more than it saves.
 const PARALLEL_INDEX_MIN_CANDIDATES: usize = 8;
@@ -42,6 +44,8 @@ pub struct IndexReport {
     pub symbols: usize,
     pub imports_resolved: usize,
     pub imports_unresolved: usize,
+    /// Call sites recorded inside the indexed functions and methods (D89).
+    pub call_sites: usize,
     pub duration_ms: u64,
     pub stale: bool,
 }
@@ -219,6 +223,7 @@ impl<'a> Indexer<'a> {
         let mut symbols = 0_usize;
         let mut imports_resolved = 0_usize;
         let mut imports_unresolved = 0_usize;
+        let mut call_sites = 0_usize;
 
         let candidates = candidates.into_iter().collect::<Vec<_>>();
         let context = PrepareContext {
@@ -252,14 +257,16 @@ impl<'a> Indexer<'a> {
                 symbols += prepared.symbols.len();
                 imports_resolved += prepared.imports_resolved;
                 imports_unresolved += prepared.imports_unresolved;
+                call_sites += prepared.calls.len();
             } else {
                 files_skipped += 1;
             }
-            self.store.replace_indexed_file(
+            self.store.replace_indexed_file_with_calls(
                 repo,
                 &prepared.record,
                 &prepared.symbols,
                 &prepared.edges,
+                &prepared.calls,
             )?;
             Ok(())
         };
@@ -302,6 +309,7 @@ impl<'a> Indexer<'a> {
             symbols,
             imports_resolved,
             imports_unresolved,
+            call_sites,
             duration_ms: elapsed_millis(started),
             stale,
         })
@@ -322,6 +330,7 @@ struct PreparedFile {
     record: FileRecord,
     symbols: Vec<SymbolRecord>,
     edges: Vec<EdgeRecord>,
+    calls: Vec<CallSiteRecord>,
     parsed: bool,
     imports_resolved: usize,
     imports_unresolved: usize,
@@ -378,6 +387,7 @@ fn prepare_file(
     let language = ParserRegistry::for_path(relative);
     let mut symbols = Vec::new();
     let mut edges = Vec::new();
+    let mut calls = Vec::new();
     let mut imports_resolved = 0_usize;
     let mut imports_unresolved = 0_usize;
 
@@ -395,6 +405,7 @@ fn prepare_file(
             context.rust_workspace,
         );
         symbols = extraction.symbols;
+        calls = extraction.calls;
         estimate_symbol_tokens(&source, relative, &mut symbols, context.counter)
             .map_err(PrepareFailure::during_parse)?;
         for import in extraction.imports {
@@ -419,6 +430,7 @@ fn prepare_file(
         },
         symbols,
         edges,
+        calls,
         parsed: language.is_some(),
         imports_resolved,
         imports_unresolved,

@@ -5,7 +5,8 @@ use compresso_store::Store;
 use rusqlite::{Connection, params};
 use tempfile::tempdir;
 
-const EXPECTED_TABLES: [&str; 13] = [
+const EXPECTED_TABLES: [&str; 14] = [
+    "call_sites",
     "edges",
     "files",
     "index_versions",
