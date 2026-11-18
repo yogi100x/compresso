@@ -2782,6 +2782,19 @@ pub(crate) fn canonical_query_root(root: &Path) -> Result<PathBuf, AtlasError> {
     Ok(canonical)
 }
 
+/// Resolves a repository-relative path for reading, the one gate every
+/// repository file read passes (read, grep, unfold, outline staleness,
+/// context-pack content scan, module-card purpose lines).
+///
+/// The symlink rule: a file is served only when the requested path names it
+/// directly. The target must lie inside `root` (otherwise
+/// [`AtlasError::OutsideRoot`]); then, if the requested path or the resolved
+/// target is a secret path, or any component of the requested path below
+/// `root` is a symbolic link, the entry is reported as
+/// [`ResolvedEntry::Missing`], exactly like a secret path, so a link reveals
+/// nothing about its target. The scanner never indexes or follows a link, so
+/// an indexed path that is now a link was swapped after indexing, and a link
+/// that was never indexed would serve content the index never vetted.
 pub(crate) fn resolve_under_root(
     root: &Path,
     requested: &str,
@@ -2793,6 +2806,10 @@ pub(crate) fn resolve_under_root(
     match fs::canonicalize(&joined) {
         Ok(resolved) => {
             ensure_contained(root, &resolved)?;
+            let target = resolved.strip_prefix(root).unwrap_or(&resolved);
+            if is_secret_path(target) || traverses_symlink(root, Path::new(requested)) {
+                return Ok(ResolvedEntry::Missing);
+            }
             if !resolved.is_file() {
                 return Err(QueryError::NotAFile { path: resolved }.into());
             }
@@ -2808,6 +2825,48 @@ pub(crate) fn resolve_under_root(
         }
         .into()),
     }
+}
+
+/// Whether any component of `requested` below `root` is a symbolic link,
+/// checked without following links. A path that names no component below
+/// `root` lexically (an absolute path elsewhere, or one that climbs above
+/// `root` with `..`) counts as traversing a link: it can only reach the root
+/// through another name for it.
+fn traverses_symlink(root: &Path, requested: &Path) -> bool {
+    let relative = if requested.is_absolute() {
+        match requested.strip_prefix(root) {
+            Ok(relative) => relative,
+            Err(_) => return true,
+        }
+    } else {
+        requested
+    };
+    let mut current = root.to_path_buf();
+    let mut depth = 0_usize;
+    for component in relative.components() {
+        match component {
+            std::path::Component::Normal(part) => {
+                current.push(part);
+                depth += 1;
+                // A component that cannot be inspected (it changed since
+                // canonicalization) is refused like a link.
+                match fs::symlink_metadata(&current) {
+                    Ok(metadata) if !metadata.file_type().is_symlink() => {}
+                    _ => return true,
+                }
+            }
+            std::path::Component::ParentDir => {
+                if depth == 0 {
+                    return true;
+                }
+                current.pop();
+                depth -= 1;
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => return true,
+        }
+    }
+    false
 }
 
 fn ensure_missing_path_contained(root: &Path, missing: &Path) -> Result<(), AtlasError> {

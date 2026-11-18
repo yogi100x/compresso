@@ -501,7 +501,7 @@ fn test_read_bounded_rejects_dotdot_and_absolute_escapes() {
 
 #[cfg(unix)]
 #[test]
-fn test_read_bounded_symlink_escape_and_internal_symlink() {
+fn test_read_bounded_refuses_symlink_escape_and_internal_symlink() {
     use std::os::unix::fs::symlink;
 
     let directory = tempfile::tempdir().expect("temporary directory should be created");
@@ -519,9 +519,14 @@ fn test_read_bounded_symlink_escape_and_internal_symlink() {
         read_bounded(&root, "escape.txt", None, 100, counter()),
         Err(AtlasError::OutsideRoot { .. })
     ));
-    let internal = read_bounded(&root, "inside-link.txt", None, 100, counter())
-        .expect("internal symlink should be readable");
-    assert_eq!(internal.content, "inside\n");
+    // A link inside the root is refused like a missing file: the scanner
+    // never indexes or follows one, so its target was never vetted.
+    assert!(matches!(
+        read_bounded(&root, "inside-link.txt", None, 100, counter()),
+        Err(AtlasError::Query(
+            compresso_atlas::QueryError::NotFound { .. }
+        ))
+    ));
 }
 
 #[cfg(unix)]

@@ -385,6 +385,34 @@ async fn test_read_symlink_escape_via_mcp() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn test_indexed_file_swapped_for_a_symlink_to_a_secret_is_never_served() {
+    use std::os::unix::fs::symlink;
+
+    const SECRET: &str = "supersecret_swap_canary_5521";
+    let fixture = IndexedFixture::new();
+    fs::write(fixture.root.join(".env"), format!("TOKEN={SECRET}\n")).expect("secret file");
+    fs::remove_file(fixture.root.join("src/cache.rs")).expect("indexed file removed");
+    symlink(fixture.root.join(".env"), fixture.root.join("src/cache.rs")).expect("swap link");
+    let mut harness = Harness::start(fixture.store.clone()).await;
+
+    let mut read = fixture.arguments();
+    read.insert("path".to_owned(), json!("src/cache.rs"));
+    let response = harness.call("compresso_read", Value::Object(read)).await;
+    assert_tool_error(&response, "not_found");
+    assert!(!response.to_string().contains(SECRET));
+
+    let mut grep = fixture.arguments();
+    grep.insert("pattern".to_owned(), json!(SECRET));
+    let response = harness.call("compresso_grep", Value::Object(grep)).await;
+    assert!(!response.to_string().contains(&format!("TOKEN={SECRET}")));
+    let result = successful_json(response);
+    assert_eq!(result["results"][0]["matches_total"], 0);
+    assert_eq!(result["scan"]["files_skipped_unreadable"], 1);
+    harness.close().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn test_bound_root_retarget_cannot_leak_another_approved_repository() {
     use std::os::unix::fs::symlink;
 
