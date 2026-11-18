@@ -164,6 +164,45 @@ task = "Where is TooManyAttemptsError thrown?"
 gold_files = ["auth/src/errors.ts", "auth/src/rateLimiter.ts"]
 expect_ready = true
 
+# Several parts in one task (D95): one report, the whole catalog, and keeping
+# the check cheap for large sources. The answer is a shared comparison helper
+# and the two functions that call it, in a file whose constants and other
+# report functions fill the two-per-file share first. Before D95 each pack was
+# ready without the per-report check or the helper: words scattered over
+# unrelated excerpts covered half the task. The code never says "cheap" or
+# "large", so no pack covers the last clause and none may be ready; no
+# `expect_ready` is declared, so a planner that one day covers it is not
+# penalised, while `false_ready` still fails a ready pack missing a symbol.
+[[task]]
+id = "cache-staleness-prose"
+task = "In this repository, explain how the report cache decides that a cached report, or the whole catalog, is out of date compared with its source on disk, and how it keeps that check cheap for large sources. Cite source files and function names."
+gold_files = ["engine/src/report_cache.rs"]
+gold_symbols = [
+    "engine/src/report_cache.rs::catalog_stale",
+    "engine/src/report_cache.rs::report_current",
+    "engine/src/report_cache.rs::source_unchanged",
+]
+
+[[task]]
+id = "cache-staleness-terse"
+task = "staleness check: how the report cache decides a cached report or the catalog is stale versus disk; cheap check for large sources (length, mtime, digest)"
+gold_files = ["engine/src/report_cache.rs"]
+gold_symbols = [
+    "engine/src/report_cache.rs::catalog_stale",
+    "engine/src/report_cache.rs::report_current",
+    "engine/src/report_cache.rs::source_unchanged",
+]
+
+[[task]]
+id = "cache-staleness-paraphrase"
+task = "How does the report cache tell that one cached report or the whole catalog no longer matches its source on disk, and how is that kept cheap for large sources?"
+gold_files = ["engine/src/report_cache.rs"]
+gold_symbols = [
+    "engine/src/report_cache.rs::catalog_stale",
+    "engine/src/report_cache.rs::report_current",
+    "engine/src/report_cache.rs::source_unchanged",
+]
+
 # Absent concepts: nothing in the corpus answers these, so a ready pack would
 # be a false claim.
 [[task]]

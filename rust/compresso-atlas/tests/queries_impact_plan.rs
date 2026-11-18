@@ -1163,9 +1163,12 @@ fn test_plan_context_drops_broad_word_tail_only_when_specific_evidence_covers_th
     )
     .expect("context should plan");
 
+    // D95: `MCP server` is a part of the task of its own, so the one symbol
+    // that best covers it stays as that part's evidence; the rest of the
+    // broad-word tail is dropped.
     assert_eq!(
         tail(&covered),
-        0,
+        1,
         "symbols matching only broad words are dropped once the task is covered: {}",
         covered.rendered
     );

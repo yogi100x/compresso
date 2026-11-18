@@ -333,9 +333,7 @@ fn run_tasks(corpus: &RetrievalCorpus) -> Result<(usize, Vec<RetrievalTaskOutcom
 
 /// The readiness rule the product reports for a pack (04 §`compresso_context`).
 fn plan_ready(plan: &ContextPlan) -> bool {
-    plan.evidence_files_included >= plan.evidence_files_total
-        && plan.evidence_files_total > 0
-        && plan.concept_coverage_sufficient()
+    plan.evidence_ready()
 }
 
 /// Splits `<path>::<qualified name>` at the first `::`; a path has none.
