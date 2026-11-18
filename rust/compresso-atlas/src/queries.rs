@@ -2674,12 +2674,12 @@ fn symbol_identity(path: &str, symbol: &SymbolRecord) -> SymbolIdentity {
     }
 }
 
-enum ResolvedEntry {
+pub(crate) enum ResolvedEntry {
     File(PathBuf),
     Missing,
 }
 
-fn canonical_query_root(root: &Path) -> Result<PathBuf, AtlasError> {
+pub(crate) fn canonical_query_root(root: &Path) -> Result<PathBuf, AtlasError> {
     let canonical = fs::canonicalize(root).map_err(|source| QueryError::CanonicalizeRoot {
         path: root.to_path_buf(),
         source,
@@ -2696,7 +2696,10 @@ fn canonical_query_root(root: &Path) -> Result<PathBuf, AtlasError> {
     Ok(canonical)
 }
 
-fn resolve_under_root(root: &Path, requested: &str) -> Result<ResolvedEntry, AtlasError> {
+pub(crate) fn resolve_under_root(
+    root: &Path,
+    requested: &str,
+) -> Result<ResolvedEntry, AtlasError> {
     if is_secret_path(Path::new(requested)) {
         return Ok(ResolvedEntry::Missing);
     }
@@ -2801,7 +2804,7 @@ fn freshness_from_metadata(
 /// A size that differs is stale without reading, a file untouched since
 /// before it was indexed is trusted without reading, and anything else is
 /// hashed through one fixed buffer. The file is never loaded whole.
-fn file_matches_index(
+pub(crate) fn file_matches_index(
     path: &Path,
     indexed: &compresso_store::FileRecord,
 ) -> Result<bool, QueryError> {

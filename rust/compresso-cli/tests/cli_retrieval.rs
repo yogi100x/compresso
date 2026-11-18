@@ -224,6 +224,44 @@ fn test_map_outline_and_context_use_approved_cwd_and_canonical_queries() {
 }
 
 #[test]
+fn test_map_cards_are_opt_in_bounded_and_zoomable() {
+    let fixture = Fixture::new();
+
+    let (_, plain, _) = fixture.run_json(&["map", "--json"]);
+    assert!(plain["data"].get("cards").is_none(), "cards are opt-in");
+
+    let (exit, output, errors) = fixture.run_json(&["map", "--cards", "--json"]);
+    assert_eq!(exit, CliExitCode::Success);
+    assert!(errors.is_null());
+    let card = &output["data"]["cards"][0];
+    assert_eq!(card["path"], "src");
+    assert_eq!(card["files"], 2);
+    assert!(
+        card["public_symbols"]
+            .as_array()
+            .expect("public symbols")
+            .iter()
+            .any(|symbol| symbol["name"] == "SessionManager" && symbol["kind"] == "struct")
+    );
+    assert_eq!(output["data"]["cards_total"], 1);
+    assert_eq!(output["data"]["cards_truncated"], false);
+    let used = output["data"]["tokens_used"].as_u64().unwrap()
+        + output["data"]["cards_tokens_used"].as_u64().unwrap();
+    assert!(used <= 2_000);
+
+    let (exit, zoomed, _) = fixture.run_json(&["map", "--path", "missing", "--json"]);
+    assert_eq!(exit, CliExitCode::Success);
+    assert_eq!(zoomed["data"]["cards"], serde_json::json!([]));
+
+    let (exit, _, errors) = fixture.run_json(&["map", "--cards", "--max-cards", "0", "--json"]);
+    assert_eq!(exit, CliExitCode::Failure);
+    assert_eq!(errors["error"]["code"], "invalid_arguments");
+    let (exit, _, errors) = fixture.run_json(&["map", "--path", "../escape", "--json"]);
+    assert_eq!(exit, CliExitCode::Failure);
+    assert_eq!(errors["error"]["code"], "invalid_arguments");
+}
+
+#[test]
 fn test_explicit_root_must_be_the_exact_approved_repository() {
     let fixture = Fixture::new();
     let unapproved = fixture.root.parent().unwrap().join("unapproved");

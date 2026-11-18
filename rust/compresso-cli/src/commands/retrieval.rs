@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args, ValueEnum};
 use compresso_atlas::{
-    AtlasError, BoundedRead, ContextPlan, QueryError, SearchOptions, UnfoldResult, file_line_count,
-    impact, outline, plan_context, read_bounded, repo_map, search_with_diagnostics, unfold,
+    AtlasError, BoundedRead, CardOptions, ContextPlan, DEFAULT_MAX_CARDS, MAX_CARDS, ModuleCard,
+    QueryError, SearchOptions, UnfoldResult, file_line_count, impact, module_cards, outline,
+    plan_context, read_bounded, repo_map, search_with_diagnostics, unfold,
 };
 use compresso_core::{TokenProvider, counter_for};
 use compresso_store::{
@@ -36,6 +37,15 @@ pub struct MapArgs {
     pub repository: RepositoryArgs,
     #[arg(long, default_value_t = DEFAULT_MAP_TOKENS)]
     pub max_tokens: usize,
+    /// Add deterministic per-directory module cards within --max-tokens.
+    #[arg(long)]
+    pub cards: bool,
+    /// Repository-relative directory whose subtree the cards cover; implies --cards.
+    #[arg(long, value_name = "REPO_PATH")]
+    pub path: Option<String>,
+    /// Maximum module cards (1-50).
+    #[arg(long, default_value_t = DEFAULT_MAX_CARDS)]
+    pub max_cards: usize,
     #[command(flatten)]
     pub output: OutputArgs,
 }
@@ -163,9 +173,34 @@ pub(crate) fn execute(
 
 fn execute_map(store: &Store, cwd: &Path, arguments: MapArgs) -> Result<Rendered, RetrievalError> {
     validate_budget(arguments.max_tokens)?;
+    if !(1..=MAX_CARDS).contains(&arguments.max_cards) {
+        return Err(RetrievalError::invalid(
+            "max-cards must be between 1 and 50",
+        ));
+    }
     let repository = resolve_repository(store, arguments.repository.root.as_deref(), cwd)?;
-    let result = repo_map(store, repository.id, arguments.max_tokens).map_err(map_atlas_error)?;
-    let data = json!({
+    let with_cards = arguments.cards || arguments.path.is_some();
+    // Cards take up to three quarters of the budget; the map keeps the rest.
+    let cards = with_cards
+        .then(|| {
+            module_cards(
+                store,
+                repository.id,
+                &repository.root,
+                CardOptions {
+                    path: arguments.path.as_deref(),
+                    max_cards: arguments.max_cards,
+                    budget_tokens: arguments.max_tokens.saturating_mul(3) / 4,
+                },
+            )
+        })
+        .transpose()
+        .map_err(map_atlas_error)?;
+    let map_budget = arguments
+        .max_tokens
+        .saturating_sub(cards.as_ref().map_or(0, |cards| cards.tokens_used));
+    let result = repo_map(store, repository.id, map_budget).map_err(map_atlas_error)?;
+    let mut data = json!({
         "root": repository.root,
         "map": result.rendered.clone(),
         "files_total": result.files_total,
@@ -174,7 +209,51 @@ fn execute_map(store: &Store, cwd: &Path, arguments: MapArgs) -> Result<Rendered
         "token_provider": result.token_provider,
         "truncated": result.truncated,
     });
-    Ok(rendered(data, result.rendered))
+    let mut human = result.rendered;
+    if let (Some(cards), Some(object)) = (cards, data.as_object_mut()) {
+        object.insert(
+            "cards".to_owned(),
+            Value::Array(cards.cards.iter().map(card_json).collect()),
+        );
+        object.insert("cards_total".to_owned(), json!(cards.cards_total));
+        object.insert("cards_shown".to_owned(), json!(cards.cards.len()));
+        object.insert("cards_tokens_used".to_owned(), json!(cards.tokens_used));
+        object.insert("cards_truncated".to_owned(), json!(cards.truncated));
+        for card in &cards.cards {
+            human.push_str("\n\n");
+            human.push_str(&card.rendered);
+        }
+        if cards.truncated {
+            human.push_str(&format!(
+                "\n\n[{} of {} module cards shown]",
+                cards.cards.len(),
+                cards.cards_total
+            ));
+        }
+    }
+    Ok(rendered(data, human))
+}
+
+fn card_json(card: &ModuleCard) -> Value {
+    json!({
+        "path": card.path,
+        "purpose": card.purpose,
+        "files": card.files,
+        "symbols": card.symbols,
+        "entry_points": card.entry_points,
+        "public_symbols": card.public_symbols.iter().map(|symbol| json!({
+            "name": symbol.name,
+            "kind": symbol_kind_name(symbol.kind),
+            "file": symbol.file,
+            "line": symbol.line,
+        })).collect::<Vec<_>>(),
+        "depends_on": card.depends_on,
+        "depends_on_total": card.depends_on_total,
+        "used_by": card.used_by,
+        "used_by_total": card.used_by_total,
+        "rendered": card.rendered,
+        "tokens": card.tokens,
+    })
 }
 
 fn execute_search(

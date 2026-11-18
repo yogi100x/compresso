@@ -1,5 +1,6 @@
 //! Repository scanning, parsing, indexing, and structural query primitives.
 
+pub mod cards;
 pub mod concurrency;
 pub mod indexer;
 pub mod parsers;
@@ -8,6 +9,9 @@ mod rust_imports;
 pub mod scanner;
 pub mod search;
 
+pub use cards::{
+    CardOptions, CardSymbol, DEFAULT_MAX_CARDS, MAX_CARDS, ModuleCard, ModuleCards, module_cards,
+};
 pub use concurrency::{Concurrency, DEFAULT_MEMORY_BUDGET_BYTES};
 pub use indexer::{IndexError, IndexProgress, IndexReport, Indexer};
 pub use queries::{

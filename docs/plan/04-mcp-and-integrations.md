@@ -43,7 +43,7 @@ Shipped verbatim as the rmcp server `instructions` (build-doc §13.4: brief, fac
 
 ### 1.3 compresso_repo_map
 
-**Description (final copy)**: Returns a token-budgeted map of an indexed repository: directory tree plus the most structurally important symbols per file, ranked by edge in-degree. Use this first when orienting in an unfamiliar repository; it is the cheapest way to decide where to look next. Read-only; requires the repository to have been indexed with `compresso index`.
+**Description (final copy)**: Returns a token-budgeted map of an indexed repository: directory tree plus the most structurally important symbols per file, ranked by edge in-degree. Use this first when orienting in an unfamiliar repository; it is the cheapest way to decide where to look next. With cards:true it also returns deterministic per-directory module cards. Read-only; requires the repository to have been indexed with `compresso index`.
 
 **inputSchema**:
 
@@ -53,7 +53,9 @@ Shipped verbatim as the rmcp server `instructions` (build-doc §13.4: brief, fac
   "properties": {
     "root": { "type": "string", "description": "Optional absolute root; when supplied, it must equal the server's bound repository session root." },
     "focus": { "type": "string", "description": "Repo-relative path prefix to bias ranking toward (e.g. 'src/auth')." },
-    "max_tokens": { "type": "integer", "minimum": 100, "maximum": 100000, "default": 2000 }
+    "max_tokens": { "type": "integer", "minimum": 100, "maximum": 100000, "default": 2000 },
+    "cards": { "type": "boolean", "default": false, "description": "Add per-directory module cards (purpose, public symbols, entry points, dependencies) within max_tokens." },
+    "path": { "type": "string", "minLength": 1, "description": "Repo-relative directory whose subtree the cards cover; implies cards." }
   },
   "required": []
 }
@@ -77,6 +79,27 @@ Shipped verbatim as the rmcp server `instructions` (build-doc §13.4: brief, fac
 ```
 
 **Errors**: `not_indexed` (with `compresso index` instruction), `outside_root`, `invalid_arguments`. `stale: true` (not an error) when file hashes have drifted since last index (a file untouched since before it was indexed, with the indexed size, is trusted without hashing; D80); the map is still served with a reindex hint appended.
+
+**Module cards (E17-26, D91; opt-in).** Without `cards` or `path` the request and result are exactly as above. With `cards: true`, or with `path` (which implies cards; `cards: false` plus `path` is `invalid_arguments`), the result gains five additive fields:
+
+```json
+{
+  "cards": [
+    "src/session/ (4 files, 37 symbols)\n  purpose: Restores interrupted sessions from the journal.\n  entry: mod.rs\n  public: Recovery (struct mod.rs:12), recover (function recover.rs:40)\n  uses: src/store\n  used by: src/cli, src/server (+2 more)"
+  ],
+  "cards_total": 9,
+  "cards_shown": 6,
+  "cards_tokens_used": 1180,
+  "cards_truncated": true
+}
+```
+
+- **One card per directory** of directly contained indexed files (`.` is the repository root), built by `compresso_atlas::module_cards` from the index only; no model is called and the same index yields the same cards. A card shows the file and symbol counts; a purpose line; up to four entry-point files (well-known names such as `lib.rs`, `main.rs`, `mod.rs`, `__init__.py`, `__main__.py`, `main.py`, `index.ts`, `index.js`, plus any file with a top-level `main` function); up to six public symbols with kinds and `file:line`, traits and interfaces first, then types, functions, modules, and constants; and up to six internal dependencies (`uses`) and dependents (`used by`) with a `(+N more)` suffix. Dependencies are other directories reached by resolved `Imports` edges.
+- **Purpose line**: the first sentence (at most 160 characters, whitespace collapsed, control characters removed) of the leading module or file doc comment: Rust `//!` or `/*! */`, a Python module docstring, a leading TypeScript or JavaScript `/** */` block, or leading shell `#` comments. License or copyright headers are ignored. It reads at most the first 4 KiB of at most three files per card (entry points first, then the most-imported files), through the same root containment and secret-path checks as `compresso_read`, and only from files that still match their index record; a stale, missing, or escaping file contributes no purpose.
+- **Public symbols** use a signature heuristic because the index stores no visibility: Rust top-level items whose signature starts with `pub`, TypeScript and JavaScript top-level `export`s, Python top-level names without a leading underscore, and shell functions. Text-file headings never appear.
+- **Bounds**: cards are ranked by dependent-directory count, then symbol count, then path. At most 12 cards are returned (`compresso map --max-cards` allows 1-50). Cards take at most three quarters of `max_tokens`, counted on their rendered text with the o200k tokenizer; the map is then rendered within the remaining budget. `cards_truncated` is true when the card cap or budget left a card out.
+- **Gates**: secret paths and edges touching them are excluded, so a directory holding only secret files has no card. The approval, session-root, and `not_indexed` gates are unchanged, and `stale` still reports index drift. `path` is validated like `focus` (lexical repository-relative prefix; `..`, absolute, and backslash paths are `invalid_arguments`).
+- **CLI**: `compresso map --cards [--path REPO_PATH] [--max-cards N]` adds `cards` as structured objects (`path`, `purpose`, `files`, `symbols`, `entry_points`, `public_symbols[{name, kind, file, line}]`, `depends_on`, `depends_on_total`, `used_by`, `used_by_total`, `rendered`, `tokens`) to `--json` output and appends the rendered cards to human output.
 
 **Predecessor compatibility**: functional counterpart of the predecessor `repo_map` tool; same purpose, `max_tokens` budget name retained.
 
