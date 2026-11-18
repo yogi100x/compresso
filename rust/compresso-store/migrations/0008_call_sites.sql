@@ -10,7 +10,7 @@ CREATE TABLE call_sites (
   caller_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
   callee_name TEXT NOT NULL,
   callee_qualifier TEXT,
-  call_form TEXT NOT NULL CHECK (call_form IN ('plain','path','self','receiver')),
+  call_form TEXT NOT NULL CHECK (call_form IN ('plain','path','self','receiver','reference')),
   line INTEGER NOT NULL CHECK (line >= 1)
 );
 CREATE INDEX idx_call_sites_caller ON call_sites(caller_symbol_id);

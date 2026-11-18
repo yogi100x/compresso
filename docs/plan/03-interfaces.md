@@ -266,7 +266,7 @@ impl ParserRegistry {
 pub enum ImportKind { Use, Import, ExportFrom, Require, FromImport }
 pub struct ImportRecord { pub raw: String, pub kind: ImportKind, pub resolved_path: Option<String>, pub resolution: ImportResolution }
 pub enum ImportResolution { Resolved, Ambiguous(Vec<String>), Unresolved(String) }
-pub struct Extraction { pub symbols: Vec<SymbolRecord>, pub imports: Vec<ImportRecord>, pub calls: Vec<CallSiteRecord> } // calls: D89; CallSiteRecord { caller /* index into symbols */, callee_name, qualifier, form: CallForm /* Plain|Path|SelfRef|Receiver */, line }; at most MAX_CALLS_PER_FILE (4,096) kept and MAX_CALL_NODES_PER_FILE (65,536) examined per file; pub calls_truncated: bool
+pub struct Extraction { pub symbols: Vec<SymbolRecord>, pub imports: Vec<ImportRecord>, pub calls: Vec<CallSiteRecord> } // calls: D89; CallSiteRecord { caller /* index into symbols */, callee_name, qualifier, form: CallForm /* Plain|Path|SelfRef|Receiver|Reference */, line }; at most MAX_CALLS_PER_FILE (4,096) kept and MAX_CALL_NODES_PER_FILE (65,536) examined per file; pub calls_truncated: bool
 // code languages use pinned tree-sitter queries in queries/<lang>.scm; shell and inert text use bounded, non-executing structural scanners; all kinds normalize to store vocabulary
 
 // indexer.rs
@@ -301,8 +301,9 @@ pub fn read_bounded(root: &Path, path: &str, range: Option<(u32, u32)>, budget_t
 pub fn impact(store: &Store, repo: RepoId, path: &str) -> Result<ImpactReport>;              // reverse-edge closure, depth 2
 // trace.rs (D90) — call sites resolved at query time (ADR-0033); reads only
 pub fn trace(store: &Store, repo: RepoId, from: Option<&str>, to: Option<&str>, options: TraceOptions) -> Result<TraceReport>; // both: shortest paths; from: callees; to: callers. TraceOptions { max_depth: Option<u8> /* 1..=8; None = 6 path, 1 neighbors */, max_paths /* 1..=10 */, max_nodes /* 1..=20000 */, max_results /* 1..=500 */ }; QueryError::InvalidTraceOptions on bad bounds
+// TraceHop and TraceNeighbor carry `reference: bool` (a function passed as a call argument); TraceNeighbor also `cycle`
 pub enum TraceResult { Paths(Vec<Vec<TraceHop>>), NoPath, Callees(Vec<TraceNeighbor>), Callers(Vec<TraceNeighbor>), Ambiguous { end, candidates, total }, NotFound { end, name }, CallGraphMissing }
-pub struct TraceReport { pub result: TraceResult, pub total: usize, pub nodes_visited: usize, pub depth_reached: u8, pub max_depth: u8, pub truncated: bool, pub depth_limited: bool, pub complete: bool, pub unfollowed: Vec<UnfollowedCall>, pub unfollowed_total: usize }
+pub struct TraceReport { pub result: TraceResult, pub total: usize, pub nodes_visited: usize, pub depth_reached: u8, pub max_depth: u8, pub truncated: bool, pub depth_limited: bool /* path search, or explicit max_depth */, pub complete: bool /* among recorded calls and references */, pub unfollowed: Vec<UnfollowedCall>, pub unfollowed_total: usize }
 pub fn plan_context(store: &Store, repo: RepoId, task: &str, budget_tokens: usize) -> Result<ContextPlan>; // search-driven pack: focused map + file-diverse evidence excerpts within budget
 ```
 

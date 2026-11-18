@@ -569,7 +569,7 @@ fn test_default_parser_version_marks_call_site_extraction() {
         .expect("version should exist");
     // Indexes stamped before call sites existed hold none, so the suffix
     // change makes the next index pass reparse every file once.
-    assert!(version.parser_version.ends_with("+calls-v1"));
+    assert!(version.parser_version.contains("+calls-v1"));
 }
 
 #[test]

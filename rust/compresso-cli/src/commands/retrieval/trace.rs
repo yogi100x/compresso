@@ -217,6 +217,7 @@ fn hop_json(hop: &TraceHop) -> Value {
             hop.resolution
                 .map_or(Value::Null, |rule| Value::from(rule.as_str())),
         );
+        object.insert("reference".to_owned(), Value::Bool(hop.reference));
     }
     value
 }
@@ -226,7 +227,12 @@ fn neighbor_line(entry: &TraceNeighbor, callers: bool) -> String {
         "{}{}  [{} {} at {}, {}{}]",
         "  ".repeat(usize::from(entry.depth.saturating_sub(1))),
         symbol_line(&entry.symbol),
-        if callers { "calls" } else { "called by" },
+        match (callers, entry.reference) {
+            (true, false) => "calls",
+            (true, true) => "passes",
+            (false, false) => "called by",
+            (false, true) => "passed by",
+        },
         entry.via,
         site(&entry.call_site),
         entry.resolution.as_str(),
@@ -244,6 +250,7 @@ fn neighbor_json(entry: &TraceNeighbor) -> Value {
             "resolution".to_owned(),
             Value::from(entry.resolution.as_str()),
         );
+        object.insert("reference".to_owned(), Value::Bool(entry.reference));
         object.insert("cycle".to_owned(), Value::Bool(entry.cycle));
     }
     value

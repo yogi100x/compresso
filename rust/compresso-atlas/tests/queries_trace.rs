@@ -324,8 +324,14 @@ fn test_trace_callers_report_call_sites_totals_and_truncation() {
     assert_eq!(report.total, 2);
     assert!(!report.truncated);
     assert!(report.complete);
-    // Depth 1 found symbols that have callers of their own.
-    assert!(report.depth_limited);
+    // At the default depth direct callers are the whole answer.
+    assert!(!report.depth_limited);
+    let explicit = TraceOptions {
+        max_depth: Some(1),
+        ..TraceOptions::default()
+    };
+    // An explicit depth reports that deeper callers exist.
+    assert!(fixture.trace(None, Some("save"), explicit).depth_limited);
 
     let options = TraceOptions {
         max_depth: Some(3),
@@ -482,4 +488,58 @@ fn test_trace_labels_a_receiver_call_resolved_only_by_a_unique_name() {
     };
     assert_eq!(callees[0].symbol.qualified_name, "Service::step");
     assert_eq!(callees[0].resolution, CallResolution::NameOnly);
+}
+
+#[test]
+fn test_trace_never_resolves_a_call_across_languages() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.root.join("src/cross.rs"),
+        "pub fn rust_caller() {\n    only_in_python();\n}\n",
+    )
+    .expect("fixture file should be written");
+    fs::write(
+        fixture.root.join("py/lonely.py"),
+        "def only_in_python():\n    pass\n",
+    )
+    .expect("fixture file should be written");
+    Indexer::new(&fixture.store, counter_for(TokenProvider::Heuristic))
+        .index(&fixture.root, |_| {})
+        .expect("re-index should succeed");
+    let report = fixture.trace(Some("rust_caller"), None, TraceOptions::default());
+    assert_eq!(report.result, TraceResult::Callees(Vec::new()));
+    let report = fixture.trace(None, Some("only_in_python"), TraceOptions::default());
+    assert_eq!(report.result, TraceResult::Callers(Vec::new()));
+}
+
+#[test]
+fn test_trace_lists_a_function_passed_as_a_value_as_a_reference_caller() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.root.join("src/value.rs"),
+        "pub fn apply(f: fn()) {\n    f();\n}\n\npub fn passes() {\n    let unrelated = 1;\n    apply(local_target);\n    apply(unrelated);\n}\n\nfn local_target() {}\n",
+    )
+    .expect("fixture file should be written");
+    Indexer::new(&fixture.store, counter_for(TokenProvider::Heuristic))
+        .index(&fixture.root, |_| {})
+        .expect("re-index should succeed");
+    let report = fixture.trace(None, Some("local_target"), TraceOptions::default());
+    let TraceResult::Callers(callers) = &report.result else {
+        panic!("expected callers, got {:?}", report.result);
+    };
+    assert_eq!(callers.len(), 1);
+    assert_eq!(callers[0].symbol.qualified_name, "passes");
+    assert_eq!(callers[0].call_site.line, 7);
+    assert!(callers[0].reference);
+    assert!(report.complete);
+    // A variable passed as an argument is not a reference to anything.
+    let report = fixture.trace(Some("passes"), None, TraceOptions::default());
+    let TraceResult::Callees(callees) = &report.result else {
+        panic!("expected callees");
+    };
+    let names = callees
+        .iter()
+        .map(|entry| (entry.symbol.qualified_name.as_str(), entry.reference))
+        .collect::<Vec<_>>();
+    assert_eq!(names, [("apply", false), ("local_target", true)]);
 }

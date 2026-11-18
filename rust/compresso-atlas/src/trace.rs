@@ -10,9 +10,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
-use compresso_store::{CallForm, IndexedSymbol, RepoId, Store, StoredCallSite, SymbolKind};
+use compresso_store::{
+    CallForm, FileLanguage, IndexedSymbol, RepoId, Store, StoredCallSite, SymbolKind,
+};
 
 use crate::AtlasError;
+use crate::parsers::ParserRegistry;
 use crate::queries::QueryError;
 use crate::scanner::is_secret_path;
 
@@ -122,6 +125,9 @@ pub struct TraceHop {
     /// The call in the previous hop's body; `None` for the first hop.
     pub call_site: Option<TraceCallSite>,
     pub resolution: Option<CallResolution>,
+    /// The previous hop names this symbol as a call argument (a function
+    /// passed as a value) rather than calling it there.
+    pub reference: bool,
 }
 
 /// One caller or callee found by a single-ended trace.
@@ -134,6 +140,8 @@ pub struct TraceNeighbor {
     /// The call that links `symbol` and `via` (written in the caller).
     pub call_site: TraceCallSite,
     pub resolution: CallResolution,
+    /// The link is a function passed as a call argument, not a call.
+    pub reference: bool,
     /// The call leads back to the start symbol (recursion or a cycle).
     pub cycle: bool,
 }
@@ -189,11 +197,14 @@ pub struct TraceReport {
     /// A node, result, or path bound cut the answer short; asking again with
     /// the same bounds returns the same answer.
     pub truncated: bool,
-    /// Symbols at `max_depth` were found but not expanded: deeper callers,
-    /// callees, or a longer path may exist.
+    /// Symbols at `max_depth` were found but not expanded: a longer path, or
+    /// (when `max_depth` was given explicitly) deeper callers or callees, may
+    /// exist.
     pub depth_limited: bool,
-    /// No bound was hit and no ambiguous or ownerless `self` call was met,
-    /// so a missing caller or path is not hiding behind one.
+    /// Among recorded direct calls, no bound was hit and no ambiguous or
+    /// ownerless `self` call was met. Uses that are not recorded calls
+    /// (a function passed as a value, a call at module level, a call through
+    /// a trait object or callback) are outside this claim.
     pub complete: bool,
     pub unfollowed: Vec<UnfollowedCall>,
     pub unfollowed_total: usize,
@@ -450,7 +461,7 @@ fn one_line(signature: &str) -> Option<String> {
 
 fn written_call(call: &StoredCallSite) -> String {
     match (call.form, call.qualifier.as_deref()) {
-        (CallForm::Plain, _) => call.callee_name.clone(),
+        (CallForm::Plain | CallForm::Reference, _) => call.callee_name.clone(),
         (CallForm::SelfRef, Some("Self")) => format!("Self::{}", call.callee_name),
         (CallForm::SelfRef, Some(owner)) => format!("{owner}.{}", call.callee_name),
         (CallForm::Path, Some(qualifier)) if call.from_path.ends_with(".rs") => {
@@ -535,7 +546,15 @@ impl<'a> Resolver<'a> {
     fn resolve(&mut self, call: &StoredCallSite) -> Result<Resolution, AtlasError> {
         let rust = call.from_path.ends_with(".rs");
         let caller_owner = owner_base(&call.caller_qualified_name);
-        let candidates = self.named(&call.callee_name)?.to_vec();
+        // A call never crosses languages: Rust, Python, and the script
+        // family (JavaScript, TypeScript, TSX) resolve only within themselves.
+        let family = language_family(ParserRegistry::for_path(Path::new(&call.from_path)));
+        let candidates = self
+            .named(&call.callee_name)?
+            .iter()
+            .filter(|candidate| family.is_some() && language_family(candidate.language) == family)
+            .cloned()
+            .collect::<Vec<_>>();
         let methods = |candidates: &[IndexedSymbol]| {
             candidates
                 .iter()
@@ -607,6 +626,11 @@ impl<'a> Resolver<'a> {
                 }
             }
             CallForm::Receiver => methods(&candidates),
+            CallForm::Reference => candidates
+                .iter()
+                .filter(|candidate| candidate.symbol.kind == SymbolKind::Function)
+                .cloned()
+                .collect(),
         };
         if filtered.is_empty() {
             return Ok(Resolution::Unresolved("not_found"));
@@ -618,7 +642,7 @@ impl<'a> Resolver<'a> {
             .map(|candidate| candidate.id)
             .collect::<Vec<_>>();
         if let Some(resolution) = tier(&same_file, CallResolution::SameFile) {
-            return Ok(resolution);
+            return Ok(silent_reference_ambiguity(call.form, resolution));
         }
         let imports = self.imports_of(&call.from_path)?;
         let imported = filtered
@@ -627,7 +651,13 @@ impl<'a> Resolver<'a> {
             .map(|candidate| candidate.id)
             .collect::<Vec<_>>();
         if let Some(resolution) = tier(&imported, CallResolution::Import) {
-            return Ok(resolution);
+            return Ok(silent_reference_ambiguity(call.form, resolution));
+        }
+        if call.form == CallForm::Reference {
+            // Most bare arguments are variables: a name counts as a function
+            // reference only when one function of that name is in the
+            // caller's file or a file it imports; anything else is silent.
+            return Ok(Resolution::Unresolved("not_found"));
         }
         let all = filtered
             .iter()
@@ -639,6 +669,24 @@ impl<'a> Resolver<'a> {
             CallResolution::UniqueName
         };
         Ok(tier(&all, rule).unwrap_or(Resolution::Unresolved("not_found")))
+    }
+}
+
+fn silent_reference_ambiguity(form: CallForm, resolution: Resolution) -> Resolution {
+    match resolution {
+        Resolution::Ambiguous(_) if form == CallForm::Reference => {
+            Resolution::Unresolved("not_found")
+        }
+        resolution => resolution,
+    }
+}
+
+fn language_family(language: Option<FileLanguage>) -> Option<u8> {
+    match language? {
+        FileLanguage::Rust => Some(0),
+        FileLanguage::Python => Some(1),
+        FileLanguage::JavaScript | FileLanguage::TypeScript | FileLanguage::Tsx => Some(2),
+        FileLanguage::Shell | FileLanguage::Text => None,
     }
 }
 
@@ -657,6 +705,7 @@ struct Link {
     callee: i64,
     site: TraceCallSite,
     rule: CallResolution,
+    reference: bool,
 }
 
 enum ResultKind {
@@ -793,6 +842,7 @@ impl Walk {
                         line: call.line,
                     },
                     rule,
+                    reference: call.form == CallForm::Reference,
                 });
             }
         }
@@ -838,6 +888,7 @@ impl Walk {
                                     line: call.line,
                                 },
                                 rule: *rule,
+                                reference: call.form == CallForm::Reference,
                             });
                         }
                     }
@@ -940,8 +991,10 @@ impl Walk {
                 self.depth_reached = depth;
                 entries.push((depth, near, far, link, cycle));
             }
-            if !next.is_empty() && depth == self.max_depth {
-                // Symbols at the depth limit were found but not expanded.
+            if !next.is_empty() && depth == self.max_depth && self.options.max_depth.is_some() {
+                // Symbols at an explicit depth limit were found but not
+                // expanded. At the default depth the caller asked for direct
+                // neighbours only, so that is the whole answer.
                 self.depth_limited = true;
             }
             frontier = next;
@@ -969,6 +1022,7 @@ impl Walk {
                     via: via.symbol.qualified_name.clone(),
                     call_site: link.site,
                     resolution: link.rule,
+                    reference: link.reference,
                     cycle,
                 })
             })
@@ -1074,11 +1128,13 @@ impl Walk {
                     symbol: trace_symbol(from),
                     call_site: None,
                     resolution: None,
+                    reference: false,
                 }];
                 for link in chain {
                     if let Some(symbol) = resolver.symbol(link.callee) {
                         hops.push(TraceHop {
                             symbol: trace_symbol(symbol),
+                            reference: link.reference,
                             call_site: Some(link.site),
                             resolution: Some(link.rule),
                         });

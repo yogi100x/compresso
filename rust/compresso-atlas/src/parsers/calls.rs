@@ -69,6 +69,8 @@ pub(super) fn extract(
         let node = cursor.node();
         let found = if is_call_node(syntax, node.kind()) {
             callee(syntax, node, source).into_iter().collect()
+        } else if is_argument_list(syntax, node.kind()) {
+            argument_references(node)
         } else if syntax == CallSyntax::Rust && node.kind() == "token_tree" {
             macro_argument_calls(node, source)
         } else {
@@ -121,6 +123,36 @@ const fn is_call_node(syntax: CallSyntax, kind: &str) -> bool {
         CallSyntax::Python => const_eq(kind, "call"),
         CallSyntax::Script => const_eq(kind, "call_expression") || const_eq(kind, "new_expression"),
     }
+}
+
+const fn is_argument_list(syntax: CallSyntax, kind: &str) -> bool {
+    match syntax {
+        CallSyntax::Rust | CallSyntax::Script => const_eq(kind, "arguments"),
+        CallSyntax::Python => const_eq(kind, "argument_list"),
+    }
+}
+
+/// Bare names passed as call arguments (`map_err(to_failure)`,
+/// `sorted(items, key=rank)`): possible function references. Most are
+/// variables; Atlas keeps only those that resolve to a function in the
+/// caller's file or a file it imports.
+fn argument_references<'tree>(arguments: Node<'tree>) -> Vec<Callee<'tree>> {
+    let mut cursor = arguments.walk();
+    arguments
+        .named_children(&mut cursor)
+        .filter_map(|argument| match argument.kind() {
+            "identifier" => Some(argument),
+            "keyword_argument" => argument
+                .child_by_field_name("value")
+                .filter(|value| value.kind() == "identifier"),
+            _ => None,
+        })
+        .map(|name| Callee {
+            name,
+            qualifier: None,
+            form: CallForm::Reference,
+        })
+        .collect()
 }
 
 const fn const_eq(left: &str, right: &str) -> bool {

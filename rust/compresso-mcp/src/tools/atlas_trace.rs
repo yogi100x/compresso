@@ -148,7 +148,7 @@ fn render(
         ),
         TraceResult::CallGraphMissing => ("reindex_required", "paths", Vec::new(), None),
     };
-    let (values, tokens_used, budget_truncated) = cap_values(values, max_tokens, counter);
+    let (values, list_tokens, budget_truncated) = cap_values(values, max_tokens, counter);
     let unfollowed = report
         .unfollowed
         .iter()
@@ -162,6 +162,14 @@ fn render(
             })
         })
         .collect::<Vec<_>>();
+    // The unfollowed calls share the token budget with the main list; any
+    // that do not fit are still counted in `unfollowed_total`.
+    let (unfollowed, unfollowed_tokens, _) = if unfollowed.is_empty() {
+        (unfollowed, 0, false)
+    } else {
+        cap_values(unfollowed, max_tokens.saturating_sub(list_tokens), counter)
+    };
+    let tokens_used = list_tokens + unfollowed_tokens;
     let reindex_required = matches!(report.result, TraceResult::CallGraphMissing);
     let mut payload = json!({
         "schema_version": 1,
@@ -229,6 +237,9 @@ fn hop_value(hop: &TraceHop) -> Value {
             hop.resolution
                 .map_or(Value::Null, |rule| Value::from(rule.as_str())),
         );
+        if hop.reference {
+            object.insert("reference".to_owned(), Value::Bool(true));
+        }
     }
     value
 }
@@ -246,6 +257,9 @@ fn neighbor_value(entry: &TraceNeighbor) -> Value {
             "resolution".to_owned(),
             Value::from(entry.resolution.as_str()),
         );
+        if entry.reference {
+            object.insert("reference".to_owned(), Value::Bool(true));
+        }
         if entry.cycle {
             object.insert("cycle".to_owned(), Value::Bool(true));
         }

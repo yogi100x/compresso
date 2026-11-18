@@ -58,14 +58,18 @@ Option 2.
   subscripts).
 - **Call forms.** `plain` (`run()`, `new Widget()`), `path` (`Store::open()`,
   `os.path.join()`, `api.v1.fetch()`), `self` (`self.x()`, `Self::x()`,
-  `this.x()`, `cls.x()`), `receiver` (any other `expr.method()`).
+  `this.x()`, `cls.x()`), `receiver` (any other `expr.method()`), and
+  `reference` (a bare name passed as a call argument, `map_err(to_failure)`,
+  `sorted(xs, key=rank)`: a function used as a value).
 - **Resolution (query time).** Candidates are indexed symbols with the
   callee's name, narrowed by form: `plain` to functions, classes, and
   structs; `self` to methods of the caller's own type; `path` to methods of
   the type the qualifier names, or functions in the module file it names
   (falling back to a receiver call for Python and script variables, and to
   unresolved `external_path` for Rust paths such as `std::fs::read`);
-  `receiver` to methods. Then, in order: exactly one candidate in the caller's
+  `receiver` to methods; `reference` to functions, and only in the caller's
+  file or a file it imports (most bare arguments are variables, so anything
+  else, including an ambiguous match, is silently dropped). Then, in order: exactly one candidate in the caller's
   file; else exactly one in a file the caller's file imports (resolved import
   edges); else exactly one in the repository. More than one at the first tier
   that has any is `ambiguous` and lists the candidates; none is
@@ -83,14 +87,18 @@ Option 2.
 
 - An incremental index never leaves a call pointing at a deleted symbol, and
   indexing needs no repository-wide pass. Measured on a pinned snapshot of
-  this repository (386 files, 7,103 symbols, 24,288 call sites), release
-  build, macOS arm64, five interleaved full-index runs each: median 1,325 ms
-  before and 1,525 ms after (about 15%); no-op index 0.25 s before and
-  0.26-0.28 s after; store 7.9-8.2 MB before and 9.7 MB after.
+  this repository (386 files, 7,103 symbols, 28,578 call sites: 14,594
+  receiver calls, 4,290 references), release build, macOS arm64, five
+  interleaved full-index runs each: median 1,170 ms before and 1,347 ms after
+  (about 15%; an earlier, busier round gave 1,325 and 1,525 ms); no-op index
+  0.25 s before and 0.26-0.28 s after; store 7.9-8.8 MB before and 9.7-11 MB
+  after.
 - Resolution cost moves to the trace query, which bounds it by visited nodes.
 - Resolution is by name, not by type. It can miss a call through a trait
-  object, a function value, a re-export, or an inherited method, and a
-  `name_only` hop can be wrong; every hop carries the rule that resolved it.
+  object, a stored callback, a re-export, an inherited method, or a call at
+  module level, and a `name_only` hop can be wrong; every hop carries the
+  rule that resolved it. A function passed by name as an argument is found;
+  one stored in a field or returned is not.
 - The ledger check makes migrations a prefix list, so a binary released before
   migration 0008 refuses a store this build has opened
   (`InvalidMigrationHistory`). Downgrading needs the newer binary or a fresh

@@ -28,6 +28,9 @@ pub enum CallForm {
     SelfRef,
     /// A method call on any other expression: `store.search()`.
     Receiver,
+    /// A function named as a call argument, not called there:
+    /// `.map_err(to_failure)`, `map(parse, items)`, `sorted(key=rank)`.
+    Reference,
 }
 
 impl CallForm {
@@ -37,6 +40,7 @@ impl CallForm {
             Self::Path => "path",
             Self::SelfRef => "self",
             Self::Receiver => "receiver",
+            Self::Reference => "reference",
         }
     }
 
@@ -46,6 +50,7 @@ impl CallForm {
             "path" => Ok(Self::Path),
             "self" => Ok(Self::SelfRef),
             "receiver" => Ok(Self::Receiver),
+            "reference" => Ok(Self::Reference),
             _ => Err(StoreError::InvalidStoredValue {
                 field: "call_sites.call_form",
                 value: value.to_owned(),

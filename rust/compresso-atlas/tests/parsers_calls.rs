@@ -92,6 +92,7 @@ def run():
                 CallForm::SelfRef,
                 7
             ),
+            ("Queue::push", "item", None, CallForm::Reference, 7),
             ("Queue::push", "join", Some("os.path"), CallForm::Path, 8),
             ("Queue::push", "items", None, CallForm::Plain, 9),
             ("Queue::push", "append", None, CallForm::Receiver, 9),
@@ -126,6 +127,7 @@ export function boot() { new Service().start(); }
                 ("Service::start", "fetch", Some("api.v1"), CallForm::Path, 6),
                 ("Service::start", "getItems", None, CallForm::Plain, 7),
                 ("Service::start", "map", None, CallForm::Receiver, 7),
+                ("Service::start", "render", None, CallForm::Reference, 7),
                 ("boot", "Service", None, CallForm::Plain, 10),
                 ("boot", "start", None, CallForm::Receiver, 10),
             ],
@@ -293,6 +295,37 @@ macro_rules! define {
             ("S::check", "len", None, CallForm::Receiver, 4),
             ("S::check", "inner", None, CallForm::Plain, 5),
             ("S::check", "build", None, CallForm::Plain, 6),
+        ]
+    );
+}
+
+#[test]
+fn test_names_passed_as_call_arguments_are_recorded_as_references() {
+    let rust = ParserRegistry::extract(
+        Language::Rust,
+        "fn run() {\n    result.map_err(to_failure);\n    apply(1, handler, x.y);\n}\n",
+    )
+    .expect("Rust should extract");
+    assert_eq!(
+        rows(&rust),
+        [
+            ("run", "map_err", None, CallForm::Receiver, 2),
+            ("run", "to_failure", None, CallForm::Reference, 2),
+            ("run", "apply", None, CallForm::Plain, 3),
+            ("run", "handler", None, CallForm::Reference, 3),
+        ]
+    );
+    let python = ParserRegistry::extract(
+        Language::Python,
+        "def run(items):\n    return sorted(items, key=rank)\n",
+    )
+    .expect("Python should extract");
+    assert_eq!(
+        rows(&python),
+        [
+            ("run", "sorted", None, CallForm::Plain, 2),
+            ("run", "items", None, CallForm::Reference, 2),
+            ("run", "rank", None, CallForm::Reference, 2),
         ]
     );
 }

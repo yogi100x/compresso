@@ -379,6 +379,10 @@ async fn test_trace_tool_callers_report_total_and_truncation_in_one_call() {
             .as_u64()
             .is_some_and(|tokens| tokens <= 200)
     );
+    let listed = serde_json::to_string(&payload["callers"]).expect("callers serialize");
+    let unfollowed = serde_json::to_string(&payload["unfollowed"]).expect("unfollowed serialize");
+    let counter = counter_for(TokenProvider::OpenAiO200k);
+    assert!(counter.count(&listed) + counter.count(&unfollowed) <= 200);
     assert!(payload["shown"].as_u64().is_some_and(|shown| shown < 60));
     assert_eq!(payload["total"], 60);
     assert_eq!(payload["truncated"], true);

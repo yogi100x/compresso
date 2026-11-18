@@ -344,7 +344,7 @@ CREATE TABLE call_sites (
   caller_symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
   callee_name TEXT NOT NULL,            -- as written, identifier characters, <= 256 bytes
   callee_qualifier TEXT,                -- Store in Store::open(), os.path in os.path.join(), self/Self/this/cls
-  call_form TEXT NOT NULL CHECK (call_form IN ('plain','path','self','receiver')),
+  call_form TEXT NOT NULL CHECK (call_form IN ('plain','path','self','receiver','reference')), -- reference: a bare name passed as a call argument
   line INTEGER NOT NULL CHECK (line >= 1)  -- 1-based line of the callee name
 );
 CREATE INDEX idx_call_sites_caller ON call_sites(caller_symbol_id);
