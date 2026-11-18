@@ -1202,7 +1202,9 @@ body-only target whose task also uses a word found in more bodies than a
 specific query returns (`execute`, in every migration step). D86 adds a raise
 site that shares its file with the enum variant and an operator report that
 both use the same named concept (`tenant suspended`), and a limit held by a
-constant in a file no task word names (`SEGMENT_CEILING`).
+constant in a file no task word names (`SEGMENT_CEILING`). D95 adds a
+staleness check whose two entry points share one helper in a file crowded by
+constants and look-alike functions (`report_cache.rs`).
 
 ```toml
 schema_version = 1
@@ -1235,7 +1237,8 @@ per task at `budget_tokens`. Per task:
 - `precision`: evidence items whose path is a gold file, over evidence items;
   zero when there is no evidence.
 - `ready`: every candidate evidence file fitted, there is at least one, and the
-  evidence covers the task's concepts — the rule behind `task_pack_ready`.
+  evidence covers the task's concepts and every part of a several-part task
+  (D95) — the rule behind `task_pack_ready` (`ContextPlan::evidence_ready`).
 - `false_ready`: ready while a gold file or gold symbol is missing, or ready
   with no gold files.
 
@@ -1264,8 +1267,8 @@ is present:
 
 | Gate | Rule | Committed | Measured |
 |---|---|---|---|
-| `retrieval_mean_recall` | `>= mean_recall_min` | 0.96 | 1.0 (25 of 25) |
-| `retrieval_mean_precision` | `>= mean_precision_min` | 0.34 | 0.3885 |
+| `retrieval_mean_recall` | `>= mean_recall_min` | 0.96 | 1.0 (28 of 28) |
+| `retrieval_mean_precision` | `>= mean_precision_min` | 0.34 | 0.3784 |
 | `retrieval_false_ready` | `<= false_ready_max` | 0 | 0 |
 | `retrieval_ready_mismatches` | `<= ready_mismatches_max` | 1 | 1 |
 
@@ -1300,6 +1303,28 @@ names the status `423`, also written only in a body. `named-error-raise` names
 and before D88 the raise site was missing and the pack was false-ready. With
 the three tasks the measured precision is 0.3885 (the 22 earlier tasks are
 unchanged at 0.3835); the committed thresholds are unchanged.
+
+Several-part tasks (D95, awaiting owner confirmation): `engine/src/report_cache.rs`
+mirrors a staleness check. `report_current` (one report) and `catalog_stale`
+(the whole catalog) share the helper `source_unchanged`, which asks
+`metadata_verdict` (length, then modification time against a slack constant)
+before `digest_matches` reads the source through a fixed-size buffer. Two
+constants and four other report functions (`store_report`, `evict_report`,
+`cached_report_bytes`, `large_reports`) share the file and its words, and no
+line says "cheap". Three tasks ask the same two-part question as prose with a
+trailing instruction and the idiom "out of date" (`cache-staleness-prose`),
+as a terse clause list (`cache-staleness-terse`), and as a paraphrase
+(`cache-staleness-paraphrase`). Each lists the helper and both callers as gold
+symbols and declares no `expect_ready`. Before D95 all three packs were ready
+with only `catalog_stale` (recall 0.5, `false_ready` 3, mean recall 0.9464,
+failing two gates); after it each holds all three symbols and reports the
+cheap-for-large-sources clause as uncovered. With the 31 tasks the measured
+recall is 1.0 (28 of 28), precision 0.3784, `false_ready` 0, and
+`ready_mismatches` 1. On this corpus the planner change leaves every earlier
+task's evidence identical; the new file itself is a decoy for two of them
+(`payload-too-large` 0.40 → 0.36 and `chunked-file-read` 0.30 → 0.25 through
+`large_reports`), so the 25 earlier gold tasks measure 0.3851 instead of
+0.3885. The committed thresholds are unchanged.
 
 Changing any file below `fixtures/retrieval/` requires updating the
 `[retrieval]` pin in `fixtures/corpus.toml` and re-measuring the thresholds.

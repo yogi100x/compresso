@@ -599,10 +599,9 @@ fn compact_context_payload(
         "matched"
     };
     let evidence_files_required = plan.evidence_files_total;
-    let files_ready =
-        evidence_files_required > 0 && plan.evidence_files_included >= evidence_files_required;
     let concepts_ready = plan.concept_coverage_sufficient();
-    let evidence_ready = files_ready && concepts_ready;
+    let facets_ready = plan.task_facets_covered >= plan.task_facets_total;
+    let evidence_ready = plan.evidence_ready();
     let broad_follow_up_required = plan.matches_total == 0 || stale;
     let targeted_follow_up_required =
         !broad_follow_up_required && plan.matches_total > 0 && !evidence_ready;
@@ -627,6 +626,10 @@ fn compact_context_payload(
     let retrieval_note = if plan.matches_total == 0 {
         Some(
             "No indexed symbols matched the derived task queries. This is not proof that the repository contains no relevant implementation.",
+        )
+    } else if targeted_follow_up_required && !facets_ready {
+        Some(
+            "The evidence found does not cover every part of the task (see task_coverage.uncovered_facets). Answer only the covered parts from the pack and use at most two precise Compresso follow-ups naming exact identifiers for the rest; do not repeat broad retrieval.",
         )
     } else if targeted_follow_up_required && !concepts_ready {
         Some(
@@ -657,7 +660,10 @@ fn compact_context_payload(
         "task_coverage": {
             "concepts_covered": plan.task_concepts_covered,
             "concepts_total": plan.task_concepts_total,
-            "uncovered": &plan.uncovered_concepts
+            "uncovered": &plan.uncovered_concepts,
+            "facets_covered": plan.task_facets_covered,
+            "facets_total": plan.task_facets_total,
+            "uncovered_facets": &plan.uncovered_facets
         },
         "matches_total": plan.matches_total,
         "content_pack": plan.rendered,

@@ -832,6 +832,9 @@ fn render_context(task: String, plan: ContextPlan) -> Rendered {
             "concepts_covered": plan.task_concepts_covered,
             "concepts_total": plan.task_concepts_total,
             "uncovered": &plan.uncovered_concepts,
+            "facets_covered": plan.task_facets_covered,
+            "facets_total": plan.task_facets_total,
+            "uncovered_facets": &plan.uncovered_facets,
             "sufficient": plan.concept_coverage_sufficient(),
         },
         "plan": {

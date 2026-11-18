@@ -9,6 +9,7 @@ pub mod queries;
 mod rust_imports;
 pub mod scanner;
 pub mod search;
+mod task_facets;
 mod task_identifiers;
 pub mod trace;
 

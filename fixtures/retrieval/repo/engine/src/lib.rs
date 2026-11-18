@@ -8,6 +8,7 @@ pub mod metrics;
 pub mod payload;
 pub mod queue;
 pub mod rate_limit;
+pub mod report_cache;
 pub mod retry;
 pub mod scheduler;
 pub mod server;
