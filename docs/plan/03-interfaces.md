@@ -210,6 +210,12 @@ impl Store {
     // files & symbols (used only by atlas)
     pub fn upsert_file(&self, repo: RepoId, rec: &FileRecord) -> Result<FileId>;
     pub fn replace_indexed_file(&self, repo: RepoId, rec: &FileRecord, symbols: &[SymbolRecord], edges: &[EdgeRecord]) -> Result<FileId>; // one per-file transaction
+    pub fn replace_indexed_file_with_calls(&self, repo: RepoId, rec: &FileRecord, symbols: &[SymbolRecord], edges: &[EdgeRecord], calls: &[CallSiteRecord]) -> Result<FileId>; // same transaction also replaces the file's call_sites (D89); replace_indexed_file == calls: &[]
+    pub fn indexed_symbols_named(&self, repo: RepoId, name: &str) -> Result<Vec<IndexedSymbol>>; // exact name, path/line order; IndexedSymbol { id, path, language, symbol }
+    pub fn symbols_by_ids(&self, repo: RepoId, ids: &[i64]) -> Result<Vec<IndexedSymbol>>; // other repositories' ids skipped
+    pub fn call_sites_from(&self, repo: RepoId, caller_ids: &[i64]) -> Result<Vec<StoredCallSite>>; // calls inside these callers
+    pub fn call_sites_named(&self, repo: RepoId, callee_name: &str) -> Result<Vec<StoredCallSite>>; // every call naming callee_name
+    pub fn call_site_count(&self, repo: RepoId) -> Result<usize>;
     pub fn file_hashes(&self, repo: RepoId) -> Result<HashMap<String, String>>;  // path -> blake3
     pub fn indexed_files(&self, repo: RepoId) -> Result<Vec<FileRecord>>; // deterministic path order
     pub fn indexed_file(&self, repo: RepoId, path: &str) -> Result<Option<FileRecord>>;
@@ -260,7 +266,7 @@ impl ParserRegistry {
 pub enum ImportKind { Use, Import, ExportFrom, Require, FromImport }
 pub struct ImportRecord { pub raw: String, pub kind: ImportKind, pub resolved_path: Option<String>, pub resolution: ImportResolution }
 pub enum ImportResolution { Resolved, Ambiguous(Vec<String>), Unresolved(String) }
-pub struct Extraction { pub symbols: Vec<SymbolRecord>, pub imports: Vec<ImportRecord> }
+pub struct Extraction { pub symbols: Vec<SymbolRecord>, pub imports: Vec<ImportRecord>, pub calls: Vec<CallSiteRecord> } // calls: D89; CallSiteRecord { caller /* index into symbols */, callee_name, qualifier, form: CallForm /* Plain|Path|SelfRef|Receiver|Reference */, line }; at most MAX_CALLS_PER_FILE (4,096) kept and MAX_CALL_NODES_PER_FILE (65,536) examined per file; pub calls_truncated: bool
 // code languages use pinned tree-sitter queries in queries/<lang>.scm; shell and inert text use bounded, non-executing structural scanners; all kinds normalize to store vocabulary
 
 // indexer.rs
@@ -271,7 +277,7 @@ impl Indexer<'_> {
     // pipeline: canonicalize+approve root -> scan -> parse ONLY added/changed -> replace_indexed_file per file transaction -> delete removed -> stamp index_versions
 }
 pub enum IndexProgress { Parsing { path: PathBuf }, Removed { path: String } }
-pub struct IndexReport { pub files_indexed: usize, pub files_removed: usize, pub files_skipped: usize, pub symbols: usize, pub imports_resolved: usize, pub imports_unresolved: usize, pub duration_ms: u64, pub stale: bool }
+pub struct IndexReport { pub files_indexed: usize, pub files_removed: usize, pub files_skipped: usize, pub symbols: usize, pub imports_resolved: usize, pub imports_unresolved: usize, pub call_sites: usize, pub call_site_files_truncated: usize, pub duration_ms: u64, pub stale: bool }
 
 // queries.rs — all read-only, all bounded by token budget
 pub struct RepoMap { pub rendered: String, pub files_total: usize, pub files_shown: usize, pub truncated: bool, pub tokens_used: usize, pub token_provider: TokenProvider }
@@ -297,6 +303,11 @@ pub fn validate_grep(options: &GrepOptions<'_>) -> Result<(), GrepError>; // Gre
 pub fn grep(store: &Store, repo: RepoId, options: &GrepOptions<'_>) -> Result<GrepReport>; // GrepReport { results: Vec<GrepPatternResult>, files_scanned, bytes_scanned, files_in_scope, files_skipped_oversize, files_skipped_unreadable, stale_files, scan_truncated, output_truncated }; fit_to_budget(budget, counter), render_text(), complete()
 pub fn read_bounded(root: &Path, path: &str, range: Option<(u32, u32)>, budget_tokens: usize, counter: &dyn TokenCounter) -> Result<BoundedRead>; // path canonicalized, MUST be under approved root; files over MAX_READ_FILE_BYTES (16 MiB) fail with QueryError::FileTooLarge before loading (D77) (symlink-resolved)
 pub fn impact(store: &Store, repo: RepoId, path: &str) -> Result<ImpactReport>;              // reverse-edge closure, depth 2
+// trace.rs (D90) — call sites resolved at query time (ADR-0033); reads only
+pub fn trace(store: &Store, repo: RepoId, from: Option<&str>, to: Option<&str>, options: TraceOptions) -> Result<TraceReport>; // both: shortest paths; from: callees; to: callers. TraceOptions { max_depth: Option<u8> /* 1..=8; None = 6 path, 1 neighbors */, max_paths /* 1..=10 */, max_nodes /* 1..=20000 */, max_results /* 1..=500 */ }; QueryError::InvalidTraceOptions on bad bounds
+// TraceHop and TraceNeighbor carry `reference: bool` (a function passed as a call argument); TraceNeighbor also `cycle`
+pub enum TraceResult { Paths(Vec<Vec<TraceHop>>), NoPath, Callees(Vec<TraceNeighbor>), Callers(Vec<TraceNeighbor>), Ambiguous { end, candidates, total }, NotFound { end, name }, CallGraphMissing }
+pub struct TraceReport { pub result: TraceResult, pub total: usize, pub nodes_visited: usize, pub depth_reached: u8, pub max_depth: u8, pub truncated: bool, pub depth_limited: bool /* path search, or explicit max_depth */, pub complete: bool /* among recorded calls and references */, pub unfollowed: Vec<UnfollowedCall>, pub unfollowed_total: usize }
 pub fn plan_context(store: &Store, repo: RepoId, task: &str, budget_tokens: usize) -> Result<ContextPlan>; // search-driven pack: focused map + file-diverse evidence excerpts within budget
 ```
 

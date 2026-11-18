@@ -58,7 +58,7 @@ impl FileLanguage {
         }
     }
 
-    fn from_db(value: &str) -> Result<Self, StoreError> {
+    pub(crate) fn from_db(value: &str) -> Result<Self, StoreError> {
         match value {
             "rust" => Ok(Self::Rust),
             "typescript" => Ok(Self::TypeScript),

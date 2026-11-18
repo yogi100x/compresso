@@ -492,3 +492,112 @@ fn test_index_survives_python_import_statement_with_no_module_name() {
         "the named imports on the malformed file's second line are still recorded"
     );
 }
+
+#[test]
+fn test_index_records_call_sites_and_survives_malformed_calls() {
+    let fixture = Fixture::new();
+    fs::write(
+        fixture.root.join("src/calls.rs"),
+        "pub fn outer() {\n    inner();\n    crate::lib::helper();\n}\npub fn inner() {}\n",
+    )
+    .expect("fixture file should be written");
+    for (path, source) in [
+        (
+            "src/broken_calls.rs",
+            "fn a() {\n    b(;\n    ::(1);\n    c.();\n}\n",
+        ),
+        ("src/broken_calls.py", "def a():\n    b(\n    .c()\n"),
+        (
+            "src/broken_calls.ts",
+            "function a() {\n  b<(;\n  this.();\n  new ();\n}\n",
+        ),
+    ] {
+        fs::write(fixture.root.join(path), source).expect("fixture file should be written");
+    }
+
+    let report = fixture
+        .indexer()
+        .index(&fixture.root, |_| {})
+        .expect("malformed calls must not fail the index");
+
+    assert_eq!(report.files_indexed, 12);
+    assert!(report.call_sites >= 2);
+    let repo = fixture.repo();
+    assert_eq!(
+        fixture
+            .store
+            .call_site_count(repo)
+            .expect("call sites should count"),
+        report.call_sites
+    );
+    let inner = fixture
+        .store
+        .call_sites_named(repo, "inner")
+        .expect("call sites should load");
+    assert!(inner.iter().any(|call| call.from_path == "src/calls.rs"
+        && call.caller_qualified_name == "outer"
+        && call.line == 2));
+
+    // Re-indexing a changed file replaces its call sites.
+    fs::write(fixture.root.join("src/calls.rs"), "pub fn outer() {}\n")
+        .expect("fixture file should be rewritten");
+    fixture
+        .indexer()
+        .index(&fixture.root, |_| {})
+        .expect("incremental index should succeed");
+    assert!(
+        fixture
+            .store
+            .call_sites_named(repo, "inner")
+            .expect("call sites should load")
+            .iter()
+            .all(|call| call.from_path != "src/calls.rs")
+    );
+}
+
+#[test]
+fn test_default_parser_version_marks_call_site_extraction() {
+    let fixture = Fixture::new();
+    fixture
+        .indexer()
+        .index(&fixture.root, |_| {})
+        .expect("index should succeed");
+    let version = fixture
+        .store
+        .latest_index_version(fixture.repo())
+        .expect("version lookup should succeed")
+        .expect("version should exist");
+    // Indexes stamped before call sites existed hold none, so the suffix
+    // change makes the next index pass reparse every file once.
+    assert!(version.parser_version.contains("+calls-v1"));
+}
+
+#[test]
+fn test_a_file_with_a_huge_number_of_calls_never_aborts_the_index() {
+    let fixture = Fixture::new();
+    let mut source = String::new();
+    for function in 0..2_000 {
+        source.push_str(&format!("def f{function}():\n"));
+        for call in 0..30 {
+            source.push_str(&format!("    g{call}()\n"));
+        }
+    }
+    let chain = (0..20_000)
+        .map(|index| format!("m{index}"))
+        .collect::<Vec<_>>()
+        .join(".");
+    source.push_str(&format!("def deep():\n    {chain}.go()\n"));
+    // Under the indexer's 1,000,000-byte file limit, so the file is parsed.
+    assert!(source.len() < 1_000_000);
+    fs::write(fixture.root.join("src/generated_calls.py"), source)
+        .expect("fixture file should be written");
+
+    let report = fixture
+        .indexer()
+        .index(&fixture.root, |_| {})
+        .expect("a call-heavy file must not fail the index");
+
+    assert_eq!(report.files_indexed, 9);
+    assert_eq!(report.call_site_files_truncated, 1);
+    assert!(report.call_sites >= compresso_atlas::parsers::MAX_CALLS_PER_FILE);
+}

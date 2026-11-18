@@ -735,7 +735,7 @@ fn classify_tool(tool: &str) -> Result<OperationKind, StoreError> {
         "compresso_compress" | "engine_compress" => Ok(OperationKind::Compression),
         "compresso_repo_map" | "compresso_search" | "compresso_grep" | "compresso_outline"
         | "compresso_unfold" | "compresso_read" | "compresso_context" | "compresso_impact"
-        | "compresso_stats" | "compresso_explain" | "compresso_recall" => {
+        | "compresso_trace" | "compresso_stats" | "compresso_explain" | "compresso_recall" => {
             Ok(OperationKind::Retrieval)
         }
         _ => Err(StoreError::UnknownOperationTool(tool.to_owned())),
@@ -1274,6 +1274,7 @@ mod tests {
             "compresso_read",
             "compresso_context",
             "compresso_impact",
+            "compresso_trace",
             "compresso_stats",
             "compresso_explain",
         ];
@@ -1290,7 +1291,7 @@ mod tests {
                 ))
                 .expect("known retrieval should record");
         }
-        assert_eq!(operation_count(&store), 10);
+        assert_eq!(operation_count(&store), 11);
 
         let missing_trace = operation(
             "missing-trace",
@@ -1344,7 +1345,7 @@ mod tests {
             store.record_operation(&unknown),
             Err(StoreError::UnknownOperationTool(tool)) if tool == "compresso_future_tool"
         ));
-        assert_eq!(operation_count(&store), 10);
+        assert_eq!(operation_count(&store), 11);
     }
 
     #[test]

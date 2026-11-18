@@ -34,7 +34,8 @@ pub use integrations::{IntegrationEnvironment, execute_integrations};
 pub use recall::{RecallArgs, RecallEnvironment, RecallSourceArg, execute_recall};
 pub use repos::{ReposCommand, ReposListArgs, ReposRemoveArgs};
 pub use retrieval::{
-    ContextArgs, GrepArgs, ImpactArgs, MapArgs, OutlineArgs, ReadArgs, SearchArgs, UnfoldArgs,
+    ContextArgs, GrepArgs, ImpactArgs, MapArgs, OutlineArgs, ReadArgs, SearchArgs, TraceArgs,
+    UnfoldArgs,
 };
 pub use setup::{
     SetupArgs, SetupClientArg, SetupRuntime, SystemSetupRuntime, execute_setup,
@@ -67,6 +68,8 @@ pub enum RootCommand {
     Unfold(UnfoldArgs),
     Context(ContextArgs),
     Impact(ImpactArgs),
+    /// Show who calls a symbol, what it calls, or how one reaches another.
+    Trace(TraceArgs),
     Compress(CompressArgs),
     Explain(ExplainArgs),
     /// Summarize locally recorded savings. Covers MCP sessions and `compress`;
@@ -893,6 +896,7 @@ impl RootCommand {
                 | Self::Unfold(_)
                 | Self::Context(_)
                 | Self::Impact(_)
+                | Self::Trace(_)
         )
     }
 
@@ -910,6 +914,7 @@ impl RootCommand {
             Self::Unfold(arguments) => arguments.output.json,
             Self::Context(arguments) => arguments.output.json,
             Self::Impact(arguments) => arguments.output.json,
+            Self::Trace(arguments) => arguments.output.json,
             Self::Compress(arguments) => arguments.output.json,
             Self::Explain(arguments) => arguments.output.json,
             Self::Stats(arguments) => arguments.output.json,

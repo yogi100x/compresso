@@ -1,11 +1,15 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use compresso_store::{SymbolKind, SymbolRecord};
+use compresso_store::{CallSiteRecord, SymbolKind, SymbolRecord};
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
 
+mod calls;
 mod shell;
 mod text;
+
+use calls::CallSyntax;
+pub use calls::{MAX_CALL_NODES_PER_FILE, MAX_CALLS_PER_FILE};
 
 const RUST_QUERY: &str = include_str!("../queries/rust.scm");
 const JAVASCRIPT_QUERY: &str = include_str!("../queries/javascript.scm");
@@ -44,6 +48,12 @@ pub struct ImportRecord {
 pub struct Extraction {
     pub symbols: Vec<SymbolRecord>,
     pub imports: Vec<ImportRecord>,
+    /// Call sites inside the extracted functions and methods (D89);
+    /// `caller` indexes `symbols`.
+    pub calls: Vec<CallSiteRecord>,
+    /// A per-file call bound ([`MAX_CALLS_PER_FILE`] kept or
+    /// [`MAX_CALL_NODES_PER_FILE`] examined) stopped call extraction early.
+    pub calls_truncated: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -116,6 +126,7 @@ fn extract_rust(source: &str) -> Result<Extraction, ParseError> {
         "Rust",
         RUST_QUERY,
         source,
+        CallSyntax::Rust,
         process_rust_candidate,
     )
 }
@@ -139,6 +150,7 @@ fn extract_typescript(lang: Language, source: &str) -> Result<Extraction, ParseE
         language_name,
         query,
         source,
+        CallSyntax::Script,
         process_typescript_candidate,
     )
 }
@@ -149,6 +161,7 @@ fn extract_javascript(source: &str) -> Result<Extraction, ParseError> {
         "JavaScript",
         JAVASCRIPT_QUERY,
         source,
+        CallSyntax::Script,
         process_javascript_candidate,
     )
 }
@@ -159,6 +172,7 @@ fn extract_python(source: &str) -> Result<Extraction, ParseError> {
         "Python",
         PYTHON_QUERY,
         source,
+        CallSyntax::Python,
         process_python_candidate,
     )
 }
@@ -168,6 +182,7 @@ fn extract_with_query(
     language_name: &'static str,
     query_source: &str,
     source: &str,
+    call_syntax: CallSyntax,
     process_candidate: for<'tree> fn(Candidate<'tree>, &str, &mut Extraction),
 ) -> Result<Extraction, ParseError> {
     let mut parser = Parser::new();
@@ -214,6 +229,8 @@ fn extract_with_query(
     let mut extraction = Extraction {
         symbols: Vec::new(),
         imports: Vec::new(),
+        calls: Vec::new(),
+        calls_truncated: false,
     };
     for candidate in candidates {
         process_candidate(candidate, source, &mut extraction);
@@ -224,6 +241,9 @@ fn extract_with_query(
     extraction
         .imports
         .retain(|import| !import.raw.trim().is_empty());
+    let calls = calls::extract(call_syntax, tree.root_node(), source, &extraction.symbols);
+    extraction.calls = calls.calls;
+    extraction.calls_truncated = calls.truncated;
 
     Ok(extraction)
 }

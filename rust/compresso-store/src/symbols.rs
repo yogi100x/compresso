@@ -2,6 +2,7 @@ use std::fmt::Write;
 
 use rusqlite::{OptionalExtension, Row, params};
 
+use crate::calls::{CallSiteRecord, insert_call_sites, validate_call_site};
 use crate::files::{
     decode_file_record, raw_file_from_row, sqlite_integer_from_u64, sqlite_integer_from_usize,
     validate_nonempty, validate_relative_path,
@@ -158,7 +159,7 @@ impl EdgeKind {
     }
 }
 
-struct RawSymbolRecord {
+pub(crate) struct RawSymbolRecord {
     id: i64,
     name: String,
     qualified_name: String,
@@ -206,7 +207,23 @@ impl Store {
         symbols: &[SymbolRecord],
         edges: &[EdgeRecord],
     ) -> Result<FileId, StoreError> {
+        self.replace_indexed_file_with_calls(repo, record, symbols, edges, &[])
+    }
+
+    /// Atomically upserts one indexed file and replaces all of its derived
+    /// rows, including the call sites inside its symbols (D89).
+    pub fn replace_indexed_file_with_calls(
+        &self,
+        repo: RepoId,
+        record: &FileRecord,
+        symbols: &[SymbolRecord],
+        edges: &[EdgeRecord],
+        calls: &[CallSiteRecord],
+    ) -> Result<FileId, StoreError> {
         validate_relative_path(&record.path)?;
+        for call in calls {
+            validate_call_site(call, symbols.len())?;
+        }
         validate_nonempty("file hash", &record.hash)?;
         let size_bytes = sqlite_integer_from_u64("file size_bytes", record.size_bytes)?;
         let token_estimate =
@@ -228,7 +245,9 @@ impl Store {
             ],
             |row| row.get(0),
         )?;
-        replace_symbols_in_transaction(&transaction, file, repo, symbols, edges, true)?;
+        let symbol_ids =
+            replace_symbols_in_transaction(&transaction, file, repo, symbols, edges, true)?;
+        insert_call_sites(&transaction, repo, file, &symbol_ids, calls)?;
         transaction.execute(
             "UPDATE edges SET to_file_id = ?3, resolution_status = 'resolved', resolution_detail = NULL WHERE repo_id = ?1 AND to_path = ?2 AND to_file_id IS NULL AND (resolution_status = 'resolved' OR (resolution_status = 'unresolved' AND resolution_detail = 'target_deleted'))",
             params![repo, &record.path, file],
@@ -567,7 +586,7 @@ fn replace_symbols_in_transaction(
     symbols: &[SymbolRecord],
     edges: &[EdgeRecord],
     allow_pending_resolved: bool,
-) -> Result<(), StoreError> {
+) -> Result<Vec<i64>, StoreError> {
     for edge in edges {
         validate_nonempty("edge to_path", &edge.to_path)?;
     }
@@ -578,13 +597,14 @@ fn replace_symbols_in_transaction(
     transaction.execute("DELETE FROM edges WHERE from_file_id = ?1", [file])?;
     transaction.execute("DELETE FROM symbols WHERE file_id = ?1", [file])?;
 
+    let mut symbol_ids = Vec::with_capacity(symbols.len());
     {
         let mut statement = transaction.prepare(
             "INSERT INTO symbols (file_id, name, qualified_name, kind, signature, start_line, end_line, token_estimate) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )?;
         for symbol in symbols {
             validate_symbol(symbol)?;
-            statement.execute(params![
+            symbol_ids.push(statement.insert(params![
                 file,
                 &symbol.name,
                 &symbol.qualified_name,
@@ -593,7 +613,7 @@ fn replace_symbols_in_transaction(
                 i64::from(symbol.start_line),
                 i64::from(symbol.end_line),
                 sqlite_integer_from_usize("symbol token_estimate", symbol.token_estimate)?,
-            ])?;
+            ])?);
         }
     }
 
@@ -613,7 +633,7 @@ fn replace_symbols_in_transaction(
             ])?;
         }
     }
-    Ok(())
+    Ok(symbol_ids)
 }
 
 fn validate_symbol(symbol: &SymbolRecord) -> Result<(), StoreError> {
@@ -774,7 +794,10 @@ fn normalize_signature_hash(hash: &str) -> Result<String, StoreError> {
     Ok(hash.to_ascii_lowercase())
 }
 
-fn raw_symbol_from_row(row: &Row<'_>, offset: usize) -> rusqlite::Result<RawSymbolRecord> {
+pub(crate) fn raw_symbol_from_row(
+    row: &Row<'_>,
+    offset: usize,
+) -> rusqlite::Result<RawSymbolRecord> {
     Ok(RawSymbolRecord {
         id: row.get(offset)?,
         name: row.get(offset + 1)?,
@@ -787,7 +810,9 @@ fn raw_symbol_from_row(row: &Row<'_>, offset: usize) -> rusqlite::Result<RawSymb
     })
 }
 
-fn decode_symbol_record(raw: RawSymbolRecord) -> Result<(i64, SymbolRecord), StoreError> {
+pub(crate) fn decode_symbol_record(
+    raw: RawSymbolRecord,
+) -> Result<(i64, SymbolRecord), StoreError> {
     let start_line = u32::try_from(raw.start_line).map_err(|_| StoreError::InvalidStoredValue {
         field: "symbols.start_line",
         value: raw.start_line.to_string(),

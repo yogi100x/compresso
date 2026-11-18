@@ -11,7 +11,7 @@ pub use commands::{
     PostError, PullRequestPoster, ReadArgs, RecallArgs, RecallEnvironment, RecallSourceArg,
     ReposCommand, ReposListArgs, ReposRemoveArgs, RootCommand, RoutingReminderArgs, SearchArgs,
     SetupArgs, SetupClientArg, SetupRuntime, StatsArgs, SystemPullRequestPoster,
-    SystemSetupRuntime, UnavailableAccountClient, UnfoldArgs, execute, execute_decisions,
-    execute_diagnostics, execute_integrations, execute_recall, execute_setup,
+    SystemSetupRuntime, TraceArgs, UnavailableAccountClient, UnfoldArgs, execute,
+    execute_decisions, execute_diagnostics, execute_integrations, execute_recall, execute_setup,
     execute_setup_with_runtime, execute_with_store, execute_with_store_and_input,
 };

@@ -80,6 +80,11 @@ pub(crate) const LEAN_TOOLS: &[LeanTool] = &[
         hint: "compresso_grep for text and use sites",
     },
     LeanTool {
+        name: "compresso_trace",
+        description: "Call graph in one call: who calls X, what X calls, or the call path from A to B, with call-site path and line per hop.",
+        hint: "compresso_trace for callers, callees, and call paths",
+    },
+    LeanTool {
         name: "compresso_outline",
         description: "Symbol skeleton of one file: kinds, signatures, line ranges, no bodies.",
         hint: "compresso_outline for a file's structure",

@@ -10,6 +10,7 @@ mod rust_imports;
 pub mod scanner;
 pub mod search;
 mod task_identifiers;
+pub mod trace;
 
 pub use cards::{
     CardOptions, CardSymbol, DEFAULT_MAX_CARDS, MAX_CARDS, ModuleCard, ModuleCards, module_cards,
@@ -35,4 +36,9 @@ pub use scanner::{
 pub use search::{
     SEARCH_MIN_QUERY_CHARS, SearchDiagnostic, SearchDiagnosticCode, SearchOptions, SearchReport,
     search_with_diagnostics, validate_search_query,
+};
+pub use trace::{
+    CallResolution, TRACE_DEFAULT_NEIGHBOR_DEPTH, TRACE_DEFAULT_PATH_DEPTH, TRACE_MAX_DEPTH,
+    TraceCallSite, TraceEnd, TraceHop, TraceNeighbor, TraceOptions, TraceReport, TraceResult,
+    TraceSymbol, UnfollowedCall, trace,
 };
