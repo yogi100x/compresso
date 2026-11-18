@@ -1,0 +1,41 @@
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_7ed33802472810 191,197,199,393
+rust/compresso-atlas/src/grep.rs
+  s_89a704cfae63f5::t_308930b80391e4 464-466,505-512,514-517,520-523,525,532,537-539,542,544,547-552,581-583,640-680
+rust/compresso-atlas/src/queries.rs
+  s_89a704cfae63f5::t_a56e344fc8f005 934,936-939
+rust/compresso-atlas/tests/grep_content.rs
+  s_89a704cfae63f5::t_7e567e0c84c879 289-318
+rust/compresso-atlas/tests/queries_task_named.rs
+  s_89a704cfae63f5::t_61b064595f737a 219-247
+rust/compresso-mcp/src/tools/atlas_grep.rs
+  s_89a704cfae63f5::t_85eb736828ceef 92,95-101,135
+rust/compresso-mcp/tests/tools_grep.rs
+  s_89a704cfae63f5::t_aae13c4ff13e6c 297-322,389
+rust/compresso-atlas/src/task_identifiers.rs
+  s_dbe3947a1642df::t_1f95ef938544cf 36-37,65-67,69-76
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "32133b21472b99165975d9d18d5d55bac665ba88",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_dbe3947a1642df": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ab40211f12366e84f",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
