@@ -120,8 +120,8 @@ const INSTRUCTIONS: &str = "Compresso provides token-efficient, read-only access
 
 const REPO_MAP_DESCRIPTION: &str = "Returns a token-budgeted map of an indexed repository: directory tree plus the most structurally important symbols per file, ranked by edge in-degree. Use this first when orienting in an unfamiliar repository; it is the cheapest way to decide where to look next. With cards:true it also returns deterministic per-directory module cards. Read-only; requires the repository to have been indexed with `compresso index`.";
 const SEARCH_DESCRIPTION: &str = "Performs one exact symbol-index lookup (names, qualified names, signatures; FTS5, bm25-ranked) and returns compact hits with file, line range, and signature. Use for \"where is X defined/used\" questions. For broad natural-language or multi-concept tasks, call compresso_context once instead of issuing synonym searches. Read-only; requires an indexed repository.";
-const GREP_DESCRIPTION: &str = "Replaces shell text search (grep) for this repository. Finds literal text or a regular expression in the indexed files and returns every use site, not only definitions, grouped per pattern and then per file with line numbers, a short snippet, and the enclosing symbol when the index knows it. Pass several patterns in one call instead of one search per name. Each pattern reports matches_total and files_total for the whole repository even when the listing is capped, and complete:true means nothing more exists, so do not repeat a search with larger limits; narrow it with path (a prefix or a glob such as 'src/**/*.rs') instead. Linear-time matching; secret paths and files over 16 MiB are never read. Read-only; requires an indexed repository.";
-const READ_DESCRIPTION: &str = "Reads a file or inclusive line range from an approved repository under a hard token budget. An end_line beyond EOF clamps safely; the result reports the resolved range, total file lines, and whether clamping occurred, so no separate line-count command is needed. Token overflow truncates with an explicit elision marker. With gate:true it returns only a worth-reading verdict and cost estimate. Read-only; paths must remain inside the approved repository root.";
+const GREP_DESCRIPTION: &str = "Replaces shell text search (grep) for this repository. Finds literal text or a regular expression in the indexed files and returns every use site, not only definitions, grouped per pattern and then per file with line numbers, a short snippet, and the enclosing symbol when the index knows it. Pass several patterns in one call instead of one search per name. context_lines (0-10) adds that many lines around each listed match, merged where they overlap, so a match can be understood without a follow-up compresso_read. Each pattern reports matches_total and files_total for the whole repository even when the listing is capped, and complete:true means nothing more exists, so do not repeat a search with larger limits; narrow it with path (a prefix or a glob such as 'src/**/*.rs') instead. Linear-time matching; secret paths and files over 16 MiB are never read. Read-only; requires an indexed repository.";
+const READ_DESCRIPTION: &str = "Reads a file or inclusive line range from an approved repository under a hard token budget. An end_line beyond EOF clamps safely; the result reports the resolved range, total file lines, and whether clamping occurred, so no separate line-count command is needed. Token overflow truncates with an explicit elision marker. With gate:true it returns only a worth-reading verdict and cost estimate. Pass ranges (up to 8 {path, start_line, end_line}) instead of path to read several ranges or files in one call: the token budget is shared, and each range reports its own truncation or error. Read-only; paths must remain inside the approved repository root.";
 const OUTLINE_DESCRIPTION: &str = "Returns the symbol skeleton of one file: every indexed symbol with kind, signature, line range, and per-symbol token estimate, but no bodies. Combine with compresso_unfold to fetch only the bodies you need — typically ~70% cheaper than a full file read for navigation. Read-only; requires an indexed repository.";
 const UNFOLD_DESCRIPTION: &str = "Returns the exact indexed source body for one symbol. Optional identity fields disambiguate overloads; ambiguous selectors return bounded candidates instead of choosing arbitrarily. Read-only; requires an indexed repository and an approved path.";
 const CONTEXT_DESCRIPTION: &str = "Primary one-call planner for broad natural-language or multi-concept repository tasks. It starts at 800 tokens and expands only when ranked evidence coverage is insufficient, using 1,600 and 3,200 token stages under a 4,000-token ceiling. max_tokens is the caller's hard ceiling. For task_pack_ready or next_action answer_from_pack, answer immediately with zero follow-up repository tool calls. Only for targeted_follow_up_needed, use at most two precise Compresso follow-ups. Read-only; requires an indexed repository.";
@@ -284,12 +284,9 @@ impl ServerHandler for CompressoServer {
         // for input or creates a task.
         let completed = async move {
             if hidden {
-                return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                    "[tool_unavailable] Tool '{}' is not served by the {} tool profile; the operator can restart the server without `--tools {}` to use it.",
-                    request.name,
-                    profile.name(),
-                    profile.name()
-                ))]));
+                return Ok(CallToolResult::error(vec![ContentBlock::text(
+                    hidden_tool_message(&request.name, profile),
+                )]));
             }
             if handled {
                 let Some(_call_guard) = session.acquire_call().await else {
@@ -778,6 +775,7 @@ fn tool_declarations() -> Vec<Tool> {
                 "path": { "type": "string", "minLength": 1, "maxLength": 256, "description": "Repo-relative file or directory prefix, or a glob with *, **, ? ('*.rs' matches file names at any depth)." },
                 "max_files": { "type": "integer", "minimum": 1, "maximum": 100, "default": 20, "description": "Files listed per pattern." },
                 "max_matches_per_file": { "type": "integer", "minimum": 1, "maximum": 50, "default": 5, "description": "Matching lines listed per file." },
+                "context_lines": { "type": "integer", "minimum": 0, "maximum": 10, "default": 0, "description": "Lines before and after each match, merged; within max_tokens." },
                 "max_tokens": { "type": "integer", "minimum": 300, "maximum": 10000, "default": 1500 }
             }),
             &[],
@@ -790,10 +788,11 @@ fn tool_declarations() -> Vec<Tool> {
                 "path": { "type": "string", "minLength": 1, "description": "Repo-relative file path." },
                 "start_line": { "type": "integer", "minimum": 1, "description": "1-based inclusive. Optional." },
                 "end_line": { "type": "integer", "minimum": 1, "description": "1-based inclusive. Optional; requires start_line." },
+                "ranges": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "type": "object", "required": ["path"], "properties": { "path": { "type": "string" }, "start_line": { "type": "integer" }, "end_line": { "type": "integer" } } }, "description": "Instead of path: up to 8 ranges in one call sharing max_tokens." },
                 "max_tokens": token_budget(2000),
                 "gate": { "type": "boolean", "default": false, "description": "If true, return verdict + cost estimate only, no content." }
             }),
-            &["path"],
+            &[],
         ),
         tool(
             "compresso_outline",
@@ -976,6 +975,25 @@ impl OutputHealth {
             .unwrap_or_else(PoisonError::into_inner)
             .take()
     }
+}
+
+/// Why a known tool is not served here. A tool on the profile's allowlist
+/// that is still unregistered is conditional and not enabled for this
+/// process: restarting with the full profile would not help.
+fn hidden_tool_message(name: &str, profile: McpToolProfile) -> String {
+    if crate::profile::lean_tool_allowlist().contains(&name) {
+        let enable = match name {
+            "compresso_recall" => "start the server with `--recall-source`",
+            _ => "enable it when starting the server",
+        };
+        return format!(
+            "[tool_unavailable] Tool '{name}' is not enabled for this server process; the operator can {enable} to use it."
+        );
+    }
+    format!(
+        "[tool_unavailable] Tool '{name}' is not served by the {profile} tool profile; the operator can restart the server without `--tools {profile}` to use it.",
+        profile = profile.name()
+    )
 }
 
 /// Records an input failure that ends the session after it closes cleanly.

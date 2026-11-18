@@ -290,6 +290,8 @@ pub enum QueryError {
     InvalidImpactOptions { reason: &'static str },
     #[error("invalid trace options: {reason}")]
     InvalidTraceOptions { reason: &'static str },
+    #[error("invalid read ranges: {reason}")]
+    InvalidReadRanges { reason: &'static str },
     #[error("failed to canonicalize repository query root {path:?}")]
     CanonicalizeRoot {
         path: PathBuf,
@@ -545,7 +547,7 @@ pub fn unfold(
         };
         let extraction =
             ParserRegistry::extract(language, &source).map_err(|source| QueryError::Parse {
-                path: path.clone(),
+                path: path.path().to_path_buf(),
                 source,
             })?;
         matching_symbols(extraction.symbols, selector)
@@ -559,7 +561,8 @@ pub fn unfold(
         0 => Ok(not_found(selector, stale)),
         1 => {
             let symbol = candidates.pop().expect("one candidate was counted");
-            let content = source_line_range(&source, &path, symbol.start_line, symbol.end_line)?;
+            let content =
+                source_line_range(&source, path.path(), symbol.start_line, symbol.end_line)?;
             Ok(UnfoldResult::Found {
                 path: selector.path.clone(),
                 symbol,
@@ -709,7 +712,7 @@ pub fn read_bounded(
                 start_line,
                 selected_end_line,
                 range_clamped,
-                source_line_range(&source, &resolved, start_line, selected_end_line)?,
+                source_line_range(&source, resolved.path(), start_line, selected_end_line)?,
             )
         }
         None if total_lines == 0 => (0, 0, false, ""),
@@ -764,6 +767,86 @@ pub fn read_bounded(
         truncated,
         elision,
     })
+}
+
+/// Most line ranges one [`read_bounded_ranges`] call reads.
+pub const READ_MAX_RANGES: usize = 8;
+
+/// One file range of a multi-range read: the whole file, `start_line`
+/// through the end, or an inclusive `start_line..=end_line` (an `end_line`
+/// past the end clamps, as in [`read_bounded`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReadRequest<'a> {
+    pub path: &'a str,
+    pub start_line: Option<u32>,
+    pub end_line: Option<u32>,
+}
+
+/// Reads up to [`READ_MAX_RANGES`] ranges under one shared token budget.
+///
+/// The request list is validated as a whole first (count, and for every
+/// range: a path, `end_line` only with `start_line`, `start_line` at least 1
+/// and not after `end_line`). Each range then passes every gate
+/// [`read_bounded`] applies (root containment, secret paths, the symlink
+/// rule, the 16 MiB ceiling) on its own; a range that fails yields its own
+/// error and costs no budget. The budget is shared in request order: each
+/// range may use an equal share of what the earlier ranges left, so a large
+/// first range cannot starve the rest, and each range reports its own
+/// truncation.
+pub fn read_bounded_ranges(
+    root: &Path,
+    requests: &[ReadRequest<'_>],
+    budget_tokens: usize,
+    counter: &dyn TokenCounter,
+) -> Result<Vec<Result<BoundedRead, AtlasError>>, AtlasError> {
+    validate_read_requests(requests)?;
+    let mut remaining = budget_tokens;
+    let mut output = Vec::with_capacity(requests.len());
+    for (index, request) in requests.iter().enumerate() {
+        let share = remaining / (requests.len() - index);
+        let read = read_request(root, request, share, counter);
+        if let Ok(read) = &read {
+            remaining = remaining.saturating_sub(read.tokens_used.min(share));
+        }
+        output.push(read);
+    }
+    Ok(output)
+}
+
+/// Rejects a malformed multi-range request before any file is opened.
+pub fn validate_read_requests(requests: &[ReadRequest<'_>]) -> Result<(), AtlasError> {
+    let invalid = |reason| Err(QueryError::InvalidReadRanges { reason }.into());
+    if requests.is_empty() || requests.len() > READ_MAX_RANGES {
+        return invalid("give 1 to 8 ranges");
+    }
+    for request in requests {
+        if request.path.is_empty() || request.path.contains('\0') {
+            return invalid("every range needs a non-empty path without NUL");
+        }
+        match (request.start_line, request.end_line) {
+            (None, Some(_)) => return invalid("end_line requires start_line"),
+            (Some(0), _) => return invalid("start_line must be at least 1"),
+            (Some(start), Some(end)) if end < start => {
+                return invalid("end_line must not be before start_line");
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn read_request(
+    root: &Path,
+    request: &ReadRequest<'_>,
+    budget_tokens: usize,
+    counter: &dyn TokenCounter,
+) -> Result<BoundedRead, AtlasError> {
+    let range = match (request.start_line, request.end_line) {
+        (Some(start), Some(end)) => Some((start, end)),
+        (Some(start), None) => Some((start, file_line_count(root, request.path)?)),
+        _ => None,
+    };
+    read_bounded(root, request.path, range, budget_tokens, counter)
 }
 
 /// Returns resolved reverse dependencies at minimum depths one and two only.
@@ -1805,8 +1888,12 @@ fn scan_content_terms(
                         known.path == record.path && same_symbol(&known.symbol, symbol)
                     })
                     .unwrap_or_else(|| {
-                        let body =
-                            source_line_range(&source, &path, symbol.start_line, symbol.end_line);
+                        let body = source_line_range(
+                            &source,
+                            path.path(),
+                            symbol.start_line,
+                            symbol.end_line,
+                        );
                         body_scores.push(body.map_or(0.0, |body| concepts.body_score(body)));
                         hits.push(SearchHit {
                             path: record.path.clone(),
@@ -2761,8 +2848,47 @@ fn symbol_identity(path: &str, symbol: &SymbolRecord) -> SymbolIdentity {
 }
 
 pub(crate) enum ResolvedEntry {
-    File(PathBuf),
+    File(ResolvedFile),
     Missing,
+}
+
+/// A file [`resolve_under_root`] approved, opened only through
+/// [`ResolvedFile::open`].
+///
+/// On Unix it carries the device and inode the gate inspected, and `open`
+/// refuses a handle whose identity differs: a component swapped for a
+/// symbolic link (or any other file) between the check and the open is
+/// never read, whichever directory level was swapped. Elsewhere `open`
+/// reopens the checked path, so the check-then-open window remains there.
+#[derive(Debug)]
+pub(crate) struct ResolvedFile {
+    path: PathBuf,
+    #[cfg(unix)]
+    identity: (u64, u64),
+}
+
+impl ResolvedFile {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Opens the approved file, failing as not found if what the path now
+    /// names is not the file the gate approved.
+    pub(crate) fn open(&self) -> io::Result<fs::File> {
+        let file = fs::File::open(&self.path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+            let metadata = file.metadata()?;
+            if (metadata.dev(), metadata.ino()) != self.identity {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "the file changed after it was resolved",
+                ));
+            }
+        }
+        Ok(file)
+    }
 }
 
 pub(crate) fn canonical_query_root(root: &Path) -> Result<PathBuf, AtlasError> {
@@ -2782,6 +2908,19 @@ pub(crate) fn canonical_query_root(root: &Path) -> Result<PathBuf, AtlasError> {
     Ok(canonical)
 }
 
+/// Resolves a repository-relative path for reading, the one gate every
+/// repository file read passes (read, grep, unfold, outline staleness,
+/// context-pack content scan, module-card purpose lines).
+///
+/// The symlink rule: a file is served only when the requested path names it
+/// directly. The target must lie inside `root` (otherwise
+/// [`AtlasError::OutsideRoot`]); then, if the requested path or the resolved
+/// target is a secret path, or any component of the requested path below
+/// `root` is a symbolic link, the entry is reported as
+/// [`ResolvedEntry::Missing`], exactly like a secret path, so a link reveals
+/// nothing about its target. The scanner never indexes or follows a link, so
+/// an indexed path that is now a link was swapped after indexing, and a link
+/// that was never indexed would serve content the index never vetted.
 pub(crate) fn resolve_under_root(
     root: &Path,
     requested: &str,
@@ -2793,10 +2932,17 @@ pub(crate) fn resolve_under_root(
     match fs::canonicalize(&joined) {
         Ok(resolved) => {
             ensure_contained(root, &resolved)?;
+            let target = resolved.strip_prefix(root).unwrap_or(&resolved);
+            if is_secret_path(target) {
+                return Ok(ResolvedEntry::Missing);
+            }
+            let Some(leaf) = direct_leaf(root, Path::new(requested)) else {
+                return Ok(ResolvedEntry::Missing);
+            };
             if !resolved.is_file() {
                 return Err(QueryError::NotAFile { path: resolved }.into());
             }
-            Ok(ResolvedEntry::File(resolved))
+            approved_file(resolved, &leaf)
         }
         Err(source) if source.kind() == io::ErrorKind::NotFound => {
             ensure_missing_path_contained(root, &joined)?;
@@ -2807,6 +2953,81 @@ pub(crate) fn resolve_under_root(
             source,
         }
         .into()),
+    }
+}
+
+/// The canonical file, tied to the inode the link-free walk reached. If the
+/// canonical path and the walked path no longer name the same file (a swap
+/// between the two checks), nothing is served.
+fn approved_file(resolved: PathBuf, leaf: &fs::Metadata) -> Result<ResolvedEntry, AtlasError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let Ok(canonical) = fs::metadata(&resolved) else {
+            return Ok(ResolvedEntry::Missing);
+        };
+        let identity = (leaf.dev(), leaf.ino());
+        if (canonical.dev(), canonical.ino()) != identity {
+            return Ok(ResolvedEntry::Missing);
+        }
+        Ok(ResolvedEntry::File(ResolvedFile {
+            path: resolved,
+            identity,
+        }))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = leaf;
+        Ok(ResolvedEntry::File(ResolvedFile { path: resolved }))
+    }
+}
+
+/// The metadata of the file `requested` names, read without following
+/// links, when no component of `requested` below `root` is a symbolic link;
+/// `None` otherwise. A path that names no component below `root` lexically
+/// (an absolute path elsewhere, or one that climbs above `root` with `..`)
+/// counts as traversing a link: it can only reach the root through another
+/// name for it.
+fn direct_leaf(root: &Path, requested: &Path) -> Option<fs::Metadata> {
+    let relative = if requested.is_absolute() {
+        requested.strip_prefix(root).ok()?
+    } else {
+        requested
+    };
+    let mut current = root.to_path_buf();
+    let mut depth = 0_usize;
+    let mut leaf = None;
+    for component in relative.components() {
+        match component {
+            std::path::Component::Normal(part) => {
+                current.push(part);
+                depth += 1;
+                // A component that cannot be inspected (it changed since
+                // canonicalization) is refused like a link.
+                let metadata = fs::symlink_metadata(&current).ok()?;
+                if metadata.file_type().is_symlink() {
+                    return None;
+                }
+                leaf = Some(metadata);
+            }
+            std::path::Component::ParentDir => {
+                if depth == 0 {
+                    return None;
+                }
+                current.pop();
+                depth -= 1;
+                leaf = None;
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => return None,
+        }
+    }
+    // After `a/..` the leaf is a directory again; re-read it link-free.
+    match leaf {
+        Some(leaf) => Some(leaf),
+        None => fs::symlink_metadata(&current)
+            .ok()
+            .filter(|metadata| !metadata.file_type().is_symlink()),
     }
 }
 
@@ -2891,14 +3112,14 @@ fn freshness_from_metadata(
 /// before it was indexed is trusted without reading, and anything else is
 /// hashed through one fixed buffer. The file is never loaded whole.
 pub(crate) fn file_matches_index(
-    path: &Path,
+    resolved: &ResolvedFile,
     indexed: &compresso_store::FileRecord,
 ) -> Result<bool, QueryError> {
     let read_error = |source| QueryError::Read {
-        path: path.to_path_buf(),
+        path: resolved.path().to_path_buf(),
         source,
     };
-    let mut file = fs::File::open(path).map_err(read_error)?;
+    let mut file = resolved.open().map_err(read_error)?;
     let metadata = file.metadata().map_err(read_error)?;
     let modified_seconds = metadata
         .modified()
@@ -2946,17 +3167,18 @@ fn content_matches_index(
     Ok(total == indexed_size && hasher.finalize().to_hex().as_str() == indexed_hash)
 }
 
-pub(crate) fn read_utf8(path: &Path) -> Result<String, QueryError> {
-    read_utf8_capped(path, MAX_READ_FILE_BYTES)
+pub(crate) fn read_utf8(resolved: &ResolvedFile) -> Result<String, QueryError> {
+    read_utf8_capped(resolved, MAX_READ_FILE_BYTES)
 }
 
 /// Reads at most `limit` bytes, failing closed when the file holds more.
 ///
 /// The ceiling is enforced on the open handle rather than on metadata alone,
 /// so a file that grows after a size check still cannot exceed it.
-fn read_utf8_capped(path: &Path, limit: u64) -> Result<String, QueryError> {
+fn read_utf8_capped(resolved: &ResolvedFile, limit: u64) -> Result<String, QueryError> {
     use std::io::Read as _;
 
+    let path = resolved.path();
     let read_error = |source| QueryError::Read {
         path: path.to_path_buf(),
         source,
@@ -2965,7 +3187,7 @@ fn read_utf8_capped(path: &Path, limit: u64) -> Result<String, QueryError> {
         path: path.to_path_buf(),
         limit_bytes: limit,
     };
-    let file = fs::File::open(path).map_err(read_error)?;
+    let file = resolved.open().map_err(read_error)?;
     if file.metadata().map_err(read_error)?.len() > limit {
         return Err(too_large());
     }
@@ -3127,10 +3349,15 @@ fn render_directory(directory: &DirectoryNode, depth: usize, output: &mut String
 #[cfg(test)]
 mod tests {
     use std::fs;
+    #[cfg(unix)]
+    use std::io;
+    use std::path::PathBuf;
 
+    #[cfg(unix)]
+    use super::read_utf8;
     use super::{
-        QueryError, STALENESS_HASH_BUFFER_BYTES, content_matches_index, line_spells_word,
-        read_utf8_capped,
+        QueryError, ResolvedEntry, ResolvedFile, STALENESS_HASH_BUFFER_BYTES,
+        content_matches_index, line_spells_word, read_utf8_capped, resolve_under_root,
     };
 
     /// Serves `total` zero bytes and records how it was read.
@@ -3444,11 +3671,76 @@ mod tests {
         );
     }
 
+    /// Writes `name` under a fresh canonical root and resolves it through the gate.
+    fn written_and_resolved(
+        directory: &tempfile::TempDir,
+        name: &str,
+        content: &str,
+    ) -> (PathBuf, ResolvedFile) {
+        let root = fs::canonicalize(directory.path()).expect("root should canonicalize");
+        fs::write(root.join(name), content).expect("file should be written");
+        let Ok(ResolvedEntry::File(resolved)) = resolve_under_root(&root, name) else {
+            panic!("{name} should resolve to a file");
+        };
+        (root, resolved)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_a_file_swapped_for_a_symlink_after_resolution_is_never_opened() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let (root, resolved) = written_and_resolved(&directory, "notes.txt", "ordinary\n");
+        fs::write(root.join(".env"), "TOKEN=swapped_secret\n").expect("secret file");
+        fs::remove_file(root.join("notes.txt")).expect("remove");
+        std::os::unix::fs::symlink(root.join(".env"), root.join("notes.txt")).expect("swap");
+
+        assert_eq!(
+            resolved
+                .open()
+                .expect_err("a swapped file must not open")
+                .kind(),
+            io::ErrorKind::NotFound
+        );
+        assert!(read_utf8(&resolved).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_a_parent_directory_swapped_for_a_symlink_after_resolution_is_never_opened() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let root = fs::canonicalize(directory.path()).expect("root should canonicalize");
+        fs::create_dir_all(root.join("docs")).expect("docs");
+        fs::create_dir_all(root.join("private")).expect("private");
+        fs::write(root.join("docs/notes.txt"), "ordinary\n").expect("notes");
+        fs::write(root.join("private/notes.txt"), "hidden\n").expect("hidden");
+        let Ok(ResolvedEntry::File(resolved)) = resolve_under_root(&root, "docs/notes.txt") else {
+            panic!("docs/notes.txt should resolve");
+        };
+        fs::rename(root.join("docs"), root.join("docs-parked")).expect("park");
+        std::os::unix::fs::symlink(root.join("private"), root.join("docs")).expect("swap");
+
+        assert!(resolved.open().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_hard_linked_ordinary_files_are_served() {
+        // Hard links are not refused: shared source trees use them, and a
+        // link to a secret can only be made by someone who can already read
+        // it (see the symlink rule in docs/plan/04-mcp-and-integrations.md).
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let (root, _) = written_and_resolved(&directory, "a.txt", "shared\n");
+        fs::hard_link(root.join("a.txt"), root.join("b.txt")).expect("hard link");
+        let Ok(ResolvedEntry::File(resolved)) = resolve_under_root(&root, "b.txt") else {
+            panic!("a hard-linked file should resolve");
+        };
+        assert_eq!(read_utf8(&resolved).expect("read"), "shared\n");
+    }
+
     #[test]
     fn test_read_utf8_capped_accepts_file_at_limit() {
         let directory = tempfile::tempdir().expect("temporary directory should be created");
-        let path = directory.path().join("at-limit.txt");
-        fs::write(&path, "0123456789").expect("file should be written");
+        let (_, path) = written_and_resolved(&directory, "at-limit.txt", "0123456789");
 
         let text = read_utf8_capped(&path, 10).expect("file at the limit should read");
 
@@ -3458,8 +3750,7 @@ mod tests {
     #[test]
     fn test_read_utf8_capped_rejects_one_byte_over_limit() {
         let directory = tempfile::tempdir().expect("temporary directory should be created");
-        let path = directory.path().join("over-limit.txt");
-        fs::write(&path, "0123456789A").expect("file should be written");
+        let (_, path) = written_and_resolved(&directory, "over-limit.txt", "0123456789A");
 
         let error = read_utf8_capped(&path, 10).expect_err("oversized file should fail");
 

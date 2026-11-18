@@ -21,6 +21,9 @@ pub struct IndexArgs {
     pub dry_run: bool,
 }
 
+/// Longest `index_failed` message, cause included.
+const INDEX_FAILED_MESSAGE_MAX_BYTES: usize = 512;
+
 pub(crate) struct Rendered {
     pub json: Value,
     pub human: String,
@@ -50,7 +53,7 @@ pub(crate) fn execute(
             IndexProgress::Parsing { path } => parsed.push(path_text(&path)),
             IndexProgress::Removed { path } => removed.push(path),
         })
-        .map_err(|_| IndexCommandError::index_failed())?;
+        .map_err(|error| IndexCommandError::index_failed(&error))?;
     parsed.sort();
     removed.sort();
 
@@ -80,6 +83,7 @@ fn render(
     let root = root.to_string_lossy().into_owned();
     let report_json = report.as_ref().map(|report| {
         json!({
+            "call_site_files_rejected": report.call_site_files_rejected,
             "call_site_files_truncated": report.call_site_files_truncated,
             "call_sites": report.call_sites,
             "duration_ms": report.duration_ms,
@@ -144,10 +148,54 @@ impl IndexCommandError {
         }
     }
 
-    fn index_failed() -> Self {
+    /// Names the underlying cause (and its sources) so a failure can be
+    /// acted on, bounded so a long path cannot flood the output.
+    fn index_failed(error: &dyn std::error::Error) -> Self {
+        let mut cause = error.to_string();
+        let mut source = error.source();
+        while let Some(next) = source {
+            cause.push_str(": ");
+            cause.push_str(&next.to_string());
+            source = next.source();
+        }
+        let cause = cause.replace(['\n', '\r'], " ");
+        let mut message = format!("repository indexing failed: {cause}");
+        if message.len() > INDEX_FAILED_MESSAGE_MAX_BYTES {
+            let mut end = INDEX_FAILED_MESSAGE_MAX_BYTES;
+            while !message.is_char_boundary(end) {
+                end -= 1;
+            }
+            message.truncate(end);
+            message.push('…');
+        }
         Self {
             code: "index_failed",
-            message: "repository indexing failed".to_owned(),
+            message,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("outer failure")]
+    struct Outer(#[source] std::io::Error);
+
+    #[test]
+    fn test_index_failed_names_the_cause_chain_on_one_bounded_line() {
+        let error = Outer(std::io::Error::other("disk\nfull"));
+        let failure = IndexCommandError::index_failed(&error);
+        assert_eq!(failure.code, "index_failed");
+        assert_eq!(
+            failure.message,
+            "repository indexing failed: outer failure: disk full"
+        );
+
+        let long = Outer(std::io::Error::other("é".repeat(1_000)));
+        let failure = IndexCommandError::index_failed(&long);
+        assert!(failure.message.len() <= INDEX_FAILED_MESSAGE_MAX_BYTES + '…'.len_utf8());
+        assert!(failure.message.ends_with('…'));
     }
 }

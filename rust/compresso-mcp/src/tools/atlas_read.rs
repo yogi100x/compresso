@@ -1,6 +1,7 @@
 use compresso_atlas::{
-    SearchHit, SearchOptions, file_line_count, is_scanner_excluded, plan_context, read_bounded,
-    repository_stale, search_with_diagnostics, validate_search_query,
+    BoundedRead, READ_MAX_RANGES, ReadRequest, SearchHit, SearchOptions, file_line_count,
+    is_scanner_excluded, plan_context, read_bounded, read_bounded_ranges, repository_stale,
+    search_with_diagnostics, validate_read_requests, validate_search_query,
 };
 use compresso_core::{TokenCounter, operation_identity};
 use compresso_store::{Store, SymbolRecord};
@@ -125,10 +126,14 @@ fn read_tool(
             "path",
             "start_line",
             "end_line",
+            "ranges",
             "max_tokens",
             "gate",
         ],
     )?;
+    if let Some(ranges) = arguments.remove("ranges") {
+        return read_ranges_tool(store, repository_root, arguments, ranges);
+    }
     let root = optional_string(&mut arguments, "root", false)?;
     let path = required_string(&mut arguments, "path")?;
     let start_line = optional_u32(&mut arguments, "start_line", 1, u32::MAX)?;
@@ -149,21 +154,7 @@ fn read_tool(
     }
 
     let repository = resolve_repository(store, repository_root, root.as_deref())?;
-    validate_repo_path(&repository.root, &path)?;
-    // A direct read follows the scanner's exclusion policy: content the index
-    // was never allowed to hold is not served either. An indexed file is
-    // always readable, so an index built without ignore rules still works.
-    if is_scanner_excluded(&repository.root, Path::new(&path))
-        && store
-            .indexed_file(repository.id, &path)
-            .map_err(|_| ToolFailure::internal())?
-            .is_none()
-    {
-        return Err(ToolFailure::new(
-            "not_found",
-            "The requested file was not found on disk.",
-        ));
-    }
+    read_gate_path(store, &repository, &path)?;
     let counter = navigation_counter();
     let range = read_range(&repository.root, &path, start_line, end_line)?;
     if gate {
@@ -181,10 +172,19 @@ fn read_tool(
     let result = read_bounded(&repository.root, &path, range, max_tokens, counter)
         .map_err(map_atlas_error)?;
     let operation_id = operation_identity().id;
-    let file_tokens_estimated = result.file_tokens_estimated;
     let mut payload = json!({
         "schema_version": 1,
         "operation_id": operation_id,
+    });
+    if let (Some(payload), Value::Object(read)) = (payload.as_object_mut(), read_value(&result)) {
+        payload.extend(read);
+    }
+    Ok(payload)
+}
+
+/// The fields of one bounded read, shared by the single and multi-range forms.
+fn read_value(result: &BoundedRead) -> Value {
+    let mut value = json!({
         "path": result.path,
         "content": result.content,
         "range": {
@@ -203,10 +203,156 @@ fn read_tool(
         "truncated": result.truncated,
         "elision": result.elision
     });
-    if file_tokens_estimated {
-        payload["file_tokens_total_estimated"] = serde_json::Value::Bool(true);
+    if result.file_tokens_estimated {
+        value["file_tokens_total_estimated"] = Value::Bool(true);
     }
-    Ok(payload)
+    value
+}
+
+/// The MCP read gates every read passes before Atlas opens anything: a
+/// repository-relative path inside the root, and the scanner's exclusion
+/// policy (content the index was never allowed to hold is not served
+/// either; an indexed file is always readable, so an index built without
+/// ignore rules still works). Atlas then applies containment, secret paths,
+/// the symlink rule, and the size ceiling.
+fn read_gate_path(
+    store: &Store,
+    repository: &compresso_store::RepoRecord,
+    path: &str,
+) -> Result<(), ToolFailure> {
+    validate_repo_path(&repository.root, path)?;
+    if is_scanner_excluded(&repository.root, Path::new(path))
+        && store
+            .indexed_file(repository.id, path)
+            .map_err(|_| ToolFailure::internal())?
+            .is_none()
+    {
+        return Err(ToolFailure::new(
+            "not_found",
+            "The requested file was not found on disk.",
+        ));
+    }
+    Ok(())
+}
+
+/// `ranges`: up to eight `{path, start_line, end_line}` reads in one call
+/// under one shared token budget. Each range passes every read gate on its
+/// own and fails on its own with the same code a single read would return.
+fn read_ranges_tool(
+    store: &Store,
+    repository_root: Option<&Path>,
+    mut arguments: serde_json::Map<String, Value>,
+    ranges: Value,
+) -> ToolResult {
+    for single in ["path", "start_line", "end_line"] {
+        if arguments.contains_key(single) {
+            return Err(ToolFailure::invalid(format!(
+                "pass either 'ranges' or '{single}', not both."
+            )));
+        }
+    }
+    if optional_bool(&mut arguments, "gate")?.unwrap_or(false) {
+        return Err(ToolFailure::invalid(
+            "argument 'gate' reads one file; it cannot be combined with 'ranges'.",
+        ));
+    }
+    let root = optional_string(&mut arguments, "root", false)?;
+    let max_tokens = token_budget(&mut arguments, READ_DEFAULT_TOKENS)?;
+    let ranges = ranges_argument(ranges)?;
+    let requests = ranges
+        .iter()
+        .map(|(path, start_line, end_line)| ReadRequest {
+            path,
+            start_line: *start_line,
+            end_line: *end_line,
+        })
+        .collect::<Vec<_>>();
+    validate_read_requests(&requests).map_err(map_atlas_error)?;
+    let repository = resolve_repository(store, repository_root, root.as_deref())?;
+
+    let mut outcomes = Vec::with_capacity(requests.len());
+    let mut admitted = Vec::new();
+    for request in &requests {
+        match read_gate_path(store, &repository, request.path) {
+            Ok(()) => {
+                outcomes.push(None);
+                admitted.push(*request);
+            }
+            Err(failure) => outcomes.push(Some(failure)),
+        }
+    }
+    let counter = navigation_counter();
+    let mut reads = if admitted.is_empty() {
+        Vec::new()
+    } else {
+        read_bounded_ranges(&repository.root, &admitted, max_tokens, counter)
+            .map_err(map_atlas_error)?
+    }
+    .into_iter();
+
+    let mut values = Vec::with_capacity(requests.len());
+    let (mut tokens_used, mut truncated, mut failed) = (0_usize, false, 0_usize);
+    for (request, gate_failure) in requests.iter().zip(outcomes) {
+        let read = match gate_failure {
+            Some(failure) => Err(failure),
+            None => reads
+                .next()
+                .ok_or_else(ToolFailure::internal)?
+                .map_err(map_atlas_error),
+        };
+        match read {
+            Ok(read) => {
+                tokens_used += read.tokens_used;
+                truncated |= read.truncated;
+                values.push(read_value(&read));
+            }
+            Err(failure) => {
+                failed += 1;
+                values.push(json!({
+                    "path": request.path,
+                    "error": { "code": failure.code(), "message": failure.message() }
+                }));
+            }
+        }
+    }
+    Ok(json!({
+        "schema_version": 1,
+        "operation_id": operation_identity().id,
+        "ranges": values,
+        "ranges_failed": failed,
+        "tokens_used": tokens_used,
+        "token_provider": counter.provider(),
+        "truncated": truncated
+    }))
+}
+
+type RangeArgument = (String, Option<u32>, Option<u32>);
+
+fn ranges_argument(ranges: Value) -> Result<Vec<RangeArgument>, ToolFailure> {
+    let invalid = || {
+        ToolFailure::invalid(format!(
+            "argument 'ranges' must be an array of 1 to {READ_MAX_RANGES} objects with 'path' and optional 'start_line' and 'end_line'."
+        ))
+    };
+    let Value::Array(ranges) = ranges else {
+        return Err(invalid());
+    };
+    if ranges.is_empty() || ranges.len() > READ_MAX_RANGES {
+        return Err(invalid());
+    }
+    ranges
+        .into_iter()
+        .map(|range| {
+            let Value::Object(range) = range else {
+                return Err(invalid());
+            };
+            let mut range = checked_arguments(Some(range), &["path", "start_line", "end_line"])?;
+            let path = required_string(&mut range, "path")?;
+            let start_line = optional_u32(&mut range, "start_line", 1, u32::MAX)?;
+            let end_line = optional_u32(&mut range, "end_line", 1, u32::MAX)?;
+            Ok((path, start_line, end_line))
+        })
+        .collect()
 }
 
 fn read_range(

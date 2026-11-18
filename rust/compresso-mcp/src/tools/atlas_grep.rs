@@ -44,6 +44,7 @@ pub(crate) fn dispatch(
             "path",
             "max_files",
             "max_matches_per_file",
+            "context_lines",
             "max_tokens",
         ],
     )?;
@@ -66,6 +67,13 @@ pub(crate) fn dispatch(
         compresso_atlas::GREP_MAX_MATCHES_PER_FILE_LIMIT,
     )?
     .unwrap_or(DEFAULT_MAX_MATCHES_PER_FILE);
+    let context_lines = optional_usize(
+        &mut arguments,
+        "context_lines",
+        0,
+        compresso_atlas::GREP_MAX_CONTEXT_LINES,
+    )?
+    .unwrap_or(0);
     let max_tokens = optional_usize(&mut arguments, "max_tokens", MIN_TOKENS, MAX_TOKENS)?
         .unwrap_or(DEFAULT_TOKENS);
     let options = GrepOptions {
@@ -75,6 +83,7 @@ pub(crate) fn dispatch(
         path: path.as_deref(),
         max_files,
         max_matches_per_file,
+        context_lines,
     };
     // Reject a bad pattern before the repository is even resolved.
     validate_grep(&options).map_err(|error| map_grep_error(error.into()))?;
@@ -165,6 +174,16 @@ fn payload(
     let note = if report.scan_truncated {
         "The scan stopped at its file or byte cap, so totals are lower bounds. Narrow with 'path' instead of repeating the search."
             .to_owned()
+    } else if report.files_skipped() > 0 {
+        format!(
+            "{} files in scope were not searched (over the read size ceiling or unreadable; see scan), so totals may be low.{}",
+            report.files_skipped(),
+            if unlisted > 0 {
+                format!(" {unlisted} matching lines are counted but not listed.")
+            } else {
+                String::new()
+            }
+        )
     } else if unlisted > 0 {
         format!(
             "matches_total is exact for every indexed file in scope; {unlisted} matching lines are counted but not listed. Narrow with 'path' or a more specific pattern rather than repeating the same search with larger limits."
@@ -200,19 +219,11 @@ fn payload(
 
 /// One file: its total and its listed lines as `line [symbol] snippet`.
 fn file_value(file: &GrepFile) -> Value {
+    // Context lines (`line- text`) sit between the matches they surround.
     let lines = file
         .lines
         .iter()
-        .map(|line| match &line.symbol {
-            Some(symbol) => format!(
-                "{} [{}{}] {}",
-                line.line,
-                if line.definition { "def " } else { "" },
-                symbol,
-                line.snippet
-            ),
-            None => format!("{} {}", line.line, line.snippet),
-        })
+        .flat_map(compresso_atlas::GrepLine::rendered_rows)
         .collect::<Vec<_>>();
     let mut value = json!({
         "path": file.path,

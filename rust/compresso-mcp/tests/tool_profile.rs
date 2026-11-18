@@ -235,7 +235,6 @@ async fn test_lean_profile_rejects_a_hidden_tool_with_a_clean_error() {
         ("compresso_impact", json!({ "path": "src/lib.rs" })),
         ("compresso_compress", json!({ "text": "hello" })),
         ("compresso_stats", json!({})),
-        ("compresso_recall", json!({ "query": "retry" })),
     ] {
         let response = harness.call(name, arguments).await;
         let text = error_text(&response);
@@ -245,6 +244,17 @@ async fn test_lean_profile_rejects_a_hidden_tool_with_a_clean_error() {
             "{text}"
         );
     }
+    // Recall is on the lean allowlist; what it lacks is a recall source.
+    let response = harness
+        .call("compresso_recall", json!({ "query": "retry" }))
+        .await;
+    let text = error_text(&response);
+    assert!(text.starts_with("[tool_unavailable]"), "{text}");
+    assert!(
+        text.contains("compresso_recall") && text.contains("--recall-source"),
+        "{text}"
+    );
+    assert!(!text.contains("--tools lean"), "{text}");
 
     // An advertised tool still dispatches normally; this unbound session
     // reports the usual repository error, not a profile error.

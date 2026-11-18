@@ -329,3 +329,59 @@ fn test_names_passed_as_call_arguments_are_recorded_as_references() {
         ]
     );
 }
+
+#[test]
+fn test_an_oversized_or_garbled_qualifier_drops_only_that_call() {
+    let owner = "A".repeat(300);
+    let source = format!(
+        "fn run() {{\n    assert!({owner}::make());\n    assert!(Store::open());\n    keep();\n}}\n"
+    );
+    let extraction = ParserRegistry::extract(Language::Rust, &source).expect("Rust should extract");
+    assert_eq!(
+        rows(&extraction),
+        [
+            ("run", "open", Some("Store"), CallForm::Path, 3),
+            ("run", "keep", None, CallForm::Plain, 4),
+        ]
+    );
+    for call in &extraction.calls {
+        for text in [Some(call.callee_name.as_str()), call.qualifier.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            assert!(text.len() <= compresso_store::MAX_CALL_TEXT_BYTES);
+        }
+    }
+}
+
+#[test]
+fn test_functions_sharing_a_line_each_own_their_calls() {
+    let script = ParserRegistry::extract(
+        Language::JavaScript,
+        "function a(){first()}function b(){second()}class C{m(){third()}n(){fourth()}}\n",
+    )
+    .expect("JavaScript should extract");
+    assert_eq!(
+        rows(&script),
+        [
+            ("a", "first", None, CallForm::Plain, 1),
+            ("b", "second", None, CallForm::Plain, 1),
+            ("C::m", "third", None, CallForm::Plain, 1),
+            ("C::n", "fourth", None, CallForm::Plain, 1),
+        ]
+    );
+    let rust = ParserRegistry::extract(
+        Language::Rust,
+        "fn a() { first() } fn b() { second(); fn inner() { third() } fourth() }\n",
+    )
+    .expect("Rust should extract");
+    assert_eq!(
+        rows(&rust),
+        [
+            ("a", "first", None, CallForm::Plain, 1),
+            ("b", "second", None, CallForm::Plain, 1),
+            ("inner", "third", None, CallForm::Plain, 1),
+            ("b", "fourth", None, CallForm::Plain, 1),
+        ]
+    );
+}

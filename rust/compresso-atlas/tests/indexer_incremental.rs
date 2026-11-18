@@ -135,7 +135,7 @@ fn test_parser_version_bump_flags_stale_and_reparses_all() {
         .latest_index_version(fixture.repo())
         .expect("version lookup should succeed")
         .expect("version should exist");
-    assert_eq!(version.parser_version, "0.0.2");
+    assert_eq!(version.parser_version, "0.0.2+calls-v1");
     assert_eq!(version.schema_version, 1);
 }
 
@@ -532,7 +532,7 @@ fn test_index_records_call_sites_and_survives_malformed_calls() {
     );
     let inner = fixture
         .store
-        .call_sites_named(repo, "inner")
+        .call_sites_named(repo, "inner", usize::MAX)
         .expect("call sites should load");
     assert!(inner.iter().any(|call| call.from_path == "src/calls.rs"
         && call.caller_qualified_name == "outer"
@@ -548,7 +548,7 @@ fn test_index_records_call_sites_and_survives_malformed_calls() {
     assert!(
         fixture
             .store
-            .call_sites_named(repo, "inner")
+            .call_sites_named(repo, "inner", usize::MAX)
             .expect("call sites should load")
             .iter()
             .all(|call| call.from_path != "src/calls.rs")
@@ -600,4 +600,30 @@ fn test_a_file_with_a_huge_number_of_calls_never_aborts_the_index() {
     assert_eq!(report.files_indexed, 9);
     assert_eq!(report.call_site_files_truncated, 1);
     assert!(report.call_sites >= compresso_atlas::parsers::MAX_CALLS_PER_FILE);
+}
+
+#[test]
+fn test_an_oversized_macro_call_qualifier_never_aborts_the_index() {
+    let fixture = Fixture::new();
+    let owner = "A".repeat(300);
+    fs::write(
+        fixture.root.join("src/hostile.rs"),
+        format!(
+            "fn run() {{\n    assert!({owner}::make());\n    helper();\n}}\nfn helper() {{}}\n"
+        ),
+    )
+    .expect("fixture file should be written");
+
+    let report = fixture
+        .indexer()
+        .index(&fixture.root, |_| {})
+        .expect("one hostile qualifier must not fail the repository index");
+
+    assert_eq!(report.files_indexed, 9);
+    assert_eq!(report.call_site_files_rejected, 0);
+    let calls = fixture
+        .store
+        .call_sites_named(fixture.repo(), "helper", usize::MAX)
+        .expect("calls should load");
+    assert!(calls.iter().any(|call| call.from_path == "src/hostile.rs"));
 }

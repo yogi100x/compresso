@@ -378,7 +378,8 @@ fn purpose_of(root: &Path, file: &FileRecord) -> Option<String> {
         return None;
     }
     let mut head = Vec::new();
-    std::fs::File::open(&resolved)
+    resolved
+        .open()
         .ok()?
         .take(PURPOSE_HEAD_BYTES)
         .read_to_end(&mut head)

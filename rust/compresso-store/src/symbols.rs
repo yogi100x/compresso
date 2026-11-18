@@ -370,6 +370,8 @@ impl Store {
     /// Symbols whose bare name is exactly `name` (case-sensitive), through the
     /// name index rather than full-text ranking, so a definition is found
     /// however many other symbols mention the name. Path and line ordered.
+    /// For call resolution, which needs row ids and every definition, see
+    /// [`Store::indexed_symbols_named`].
     pub fn symbols_named(
         &self,
         repo: RepoId,
