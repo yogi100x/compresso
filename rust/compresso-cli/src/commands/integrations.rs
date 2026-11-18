@@ -8,10 +8,11 @@ use compresso_core::RuntimePaths;
 use compresso_integrations::{
     ClaudeCodeDiscovery, ClaudeCodeIntegration, CodexIntegration, CompactionHookClient,
     CompactionHookIntegration, ConfigFormat, CursorApplicationEvidence, CursorCliEvidence,
-    CursorDiscovery, CursorIntegration, DeferredInstallAuthorization, Detection, FileReceiptStore,
-    InstallCtx, InstallReceipt, Integration, IntegrationError, LegacyProjectHook, MutationPlan,
-    PlanApproval, PlanClock, PlanManager, ReceiptStore, Scope, VerificationCheck,
-    VerificationReport, read_configured_server, receipt_authenticates_server,
+    CursorDiscovery, CursorIntegration, DeferredInstallAuthorization, Detection,
+    ExploreAgentIntegration, FileReceiptStore, InstallCtx, InstallReceipt, Integration,
+    IntegrationError, LegacyProjectHook, MutationPlan, PlanApproval, PlanClock, PlanManager,
+    ReceiptStore, Scope, VerificationCheck, VerificationReport, read_configured_server,
+    receipt_authenticates_server,
 };
 use compresso_store::{ReceiptRecord, Store};
 
@@ -685,7 +686,11 @@ fn execute_mutation(
             "--no-recall applies only to `integrations install`; uninstall removes the whole Compresso entry",
         ));
     }
-    let requested_scope = resolve_scope(arguments.project.as_deref(), &environment.cwd)?;
+    let requested_scope = if arguments.explore_agent {
+        explore_agent_scope(arguments.project.as_deref(), &environment.cwd)?
+    } else {
+        resolve_scope(arguments.project.as_deref(), &environment.cwd)?
+    };
     // The reminder hook is installed only in user-level configuration. For a
     // hook install `--project` (or else the working directory) just names the
     // repository whose legacy project-level hook is migrated away.
@@ -699,12 +704,16 @@ fn execute_mutation(
     } else {
         (requested_scope, None)
     };
-    let selected = SelectedIntegration::new(
-        arguments.client,
-        environment,
-        &scope,
-        arguments.compaction_hook,
-    )?;
+    let selected = if arguments.explore_agent {
+        SelectedIntegration::explore_agent(arguments.client, environment, &scope)?
+    } else {
+        SelectedIntegration::new(
+            arguments.client,
+            environment,
+            &scope,
+            arguments.compaction_hook,
+        )?
+    };
     let manager = PlanManager::new(&environment.session_id)?;
     let receipts = FileReceiptStore::new(environment.receipt_store_path());
     let launcher_path = match action {
@@ -831,7 +840,7 @@ fn execute_mutation(
     };
     let mut warnings = Vec::new();
     project_canonical_receipts(&receipts, environment, &mut warnings);
-    if action == MutationAction::Uninstall {
+    if action == MutationAction::Uninstall && !arguments.explore_agent {
         if arguments.compaction_hook {
             if matches!(scope, Scope::User)
                 && matches!(&result, MutationResult::Uninstall(report) if !report.removed_keys.is_empty())
@@ -938,17 +947,11 @@ fn execute_status(
     output: &mut impl Write,
 ) -> Result<(), IntegrationCliError> {
     reject_project_scoped_hook_read(&arguments)?;
-    let scope = resolve_scope(arguments.project.as_deref(), &environment.cwd)?;
-    let selected = SelectedIntegration::new(
-        arguments.client,
-        environment,
-        &scope,
-        arguments.compaction_hook,
-    )?;
+    let (scope, selected) = select_for_read(&arguments, environment)?;
     let receipts = FileReceiptStore::new(environment.receipt_store_path());
     let receipt = receipts.active_for(arguments.client.as_str(), &selected.config_path)?;
     let active_receipt = receipt.is_some();
-    if arguments.compaction_hook {
+    if arguments.compaction_hook || arguments.explore_agent {
         return render_hook_status(
             output,
             &arguments,
@@ -1013,28 +1016,44 @@ fn render_hook_status(
     installed: bool,
 ) -> Result<(), IntegrationCliError> {
     if arguments.output.json {
+        let (surface, installed_key) = if arguments.explore_agent {
+            ("explore_agent", "agent_installed")
+        } else {
+            ("compaction_hook", "hook_installed")
+        };
+        let mut data = serde_json::json!({
+            "action": "status",
+            "surface": surface,
+            "client": arguments.client.as_str(),
+            "config_path": selected.config_path,
+            "canonical_receipt_active": active_receipt,
+        });
+        data[installed_key] = serde_json::Value::Bool(installed);
         serde_json::to_writer(
             &mut *output,
-            &serde_json::json!({
-                "schema_version": 1,
-                "data": {
-                    "action": "status",
-                    "surface": "compaction_hook",
-                    "client": arguments.client.as_str(),
-                    "config_path": selected.config_path,
-                    "hook_installed": installed,
-                    "canonical_receipt_active": active_receipt,
-                }
-            }),
+            &serde_json::json!({ "schema_version": 1, "data": data }),
         )?;
         writeln!(output)?;
     } else {
         writeln!(output, "client: {}", arguments.client.as_str())?;
-        writeln!(output, "surface: post-compaction routing-reminder hook")?;
+        writeln!(
+            output,
+            "surface: {}",
+            if arguments.explore_agent {
+                "exploration agent definition"
+            } else {
+                "post-compaction routing-reminder hook"
+            }
+        )?;
         writeln!(output, "config: {}", selected.config_path.display())?;
         writeln!(
             output,
-            "hook: {}",
+            "{}: {}",
+            if arguments.explore_agent {
+                "agent"
+            } else {
+                "hook"
+            },
             if installed {
                 "installed"
             } else {
@@ -1091,15 +1110,12 @@ fn execute_verify(
     output: &mut impl Write,
 ) -> Result<(), IntegrationCliError> {
     reject_project_scoped_hook_read(&arguments)?;
-    let scope = resolve_scope(arguments.project.as_deref(), &environment.cwd)?;
-    let selected = SelectedIntegration::new(
-        arguments.client,
-        environment,
-        &scope,
-        arguments.compaction_hook,
-    )?;
+    let (scope, selected) = select_for_read(&arguments, environment)?;
     let mut report = selected.adapter.verify(&scope);
-    if arguments.client == IntegrationClientArg::ClaudeCode && !arguments.compaction_hook {
+    if arguments.client == IntegrationClientArg::ClaudeCode
+        && !arguments.compaction_hook
+        && !arguments.explore_agent
+    {
         report.checks.push(VerificationCheck {
             name: "live_client_evidence".to_owned(),
             passed: false,
@@ -1206,6 +1222,66 @@ impl SelectedIntegration {
             config_path,
         })
     }
+}
+
+impl SelectedIntegration {
+    /// Selects the opt-in Claude Code exploration agent adapter. Its tool list
+    /// is the lean MCP exploration allowlist, so the agent and
+    /// `mcp serve --tools lean` share one source of truth.
+    fn explore_agent(
+        client: IntegrationClientArg,
+        environment: &IntegrationEnvironment,
+        scope: &Scope,
+    ) -> Result<Self, IntegrationCliError> {
+        if client != IntegrationClientArg::ClaudeCode {
+            return Err(IntegrationCliError::new(
+                "unsupported",
+                "the exploration agent definition is a Claude Code subagent; use claude-code",
+            ));
+        }
+        let adapter =
+            ExploreAgentIntegration::new(environment.home_dir.clone(), explore_agent_tools());
+        let config_path = adapter.config_path(scope)?;
+        Ok(Self {
+            adapter: Box::new(adapter),
+            config_path,
+        })
+    }
+}
+
+/// Compresso tools the exploration agent may call: the lean allowlist without
+/// `compresso_recall`, which a server serves only with `--recall-source`.
+pub(crate) fn explore_agent_tools() -> Vec<String> {
+    compresso_mcp::lean_tool_allowlist()
+        .into_iter()
+        .filter(|name| *name != "compresso_recall")
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The exploration agent is project-scoped: `--project`, or else the working
+/// directory.
+fn explore_agent_scope(project: Option<&Path>, cwd: &Path) -> Result<Scope, IntegrationCliError> {
+    resolve_scope(Some(project.unwrap_or(cwd)), cwd)
+}
+
+fn select_for_read(
+    arguments: &IntegrationReadArgs,
+    environment: &IntegrationEnvironment,
+) -> Result<(Scope, SelectedIntegration), IntegrationCliError> {
+    if arguments.explore_agent {
+        let scope = explore_agent_scope(arguments.project.as_deref(), &environment.cwd)?;
+        let selected = SelectedIntegration::explore_agent(arguments.client, environment, &scope)?;
+        return Ok((scope, selected));
+    }
+    let scope = resolve_scope(arguments.project.as_deref(), &environment.cwd)?;
+    let selected = SelectedIntegration::new(
+        arguments.client,
+        environment,
+        &scope,
+        arguments.compaction_hook,
+    )?;
+    Ok((scope, selected))
 }
 
 fn compaction_hook_client(
@@ -1524,6 +1600,7 @@ impl From<IntegrationError> for IntegrationCliError {
             IntegrationError::Unsupported { .. } | IntegrationError::UserHooksPresent { .. } => {
                 "unsupported"
             }
+            IntegrationError::UserFilePresent { .. } => "user_file_present",
             IntegrationError::ConfigDrift { .. } => "config_drift",
             IntegrationError::PendingRecovery { .. } => "pending_recovery",
             IntegrationError::PlanExpired { .. } => "plan_expired",

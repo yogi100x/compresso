@@ -172,6 +172,11 @@ pub struct IntegrationMutationArgs {
     /// transcripts (Claude Code and Codex only).
     #[arg(long, conflicts_with = "compaction_hook")]
     pub no_recall: bool,
+    /// Manage the opt-in Claude Code exploration agent definition
+    /// (`.claude/agents/compresso-explorer.md`) instead of the MCP server
+    /// entry. Project scope: `--project`, or else the working directory.
+    #[arg(long, conflicts_with_all = ["compaction_hook", "no_recall"])]
+    pub explore_agent: bool,
 }
 
 #[derive(Args, Debug)]
@@ -189,6 +194,10 @@ pub struct IntegrationReadArgs {
     /// not combined with `--project`).
     #[arg(long)]
     pub compaction_hook: bool,
+    /// Inspect the Claude Code exploration agent definition in `--project`,
+    /// or else the working directory, instead of the MCP server entry.
+    #[arg(long, conflicts_with = "compaction_hook")]
+    pub explore_agent: bool,
 }
 
 #[derive(Args, Debug, Default)]
