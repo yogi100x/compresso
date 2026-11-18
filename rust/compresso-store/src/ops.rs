@@ -208,6 +208,9 @@ pub struct DetailedStatsSummary {
 enum OperationKind {
     Compression,
     Retrieval,
+    /// An operator-enabled `compresso_edit` call (E17-32): no trace, no
+    /// retrieval metrics, and no savings of either kind.
+    Edit,
 }
 
 struct PreparedStrategyResult<'a> {
@@ -514,6 +517,9 @@ impl Store {
                 "operations.modeled_follow_up_calls_avoided",
                 follow_ups,
             )?;
+            // An edit report is not a retrieval pack: it counts as an
+            // operation and nothing else.
+            let pack = if kind == OperationKind::Edit { 0 } else { pack };
             let avoided = raw.saturating_sub(pack);
 
             operations = operations.saturating_add(1);
@@ -738,6 +744,7 @@ fn classify_tool(tool: &str) -> Result<OperationKind, StoreError> {
         | "compresso_trace" | "compresso_stats" | "compresso_explain" | "compresso_recall" => {
             Ok(OperationKind::Retrieval)
         }
+        "compresso_edit" => Ok(OperationKind::Edit),
         _ => Err(StoreError::UnknownOperationTool(tool.to_owned())),
     }
 }
@@ -819,6 +826,25 @@ fn validate_operation_shape(
                 return Err(StoreError::InvalidField {
                     field: "retrieval fallback_used",
                     reason: "retrieval operations do not use compression fallback",
+                });
+            }
+            Ok(None)
+        }
+        OperationKind::Edit => {
+            if operation.trace_json.is_some() {
+                return Err(StoreError::UnexpectedTrace {
+                    tool: operation.tool.clone(),
+                });
+            }
+            if operation.tokens_served.is_none() {
+                return Err(StoreError::MissingTokensServed {
+                    tool: operation.tool.clone(),
+                });
+            }
+            if operation.retrieval.is_some() || operation.fallback_used {
+                return Err(StoreError::InvalidField {
+                    field: "edit operation metrics",
+                    reason: "edit operations carry no retrieval metrics or compression fallback",
                 });
             }
             Ok(None)
@@ -1373,6 +1399,80 @@ mod tests {
             )
             .expect("retrieval ledger row should be queryable");
         assert_eq!(row, (None, 1_874));
+    }
+
+    #[test]
+    fn test_edit_operations_record_and_count_no_savings() {
+        let (_directory, store) = setup();
+        store
+            .record_operation(&operation(
+                "edit-ledger-row",
+                "compresso_edit",
+                (120, 120),
+                false,
+                Some(120),
+                None,
+                100,
+            ))
+            .expect("edit operation should record");
+        let stored = store
+            .operation_by_id("edit-ledger-row")
+            .expect("lookup")
+            .expect("stored");
+        assert_eq!(stored.tool, "compresso_edit");
+        assert!(stored.trace_json.is_none());
+
+        let stats = store
+            .detailed_stats(&StatsFilter {
+                since: None,
+                session_id: None,
+                operation_limit: None,
+            })
+            .expect("stats include an edit row");
+        assert_eq!(stats.summary.operations, 1);
+        assert_eq!(stats.summary.retrieval_pack_tokens, 0);
+        assert_eq!(stats.summary.retrieval_tokens_avoided, 0);
+        assert_eq!(stats.summary.removed_tokens, 0);
+        assert_eq!(stats.by_tool[0].tool, "compresso_edit");
+        assert_eq!(stats.by_operation[0].total_effective_savings, 0);
+
+        for (tokens_served, trace) in [(None, None), (Some(1), Some("{}".to_owned()))] {
+            assert!(
+                store
+                    .record_operation(&operation(
+                        "edit-bad",
+                        "compresso_edit",
+                        (1, 1),
+                        false,
+                        tokens_served,
+                        trace,
+                        101,
+                    ))
+                    .is_err()
+            );
+        }
+        let mut with_metrics = operation(
+            "edit-metrics",
+            "compresso_edit",
+            (1, 1),
+            false,
+            Some(1),
+            None,
+            102,
+        );
+        with_metrics.retrieval = Some(RetrievalMetrics {
+            repository_id: None,
+            estimated_raw_source_tokens: 10,
+            modeled_follow_up_calls_avoided: 1,
+        });
+        assert!(store.record_operation(&with_metrics).is_err());
+    }
+
+    #[test]
+    fn test_store_reports_its_database_path() {
+        let (directory, store) = setup();
+        let path = store.database_path().expect("file-backed store");
+        assert!(path.starts_with(directory.path()) || path.ends_with("compresso.db"));
     }
 
     #[test]
