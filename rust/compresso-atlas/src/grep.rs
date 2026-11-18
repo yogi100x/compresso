@@ -377,7 +377,7 @@ fn compact_regex_error(error: &regex::Error) -> String {
 }
 
 /// A validated path scope.
-enum PathFilter {
+pub(crate) enum PathFilter {
     Prefix(String),
     /// Anchored regex over the whole path, or over the file name when
     /// `basename` is set.
@@ -388,7 +388,7 @@ enum PathFilter {
 }
 
 impl PathFilter {
-    fn parse(filter: &str) -> Result<Option<Self>, GrepError> {
+    pub(crate) fn parse(filter: &str) -> Result<Option<Self>, GrepError> {
         let invalid = |reason| GrepError::InvalidPathFilter {
             filter: filter.to_owned(),
             reason,
@@ -438,7 +438,7 @@ impl PathFilter {
         Ok(Some(Self::Glob { matcher, basename }))
     }
 
-    fn matches(&self, path: &str) -> bool {
+    pub(crate) fn matches(&self, path: &str) -> bool {
         match self {
             Self::Prefix(prefix) => map_path_matches_focus(path, prefix),
             Self::Glob { matcher, basename } => {

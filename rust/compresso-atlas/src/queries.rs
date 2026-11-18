@@ -3450,6 +3450,19 @@ impl ResolvedFile {
         &self.path
     }
 
+    /// The device and inode the gate inspected; `None` where the platform
+    /// has no such identity.
+    pub(crate) fn identity(&self) -> Option<(u64, u64)> {
+        #[cfg(unix)]
+        {
+            Some(self.identity)
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    }
+
     /// Opens the approved file, failing as not found if what the path now
     /// names is not the file the gate approved.
     pub(crate) fn open(&self) -> io::Result<fs::File> {
