@@ -1,0 +1,22 @@
+rust/compresso-mcp/src/tools/text.rs
+  s_89a704cfae63f5::t_fcc293781d8491 537,540-541,543-552,556-558
+  s_89a704cfae63f5::t_d996680fc0586a 538-539,542
+  s_89a704cfae63f5::t_11882de393f18c 804-806
+  s_89a704cfae63f5::t_4be353f4287d84 763-803,807
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cf257d65d819ed65872a51f6d95f96aeeb98713c",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
