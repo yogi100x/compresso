@@ -1,0 +1,88 @@
+rust/compresso-atlas/tests/grep_content.rs
+  s_89a704cfae63f5::t_4c8d9a3096a214 1-407
+  s_89a704cfae63f5::t_49fd930bc758e1 408-410
+  s_dbe3947a1642df::t_8e1817283cf77a 411-424
+rust/compresso-mcp/tests/tools_grep.rs
+  s_89a704cfae63f5::t_c7effb1c4c793a 1-446
+  s_89a704cfae63f5::t_3d8dff9af7ccad 447-449
+  s_dbe3947a1642df::t_f75ccf3109963b 450-477
+rust/compresso-cli/tests/cli_retrieval.rs
+  s_89a704cfae63f5::t_f660213a1b6945 330-375
+  s_89a704cfae63f5::t_f5a0f12184fcd8 329
+rust/compresso-mcp/src/tools/atlas_grep.rs
+  s_89a704cfae63f5::t_889fa00c412c9f 1-233
+  s_89a704cfae63f5::t_29be509d1d8428 234
+rust/compresso-atlas/src/grep.rs
+  s_89a704cfae63f5::t_b22ed4e12f2c79 1-65,67-317,319-330,332-443,446-635,640-760
+  s_89a704cfae63f5::t_7a8db6366e27eb 318
+  s_89a704cfae63f5::t_f85f18966572f3 636-639
+  s_89a704cfae63f5::t_6402fa4ccf6ef2 66
+  s_89a704cfae63f5::t_6a922aaaa98ee7 331
+  s_89a704cfae63f5::t_840771e6207182 444-445
+Cargo.toml
+  s_89a704cfae63f5::t_1e46b6e48285fe 42
+docs/plan/03-interfaces.md
+  s_89a704cfae63f5::t_1154f87cd7c2f2 294-297,460
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_90ade22d503506 17,29,31,131-200,393
+rust/compresso-atlas/Cargo.toml
+  s_89a704cfae63f5::t_cf680bacb51a6b 15
+rust/compresso-atlas/src/lib.rs
+  s_89a704cfae63f5::t_cf64ad6242ef03 4,13-17
+rust/compresso-atlas/src/queries.rs
+  s_89a704cfae63f5::t_74dffb8791f9b0 1853-1856,2680,2685,2702-2705,2866
+rust/compresso-atlas/src/scanner.rs
+  s_89a704cfae63f5::t_e892f2dac7f596 70-71
+rust/compresso-cli/src/commands.rs
+  s_89a704cfae63f5::t_1f6070df767d86 37,63-64,881,898
+rust/compresso-cli/tests/cli_app.rs
+  s_89a704cfae63f5::t_b78f0d7fe88566 27
+rust/compresso-core/src/transcript.rs
+  s_89a704cfae63f5::t_949d79dcce850c 17,20
+rust/compresso-integrations/src/cursor.rs
+  s_89a704cfae63f5::t_12951187f40acd 29,32
+rust/compresso-integrations/tests/launcher_upgrade.rs
+  s_89a704cfae63f5::t_beaafd6a59acc3 18,21
+rust/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_f58b5eada0749a 23
+rust/compresso-mcp/src/server.rs
+  s_89a704cfae63f5::t_42b831547df1ae 118,122,677-692
+rust/compresso-mcp/src/tools/mod.rs
+  s_89a704cfae63f5::t_62212be94c1772 1,25,51-53
+rust/compresso-mcp/tests/handshake.rs
+  s_89a704cfae63f5::t_a5ae02e5662133 14,18
+rust/compresso-mcp/tests/tools_recall.rs
+  s_89a704cfae63f5::t_22b63c93259e92 250
+rust/compresso-store/src/ops.rs
+  s_89a704cfae63f5::t_907fbad7fd7955 736-740,1271,1293,1347
+Cargo.lock
+  s_dbe3947a1642df::t_ce0b94b5d156d0 343,428
+docs/runbooks/mcp-manual-verification.md
+  s_dbe3947a1642df::t_2295f49cc00e83 28-29,42
+rust/compresso-cli/src/commands/retrieval.rs
+  s_dbe3947a1642df::t_718321166b9eeb 6-8,24-26,61-88,187,266-331,778
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6f83e8258a96991c3ff6be5a8b46771d47f4c586",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_dbe3947a1642df": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ab40211f12366e84f",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
