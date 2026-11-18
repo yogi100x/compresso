@@ -1,0 +1,24 @@
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_08d0d5240844dd 3206-3231,3278-3280
+  s_89a704cfae63f5::t_46787d45c5e2a2 2702,3247
+decisions.md
+  s_89a704cfae63f5::t_08d0d5240844dd 110
+docs/plan/00-overview.md
+  s_89a704cfae63f5::t_08d0d5240844dd 59,94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "89c455eb38957633974659a0b2a857aa7a441ced",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
