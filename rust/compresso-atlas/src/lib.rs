@@ -17,9 +17,9 @@ pub use cards::{
 };
 pub use concurrency::{Concurrency, DEFAULT_MEMORY_BUDGET_BYTES};
 pub use grep::{
-    GREP_MAX_FILES_LIMIT, GREP_MAX_MATCHES_PER_FILE_LIMIT, GREP_MAX_PATTERN_BYTES,
-    GREP_MAX_PATTERNS, GrepError, GrepFile, GrepLine, GrepOptions, GrepPatternResult, GrepReport,
-    grep, validate_grep,
+    GREP_MAX_CONTEXT_LINES, GREP_MAX_FILES_LIMIT, GREP_MAX_MATCHES_PER_FILE_LIMIT,
+    GREP_MAX_PATTERN_BYTES, GREP_MAX_PATTERNS, GREP_REGEX_MAX_BYTES_PER_PATTERN, GrepContextLine,
+    GrepError, GrepFile, GrepLine, GrepOptions, GrepPatternResult, GrepReport, grep, validate_grep,
 };
 pub use indexer::{IndexError, IndexProgress, IndexReport, Indexer};
 pub use queries::{

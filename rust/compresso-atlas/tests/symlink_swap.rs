@@ -99,11 +99,13 @@ fn test_grep_skips_a_swapped_symlink_and_reports_it_skipped() {
             path: None,
             max_files: 20,
             max_matches_per_file: 5,
+            context_lines: 0,
         },
     )
     .expect("grep");
     assert_eq!(report.results[0].matches_total, 0);
     assert_eq!(report.files_skipped_unreadable, 2);
+    assert!(!report.complete());
 }
 
 #[test]

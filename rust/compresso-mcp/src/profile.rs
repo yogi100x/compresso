@@ -76,7 +76,7 @@ pub(crate) const LEAN_TOOLS: &[LeanTool] = &[
     },
     LeanTool {
         name: "compresso_grep",
-        description: "Text or regex search of indexed files, up to 8 patterns per call; returns use sites as path, line, enclosing symbol, with exact totals.",
+        description: "Text or regex search of indexed files, up to 8 patterns per call; use sites with path, line, enclosing symbol, exact totals. context_lines adds nearby lines, sparing a read.",
         hint: "compresso_grep for text and use sites",
     },
     LeanTool {

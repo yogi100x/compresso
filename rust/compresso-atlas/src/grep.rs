@@ -36,10 +36,17 @@ pub const GREP_SNIPPET_MAX_BYTES: usize = 160;
 pub const GREP_SCAN_MAX_FILES: usize = 20_000;
 /// Bytes read by one search before it stops.
 pub const GREP_SCAN_MAX_BYTES: u64 = 256 * 1024 * 1024;
+/// Bytes one regular-expression pattern searches before it stops. A
+/// literal runs a substring search; a regular expression runs an automaton
+/// whose per-byte cost grows with the pattern, so each one gets its own
+/// budget and reaching it marks the scan truncated.
+pub const GREP_REGEX_MAX_BYTES_PER_PATTERN: u64 = 64 * 1024 * 1024;
+/// Upper bound for [`GrepOptions::context_lines`].
+pub const GREP_MAX_CONTEXT_LINES: usize = 10;
 
 /// Compiled program ceiling: rejects patterns whose automaton would be large.
-const REGEX_SIZE_LIMIT: usize = 1 << 20;
-const REGEX_DFA_SIZE_LIMIT: usize = 4 << 20;
+const REGEX_SIZE_LIMIT: usize = 256 * 1024;
+const REGEX_DFA_SIZE_LIMIT: usize = 2 << 20;
 const REGEX_NEST_LIMIT: u32 = 32;
 /// Bytes of context kept before the match when a long line is cut.
 const SNIPPET_LEADING_BYTES: usize = 48;
@@ -67,6 +74,8 @@ pub enum GrepError {
     },
     #[error("{name} must be from 1 through {max}")]
     InvalidLimit { name: &'static str, max: usize },
+    #[error("context_lines must be from 0 through {max}")]
+    InvalidContext { max: usize },
 }
 
 /// One content search: patterns, matching mode, scope, and output caps.
@@ -83,6 +92,16 @@ pub struct GrepOptions<'a> {
     pub max_files: usize,
     /// Matching lines listed per file.
     pub max_matches_per_file: usize,
+    /// Lines shown before and after each listed match (0 through
+    /// [`GREP_MAX_CONTEXT_LINES`]); overlapping context is merged.
+    pub context_lines: usize,
+}
+
+/// One line shown around a match, cut like a snippet.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GrepContextLine {
+    pub line: u32,
+    pub text: String,
 }
 
 /// One matching line.
@@ -97,6 +116,11 @@ pub struct GrepLine {
     pub symbol: Option<String>,
     /// The line is the first line of that symbol: a definition, not a use.
     pub definition: bool,
+    /// Context lines before the match not already shown with an earlier
+    /// listed match of the same file, in line order.
+    pub before: Vec<GrepContextLine>,
+    /// Context lines after the match, stopping before the next listed match.
+    pub after: Vec<GrepContextLine>,
 }
 
 /// One file's matches for one pattern.
@@ -144,21 +168,34 @@ pub struct GrepReport {
     pub files_in_scope: usize,
     /// Files above the 16 MiB read ceiling, not searched.
     pub files_skipped_oversize: usize,
-    /// Files missing, not UTF-8, or otherwise unreadable, not searched.
+    /// Files missing, not UTF-8, refused by the read gate, or otherwise
+    /// unreadable, not searched.
     pub files_skipped_unreadable: usize,
     /// Searched files whose content no longer matches the index.
     pub stale_files: usize,
-    /// The file or byte cap stopped the scan: totals are lower bounds.
+    /// The file or byte cap, or a regular-expression pattern's byte budget,
+    /// stopped the scan: totals are lower bounds.
     pub scan_truncated: bool,
     /// A file or line cap, or a token budget, left matches unlisted.
     pub output_truncated: bool,
 }
 
 impl GrepReport {
-    /// Whether every match in every in-scope file is listed.
+    /// Whether every match in every in-scope file is listed. A file skipped
+    /// as oversize or unreadable may hold matches, so it makes the report
+    /// incomplete.
     #[must_use]
     pub const fn complete(&self) -> bool {
-        !self.scan_truncated && !self.output_truncated
+        !self.scan_truncated
+            && !self.output_truncated
+            && self.files_skipped_oversize == 0
+            && self.files_skipped_unreadable == 0
+    }
+
+    /// In-scope files that were not searched.
+    #[must_use]
+    pub const fn files_skipped(&self) -> usize {
+        self.files_skipped_oversize + self.files_skipped_unreadable
     }
 
     /// Compact text: one header per pattern, one per file, one per line.
@@ -246,18 +283,36 @@ impl GrepReport {
 fn render_file(file: &GrepFile) -> String {
     let mut text = format!("{} ({})\n", file.path, file.matches_total);
     for line in &file.lines {
-        match &line.symbol {
-            Some(symbol) => text.push_str(&format!(
-                "  {} [{}{}] {}\n",
-                line.line,
-                if line.definition { "def " } else { "" },
-                symbol,
-                line.snippet
-            )),
-            None => text.push_str(&format!("  {} {}\n", line.line, line.snippet)),
+        for row in line.rendered_rows() {
+            text.push_str("  ");
+            text.push_str(&row);
+            text.push('\n');
         }
     }
     text
+}
+
+impl GrepLine {
+    /// The match as `line [symbol] snippet` (`[def symbol]` for a
+    /// definition), preceded and followed by its context lines as
+    /// `line- text`.
+    #[must_use]
+    pub fn rendered_rows(&self) -> Vec<String> {
+        let context = |line: &GrepContextLine| format!("{}- {}", line.line, line.text);
+        let mut rows = self.before.iter().map(context).collect::<Vec<_>>();
+        rows.push(match &self.symbol {
+            Some(symbol) => format!(
+                "{} [{}{}] {}",
+                self.line,
+                if self.definition { "def " } else { "" },
+                symbol,
+                self.snippet
+            ),
+            None => format!("{} {}", self.line, self.snippet),
+        });
+        rows.extend(self.after.iter().map(context));
+        rows
+    }
 }
 
 /// Rejects bad patterns before any file is read and compiles the rest.
@@ -418,7 +473,18 @@ pub fn validate_grep(options: &GrepOptions<'_>) -> Result<(), GrepError> {
         "max_matches_per_file",
         options.max_matches_per_file,
         GREP_MAX_MATCHES_PER_FILE_LIMIT,
-    )
+    )?;
+    validate_context(options.context_lines)
+}
+
+fn validate_context(context_lines: usize) -> Result<(), GrepError> {
+    if context_lines <= GREP_MAX_CONTEXT_LINES {
+        Ok(())
+    } else {
+        Err(GrepError::InvalidContext {
+            max: GREP_MAX_CONTEXT_LINES,
+        })
+    }
 }
 
 /// Searches the indexed files of `repo` for every pattern.
@@ -429,11 +495,98 @@ pub fn validate_grep(options: &GrepOptions<'_>) -> Result<(), GrepError> {
 /// indexing is searched as it is now and counted as stale; its lines get no
 /// enclosing symbol, because the stored outline describes other bytes. The
 /// scan stops at [`GREP_SCAN_MAX_FILES`] files or [`GREP_SCAN_MAX_BYTES`]
-/// bytes, never at a deadline, so a search is deterministic.
+/// bytes, and a regular-expression pattern stops at
+/// [`GREP_REGEX_MAX_BYTES_PER_PATTERN`], never at a deadline, so a search is
+/// deterministic.
+///
+/// Every matching file is counted, but only the files that can still rank
+/// within `max_files` keep snippets, context, and a symbol lookup, so memory
+/// follows the listed answer rather than the number of matching files.
 pub fn grep(
     store: &Store,
     repo: RepoId,
     options: &GrepOptions<'_>,
+) -> Result<GrepReport, AtlasError> {
+    grep_with_regex_budget(store, repo, options, GREP_REGEX_MAX_BYTES_PER_PATTERN)
+}
+
+/// Rank order of a matching file: a file defining a symbol on a listed line
+/// first, then non-test before test files, then more matches, then path.
+#[derive(Clone, Copy)]
+struct RankKey<'a> {
+    defines: bool,
+    test: bool,
+    matches: usize,
+    path: &'a str,
+}
+
+impl RankKey<'_> {
+    fn of(file: &GrepFile) -> RankKey<'_> {
+        RankKey {
+            defines: file.lines.iter().any(|line| line.definition),
+            test: is_test_path(&file.path),
+            matches: file.matches_total,
+            path: &file.path,
+        }
+    }
+
+    fn cmp(&self, other: &RankKey<'_>) -> std::cmp::Ordering {
+        other
+            .defines
+            .cmp(&self.defines)
+            .then_with(|| self.test.cmp(&other.test))
+            .then_with(|| other.matches.cmp(&self.matches))
+            .then_with(|| self.path.cmp(other.path))
+    }
+}
+
+/// One pattern's running answer: totals over every file, and the best
+/// `max_files` files kept in rank order.
+#[derive(Default)]
+struct PatternScan {
+    matches_total: usize,
+    files_total: usize,
+    kept: Vec<GrepFile>,
+    regex_bytes_left: u64,
+    exhausted: bool,
+}
+
+impl PatternScan {
+    /// Whether a file with these properties could enter the kept list even
+    /// if it turned out to define a symbol on a listed line.
+    fn could_rank(&self, max_files: usize, test: bool, matches: usize, path: &str) -> bool {
+        self.kept.len() < max_files
+            || self.kept.last().is_none_or(|worst| {
+                RankKey {
+                    defines: true,
+                    test,
+                    matches,
+                    path,
+                }
+                .cmp(&RankKey::of(worst))
+                .is_lt()
+            })
+    }
+
+    /// Inserts `file` in rank order, keeping at most `max_files`.
+    fn offer(&mut self, file: GrepFile, max_files: usize) {
+        let key = RankKey::of(&file);
+        let position = self
+            .kept
+            .partition_point(|kept| RankKey::of(kept).cmp(&key).is_lt());
+        if position >= max_files {
+            return;
+        }
+        self.kept.insert(position, file);
+        self.kept.truncate(max_files);
+    }
+}
+
+fn grep_with_regex_budget(
+    store: &Store,
+    repo: RepoId,
+    options: &GrepOptions<'_>,
+    regex_bytes_per_pattern: u64,
 ) -> Result<GrepReport, AtlasError> {
     let matchers = compile_patterns(options)?;
     let filter = match options.path {
@@ -446,6 +599,7 @@ pub fn grep(
         options.max_matches_per_file,
         GREP_MAX_MATCHES_PER_FILE_LIMIT,
     )?;
+    validate_context(options.context_lines)?;
 
     let repository = store.repository(repo)?;
     let root = canonical_query_root(&repository.root)?;
@@ -461,8 +615,13 @@ pub fn grep(
         scan_truncated: false,
         output_truncated: false,
     };
-    let mut per_pattern: Vec<Vec<GrepFile>> = matchers.iter().map(|_| Vec::new()).collect();
-    let mut matches_totals = vec![0_usize; matchers.len()];
+    let mut scans = matchers
+        .iter()
+        .map(|_| PatternScan {
+            regex_bytes_left: regex_bytes_per_pattern,
+            ..PatternScan::default()
+        })
+        .collect::<Vec<_>>();
     for record in &records {
         if is_secret_path(Path::new(&record.path))
             || filter
@@ -494,24 +653,37 @@ pub fn grep(
             }
         };
         report.files_scanned += 1;
-        report.bytes_scanned = report
-            .bytes_scanned
-            .saturating_add(u64::try_from(source.len()).unwrap_or(u64::MAX));
-        let stale = u64::try_from(source.len()).ok() != Some(record.size_bytes)
+        let source_bytes = u64::try_from(source.len()).unwrap_or(u64::MAX);
+        report.bytes_scanned = report.bytes_scanned.saturating_add(source_bytes);
+        let stale = source_bytes != record.size_bytes
             || blake3::hash(source.as_bytes()).to_hex().as_str() != record.hash;
         if stale {
             report.stale_files += 1;
         }
+        let test = is_test_path(&record.path);
         // Snippets and symbols are built while the source is at hand, so a
         // search never holds more than one file's content.
         let mut symbols = None;
-        for (index, matcher) in matchers.iter().enumerate() {
+        for (matcher, scan) in matchers.iter().zip(&mut scans) {
+            if options.regex {
+                if scan.exhausted || scan.regex_bytes_left < source_bytes {
+                    scan.exhausted = true;
+                    report.scan_truncated = true;
+                    continue;
+                }
+                scan.regex_bytes_left -= source_bytes;
+            }
             let (matches_total, kept) = if options.regex {
                 matching_lines_by_line(matcher, &source, options.max_matches_per_file)
             } else {
                 matching_lines(matcher, &source, options.max_matches_per_file)
             };
             if matches_total == 0 {
+                continue;
+            }
+            scan.matches_total += matches_total;
+            scan.files_total += 1;
+            if !scan.could_rank(options.max_files, test, matches_total, &record.path) {
                 continue;
             }
             let symbols: Option<&Vec<SymbolRecord>> = if stale {
@@ -522,9 +694,11 @@ pub fn grep(
                     None => symbols.insert(store.symbols_in_file(repo, &record.path)?),
                 })
             };
+            let contexts = merged_context(&source, &kept, options.context_lines);
             let lines = kept
                 .iter()
-                .map(|&(line, start, end, match_start)| {
+                .zip(contexts)
+                .map(|(&(line, start, end, match_start), (before, after))| {
                     let enclosing =
                         symbols.and_then(|symbols| smallest_enclosing_symbol(symbols, line));
                     GrepLine {
@@ -532,37 +706,30 @@ pub fn grep(
                         snippet: snippet(&source, start, end, match_start),
                         symbol: enclosing.map(|symbol| symbol.qualified_name.clone()),
                         definition: enclosing.is_some_and(|symbol| symbol.start_line == line),
+                        before,
+                        after,
                     }
                 })
                 .collect();
-            matches_totals[index] += matches_total;
-            per_pattern[index].push(GrepFile {
-                path: record.path.clone(),
-                language: record.language,
-                matches_total,
-                lines,
-                stale,
-            });
+            scan.offer(
+                GrepFile {
+                    path: record.path.clone(),
+                    language: record.language,
+                    matches_total,
+                    lines,
+                    stale,
+                },
+                options.max_files,
+            );
         }
     }
 
-    for ((pattern, mut files), matches_total) in
-        options.patterns.iter().zip(per_pattern).zip(matches_totals)
-    {
-        let files_total = files.len();
-        files.sort_by(|left, right| {
-            let defines = |file: &GrepFile| file.lines.iter().any(|line| line.definition);
-            defines(right)
-                .cmp(&defines(left))
-                .then_with(|| is_test_path(&left.path).cmp(&is_test_path(&right.path)))
-                .then_with(|| right.matches_total.cmp(&left.matches_total))
-                .then_with(|| left.path.cmp(&right.path))
-        });
-        if files.len() > options.max_files {
-            files.truncate(options.max_files);
+    for (pattern, scan) in options.patterns.iter().zip(scans) {
+        if scan.files_total > scan.kept.len() {
             report.output_truncated = true;
         }
-        if files
+        if scan
+            .kept
             .iter()
             .any(|file| file.lines.len() < file.matches_total)
         {
@@ -570,12 +737,73 @@ pub fn grep(
         }
         report.results.push(GrepPatternResult {
             pattern: pattern.clone(),
-            matches_total,
-            files_total,
-            files,
+            matches_total: scan.matches_total,
+            files_total: scan.files_total,
+            files: scan.kept,
         });
     }
     Ok(report)
+}
+
+/// Context for each kept match `(line, line start, line end, match start)`,
+/// in line order: up to `count` lines before and after, never repeating a
+/// line an earlier match already showed and never running into the next
+/// listed match, so the rendered file reads as merged blocks.
+fn merged_context(
+    source: &str,
+    kept: &[(u32, usize, usize, usize)],
+    count: usize,
+) -> Vec<(Vec<GrepContextLine>, Vec<GrepContextLine>)> {
+    if count == 0 {
+        return kept.iter().map(|_| (Vec::new(), Vec::new())).collect();
+    }
+    let bytes = source.as_bytes();
+    let line_text = |start: usize, end: usize, line: usize| GrepContextLine {
+        line: u32::try_from(line).unwrap_or(u32::MAX),
+        text: snippet(source, start, end, start),
+    };
+    let mut shown_through = 0_usize;
+    let mut output = Vec::with_capacity(kept.len());
+    for (index, &(line, start, end, _)) in kept.iter().enumerate() {
+        let line = line as usize;
+        let mut before = Vec::new();
+        let mut cursor = start;
+        let mut number = line;
+        while before.len() < count && cursor > 0 && number - 1 > shown_through {
+            // `cursor - 1` is the newline ending the previous line.
+            let previous_end = cursor - 1;
+            let previous_start = bytes[..previous_end]
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map_or(0, |newline| newline + 1);
+            number -= 1;
+            before.push(line_text(previous_start, previous_end, number));
+            cursor = previous_start;
+        }
+        before.reverse();
+        let next_listed = kept
+            .get(index + 1)
+            .map_or(usize::MAX, |next| next.0 as usize);
+        let mut after = Vec::new();
+        let mut cursor = end;
+        let mut number = line;
+        while after.len() < count && cursor < bytes.len() && number + 1 < next_listed {
+            let next_start = cursor + 1;
+            if next_start >= bytes.len() {
+                break;
+            }
+            let next_end = bytes[next_start..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .map_or(bytes.len(), |newline| next_start + newline);
+            number += 1;
+            after.push(line_text(next_start, next_end, number));
+            cursor = next_end;
+        }
+        shown_through = number.max(line);
+        output.push((before, after));
+    }
+    output
 }
 
 /// Counts the lines of `source` that a literal `matcher` matches and keeps
@@ -730,6 +958,67 @@ mod tests {
 
     fn literal(pattern: &str) -> Regex {
         Regex::new(&regex::escape(pattern)).expect("pattern compiles")
+    }
+
+    #[test]
+    fn test_regex_byte_budget_stops_a_pattern_and_marks_the_scan_truncated() {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let root = temp.path().join("repo");
+        std::fs::create_dir_all(&root).expect("root");
+        let store = Store::open(&temp.path().join("compresso.db")).expect("store");
+        let repo = store.approve_repo(&root).expect("approve");
+        let root = store.repository(repo).expect("repository").root;
+        let source = "let token = 1;\n";
+        for name in ["a.rs", "b.rs", "c.rs"] {
+            std::fs::write(root.join(name), source).expect("file");
+            store
+                .replace_indexed_file(
+                    repo,
+                    &compresso_store::FileRecord {
+                        path: name.to_owned(),
+                        hash: blake3::hash(source.as_bytes()).to_hex().to_string(),
+                        language: Some(FileLanguage::Rust),
+                        size_bytes: source.len() as u64,
+                        token_estimate: 4,
+                        indexed_at: 10,
+                    },
+                    &[],
+                    &[],
+                )
+                .expect("index");
+        }
+        let patterns = vec!["tok.n".to_owned()];
+        let options = |regex| GrepOptions {
+            patterns: &patterns,
+            regex,
+            case_insensitive: false,
+            path: None,
+            max_files: 10,
+            max_matches_per_file: 5,
+            context_lines: 0,
+        };
+        let budget = 2 * source.len() as u64;
+        let cut = grep_with_regex_budget(&store, repo, &options(true), budget).expect("grep");
+        assert_eq!(cut.results[0].files_total, 2);
+        assert!(cut.scan_truncated && !cut.complete());
+        assert_eq!(
+            cut.files_scanned, 3,
+            "other patterns could still read the file"
+        );
+
+        let whole = grep_with_regex_budget(&store, repo, &options(true), 3 * budget).expect("grep");
+        assert_eq!(whole.results[0].files_total, 3);
+        assert!(whole.complete());
+
+        // A literal search has no regex budget.
+        let patterns_literal = vec!["token".to_owned()];
+        let literal = GrepOptions {
+            patterns: &patterns_literal,
+            ..options(false)
+        };
+        let report = grep_with_regex_budget(&store, repo, &literal, 1).expect("grep");
+        assert_eq!(report.results[0].files_total, 3);
+        assert!(report.complete());
     }
 
     #[test]

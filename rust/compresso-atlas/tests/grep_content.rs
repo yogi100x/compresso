@@ -71,6 +71,7 @@ impl Fixture {
             path: None,
             max_files: 20,
             max_matches_per_file: 5,
+            context_lines: 0,
         };
         configure(&mut options);
         grep(
@@ -83,6 +84,7 @@ impl Fixture {
                 path: options.path.as_deref(),
                 max_files: options.max_files,
                 max_matches_per_file: options.max_matches_per_file,
+                context_lines: options.context_lines,
             },
         )
     }
@@ -94,6 +96,7 @@ struct Options {
     path: Option<String>,
     max_files: usize,
     max_matches_per_file: usize,
+    context_lines: usize,
 }
 
 fn symbol(name: &str, kind: SymbolKind, start_line: u32, end_line: u32) -> SymbolRecord {
@@ -213,6 +216,9 @@ fn test_grep_skips_files_above_the_read_ceiling() {
     assert_eq!(report.files_skipped_oversize, 1);
     assert!(!paths(&report, 0).contains(&"generated/huge.rs"));
     assert_eq!(report.results[0].files_total, 3);
+    // A skipped file may hold matches: the report never claims completeness.
+    assert!(!report.output_truncated && !report.scan_truncated);
+    assert!(!report.complete());
 }
 
 #[test]
@@ -451,4 +457,114 @@ fn test_grep_skips_missing_and_non_utf8_files() {
         paths(&report, 0),
         ["src/queries.rs", "tests/scanner_test.rs"]
     );
+    assert!(!report.complete());
+}
+
+#[test]
+fn test_grep_keeps_only_the_files_that_rank_and_matches_sort_then_truncate() {
+    let fixture = Fixture::new();
+    // Files of varied match counts, test and non-test paths, and one that
+    // defines a symbol on a matching line, so every rank term matters.
+    for index in 0..40 {
+        let matches = 1 + (index * 7) % 5;
+        let path = if index % 3 == 0 {
+            format!("tests/case_{index:02}.rs")
+        } else {
+            format!("src/unit_{index:02}.rs")
+        };
+        let body = "    marker_value();\n".repeat(matches);
+        let symbols = if index == 37 {
+            vec![symbol("marker_value", SymbolKind::Function, 2, 2)]
+        } else {
+            Vec::new()
+        };
+        fixture.write_indexed(&path, &format!("fn f() {{\n{body}}}\n"), &symbols);
+    }
+    let everything = fixture.grep(&["marker_value"], |options| options.max_files = 100);
+    let ranked = paths(&everything, 0)
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    assert_eq!(ranked.len(), 40);
+    assert_eq!(ranked[0], "src/unit_37.rs", "a defining file ranks first");
+    for max_files in [1, 3, 7, 39] {
+        let report = fixture.grep(&["marker_value"], |options| options.max_files = max_files);
+        assert_eq!(paths(&report, 0), ranked[..max_files].to_vec());
+        assert_eq!(report.results[0].files_total, 40);
+        assert_eq!(
+            report.results[0].matches_total,
+            everything.results[0].matches_total
+        );
+        assert!(report.output_truncated);
+    }
+}
+
+#[test]
+fn test_grep_context_lines_surround_each_match_and_merge_when_overlapping() {
+    let fixture = Fixture::new();
+    let source = (1..=20)
+        .map(|line| match line {
+            5 | 7 | 15 => format!("    hit_{line}(); // needle"),
+            _ => format!("    line_{line}();"),
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fixture.write_indexed("src/context.rs", &format!("{source}\n"), &[]);
+
+    let plain = fixture.grep(&["needle"], |_| {});
+    assert!(
+        plain.results[0].files[0]
+            .lines
+            .iter()
+            .all(|line| line.before.is_empty() && line.after.is_empty())
+    );
+
+    let report = fixture.grep(&["needle"], |options| options.context_lines = 2);
+    let lines = &report.results[0].files[0].lines;
+    let numbers = |context: &[compresso_atlas::GrepContextLine]| {
+        context.iter().map(|line| line.line).collect::<Vec<_>>()
+    };
+    assert_eq!(lines.len(), 3);
+    assert_eq!(numbers(&lines[0].before), [3, 4]);
+    assert_eq!(numbers(&lines[0].after), [6], "stops before the next match");
+    assert_eq!(numbers(&lines[1].before), Vec::<u32>::new(), "6 was shown");
+    assert_eq!(numbers(&lines[1].after), [8, 9]);
+    assert_eq!(numbers(&lines[2].before), [13, 14]);
+    assert_eq!(numbers(&lines[2].after), [16, 17]);
+    assert_eq!(lines[0].before[0].text, "line_3();");
+
+    let rendered = report.render_text();
+    let shown = rendered
+        .lines()
+        .skip(2)
+        .filter_map(|row| {
+            row.trim_start()
+                .split([' ', '-'])
+                .next()?
+                .parse::<u32>()
+                .ok()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(shown, [3, 4, 5, 6, 7, 8, 9, 13, 14, 15, 16, 17]);
+
+    // Context at the file edges stops at the first and last line.
+    let edge = Fixture::new();
+    edge.write_indexed("src/edge.rs", "needle_a\nmiddle\nneedle_b", &[]);
+    let report = edge.grep(&["needle"], |options| options.context_lines = 10);
+    let lines = &report.results[0].files[0].lines;
+    assert!(lines[0].before.is_empty());
+    assert_eq!(numbers(&lines[0].after), [2]);
+    assert!(lines[1].before.is_empty() && lines[1].after.is_empty());
+
+    // Context counts against the token budget as one unit with its match.
+    let counter = counter_for(TokenProvider::OpenAiO200k);
+    let wide = fixture.grep(&["needle"], |options| options.context_lines = 10);
+    let fitted = wide.fit_to_budget(60, counter);
+    assert!(counter.count(&fitted.render_text()) <= 60);
+    assert!(fitted.output_truncated);
+
+    assert!(matches!(
+        fixture.try_grep(&["needle"], |options| options.context_lines = 11),
+        Err(AtlasError::Grep(GrepError::InvalidContext { max: 10 }))
+    ));
 }

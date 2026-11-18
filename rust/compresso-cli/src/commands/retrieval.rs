@@ -93,6 +93,10 @@ pub struct GrepArgs {
     /// Matching lines listed per file (1-50).
     #[arg(long, default_value_t = DEFAULT_GREP_MATCHES_PER_FILE)]
     pub max_matches_per_file: usize,
+    /// Lines shown before and after each listed match (0-10); overlapping
+    /// context is merged.
+    #[arg(long, short = 'C', default_value_t = 0)]
+    pub context_lines: usize,
     #[arg(long, default_value_t = DEFAULT_GREP_TOKENS)]
     pub max_tokens: usize,
     #[command(flatten)]
@@ -359,6 +363,7 @@ fn execute_grep(
         path: arguments.path.as_deref(),
         max_files: arguments.max_files,
         max_matches_per_file: arguments.max_matches_per_file,
+        context_lines: arguments.context_lines,
     };
     compresso_atlas::validate_grep(&options)
         .map_err(|error| RetrievalError::invalid(&error.to_string()))?;
@@ -380,12 +385,7 @@ fn execute_grep(
                     "path": file.path,
                     "matches_total": file.matches_total,
                     "stale": file.stale,
-                    "lines": file.lines.iter().map(|line| json!({
-                        "line": line.line,
-                        "snippet": line.snippet,
-                        "symbol": line.symbol,
-                        "definition": line.definition,
-                    })).collect::<Vec<_>>(),
+                    "lines": file.lines.iter().map(grep_line_json).collect::<Vec<_>>(),
                 })).collect::<Vec<_>>(),
             })
         })
@@ -410,6 +410,29 @@ fn execute_grep(
         "truncated": !report.complete(),
     });
     Ok(rendered(data, human))
+}
+
+/// One listed match; `before` and `after` appear only when context was asked for.
+fn grep_line_json(line: &compresso_atlas::GrepLine) -> Value {
+    let mut value = json!({
+        "line": line.line,
+        "snippet": line.snippet,
+        "symbol": line.symbol,
+        "definition": line.definition,
+    });
+    let context = |lines: &[compresso_atlas::GrepContextLine]| {
+        lines
+            .iter()
+            .map(|line| json!({ "line": line.line, "text": line.text }))
+            .collect::<Vec<_>>()
+    };
+    if !line.before.is_empty() {
+        value["before"] = Value::Array(context(&line.before));
+    }
+    if !line.after.is_empty() {
+        value["after"] = Value::Array(context(&line.after));
+    }
+    value
 }
 
 fn execute_read(

@@ -501,3 +501,58 @@ fn write_file(root: &Path, path: &str, source: &str) {
     fs::create_dir_all(destination.parent().expect("parent")).expect("parent created");
     fs::write(destination, source).expect("fixture written");
 }
+
+#[tokio::test]
+async fn test_grep_tool_context_lines_surround_matches_within_the_token_cap() {
+    let (mut harness, _temp, _root) = Fixture::new().harness().await;
+
+    let plain = successful_json(&harness.call(json!({ "pattern": "is_secret_path" })).await);
+    let with_context = successful_json(
+        &harness
+            .call(json!({ "pattern": "is_secret_path", "context_lines": 1 }))
+            .await,
+    );
+    assert_eq!(
+        with_context["results"][0]["matches_total"],
+        plain["results"][0]["matches_total"]
+    );
+    let lines = with_context["results"][0]["files"][1]["lines"]
+        .as_array()
+        .expect("lines");
+    assert_eq!(
+        lines,
+        &[
+            json!("1- pub fn resolve(path: &str) -> bool {"),
+            json!("2 [resolve] is_secret_path(path)"),
+            json!("3- }"),
+            json!("5- pub fn scan(path: &str) -> bool {"),
+            json!("6 [scan] !is_secret_path(path)"),
+            json!("7- }"),
+        ]
+    );
+    assert_eq!(with_context["results"][0]["lines_listed"], 3);
+    assert_eq!(with_context["complete"], true);
+
+    // Context is counted inside max_tokens and cut with its match.
+    let capped = successful_json(
+        &harness
+            .call(json!({ "pattern": "RETRY_BUDGET", "context_lines": 10, "max_tokens": 300 }))
+            .await,
+    );
+    assert!(
+        capped["tokens_used"]
+            .as_u64()
+            .is_some_and(|tokens| tokens <= 300)
+    );
+    assert_eq!(capped["truncated"], true);
+
+    for bad in [json!(11), json!(-1), json!("2")] {
+        assert_tool_error(
+            &harness
+                .call(json!({ "pattern": "scan", "context_lines": bad }))
+                .await,
+            "invalid_arguments",
+        );
+    }
+    harness.close().await;
+}
