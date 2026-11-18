@@ -1,0 +1,35 @@
+rust/compresso-atlas/src/grep.rs
+  s_89a704cfae63f5::t_0958201cb68de7 39-45,48-49,77-78,95-104,119-123,171-172,176-177,184-186,189-198,286-289,295-317,476-487,498-504,509-589,602,618-624,656-658,663,667-675,684-688,697,700-701,709-710,714-723,727-728,731-732,740-742,748-808,963-1023
+rust/compresso-atlas/src/lib.rs
+  s_89a704cfae63f5::t_09559e0edde1ea 20-22
+rust/compresso-atlas/tests/grep_content.rs
+  s_89a704cfae63f5::t_aa1dca5ab8a544 74,87,99,219-221,460-569
+rust/compresso-atlas/tests/symlink_swap.rs
+  s_89a704cfae63f5::t_f66a4824a03568 102,108
+rust/compresso-cli/src/commands/retrieval.rs
+  s_89a704cfae63f5::t_3e1c4f9a51b7da 96-99,366,388,415-437
+rust/compresso-mcp/src/profile.rs
+  s_89a704cfae63f5::t_5c66d6d367fb0e 79
+rust/compresso-mcp/src/server.rs
+  s_89a704cfae63f5::t_4920c0c75d4257 123,781
+rust/compresso-mcp/src/tools/atlas_grep.rs
+  s_89a704cfae63f5::t_7342fd95807e21 47,70-76,86,177-186,222,226
+rust/compresso-mcp/tests/tools_grep.rs
+  s_89a704cfae63f5::t_a0ea8b1ac4e656 504-558
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f419ddf8a57fb2479733d2e6e3ba04d83950e0a4",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
