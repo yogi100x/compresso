@@ -1,0 +1,21 @@
+rust/compresso-atlas/src/cards.rs
+  s_89a704cfae63f5::t_1cb1b2faa4040c 381-382
+rust/compresso-atlas/src/queries.rs
+  s_89a704cfae63f5::t_fd8729e2b7d1e4 548,562-563,713,1809-1814,2769,2773-2811,2854,2857-2859,2863,2877-2889,2891-2911,2917,2925-2927,2929,2933,2937,2940,2943-2949,3033,3037,3040,3088-3089,3096,3099,3108,3270-3271,3274-3275,3589-3654,3658,3668
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "06fad0696fe5eb9e78609da507ca26d294f8733d",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
