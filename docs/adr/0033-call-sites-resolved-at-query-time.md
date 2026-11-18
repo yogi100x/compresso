@@ -62,7 +62,10 @@ Option 2.
   `reference` (a bare name passed as a call argument, `map_err(to_failure)`,
   `sorted(xs, key=rank)`: a function used as a value).
 - **Resolution (query time).** Candidates are indexed symbols with the
-  callee's name, narrowed by form: `plain` to functions, classes, and
+  callee's name, read through `Store::indexed_symbols_named(repo, name)`
+  (every exact-name definition with its path; distinct from the context
+  planner's bounded `Store::symbols_named(repo, name, limit)`, D88), narrowed
+  by form: `plain` to functions, classes, and
   structs; `self` to methods of the caller's own type; `path` to methods of
   the type the qualifier names, or functions in the module file it names
   (falling back to a receiver call for Python and script variables, and to

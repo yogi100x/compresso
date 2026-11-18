@@ -51,6 +51,13 @@ overhead and is distinct from any duration reported inside a tool result.
 
 `compresso_trace` (E17-25) was added after that session. Its row was checked on 2026-11-18 over raw stdio JSON-RPC (`initialize`, `tools/list` showing eleven tools, four `tools/call` requests) with `HOME` pointed at a scratch directory, not through a coding client; a client session should re-check it.
 
+Both probes ran on separate branches, so each `tools/list` showed only its own
+new tool. The merged default server lists twelve tools (thirteen when a recall
+source is configured): the ten above plus `compresso_grep` and
+`compresso_trace`. The opt-in `--tools lean` profile (D92) lists eight of them
+and was not exercised by a client session. A client session covering
+`compresso_grep` and `compresso_trace` together is still outstanding.
+
 The session made 11 calls: every tool once, plus the second `compresso_read`
 call required for traversal rejection. The session completed successfully. A
 targeted inspection of warning/error-level client log records found zero

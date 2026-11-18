@@ -370,7 +370,7 @@ persistence, and projection are not claimed to be one atomic transaction; the
 authenticated integration journal owns crash recovery (04-mcp-and-integrations
 §2.1).
 
-Rules: raw prompts and full source content never stored. Operations come in two kinds: **compression operations** (`compresso_compress`, engine runs) must carry `trace_json`, validated against the trace v1 **root** schema before insert; **retrieval operations** (map, search, read, outline, unfold, context, impact, stats, explain) store `trace_json = NULL` and set `tokens_served`. Retention: operations older than 90 days pruned on startup (configurable).
+Rules: raw prompts and full source content never stored. Operations come in two kinds: **compression operations** (`compresso_compress`, engine runs) must carry `trace_json`, validated against the trace v1 **root** schema before insert; **retrieval operations** (map, search, grep, trace, read, outline, unfold, context, impact, stats, explain, and recall when served) store `trace_json = NULL` and set `tokens_served`. Retention: operations older than 90 days pruned on startup (configurable).
 
 ```sql
 -- 0002_entitlements.sql (local side of ADR-0015; implemented in E10-local tickets)

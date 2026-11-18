@@ -63,7 +63,11 @@ uninstall of a file Compresso created must remove it.
   empty when nothing else lives there.
 - The agent's tool list is derived from the lean MCP exploration allowlist
   (D92), so adding an exploration tool there also changes the agent file a
-  reinstall writes; `verify` reports an older file as not current.
+  reinstall writes; `verify` reports an older file as not current. With
+  E17-22 and E17-25 merged, that list is eight Compresso tools (context,
+  repo_map, search, grep, trace, outline, unfold, read; recall is never
+  included) plus `Read, Edit, Write`; the agent body's routing bullets do not
+  yet mention grep or trace.
 - The agent keeps the client's `Read` tool because Claude Code's `Edit` and
   `Write` refuse to change an existing file the session has not read. Its
   instructions limit `Read` to the read immediately before an edit.
