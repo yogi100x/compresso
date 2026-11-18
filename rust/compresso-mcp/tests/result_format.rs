@@ -1,0 +1,453 @@
+//! E17-31: tool result forms. The full profile's JSON results are pinned
+//! byte for byte; the lean profile's compact text form is pinned by goldens.
+//!
+//! Set `COMPRESSO_UPDATE_GOLDEN=1` to rewrite the golden files.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use compresso_atlas::Indexer;
+use compresso_core::{Config, Engine, TokenProvider, counter_for};
+use compresso_mcp::{
+    McpDeps, McpRecallOptions, McpServeOptions, McpToolProfile, serve_io_with_options,
+};
+use compresso_recall::RecallSource;
+use compresso_store::Store;
+use serde_json::{Value, json};
+use tempfile::TempDir;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, ReadHalf, WriteHalf};
+use tokio::task::JoinHandle;
+use tokio::time::timeout;
+
+const IO_TIMEOUT: Duration = Duration::from_secs(20);
+const SECRET_CANARY: &str = "result_format_secret_canary_7342";
+
+struct Fixture {
+    temp: TempDir,
+    root: PathBuf,
+    store: Store,
+}
+
+fn write_file(root: &Path, relative: &str, contents: &str) {
+    let path = root.join(relative);
+    fs::create_dir_all(path.parent().expect("parent")).expect("parent created");
+    fs::write(path, contents).expect("file written");
+}
+
+const LIB_RS: &str = "//! Fixture crate for result forms.\npub mod session;\n\n/// A constant whose source holds quotes, a tab, and backslashes.\npub const GREETING: &str = \"say \\\"hi\\\"\\t\\\\ok\";\n\npub fn start_session(name: &str) -> String {\n\tlet session = session::Session::open(name);\n\tsession.describe()\n}\n\npub fn restart(name: &str) -> String {\n    start_session(name)\n}\n";
+
+const SESSION_RS: &str = "pub struct Session {\n    name: String,\n}\n\nimpl Session {\n    pub fn open(name: &str) -> Self {\n        Self { name: name.to_owned() }\n    }\n\n    pub fn describe(&self) -> String {\n        format!(\"session \\\"{}\\\" C:\\\\tmp\", self.name)\n    }\n\n    pub fn close(&self) {}\n}\n\npub fn open(name: &str) -> Session {\n    Session::open(name)\n}\n\nimpl std::fmt::Display for Session {\n    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {\n        write!(f, \"{}\", self.name)\n    }\n}\n\nimpl std::fmt::Debug for Session {\n    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {\n        write!(f, \"Session({})\", self.name)\n    }\n}\n";
+
+impl Fixture {
+    fn new() -> Self {
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let root = temp.path().join("work/repo");
+        write_file(&root, "src/lib.rs", LIB_RS);
+        write_file(&root, "src/session.rs", SESSION_RS);
+        let mut long = String::new();
+        for index in 0..400 {
+            long.push_str(&format!(
+                "pub fn step_{index:03}(budget: &mut usize) {{ *budget += {index}; }}\n"
+            ));
+        }
+        long.push_str("pub fn checksum_table() -> &'static [u32] {\n    &[\n");
+        for index in 0..120 {
+            long.push_str(&format!("        {},\n", index * 7919));
+        }
+        long.push_str("    ]\n}\n");
+        write_file(&root, "src/steps.rs", &long);
+        write_file(
+            &root,
+            "README.md",
+            "# Fixture\n\nSession lifecycle notes: open, describe, close.\n",
+        );
+        write_file(&root, ".env", &format!("TOKEN={SECRET_CANARY}\n"));
+        let store = Store::open(&temp.path().join("compresso.db")).expect("store");
+        Indexer::new(&store, counter_for(TokenProvider::OpenAiO200k))
+            .index(&root, |_| {})
+            .expect("fixture indexes");
+        let root = fs::canonicalize(root).expect("root canonicalizes");
+        // Created after indexing: gates must refuse them at read time.
+        let mut big = b"x".to_vec();
+        big.resize(17 * 1024 * 1024, b'x');
+        fs::write(root.join("big.txt"), big).expect("oversize file");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join(".env"), root.join("link.txt")).expect("link");
+        let fixture = Self { temp, root, store };
+        fixture.write_transcript();
+        fixture
+    }
+
+    fn home(&self) -> PathBuf {
+        self.temp.path().join("home")
+    }
+
+    fn write_transcript(&self) {
+        let path = self.home().join(".claude/projects/-work-repo/aaaa.jsonl");
+        fs::create_dir_all(path.parent().expect("parent")).expect("transcript dir");
+        let line = json!({
+            "type": "assistant",
+            "cwd": self.root,
+            "sessionId": "session-a",
+            "timestamp": "2026-05-01T10:00:00.000Z",
+            "message": { "role": "assistant", "content": [{ "type": "text",
+                "text": "Decision: keep \"session\" names short; see C:\\tmp." }] }
+        });
+        fs::write(path, format!("{line}\n")).expect("transcript written");
+    }
+
+    fn options(&self, tools: McpToolProfile) -> McpServeOptions {
+        McpServeOptions {
+            root: Some(self.root.clone()),
+            recall: Some(McpRecallOptions {
+                home_dir: self.home(),
+                sources: vec![RecallSource::ClaudeCode],
+            }),
+            tools,
+        }
+    }
+}
+
+struct Harness {
+    input: WriteHalf<DuplexStream>,
+    output: BufReader<ReadHalf<DuplexStream>>,
+    server: JoinHandle<anyhow::Result<()>>,
+    next_id: u64,
+}
+
+impl Harness {
+    async fn start(fixture: &Fixture, options: McpServeOptions) -> Self {
+        let config = Config::default();
+        let deps = McpDeps {
+            store: fixture.store.clone(),
+            engine: Engine::new(
+                config.compression.mode,
+                counter_for(TokenProvider::OpenAiO200k),
+            ),
+            config,
+        };
+        let (client, server) = tokio::io::duplex(1024 * 1024);
+        let (server_read, server_write) = tokio::io::split(server);
+        let server = tokio::spawn(serve_io_with_options(
+            deps,
+            server_read,
+            server_write,
+            options,
+        ));
+        let (client_read, client_write) = tokio::io::split(client);
+        let mut harness = Self {
+            input: client_write,
+            output: BufReader::new(client_read),
+            server,
+            next_id: 1,
+        };
+        harness
+            .request(
+                "initialize",
+                json!({
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": { "name": "result-format-test", "version": "1.0.0" }
+                }),
+            )
+            .await;
+        harness
+            .send(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+            .await;
+        harness
+    }
+
+    /// The tool's text content and whether it is an error result.
+    async fn call(&mut self, name: &str, arguments: &Value) -> (String, bool) {
+        let response = self
+            .request(
+                "tools/call",
+                json!({ "name": name, "arguments": arguments }),
+            )
+            .await;
+        assert!(
+            response.get("error").is_none(),
+            "protocol error: {response}"
+        );
+        let content = response["result"]["content"]
+            .as_array()
+            .expect("content array");
+        assert_eq!(content.len(), 1, "one text block: {response}");
+        (
+            content[0]["text"].as_str().expect("text block").to_owned(),
+            response["result"]["isError"] == true,
+        )
+    }
+
+    async fn request(&mut self, method: &str, params: Value) -> Value {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.send(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))
+            .await;
+        let mut line = String::new();
+        let bytes = timeout(IO_TIMEOUT, self.output.read_line(&mut line))
+            .await
+            .expect("response in time")
+            .expect("response readable");
+        assert!(bytes > 0, "server closed early");
+        serde_json::from_str(&line).expect("valid JSON-RPC")
+    }
+
+    async fn send(&mut self, message: &Value) {
+        let mut frame = serde_json::to_vec(message).expect("serializes");
+        frame.push(b'\n');
+        timeout(IO_TIMEOUT, self.input.write_all(&frame))
+            .await
+            .expect("write in time")
+            .expect("written");
+    }
+
+    async fn close(mut self) {
+        timeout(IO_TIMEOUT, self.input.shutdown())
+            .await
+            .expect("shutdown in time")
+            .expect("shut down");
+        drop(self.input);
+        timeout(IO_TIMEOUT, self.server)
+            .await
+            .expect("server exits")
+            .expect("no panic")
+            .expect("clean exit");
+    }
+}
+
+/// Every lean-served tool in its success, truncation, ambiguity, empty, and
+/// per-item error states.
+fn golden_calls() -> Vec<(&'static str, &'static str, Value)> {
+    vec![
+        ("repo_map", "compresso_repo_map", json!({})),
+        (
+            "repo_map_cards",
+            "compresso_repo_map",
+            json!({ "cards": true, "max_tokens": 600 }),
+        ),
+        ("search", "compresso_search", json!({ "query": "Session" })),
+        (
+            "search_truncated",
+            "compresso_search",
+            json!({ "query": "step", "limit": 40, "max_tokens": 100 }),
+        ),
+        (
+            "search_none",
+            "compresso_search",
+            json!({ "query": "zzzqqq" }),
+        ),
+        (
+            "search_path_not_found",
+            "compresso_search",
+            json!({ "query": "open", "path": "nowhere" }),
+        ),
+        (
+            "grep",
+            "compresso_grep",
+            json!({ "patterns": ["Session::open", "describe"] }),
+        ),
+        (
+            "grep_context",
+            "compresso_grep",
+            json!({ "pattern": "GREETING", "context_lines": 1 }),
+        ),
+        (
+            "grep_truncated",
+            "compresso_grep",
+            json!({ "pattern": "budget", "max_files": 1, "max_matches_per_file": 3 }),
+        ),
+        ("read", "compresso_read", json!({ "path": "src/lib.rs" })),
+        (
+            "read_range_clamped",
+            "compresso_read",
+            json!({ "path": "src/session.rs", "start_line": 15, "end_line": 900 }),
+        ),
+        (
+            "read_truncated",
+            "compresso_read",
+            json!({ "path": "src/steps.rs", "max_tokens": 200 }),
+        ),
+        (
+            "read_gate",
+            "compresso_read",
+            json!({ "path": "src/steps.rs", "gate": true, "max_tokens": 300 }),
+        ),
+        (
+            "read_ranges",
+            "compresso_read",
+            json!({ "ranges": [
+            { "path": "src/lib.rs", "start_line": 4, "end_line": 5 },
+            { "path": ".env" },
+            { "path": "big.txt" },
+            { "path": "link.txt" },
+            { "path": "src/session.rs", "start_line": 17 }
+        ] }),
+        ),
+        (
+            "outline",
+            "compresso_outline",
+            json!({ "path": "src/session.rs" }),
+        ),
+        (
+            "outline_truncated",
+            "compresso_outline",
+            json!({ "path": "src/steps.rs", "max_tokens": 150 }),
+        ),
+        (
+            "unfold",
+            "compresso_unfold",
+            json!({ "path": "src/session.rs", "qualified_name": "Session::describe" }),
+        ),
+        (
+            "unfold_raw",
+            "compresso_unfold",
+            json!({ "path": "src/lib.rs", "qualified_name": "GREETING" }),
+        ),
+        (
+            "unfold_truncated",
+            "compresso_unfold",
+            json!({ "path": "src/steps.rs", "qualified_name": "checksum_table", "max_tokens": 100 }),
+        ),
+        (
+            "unfold_ambiguous",
+            "compresso_unfold",
+            json!({ "path": "src/session.rs", "qualified_name": "Session::fmt" }),
+        ),
+        (
+            "unfold_not_found",
+            "compresso_unfold",
+            json!({ "path": "src/session.rs", "qualified_name": "Session::missing" }),
+        ),
+        (
+            "context",
+            "compresso_context",
+            json!({ "task": "how does a session open and describe itself" }),
+        ),
+        (
+            "context_no_match",
+            "compresso_context",
+            json!({ "task": "zzzqqq wwwvvv" }),
+        ),
+        (
+            "trace_callers",
+            "compresso_trace",
+            json!({ "to": "start_session" }),
+        ),
+        (
+            "trace_callees",
+            "compresso_trace",
+            json!({ "from": "start_session" }),
+        ),
+        (
+            "trace_path",
+            "compresso_trace",
+            json!({ "from": "restart", "to": "Session::open" }),
+        ),
+        (
+            "trace_ambiguous",
+            "compresso_trace",
+            json!({ "to": "open" }),
+        ),
+        (
+            "trace_not_found",
+            "compresso_trace",
+            json!({ "to": "missing_symbol" }),
+        ),
+        (
+            "recall",
+            "compresso_recall",
+            json!({ "query": "session names" }),
+        ),
+        ("error_secret", "compresso_read", json!({ "path": ".env" })),
+        ("error_size", "compresso_read", json!({ "path": "big.txt" })),
+        (
+            "error_symlink",
+            "compresso_read",
+            json!({ "path": "link.txt" }),
+        ),
+        (
+            "error_arguments",
+            "compresso_grep",
+            json!({ "pattern": "(" , "regex": true }),
+        ),
+    ]
+}
+
+/// Replaces the per-call operation id and the temporary root with stable
+/// placeholders. Grep and context count their whole serialized payload,
+/// operation id included, into `tokens_used`, so that one number varies with
+/// the random id and is masked for those two tools only.
+fn mask(tool: &str, text: &str, root: &Path) -> String {
+    let mut masked = text.replace(&root.display().to_string(), "<root>");
+    if let Ok(value) = serde_json::from_str::<Value>(text)
+        && let Some(id) = value["operation_id"].as_str()
+        && !id.is_empty()
+    {
+        masked = masked.replace(id, "<operation_id>");
+        if matches!(tool, "compresso_grep" | "compresso_context") {
+            masked = mask_number(&masked, "\"tokens_used\":");
+        }
+    }
+    masked
+}
+
+fn mask_number(text: &str, key: &str) -> String {
+    let Some(start) = text.find(key).map(|index| index + key.len()) else {
+        return text.to_owned();
+    };
+    let digits = text[start..].bytes().take_while(u8::is_ascii_digit).count();
+    format!("{}<n>{}", &text[..start], &text[start + digits..])
+}
+
+async fn transcript(fixture: &Fixture, options: McpServeOptions) -> String {
+    let mut harness = Harness::start(fixture, options).await;
+    let mut transcript = String::new();
+    for (label, tool, arguments) in golden_calls() {
+        let (text, is_error) = harness.call(tool, &arguments).await;
+        assert!(
+            !text.contains(SECRET_CANARY),
+            "{label}: secret content reached the client"
+        );
+        transcript.push_str(&format!(
+            "=== {label}{}\n{}\n",
+            if is_error { " (error)" } else { "" },
+            mask(tool, &text, &fixture.root)
+        ));
+    }
+    harness.close().await;
+    transcript
+}
+
+fn check_golden(name: &str, actual: &str) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden")
+        .join(name);
+    if std::env::var_os("COMPRESSO_UPDATE_GOLDEN").is_some() {
+        fs::create_dir_all(path.parent().expect("golden dir")).expect("golden dir created");
+        fs::write(&path, actual).expect("golden written");
+        return;
+    }
+    let expected = fs::read_to_string(&path).expect("golden file exists");
+    if expected != actual {
+        let first = expected
+            .lines()
+            .zip(actual.lines())
+            .position(|(left, right)| left != right)
+            .unwrap_or(0);
+        panic!(
+            "{name} differs from its golden at line {}:\nexpected: {:?}\nactual:   {:?}",
+            first + 1,
+            expected.lines().nth(first),
+            actual.lines().nth(first)
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_full_profile_results_are_byte_for_byte_unchanged() {
+    let fixture = Fixture::new();
+    let actual = transcript(&fixture, fixture.options(McpToolProfile::Full)).await;
+    check_golden("full_profile_json.txt", &actual);
+}
