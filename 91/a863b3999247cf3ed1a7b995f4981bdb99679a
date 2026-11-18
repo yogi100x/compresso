@@ -1,0 +1,19 @@
+rust/compresso-atlas/tests/queries_trace.rs
+  s_89a704cfae63f5::t_899a9886dd8f1e 595
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "91a863b3999247cf3ed1a7b995f4981bdb99679a",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
