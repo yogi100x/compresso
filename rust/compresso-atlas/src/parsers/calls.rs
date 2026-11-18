@@ -67,14 +67,20 @@ pub(super) fn extract(
     let mut cursor = root.walk();
     'walk: loop {
         let node = cursor.node();
-        if is_call_node(syntax, node.kind()) {
+        let found = if is_call_node(syntax, node.kind()) {
+            callee(syntax, node, source).into_iter().collect()
+        } else if syntax == CallSyntax::Rust && node.kind() == "token_tree" {
+            macro_argument_calls(node, source)
+        } else {
+            Vec::new()
+        };
+        for callee in found {
             examined += 1;
             if examined > MAX_CALL_NODES_PER_FILE {
                 truncated = true;
-                break;
+                break 'walk;
             }
-            if let Some(callee) = callee(syntax, node, source)
-                && let Some((record, name_start)) = record(callee, source, &enclosing)
+            if let Some((record, name_start)) = record(callee, source, &enclosing)
                 && seen.insert((
                     record.caller,
                     record.callee_name.clone(),
@@ -85,7 +91,7 @@ pub(super) fn extract(
                 calls.push((record.line, name_start, record));
                 if calls.len() == MAX_CALLS_PER_FILE {
                     truncated = true;
-                    break;
+                    break 'walk;
                 }
             }
         }
@@ -235,6 +241,66 @@ fn callee<'tree>(syntax: CallSyntax, node: Node<'tree>, source: &str) -> Option<
         }
         _ => None,
     }
+}
+
+/// Calls written inside a macro's arguments (`assert!(run())`,
+/// `format!("{}", self.name())`). Tree-sitter keeps macro arguments as a flat
+/// token tree, so a call is read from tokens: a name directly followed by a
+/// parenthesized group, optionally behind `Type::`, `self.`, or `expr.`.
+/// `fn name(` in a macro body and `name!(` (a nested macro) are not calls.
+fn macro_argument_calls<'tree>(tree: Node<'tree>, source: &str) -> Vec<Callee<'tree>> {
+    let mut cursor = tree.walk();
+    let tokens = tree.children(&mut cursor).collect::<Vec<_>>();
+    let mut calls = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind() != "identifier" {
+            continue;
+        }
+        let Some(next) = tokens.get(index + 1) else {
+            continue;
+        };
+        if next.kind() != "token_tree"
+            || !node_text(*next, source).is_some_and(|text| text.starts_with('('))
+        {
+            continue;
+        }
+        let previous = index.checked_sub(1).map(|previous| tokens[previous]);
+        let before = index.checked_sub(2).map(|before| tokens[before]);
+        let previous_kind = previous.map(|token| token.kind());
+        if previous_kind == Some("fn") {
+            continue;
+        }
+        let name = node_text(*token, source).unwrap_or_default();
+        let callee = match (previous_kind, before) {
+            (Some("::"), Some(owner)) if owner.kind() == "identifier" || owner.kind() == "self" => {
+                let owner_text = node_text(owner, source).unwrap_or_default();
+                Callee {
+                    name: *token,
+                    qualifier: Some(owner_text.to_owned()),
+                    form: if owner_text == "Self" {
+                        CallForm::SelfRef
+                    } else {
+                        CallForm::Path
+                    },
+                }
+            }
+            (Some("::"), _) => continue,
+            (Some("."), Some(receiver_token))
+                if node_text(receiver_token, source) == Some("self") =>
+            {
+                Callee {
+                    name: *token,
+                    qualifier: Some("self".to_owned()),
+                    form: CallForm::SelfRef,
+                }
+            }
+            (Some("."), _) => receiver(*token),
+            _ if RUST_PRELUDE_VARIANTS.contains(&name) => continue,
+            _ => plain(*token),
+        };
+        calls.push(callee);
+    }
+    calls
 }
 
 fn rust_callee<'tree>(function: Node<'tree>, source: &str) -> Option<Callee<'tree>> {

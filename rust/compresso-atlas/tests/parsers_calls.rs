@@ -55,6 +55,7 @@ fn helper() {
             ("helper", "save", None, CallForm::Receiver, 10),
             ("helper", "log", Some("crate::util"), CallForm::Path, 11),
             ("helper", "new", Some("Vec"), CallForm::Path, 12),
+            ("helper", "run", None, CallForm::Plain, 13),
             ("helper", "inner", None, CallForm::Plain, 15),
         ]
     );
@@ -265,4 +266,33 @@ fn test_huge_number_of_calls_and_functions_is_bounded_and_reports_truncation() {
 
     let small = ParserRegistry::extract(Language::Rust, "fn a() { b(); }\n").expect("extract");
     assert!(!small.calls_truncated);
+}
+
+#[test]
+fn test_rust_calls_inside_macro_arguments_are_recorded() {
+    let source = "\
+struct S;
+impl S {
+    fn check(&self) {
+        assert_eq!(self.value(), compute(S::make(), item.len()));
+        format!(\"{}\", nested!(inner()));
+        let v = vec![Some(1), build()];
+    }
+}
+macro_rules! define {
+    () => { fn generated() { hidden(); } };
+}
+";
+    let extraction = ParserRegistry::extract(Language::Rust, source).expect("Rust should extract");
+    assert_eq!(
+        rows(&extraction),
+        [
+            ("S::check", "value", Some("self"), CallForm::SelfRef, 4),
+            ("S::check", "compute", None, CallForm::Plain, 4),
+            ("S::check", "make", Some("S"), CallForm::Path, 4),
+            ("S::check", "len", None, CallForm::Receiver, 4),
+            ("S::check", "inner", None, CallForm::Plain, 5),
+            ("S::check", "build", None, CallForm::Plain, 6),
+        ]
+    );
 }
