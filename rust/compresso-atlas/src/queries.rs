@@ -290,6 +290,8 @@ pub enum QueryError {
     InvalidImpactOptions { reason: &'static str },
     #[error("invalid trace options: {reason}")]
     InvalidTraceOptions { reason: &'static str },
+    #[error("invalid read ranges: {reason}")]
+    InvalidReadRanges { reason: &'static str },
     #[error("failed to canonicalize repository query root {path:?}")]
     CanonicalizeRoot {
         path: PathBuf,
@@ -765,6 +767,86 @@ pub fn read_bounded(
         truncated,
         elision,
     })
+}
+
+/// Most line ranges one [`read_bounded_ranges`] call reads.
+pub const READ_MAX_RANGES: usize = 8;
+
+/// One file range of a multi-range read: the whole file, `start_line`
+/// through the end, or an inclusive `start_line..=end_line` (an `end_line`
+/// past the end clamps, as in [`read_bounded`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReadRequest<'a> {
+    pub path: &'a str,
+    pub start_line: Option<u32>,
+    pub end_line: Option<u32>,
+}
+
+/// Reads up to [`READ_MAX_RANGES`] ranges under one shared token budget.
+///
+/// The request list is validated as a whole first (count, and for every
+/// range: a path, `end_line` only with `start_line`, `start_line` at least 1
+/// and not after `end_line`). Each range then passes every gate
+/// [`read_bounded`] applies (root containment, secret paths, the symlink
+/// rule, the 16 MiB ceiling) on its own; a range that fails yields its own
+/// error and costs no budget. The budget is shared in request order: each
+/// range may use an equal share of what the earlier ranges left, so a large
+/// first range cannot starve the rest, and each range reports its own
+/// truncation.
+pub fn read_bounded_ranges(
+    root: &Path,
+    requests: &[ReadRequest<'_>],
+    budget_tokens: usize,
+    counter: &dyn TokenCounter,
+) -> Result<Vec<Result<BoundedRead, AtlasError>>, AtlasError> {
+    validate_read_requests(requests)?;
+    let mut remaining = budget_tokens;
+    let mut output = Vec::with_capacity(requests.len());
+    for (index, request) in requests.iter().enumerate() {
+        let share = remaining / (requests.len() - index);
+        let read = read_request(root, request, share, counter);
+        if let Ok(read) = &read {
+            remaining = remaining.saturating_sub(read.tokens_used.min(share));
+        }
+        output.push(read);
+    }
+    Ok(output)
+}
+
+/// Rejects a malformed multi-range request before any file is opened.
+pub fn validate_read_requests(requests: &[ReadRequest<'_>]) -> Result<(), AtlasError> {
+    let invalid = |reason| Err(QueryError::InvalidReadRanges { reason }.into());
+    if requests.is_empty() || requests.len() > READ_MAX_RANGES {
+        return invalid("give 1 to 8 ranges");
+    }
+    for request in requests {
+        if request.path.is_empty() || request.path.contains('\0') {
+            return invalid("every range needs a non-empty path without NUL");
+        }
+        match (request.start_line, request.end_line) {
+            (None, Some(_)) => return invalid("end_line requires start_line"),
+            (Some(0), _) => return invalid("start_line must be at least 1"),
+            (Some(start), Some(end)) if end < start => {
+                return invalid("end_line must not be before start_line");
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn read_request(
+    root: &Path,
+    request: &ReadRequest<'_>,
+    budget_tokens: usize,
+    counter: &dyn TokenCounter,
+) -> Result<BoundedRead, AtlasError> {
+    let range = match (request.start_line, request.end_line) {
+        (Some(start), Some(end)) => Some((start, end)),
+        (Some(start), None) => Some((start, file_line_count(root, request.path)?)),
+        _ => None,
+    };
+    read_bounded(root, request.path, range, budget_tokens, counter)
 }
 
 /// Returns resolved reverse dependencies at minimum depths one and two only.

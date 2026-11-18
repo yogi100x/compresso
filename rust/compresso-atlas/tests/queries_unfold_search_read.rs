@@ -632,3 +632,80 @@ fn selector(path: &str, qualified_name: &str) -> SymbolSelector {
 fn counter() -> &'static dyn TokenCounter {
     counter_for(TokenProvider::Heuristic)
 }
+
+#[test]
+fn test_read_bounded_ranges_share_one_budget_and_gate_each_range() {
+    use compresso_atlas::{ReadRequest, read_bounded_ranges};
+
+    let long = (1..=400)
+        .map(|line| format!("pub const VALUE_{line}: usize = {line};\n"))
+        .collect::<String>();
+    let fixture = IndexedFixture::new(&[
+        ("src/a.rs", "pub fn a() {}\npub fn b() {}\npub fn c() {}\n"),
+        ("src/long.rs", long.as_str()),
+    ]);
+    fs::write(fixture.root.join(".env"), "TOKEN=range_secret\n").expect("secret");
+    let root = fs::canonicalize(&fixture.root).expect("root");
+    let request = |path, start_line, end_line| ReadRequest {
+        path,
+        start_line,
+        end_line,
+    };
+
+    let reads = read_bounded_ranges(
+        &root,
+        &[
+            request("src/long.rs", None, None),
+            request("src/a.rs", Some(2), Some(2)),
+            request(".env", None, None),
+            request("src/missing.rs", Some(1), Some(3)),
+            request("src/a.rs", Some(3), Some(99)),
+        ],
+        300,
+        counter(),
+    )
+    .expect("valid requests");
+    assert_eq!(reads.len(), 5);
+    let first = reads[0].as_ref().expect("long file reads");
+    assert!(first.truncated, "the first range gets only its share");
+    assert!(first.tokens_used <= 300 / 5);
+    let second = reads[1].as_ref().expect("one line reads");
+    assert_eq!(second.content, "pub fn b() {}\n");
+    assert!(!second.truncated);
+    for refused in [&reads[2], &reads[3]] {
+        assert!(
+            matches!(
+                refused,
+                Err(AtlasError::Query(
+                    compresso_atlas::QueryError::NotFound { .. }
+                ))
+            ),
+            "{refused:?}"
+        );
+    }
+    let last = reads[4].as_ref().expect("clamped range reads");
+    assert!(last.range_clamped);
+    assert_eq!(last.content, "pub fn c() {}\n");
+    let used = reads
+        .iter()
+        .filter_map(|read| read.as_ref().ok())
+        .map(|read| read.tokens_used)
+        .sum::<usize>();
+    assert!(used <= 300);
+
+    for bad in [
+        Vec::new(),
+        vec![request("src/a.rs", None, Some(2))],
+        vec![request("src/a.rs", Some(0), Some(2))],
+        vec![request("src/a.rs", Some(3), Some(2))],
+        vec![request("", None, None)],
+        vec![request("src/a.rs", None, None); 9],
+    ] {
+        assert!(matches!(
+            read_bounded_ranges(&root, &bad, 300, counter()),
+            Err(AtlasError::Query(
+                compresso_atlas::QueryError::InvalidReadRanges { .. }
+            ))
+        ));
+    }
+}

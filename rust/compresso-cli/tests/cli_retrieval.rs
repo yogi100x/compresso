@@ -533,3 +533,84 @@ const SESSION_SOURCE: &str = concat!(
     "pub fn duplicate(value: i32) -> i32 { value }\n",
     "pub fn duplicate(value: i64) -> i64 { value }\n",
 );
+
+#[test]
+fn test_grep_context_lines_and_multi_range_read() {
+    let fixture = Fixture::new();
+
+    let (exit, output, _) = fixture.run_json(&[
+        "grep",
+        "fn importer",
+        "-C",
+        "1",
+        "--root",
+        fixture.root_str(),
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success);
+    let line = &output["data"]["results"][0]["files"][0]["lines"][0];
+    assert_eq!(line["line"], 1);
+    assert!(line.get("before").is_none(), "nothing precedes line 1");
+    let (_, plain, _) = fixture.run_json(&[
+        "grep",
+        "fn importer",
+        "--root",
+        fixture.root_str(),
+        "--json",
+    ]);
+    assert!(
+        plain["data"]["results"][0]["files"][0]["lines"][0]
+            .get("after")
+            .is_none()
+    );
+    let (exit, _, errors) = fixture.run_json(&[
+        "grep",
+        "fn importer",
+        "-C",
+        "11",
+        "--root",
+        fixture.root_str(),
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Failure);
+    assert_eq!(errors["error"]["code"], "invalid_arguments");
+
+    let (exit, output, errors) = fixture.run_json(&[
+        "read",
+        "--range",
+        "src/session.rs:1-1",
+        "--range",
+        "src/importer.rs",
+        "--range",
+        ".env",
+        "--root",
+        fixture.root_str(),
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    let ranges = output["data"]["ranges"].as_array().expect("ranges");
+    assert_eq!(ranges.len(), 3);
+    assert_eq!(ranges[0]["end_line"], 1);
+    assert_eq!(ranges[1]["content"], "pub fn importer() {}\n");
+    assert_eq!(ranges[2]["error"]["code"], "not_found");
+    assert_eq!(output["data"]["ranges_failed"], 1);
+
+    let (exit, _, errors) = fixture.run_json(&[
+        "read",
+        "--range",
+        "src/session.rs:3-2",
+        "--root",
+        fixture.root_str(),
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Failure);
+    assert_eq!(errors["error"]["code"], "invalid_arguments");
+    let both = Cli::try_parse_from([
+        "compresso",
+        "read",
+        "src/session.rs",
+        "--range",
+        "src/importer.rs",
+    ]);
+    assert!(both.is_err(), "a path and --range are exclusive");
+}

@@ -105,7 +105,17 @@ pub struct GrepArgs {
 
 #[derive(Args, Debug)]
 pub struct ReadArgs {
-    pub path: String,
+    /// Repository-relative file to read; omit when passing --range.
+    #[arg(required_unless_present = "ranges", conflicts_with = "ranges")]
+    pub path: Option<String>,
+    /// Read several ranges in one call (repeat up to 8 times) under one
+    /// shared --max-tokens: `PATH`, `PATH:START`, or `PATH:START-END`.
+    #[arg(
+        long = "range",
+        value_name = "PATH[:START[-END]]",
+        conflicts_with_all = ["start_line", "end_line"]
+    )]
+    pub ranges: Vec<String>,
     #[command(flatten)]
     pub repository: RepositoryArgs,
     #[arg(long)]
@@ -441,7 +451,10 @@ fn execute_read(
     arguments: ReadArgs,
 ) -> Result<Rendered, RetrievalError> {
     validate_budget(arguments.max_tokens)?;
-    if arguments.path.is_empty() {
+    let Some(path) = arguments.path.as_deref() else {
+        return execute_read_ranges(store, cwd, &arguments);
+    };
+    if path.is_empty() {
         return Err(RetrievalError::invalid("path must not be empty"));
     }
     let repository = resolve_repository(store, arguments.repository.root.as_deref(), cwd)?;
@@ -455,20 +468,108 @@ fn execute_read(
         (Some(start_line), None) => {
             // Only the line count is needed to close the range; a full read
             // would tokenize the whole file to learn it.
-            let total_lines =
-                file_line_count(&repository.root, &arguments.path).map_err(map_atlas_error)?;
+            let total_lines = file_line_count(&repository.root, path).map_err(map_atlas_error)?;
             Some((start_line, total_lines))
         }
     };
-    let result = read_bounded(
+    let result = read_bounded(&repository.root, path, range, arguments.max_tokens, counter)
+        .map_err(map_atlas_error)?;
+    Ok(render_bounded_read(result))
+}
+
+/// `PATH`, `PATH:START`, or `PATH:START-END`; a suffix that is not a line
+/// range stays part of the path.
+fn parse_range_argument(argument: &str) -> compresso_atlas::ReadRequest<'_> {
+    let whole = compresso_atlas::ReadRequest {
+        path: argument,
+        start_line: None,
+        end_line: None,
+    };
+    let Some((path, range)) = argument.rsplit_once(':') else {
+        return whole;
+    };
+    let (start, end) = match range.split_once('-') {
+        Some((start, end)) => (start, Some(end)),
+        None => (range, None),
+    };
+    let Ok(start) = start.parse::<u32>() else {
+        return whole;
+    };
+    let end = match end.map(str::parse::<u32>) {
+        Some(Ok(end)) => Some(end),
+        Some(Err(_)) => return whole,
+        None => None,
+    };
+    compresso_atlas::ReadRequest {
+        path,
+        start_line: Some(start),
+        end_line: end,
+    }
+}
+
+fn execute_read_ranges(
+    store: &Store,
+    cwd: &Path,
+    arguments: &ReadArgs,
+) -> Result<Rendered, RetrievalError> {
+    let requests = arguments
+        .ranges
+        .iter()
+        .map(|range| parse_range_argument(range))
+        .collect::<Vec<_>>();
+    compresso_atlas::validate_read_requests(&requests).map_err(map_atlas_error)?;
+    let repository = resolve_repository(store, arguments.repository.root.as_deref(), cwd)?;
+    let counter = counter_for(TokenProvider::OpenAiO200k);
+    let reads = compresso_atlas::read_bounded_ranges(
         &repository.root,
-        &arguments.path,
-        range,
+        &requests,
         arguments.max_tokens,
         counter,
     )
     .map_err(map_atlas_error)?;
-    Ok(render_bounded_read(result))
+    let mut human = String::new();
+    let mut values = Vec::with_capacity(reads.len());
+    let (mut tokens_used, mut truncated, mut failed) = (0_usize, false, 0_usize);
+    for (request, read) in requests.iter().zip(reads) {
+        match read {
+            Ok(read) => {
+                tokens_used += read.tokens_used;
+                truncated |= read.truncated;
+                human.push_str(&format!(
+                    "==> {}:{}-{} <==\n{}",
+                    read.path, read.start_line, read.end_line, read.content
+                ));
+                if !read.content.is_empty() && !read.content.ends_with('\n') {
+                    human.push('\n');
+                }
+                if let Some(elision) = &read.elision {
+                    human.push_str(elision);
+                    human.push('\n');
+                }
+                values.push(render_bounded_read(read).json["data"].take());
+            }
+            Err(error) => {
+                failed += 1;
+                let failure = map_atlas_error(error);
+                human.push_str(&format!(
+                    "==> {} <==\n[{}] {}\n",
+                    request.path, failure.code, failure.message
+                ));
+                values.push(json!({
+                    "path": request.path,
+                    "error": { "code": failure.code, "message": failure.message },
+                }));
+            }
+        }
+    }
+    let data = json!({
+        "ranges": values,
+        "ranges_failed": failed,
+        "tokens_used": tokens_used,
+        "token_provider": counter.provider(),
+        "truncated": truncated,
+    });
+    Ok(rendered(data, human))
 }
 
 fn execute_outline(
@@ -895,6 +996,7 @@ fn map_query_error(error: QueryError) -> RetrievalError {
         | QueryError::InvalidSearchPath { .. }
         | QueryError::InvalidImpactOptions { .. }
         | QueryError::InvalidTraceOptions { .. }
+        | QueryError::InvalidReadRanges { .. }
         | QueryError::InvalidRange { .. }
         | QueryError::InvalidSymbolRange { .. }) => RetrievalError::invalid(&invalid.to_string()),
         QueryError::NotAFile { .. } => {

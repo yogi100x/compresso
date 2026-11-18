@@ -61,12 +61,12 @@ pub(crate) struct LeanTool {
 pub(crate) const LEAN_TOOLS: &[LeanTool] = &[
     LeanTool {
         name: "compresso_context",
-        description: "One-call evidence pack for a broad or conceptual task (800 tokens, expanding to at most 4,000). If next_action is answer_from_pack, answer from it with no follow-up calls.",
-        hint: "compresso_context for broad or conceptual tasks",
+        description: "One-call evidence pack for a broad or conceptual task (800 tokens, up to 4,000). If next_action is answer_from_pack, answer from it with no follow-up calls.",
+        hint: "compresso_context for broad tasks",
     },
     LeanTool {
         name: "compresso_repo_map",
-        description: "Ranked directory map of the indexed repository. cards:true adds per-directory cards (purpose, public symbols, entry points, dependencies); path zooms the cards into a subtree.",
+        description: "Ranked directory map of the indexed repository. cards:true adds per-directory cards (purpose, public symbols, entry points, dependencies); path zooms into a subtree.",
         hint: "compresso_repo_map with cards:true to orient",
     },
     LeanTool {
@@ -76,13 +76,13 @@ pub(crate) const LEAN_TOOLS: &[LeanTool] = &[
     },
     LeanTool {
         name: "compresso_grep",
-        description: "Text or regex search of indexed files, up to 8 patterns per call; use sites with path, line, enclosing symbol, exact totals. context_lines adds nearby lines, sparing a read.",
+        description: "Text or regex search of indexed files, up to 8 patterns; use sites with path, line, enclosing symbol, exact totals. context_lines adds nearby lines, sparing a read.",
         hint: "compresso_grep for text and use sites",
     },
     LeanTool {
         name: "compresso_trace",
-        description: "Call graph in one call: who calls X, what X calls, or the call path from A to B, with call-site path and line per hop.",
-        hint: "compresso_trace for callers, callees, and call paths",
+        description: "Who calls X, what X calls, or the call path from A to B, with call-site path and line per hop.",
+        hint: "compresso_trace for callers, callees, call paths",
     },
     LeanTool {
         name: "compresso_outline",
@@ -96,8 +96,8 @@ pub(crate) const LEAN_TOOLS: &[LeanTool] = &[
     },
     LeanTool {
         name: "compresso_read",
-        description: "Bounded read of a file or inclusive line range; end_line past EOF clamps.",
-        hint: "compresso_read for a bounded line range",
+        description: "Bounded read of a file or line range; end_line past EOF clamps. ranges reads up to 8 ranges in one call.",
+        hint: "compresso_read for line ranges",
     },
     LeanTool {
         name: "compresso_recall",
