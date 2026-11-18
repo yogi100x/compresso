@@ -846,6 +846,7 @@ mod tests {
             imports_resolved: 1,
             imports_unresolved: 0,
             call_sites: 0,
+            call_site_files_truncated: 0,
             duration_ms: 1,
             stale: false,
         };

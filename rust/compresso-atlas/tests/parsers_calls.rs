@@ -1,4 +1,8 @@
-use compresso_atlas::parsers::{Extraction, Language, MAX_CALLS_PER_FILE, ParserRegistry};
+use std::time::{Duration, Instant};
+
+use compresso_atlas::parsers::{
+    Extraction, Language, MAX_CALL_NODES_PER_FILE, MAX_CALLS_PER_FILE, ParserRegistry,
+};
 use compresso_store::CallForm;
 
 /// (caller qualified name, callee, qualifier, form, line)
@@ -204,4 +208,61 @@ fn test_shell_and_text_record_no_calls() {
         let extraction = ParserRegistry::extract(language, source).expect("should extract");
         assert!(extraction.calls.is_empty());
     }
+}
+
+#[test]
+fn test_very_deep_member_chain_does_not_overflow_and_is_a_receiver_call() {
+    let chain = (0..40_000)
+        .map(|index| format!("m{index}"))
+        .collect::<Vec<_>>()
+        .join(".");
+    for (language, source) in [
+        (Language::Python, format!("def run():\n    {chain}.go()\n")),
+        (
+            Language::JavaScript,
+            format!("function run() {{\n  {chain}.go();\n}}\n"),
+        ),
+    ] {
+        // Run on a small thread stack: a recursive walk over the chain would
+        // overflow it.
+        let extraction = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || ParserRegistry::extract(language, &source))
+            .expect("thread should start")
+            .join()
+            .expect("extraction must not overflow the stack")
+            .expect("deep chain should extract");
+        assert_eq!(
+            rows(&extraction),
+            [("run", "go", None, CallForm::Receiver, 2)],
+            "{language:?}"
+        );
+    }
+}
+
+#[test]
+fn test_huge_number_of_calls_and_functions_is_bounded_and_reports_truncation() {
+    // 4,000 functions, each with 40 calls of which most repeat: far more call
+    // nodes than the examination budget, few unique records per function.
+    let mut source = String::new();
+    for function in 0..4_000 {
+        source.push_str(&format!("fn f{function}() {{\n"));
+        for call in 0..40 {
+            source.push_str(&format!("    g{}();\n", call % 3));
+        }
+        source.push_str("}\n");
+    }
+    let started = Instant::now();
+    let extraction = ParserRegistry::extract(Language::Rust, &source).expect("should extract");
+    let elapsed = started.elapsed();
+    assert!(extraction.calls_truncated);
+    assert!(extraction.calls.len() <= MAX_CALLS_PER_FILE);
+    const { assert!(4_000 * 40 > MAX_CALL_NODES_PER_FILE) };
+    assert!(
+        elapsed < Duration::from_secs(20),
+        "extraction took {elapsed:?}"
+    );
+
+    let small = ParserRegistry::extract(Language::Rust, "fn a() { b(); }\n").expect("extract");
+    assert!(!small.calls_truncated);
 }

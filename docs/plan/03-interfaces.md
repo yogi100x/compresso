@@ -266,7 +266,7 @@ impl ParserRegistry {
 pub enum ImportKind { Use, Import, ExportFrom, Require, FromImport }
 pub struct ImportRecord { pub raw: String, pub kind: ImportKind, pub resolved_path: Option<String>, pub resolution: ImportResolution }
 pub enum ImportResolution { Resolved, Ambiguous(Vec<String>), Unresolved(String) }
-pub struct Extraction { pub symbols: Vec<SymbolRecord>, pub imports: Vec<ImportRecord>, pub calls: Vec<CallSiteRecord> } // calls: D89; CallSiteRecord { caller /* index into symbols */, callee_name, qualifier, form: CallForm /* Plain|Path|SelfRef|Receiver */, line }; at most MAX_CALLS_PER_FILE (4,096)
+pub struct Extraction { pub symbols: Vec<SymbolRecord>, pub imports: Vec<ImportRecord>, pub calls: Vec<CallSiteRecord> } // calls: D89; CallSiteRecord { caller /* index into symbols */, callee_name, qualifier, form: CallForm /* Plain|Path|SelfRef|Receiver */, line }; at most MAX_CALLS_PER_FILE (4,096) kept and MAX_CALL_NODES_PER_FILE (65,536) examined per file; pub calls_truncated: bool
 // code languages use pinned tree-sitter queries in queries/<lang>.scm; shell and inert text use bounded, non-executing structural scanners; all kinds normalize to store vocabulary
 
 // indexer.rs
@@ -277,7 +277,7 @@ impl Indexer<'_> {
     // pipeline: canonicalize+approve root -> scan -> parse ONLY added/changed -> replace_indexed_file per file transaction -> delete removed -> stamp index_versions
 }
 pub enum IndexProgress { Parsing { path: PathBuf }, Removed { path: String } }
-pub struct IndexReport { pub files_indexed: usize, pub files_removed: usize, pub files_skipped: usize, pub symbols: usize, pub imports_resolved: usize, pub imports_unresolved: usize, pub call_sites: usize, pub duration_ms: u64, pub stale: bool }
+pub struct IndexReport { pub files_indexed: usize, pub files_removed: usize, pub files_skipped: usize, pub symbols: usize, pub imports_resolved: usize, pub imports_unresolved: usize, pub call_sites: usize, pub call_site_files_truncated: usize, pub duration_ms: u64, pub stale: bool }
 
 // queries.rs — all read-only, all bounded by token budget
 pub struct RepoMap { pub rendered: String, pub files_total: usize, pub files_shown: usize, pub truncated: bool, pub tokens_used: usize, pub token_provider: TokenProvider }

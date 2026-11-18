@@ -46,6 +46,8 @@ pub struct IndexReport {
     pub imports_unresolved: usize,
     /// Call sites recorded inside the indexed functions and methods (D89).
     pub call_sites: usize,
+    /// Files whose call extraction stopped at a per-file bound.
+    pub call_site_files_truncated: usize,
     pub duration_ms: u64,
     pub stale: bool,
 }
@@ -224,6 +226,7 @@ impl<'a> Indexer<'a> {
         let mut imports_resolved = 0_usize;
         let mut imports_unresolved = 0_usize;
         let mut call_sites = 0_usize;
+        let mut call_site_files_truncated = 0_usize;
 
         let candidates = candidates.into_iter().collect::<Vec<_>>();
         let context = PrepareContext {
@@ -258,6 +261,7 @@ impl<'a> Indexer<'a> {
                 imports_resolved += prepared.imports_resolved;
                 imports_unresolved += prepared.imports_unresolved;
                 call_sites += prepared.calls.len();
+                call_site_files_truncated += usize::from(prepared.calls_truncated);
             } else {
                 files_skipped += 1;
             }
@@ -310,6 +314,7 @@ impl<'a> Indexer<'a> {
             imports_resolved,
             imports_unresolved,
             call_sites,
+            call_site_files_truncated,
             duration_ms: elapsed_millis(started),
             stale,
         })
@@ -331,6 +336,7 @@ struct PreparedFile {
     symbols: Vec<SymbolRecord>,
     edges: Vec<EdgeRecord>,
     calls: Vec<CallSiteRecord>,
+    calls_truncated: bool,
     parsed: bool,
     imports_resolved: usize,
     imports_unresolved: usize,
@@ -388,6 +394,7 @@ fn prepare_file(
     let mut symbols = Vec::new();
     let mut edges = Vec::new();
     let mut calls = Vec::new();
+    let mut calls_truncated = false;
     let mut imports_resolved = 0_usize;
     let mut imports_unresolved = 0_usize;
 
@@ -406,6 +413,7 @@ fn prepare_file(
         );
         symbols = extraction.symbols;
         calls = extraction.calls;
+        calls_truncated = extraction.calls_truncated;
         estimate_symbol_tokens(&source, relative, &mut symbols, context.counter)
             .map_err(PrepareFailure::during_parse)?;
         for import in extraction.imports {
@@ -431,6 +439,7 @@ fn prepare_file(
         symbols,
         edges,
         calls,
+        calls_truncated,
         parsed: language.is_some(),
         imports_resolved,
         imports_unresolved,

@@ -19,6 +19,9 @@ use super::{line_number, node_text};
 /// Call records kept per file, after de-duplication. A generated file with
 /// more calls keeps the first ones in source order.
 pub const MAX_CALLS_PER_FILE: usize = 4_096;
+/// Call expressions examined per file, kept or not. Bounds the work a file of
+/// millions of repeated or rejected calls can cost.
+pub const MAX_CALL_NODES_PER_FILE: usize = 65_536;
 const MAX_CALL_TEXT_BYTES: usize = compresso_store::MAX_CALL_TEXT_BYTES;
 /// Rust prelude variant constructors: never a repository symbol.
 const RUST_PRELUDE_VARIANTS: [&str; 3] = ["Some", "Ok", "Err"];
@@ -36,39 +39,54 @@ struct Callee<'tree> {
     form: CallForm,
 }
 
+/// Extracted calls plus whether a per-file bound stopped the walk early.
+pub(super) struct ExtractedCalls {
+    pub(super) calls: Vec<CallSiteRecord>,
+    pub(super) truncated: bool,
+}
+
 pub(super) fn extract(
     syntax: CallSyntax,
     root: Node<'_>,
     source: &str,
     symbols: &[SymbolRecord],
-) -> Vec<CallSiteRecord> {
-    let callers = symbols
-        .iter()
-        .enumerate()
-        .filter(|(_, symbol)| matches!(symbol.kind, SymbolKind::Function | SymbolKind::Method))
-        .map(|(index, symbol)| (symbol.start_line, symbol.end_line, index))
-        .collect::<Vec<_>>();
-    if callers.is_empty() {
-        return Vec::new();
-    }
+) -> ExtractedCalls {
+    let Some(enclosing) = EnclosingCallers::new(symbols) else {
+        return ExtractedCalls {
+            calls: Vec::new(),
+            truncated: false,
+        };
+    };
 
     let mut calls = Vec::new();
     let mut seen = HashSet::new();
+    let mut examined = 0_usize;
+    let mut truncated = false;
+    // Cursor-based pre-order walk: no recursion, so nesting depth cannot
+    // exhaust the stack.
     let mut cursor = root.walk();
     'walk: loop {
         let node = cursor.node();
-        if let Some(callee) = callee(syntax, node, source)
-            && let Some((record, name_start)) = record(callee, source, &callers)
-            && seen.insert((
-                record.caller,
-                record.callee_name.clone(),
-                record.qualifier.clone(),
-                record.form,
-            ))
-        {
-            calls.push((record.line, name_start, record));
-            if calls.len() == MAX_CALLS_PER_FILE {
+        if is_call_node(syntax, node.kind()) {
+            examined += 1;
+            if examined > MAX_CALL_NODES_PER_FILE {
+                truncated = true;
                 break;
+            }
+            if let Some(callee) = callee(syntax, node, source)
+                && let Some((record, name_start)) = record(callee, source, &enclosing)
+                && seen.insert((
+                    record.caller,
+                    record.callee_name.clone(),
+                    record.qualifier.clone(),
+                    record.form,
+                ))
+            {
+                calls.push((record.line, name_start, record));
+                if calls.len() == MAX_CALLS_PER_FILE {
+                    truncated = true;
+                    break;
+                }
             }
         }
         if cursor.goto_first_child() {
@@ -85,25 +103,95 @@ pub(super) fn extract(
     }
     // Source order: by line, then by where the callee name starts on it.
     calls.sort_by_key(|(line, name_start, _)| (*line, *name_start));
-    calls.into_iter().map(|(_, _, record)| record).collect()
+    ExtractedCalls {
+        calls: calls.into_iter().map(|(_, _, record)| record).collect(),
+        truncated,
+    }
+}
+
+const fn is_call_node(syntax: CallSyntax, kind: &str) -> bool {
+    match syntax {
+        CallSyntax::Rust => const_eq(kind, "call_expression"),
+        CallSyntax::Python => const_eq(kind, "call"),
+        CallSyntax::Script => const_eq(kind, "call_expression") || const_eq(kind, "new_expression"),
+    }
+}
+
+const fn const_eq(left: &str, right: &str) -> bool {
+    let (left, right) = (left.as_bytes(), right.as_bytes());
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
+/// The innermost indexed function or method for every source line, computed
+/// once per file in O(lines + symbols log symbols) with a sweep over the
+/// symbol ranges, so each call finds its caller in O(1).
+struct EnclosingCallers {
+    by_line: Vec<Option<usize>>,
+}
+
+impl EnclosingCallers {
+    fn new(symbols: &[SymbolRecord]) -> Option<Self> {
+        let mut ranges = symbols
+            .iter()
+            .enumerate()
+            .filter(|(_, symbol)| matches!(symbol.kind, SymbolKind::Function | SymbolKind::Method))
+            .map(|(index, symbol)| (symbol.start_line, symbol.end_line, index))
+            .collect::<Vec<_>>();
+        if ranges.is_empty() {
+            return None;
+        }
+        // Outer ranges first at each start line, so the inner one ends on top;
+        // among equal ranges the first symbol ends on top.
+        ranges.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| right.1.cmp(&left.1))
+                .then_with(|| right.2.cmp(&left.2))
+        });
+        let last_line = ranges.iter().map(|range| range.1).max().unwrap_or(0);
+        let mut by_line = Vec::with_capacity(last_line as usize + 1);
+        by_line.push(None);
+        let mut stack: Vec<(u32, u32, usize)> = Vec::new();
+        let mut next = 0;
+        for line in 1..=last_line {
+            while next < ranges.len() && ranges[next].0 == line {
+                stack.push(ranges[next]);
+                next += 1;
+            }
+            while stack.last().is_some_and(|top| top.1 < line) {
+                stack.pop();
+            }
+            by_line.push(stack.last().map(|top| top.2));
+        }
+        Some(Self { by_line })
+    }
+
+    fn at(&self, line: u32) -> Option<usize> {
+        self.by_line.get(line as usize).copied().flatten()
+    }
 }
 
 fn record(
     callee: Callee<'_>,
     source: &str,
-    callers: &[(u32, u32, usize)],
+    enclosing: &EnclosingCallers,
 ) -> Option<(CallSiteRecord, usize)> {
+    let line = line_number(callee.name.start_position().row);
+    let caller = enclosing.at(line)?;
     let name = node_text(callee.name, source)?;
     if !valid_name(name) {
         return None;
     }
-    let line = line_number(callee.name.start_position().row);
-    // The innermost indexed function or method containing the call.
-    let caller = callers
-        .iter()
-        .filter(|(start, end, _)| (*start..=*end).contains(&line))
-        .min_by_key(|(start, end, index)| (end - start, std::cmp::Reverse(*start), *index))?
-        .2;
     let record = CallSiteRecord {
         caller,
         callee_name: name.to_owned(),
@@ -150,6 +238,10 @@ fn callee<'tree>(syntax: CallSyntax, node: Node<'tree>, source: &str) -> Option<
 }
 
 fn rust_callee<'tree>(function: Node<'tree>, source: &str) -> Option<Callee<'tree>> {
+    let mut function = function;
+    while function.kind() == "generic_function" {
+        function = function.child_by_field_name("function")?;
+    }
     match function.kind() {
         "identifier" => Some(plain(function)),
         "scoped_identifier" => {
@@ -159,6 +251,7 @@ fn rust_callee<'tree>(function: Node<'tree>, source: &str) -> Option<Callee<'tre
             }
             let qualifier = function
                 .child_by_field_name("path")
+                .filter(|path| path.byte_range().len() <= MAX_CALL_TEXT_BYTES * 4)
                 .and_then(|path| node_text(path, source))
                 .and_then(normalize_rust_path);
             Some(match qualifier {
@@ -191,7 +284,6 @@ fn rust_callee<'tree>(function: Node<'tree>, source: &str) -> Option<Callee<'tre
                 receiver(name)
             })
         }
-        "generic_function" => rust_callee(function.child_by_field_name("function")?, source),
         _ => None,
     }
 }
@@ -295,19 +387,33 @@ fn dotted<'tree>(
     receiver(name)
 }
 
+/// Whether `node` is a chain of plain names (`a`, `a.b`, `a.b.c`). Walks
+/// the chain iteratively; a chain longer than a stored qualifier is rejected
+/// before it is walked.
 fn is_dotted(node: Node<'_>, member_kind: &str, member_field: &str) -> bool {
-    match node.kind() {
-        "identifier" => true,
-        kind if kind == member_kind => {
-            node.child_by_field_name("object")
-                .is_some_and(|object| is_dotted(object, member_kind, member_field))
-                && node
+    if node.byte_range().len() > MAX_CALL_TEXT_BYTES {
+        return false;
+    }
+    let mut node = node;
+    loop {
+        match node.kind() {
+            "identifier" => return true,
+            kind if kind == member_kind => {
+                let member_ok = node
                     .child_by_field_name(member_field)
                     .is_some_and(|member| {
                         matches!(member.kind(), "identifier" | "property_identifier")
-                    })
+                    });
+                let Some(object) = node.child_by_field_name("object") else {
+                    return false;
+                };
+                if !member_ok {
+                    return false;
+                }
+                node = object;
+            }
+            _ => return false,
         }
-        _ => false,
     }
 }
 

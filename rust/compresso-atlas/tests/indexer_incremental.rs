@@ -571,3 +571,33 @@ fn test_default_parser_version_marks_call_site_extraction() {
     // change makes the next index pass reparse every file once.
     assert!(version.parser_version.ends_with("+calls-v1"));
 }
+
+#[test]
+fn test_a_file_with_a_huge_number_of_calls_never_aborts_the_index() {
+    let fixture = Fixture::new();
+    let mut source = String::new();
+    for function in 0..2_000 {
+        source.push_str(&format!("def f{function}():\n"));
+        for call in 0..30 {
+            source.push_str(&format!("    g{call}()\n"));
+        }
+    }
+    let chain = (0..20_000)
+        .map(|index| format!("m{index}"))
+        .collect::<Vec<_>>()
+        .join(".");
+    source.push_str(&format!("def deep():\n    {chain}.go()\n"));
+    // Under the indexer's 1,000,000-byte file limit, so the file is parsed.
+    assert!(source.len() < 1_000_000);
+    fs::write(fixture.root.join("src/generated_calls.py"), source)
+        .expect("fixture file should be written");
+
+    let report = fixture
+        .indexer()
+        .index(&fixture.root, |_| {})
+        .expect("a call-heavy file must not fail the index");
+
+    assert_eq!(report.files_indexed, 9);
+    assert_eq!(report.call_site_files_truncated, 1);
+    assert!(report.call_sites >= compresso_atlas::parsers::MAX_CALLS_PER_FILE);
+}

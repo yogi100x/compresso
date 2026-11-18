@@ -40,7 +40,12 @@ Option 2.
   built (no second parse). A call is recorded when it lies inside an indexed
   function or method; the innermost one is the caller. One row per caller,
   callee name, qualifier, and form keeps the first call site. At most 4,096
-  rows per file. Names must be identifier characters and at most 256 bytes;
+  rows per file and 65,536 call expressions examined per file; reaching either
+  bound is reported (`calls_truncated`, `call_site_files_truncated`). The tree
+  walk and the dotted-qualifier check are iterative, and a qualifier longer
+  than 256 bytes is rejected before it is walked, so nesting depth cannot
+  exhaust the stack; the enclosing caller of each line is computed once per
+  file by a sweep over the symbol ranges. Names must be identifier characters and at most 256 bytes;
   anything else from error recovery is dropped, so a malformed file cannot
   abort an index (as in E17-21). Covered: Rust, Python, JavaScript,
   TypeScript, TSX. Not covered: shell, text, macros, calls at module level or

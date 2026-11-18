@@ -9,7 +9,7 @@ mod shell;
 mod text;
 
 use calls::CallSyntax;
-pub use calls::MAX_CALLS_PER_FILE;
+pub use calls::{MAX_CALL_NODES_PER_FILE, MAX_CALLS_PER_FILE};
 
 const RUST_QUERY: &str = include_str!("../queries/rust.scm");
 const JAVASCRIPT_QUERY: &str = include_str!("../queries/javascript.scm");
@@ -51,6 +51,9 @@ pub struct Extraction {
     /// Call sites inside the extracted functions and methods (D89);
     /// `caller` indexes `symbols`.
     pub calls: Vec<CallSiteRecord>,
+    /// A per-file call bound ([`MAX_CALLS_PER_FILE`] kept or
+    /// [`MAX_CALL_NODES_PER_FILE`] examined) stopped call extraction early.
+    pub calls_truncated: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -227,6 +230,7 @@ fn extract_with_query(
         symbols: Vec::new(),
         imports: Vec::new(),
         calls: Vec::new(),
+        calls_truncated: false,
     };
     for candidate in candidates {
         process_candidate(candidate, source, &mut extraction);
@@ -237,7 +241,9 @@ fn extract_with_query(
     extraction
         .imports
         .retain(|import| !import.raw.trim().is_empty());
-    extraction.calls = calls::extract(call_syntax, tree.root_node(), source, &extraction.symbols);
+    let calls = calls::extract(call_syntax, tree.root_node(), source, &extraction.symbols);
+    extraction.calls = calls.calls;
+    extraction.calls_truncated = calls.truncated;
 
     Ok(extraction)
 }
