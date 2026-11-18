@@ -322,7 +322,7 @@ pub async fn serve_stdio(deps: McpDeps) -> anyhow::Result<()>;   // binds cwd's 
 pub async fn serve_stdio_for_root(deps: McpDeps, root: PathBuf) -> anyhow::Result<()>; // exact approved canonical root or actionable startup failure
 pub struct McpDeps { pub store: Store, pub engine: Engine, pub config: Config }
 // One rmcp #[tool] handler per tool in 04-mcp-and-integrations.md §1; handlers call atlas/engine, record operations, and are pure request/response (no background tasks). Repository tools can only use the immutable session root; compression/stats/explain remain available in an unbound session.
-// Server instructions string: <=200 words, factual, lists tools, never instructs client to prefer Compresso over its own policy (build-doc §13.4); compresso_grep is listed neutrally as "text search of indexed files with use sites" (D87). Only the opt-in lean profile's generated instructions (D92, §12) say "instead of shell search"; that wording awaits owner confirmation.
+// Server instructions string (default profile): <=200 words, factual, lists tools, never instructs client to prefer Compresso over its own policy (build-doc §13.4), because it reaches every installed client without opt-in; compresso_grep is listed neutrally as "text search of indexed files with use sites" (D87). Opt-in surfaces (the lean profile's generated instructions, D92, §12; the exploration agent, D93) may direct the model to explore with Compresso "instead of shell search"; a tool description may state what the tool replaces (instruction-wording rule as amended 2026-11-19 in D92, 04 §1.2).
 ```
 
 ## 6. compresso-integrations
@@ -476,7 +476,7 @@ Public surfaces added by E17. Every one is local: none opens a network connectio
 - **`compresso-cli::surface`** (E17-08): `surface_inventory() -> serde_json::Value` (`SURFACE_SCHEMA_VERSION` = 1). It generates the CLI/MCP/config inventory consumed by `scripts/doc-drift-lint.ts`.
 - **`compresso-eval::campaign`** (E17-10): `CampaignRunner`, `CampaignPolicy`, `CampaignOutcome`, `StartMode`, `Checkpoint`, `TaskState`, `SuiteAdapter`, `SuiteDescriptor`, `TaskSpec`, `TaskContext`, `AdapterKind`, `resolve_adapter`, `FixtureSuiteAdapter`, and `CampaignReport`, exposed by the separate `compresso-eval-campaign` binary. Adapters for external suites are opt-in and not built in.
 
-## 12. E17-26..28 interfaces (awaits owner confirmation)
+## 12. E17-26..28 interfaces (owner-confirmed 2026-11-19)
 
 Opt-in surfaces for lower fixed overhead, tool substitution, and orientation (D91-D93). Defaults are unchanged; none adds a network or process capability.
 

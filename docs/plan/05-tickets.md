@@ -2699,7 +2699,7 @@ Test cases:
 
 ## E17 — Session continuity, savings fidelity, and platform hardening
 
-Added 2026-11-14 (D70). Clean-room follow-ups to the local slice; E17-01..10 landed together through `integration/e17`, E17-11..14 are open follow-ups; E17-15 is open and E17-16 landed 2026-11-15 (D77). E17-17..21 landed 2026-11-16 (D83–D86); E17-22..29 landed 2026-11-18 (D87–D94, awaiting owner confirmation).
+Added 2026-11-14 (D70). Clean-room follow-ups to the local slice; E17-01..10 landed together through `integration/e17`, E17-11..14 are open follow-ups; E17-15 is open and E17-16 landed 2026-11-15 (D77). E17-17..21 landed 2026-11-16 (D83–D86); E17-22..29 landed 2026-11-18 (D87–D94). D83–D94 were confirmed by the owner on 2026-11-19.
 
 ### [x] E17-01: Re-assert tool routing after client compaction
 Owner: D1 · Estimate: 2d · Depends: E5-01, E6-01, E6-02, E6-03
@@ -3103,7 +3103,7 @@ Acceptance criteria:
 - A long line, a pathological pattern, or a regular expression that could cross line breaks is searched in linear time (regular expressions are matched within each line); an invalid pattern or path filter is a typed `GrepError` (`invalid_arguments`) before any file is read.
 - `tokens_used` never exceeds `max_tokens`; a budget too small for every pattern's totals is rejected.
 - Path filter: a repository-relative prefix or a glob (`*`, `**`, `?`; no `/` means file name); case-insensitive flag.
-- The tool description says it replaces shell text search for this repository; the default server instructions list it policy-neutrally as "text search of indexed files with use sites" (instructions that direct the client away from shell search exist only in the opt-in lean profile, D92).
+- The tool description says it replaces shell text search for this repository; the default server instructions list it policy-neutrally as "text search of indexed files with use sites" (instructions that direct the client away from shell search exist only on opt-in surfaces, the lean profile and the exploration agent, under the instruction-wording rule as amended in D92).
 Test cases:
 - `test_grep_returns_use_sites_with_enclosing_symbols_grouped_and_ranked`, `test_grep_never_reads_secret_paths`, `test_grep_skips_files_above_the_read_ceiling`, `test_grep_reports_caps_and_totals_when_output_is_truncated`, `test_grep_stays_linear_on_one_very_long_line`, `test_grep_regex_never_runs_past_a_line_end`, `test_grep_rejects_invalid_patterns_with_a_typed_error`, `test_grep_case_flag`, `test_grep_path_filter_prefix_and_glob`, `test_grep_searches_changed_files_as_they_are_now_without_symbols`, `test_grep_skips_missing_and_non_utf8_files` (Atlas).
 - `test_grep_tool_returns_use_sites_for_several_patterns_in_one_call`, `test_grep_tool_reports_totals_and_truncation_under_caps_and_budget`, `test_grep_tool_never_returns_secret_or_oversize_file_content`, `test_grep_tool_rejects_invalid_patterns_and_arguments`, `test_grep_tool_case_flag_and_path_filter`, `test_grep_tool_stays_linear_on_a_long_line_and_a_pathological_pattern`, `test_grep_tool_marks_changed_files_and_the_stale_index` (MCP).

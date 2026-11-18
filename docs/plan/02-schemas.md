@@ -357,6 +357,11 @@ never name a callee symbol id; the callee is resolved at query time
 (`compresso_trace`, 04 §`compresso_trace`). Indexes stamped before the
 `+calls-v1` parser-version suffix hold no rows and are reparsed once.
 
+Upgrade note (accepted by the owner, D89): after this build opens a store, a
+binary released before migration 0008 refuses that store
+(`InvalidMigrationHistory`). An operator who goes back to such a binary
+reinstalls it with a fresh store and runs `compresso index` in each repository.
+
 `integration_receipts` is a query/reporting projection, not the E6 safety
 receipt. Migration identifiers `0002`–`0005` are reserved by D60, and this
 `0001` table has no lossless fields for `plan_hash` or per-key

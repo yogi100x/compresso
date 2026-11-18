@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed 2026-11-18 (D93, E17-28); awaits owner confirmation. It extends the
+Accepted 2026-11-19 by the owner (D93, E17-28); proposed 2026-11-18. It extends the
 integration mutation framework with a third ownership format and adds no
 network or process capability.
 

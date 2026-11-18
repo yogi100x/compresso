@@ -17,4 +17,4 @@ MCP is the primary integration protocol. `compresso-mcp` serves the read-only to
 - One implementation covers all first-slice clients (D4), and read-only tools cannot write files or execute shells (build-doc §25.6, §13.3 gates write tools separately).
 - Using the official SDK tracks protocol revisions without bespoke wire-format code, at the cost of a `tokio` dependency (D21); core compression stays synchronous.
 - Tool schemas are versioned and validated, and MCP failure must not prevent assistant startup (Phase 4 exit criteria).
-- Server instructions stay brief and factual and never instruct clients to prefer Compresso over their own policy (build-doc §13.4).
+- Server instructions stay brief and factual and never instruct clients to prefer Compresso over their own policy (build-doc §13.4). Amended 2026-11-19 (D92): this binds the default profile's instructions; opt-in surfaces (the lean tool profile and the exploration agent) may direct exploration to Compresso instead of shell search, and a tool description may state what the tool replaces (04 §1.2).

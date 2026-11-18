@@ -2,8 +2,8 @@
 
 ## Status
 
-Proposed 2026-11-18 by the implementing session (D89, D90; E17-24, E17-25);
-awaits owner confirmation.
+Accepted 2026-11-19 by the owner (D89, D90; E17-24, E17-25). Proposed
+2026-11-18 by the implementing session.
 
 ## Context
 
