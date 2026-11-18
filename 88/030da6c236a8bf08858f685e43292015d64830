@@ -1,0 +1,21 @@
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_3b110bab3200a9 425-428,452-454
+docs/plan/06-fixtures.md
+  s_89a704cfae63f5::t_63c948482252e9 1205-1207,1240-1241,1270-1271,1307-1328
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "88030da6c236a8bf08858f685e43292015d64830",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
