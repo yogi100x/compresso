@@ -24,6 +24,7 @@ fn test_canonical_command_snapshot() {
             "setup",
             "map",
             "search",
+            "grep",
             "read",
             "outline",
             "unfold",

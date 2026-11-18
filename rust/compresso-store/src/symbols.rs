@@ -348,6 +348,38 @@ impl Store {
             .collect()
     }
 
+    /// Symbols whose bare name is exactly `name` (case-sensitive), through the
+    /// name index rather than full-text ranking, so a definition is found
+    /// however many other symbols mention the name. Path and line ordered.
+    pub fn symbols_named(
+        &self,
+        repo: RepoId,
+        name: &str,
+        limit: usize,
+    ) -> Result<Vec<SymbolHit>, StoreError> {
+        validate_search_query(name)?;
+        let limit = sqlite_integer_from_usize("symbol name limit", limit)?;
+        let connection = self.connection()?;
+        ensure_repo_exists(&connection, repo)?;
+        let mut statement = connection.prepare(
+            "SELECT f.path, f.hash, f.language, f.size_bytes, f.token_estimate, f.indexed_at, s.id, s.name, s.qualified_name, s.kind, s.signature, s.start_line, s.end_line, s.token_estimate FROM symbols AS s JOIN files AS f ON f.id = s.file_id WHERE s.name = ?1 AND f.repo_id = ?2 ORDER BY f.path ASC, s.start_line ASC, s.end_line ASC, s.qualified_name ASC, s.kind ASC, s.id ASC LIMIT ?3",
+        )?;
+        let raw = statement
+            .query_map(params![name, repo, limit], |row| {
+                Ok((raw_file_from_row(row, 0)?, raw_symbol_from_row(row, 6)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        raw.into_iter()
+            .map(|(file, symbol)| {
+                Ok(SymbolHit {
+                    file: decode_file_record(file)?,
+                    symbol: decode_symbol_record(symbol)?.1,
+                    rank: 0.0,
+                })
+            })
+            .collect()
+    }
+
     /// Lists a file's symbols in deterministic source order.
     pub fn symbols_in_file(
         &self,
@@ -1086,6 +1118,40 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].file.path, "scripts/auth.sh");
         assert_eq!(hits[0].file.language, Some(FileLanguage::Shell));
+    }
+
+    #[test]
+    fn test_symbols_named_matches_the_exact_name_only() {
+        let (_directory, store, repo) = setup();
+        for (path, name) in [
+            ("src/b.rs", "ContextPlan"),
+            ("src/a.rs", "ContextPlan"),
+            ("src/c.rs", "ContextPlanner"),
+            ("src/d.rs", "contextplan"),
+        ] {
+            let file_id = store
+                .upsert_file(repo, &file(path))
+                .expect("file should insert");
+            store
+                .replace_symbols(file_id, &[symbol(name, name, 1)], &[])
+                .expect("symbol should insert");
+        }
+
+        let hits = store
+            .symbols_named(repo, "ContextPlan", 10)
+            .expect("name lookup should succeed");
+        let limited = store
+            .symbols_named(repo, "ContextPlan", 1)
+            .expect("name lookup should succeed");
+
+        assert_eq!(
+            hits.iter()
+                .map(|hit| hit.file.path.as_str())
+                .collect::<Vec<_>>(),
+            ["src/a.rs", "src/b.rs"]
+        );
+        assert_eq!(limited.len(), 1);
+        assert!(store.symbols_named(repo, "", 10).is_err());
     }
 
     #[test]

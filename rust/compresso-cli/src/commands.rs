@@ -34,7 +34,7 @@ pub use integrations::{IntegrationEnvironment, execute_integrations};
 pub use recall::{RecallArgs, RecallEnvironment, RecallSourceArg, execute_recall};
 pub use repos::{ReposCommand, ReposListArgs, ReposRemoveArgs};
 pub use retrieval::{
-    ContextArgs, ImpactArgs, MapArgs, OutlineArgs, ReadArgs, SearchArgs, UnfoldArgs,
+    ContextArgs, GrepArgs, ImpactArgs, MapArgs, OutlineArgs, ReadArgs, SearchArgs, UnfoldArgs,
 };
 pub use setup::{
     SetupArgs, SetupClientArg, SetupRuntime, SystemSetupRuntime, execute_setup,
@@ -60,6 +60,8 @@ pub enum RootCommand {
     Setup(SetupArgs),
     Map(MapArgs),
     Search(SearchArgs),
+    /// Search indexed file content for literal text or a regular expression.
+    Grep(GrepArgs),
     Read(ReadArgs),
     Outline(OutlineArgs),
     Unfold(UnfoldArgs),
@@ -885,6 +887,7 @@ impl RootCommand {
             self,
             Self::Map(_)
                 | Self::Search(_)
+                | Self::Grep(_)
                 | Self::Read(_)
                 | Self::Outline(_)
                 | Self::Unfold(_)
@@ -901,6 +904,7 @@ impl RootCommand {
             Self::Setup(arguments) => arguments.output.json,
             Self::Map(arguments) => arguments.output.json,
             Self::Search(arguments) => arguments.output.json,
+            Self::Grep(arguments) => arguments.output.json,
             Self::Read(arguments) => arguments.output.json,
             Self::Outline(arguments) => arguments.output.json,
             Self::Unfold(arguments) => arguments.output.json,

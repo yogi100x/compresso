@@ -12,6 +12,7 @@ blake3.workspace = true
 compresso-core.workspace = true
 compresso-store.workspace = true
 ignore.workspace = true
+regex.workspace = true
 thiserror.workspace = true
 tree-sitter.workspace = true
 tree-sitter-javascript.workspace = true

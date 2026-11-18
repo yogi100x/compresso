@@ -1264,8 +1264,8 @@ is present:
 
 | Gate | Rule | Committed | Measured |
 |---|---|---|---|
-| `retrieval_mean_recall` | `>= mean_recall_min` | 0.96 | 1.0 (22 of 22) |
-| `retrieval_mean_precision` | `>= mean_precision_min` | 0.34 | 0.3835 |
+| `retrieval_mean_recall` | `>= mean_recall_min` | 0.96 | 1.0 (25 of 25) |
+| `retrieval_mean_precision` | `>= mean_precision_min` | 0.34 | 0.3885 |
 | `retrieval_false_ready` | `<= false_ready_max` | 0 | 0 |
 | `retrieval_ready_mismatches` | `<= ready_mismatches_max` | 1 | 1 |
 
@@ -1291,6 +1291,15 @@ and recall is 0.5. `multipart-part-ceiling` has the limit's file as a second
 gold file, reached only through the constant the top excerpt references;
 without referenced constants recall is 0.5. A task's full recall, and
 `full_recall_tasks`, require every gold symbol as well as every gold file.
+
+Verbatim names and numbers (D88): three tasks copy text from the code.
+`two-digit-literal` names the default `14`, written only in a body; before
+D88 a two-digit number was never searched and recall was 0. `status-literal`
+names the status `423`, also written only in a body. `named-error-raise` names
+`TooManyAttemptsError`; its definition and its raise site are both gold files,
+and before D88 the raise site was missing and the pack was false-ready. With
+the three tasks the measured precision is 0.3885 (the 22 earlier tasks are
+unchanged at 0.3835); the committed thresholds are unchanged.
 
 Changing any file below `fixtures/retrieval/` requires updating the
 `[retrieval]` pin in `fixtures/corpus.toml` and re-measuring the thresholds.

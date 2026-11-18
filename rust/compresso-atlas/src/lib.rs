@@ -2,17 +2,24 @@
 
 pub mod cards;
 pub mod concurrency;
+pub mod grep;
 pub mod indexer;
 pub mod parsers;
 pub mod queries;
 mod rust_imports;
 pub mod scanner;
 pub mod search;
+mod task_identifiers;
 
 pub use cards::{
     CardOptions, CardSymbol, DEFAULT_MAX_CARDS, MAX_CARDS, ModuleCard, ModuleCards, module_cards,
 };
 pub use concurrency::{Concurrency, DEFAULT_MEMORY_BUDGET_BYTES};
+pub use grep::{
+    GREP_MAX_FILES_LIMIT, GREP_MAX_MATCHES_PER_FILE_LIMIT, GREP_MAX_PATTERN_BYTES,
+    GREP_MAX_PATTERNS, GrepError, GrepFile, GrepLine, GrepOptions, GrepPatternResult, GrepReport,
+    grep, validate_grep,
+};
 pub use indexer::{IndexError, IndexProgress, IndexReport, Indexer};
 pub use queries::{
     BoundedRead, ContextPlan, ContextSymbolBody, CurrentOutline, EXACT_TOKEN_COUNT_MAX_BYTES,
