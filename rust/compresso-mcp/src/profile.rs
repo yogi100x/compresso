@@ -45,6 +45,47 @@ impl McpToolProfile {
             Self::Lean => "lean",
         }
     }
+
+    /// The result form a profile sends unless the operator chose one: the
+    /// full profile keeps its JSON contract, the lean profile sends text.
+    pub const fn default_results(self) -> McpResultFormat {
+        match self {
+            Self::Full => McpResultFormat::Json,
+            Self::Lean => McpResultFormat::Text,
+        }
+    }
+}
+
+/// How a successful tool result is encoded for the client (E17-31).
+///
+/// Errors keep their `[code] message` text in both forms, and tools without a
+/// text renderer (compress, stats, explain, impact) always send JSON.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum McpResultFormat {
+    /// One JSON document per result: the historical, versioned contract.
+    Json,
+    /// Compact plain text: raw source, one header per file or range, and
+    /// non-default state as terse trailing `[...]` lines.
+    Text,
+}
+
+impl McpResultFormat {
+    /// Parses an operator-supplied form name (`json` or `text`).
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "json" => Some(Self::Json),
+            "text" => Some(Self::Text),
+            _ => None,
+        }
+    }
+
+    /// The operator-facing form name.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Json => "json",
+            Self::Text => "text",
+        }
+    }
 }
 
 /// One tool the lean profile serves.

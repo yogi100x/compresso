@@ -10,7 +10,8 @@ use std::time::Duration;
 use compresso_atlas::Indexer;
 use compresso_core::{Config, Engine, TokenProvider, counter_for};
 use compresso_mcp::{
-    McpDeps, McpRecallOptions, McpServeOptions, McpToolProfile, serve_io_with_options,
+    McpDeps, McpRecallOptions, McpResultFormat, McpServeOptions, McpToolProfile,
+    serve_io_with_options,
 };
 use compresso_recall::RecallSource;
 use compresso_store::Store;
@@ -105,6 +106,7 @@ impl Fixture {
                 sources: vec![RecallSource::ClaudeCode],
             }),
             tools,
+            ..McpServeOptions::default()
         }
     }
 }
@@ -401,29 +403,58 @@ fn mask_number(text: &str, key: &str) -> String {
     format!("{}<n>{}", &text[..start], &text[start + digits..])
 }
 
-async fn transcript(fixture: &Fixture, options: McpServeOptions) -> String {
+/// Every golden call's label, tool, result text, and error flag.
+async fn results(
+    fixture: &Fixture,
+    options: McpServeOptions,
+) -> Vec<(&'static str, &'static str, String, bool)> {
     let mut harness = Harness::start(fixture, options).await;
-    let mut transcript = String::new();
+    let mut results = Vec::new();
     for (label, tool, arguments) in golden_calls() {
         let (text, is_error) = harness.call(tool, &arguments).await;
         assert!(
             !text.contains(SECRET_CANARY),
             "{label}: secret content reached the client"
         );
-        transcript.push_str(&format!(
-            "=== {label}{}\n{}\n",
-            if is_error { " (error)" } else { "" },
-            mask(tool, &text, &fixture.root)
-        ));
+        results.push((label, tool, text, is_error));
     }
     harness.close().await;
-    transcript
+    results
+}
+
+async fn transcript(fixture: &Fixture, options: McpServeOptions) -> String {
+    results(fixture, options)
+        .await
+        .into_iter()
+        .map(|(label, tool, text, is_error)| {
+            format!(
+                "=== {label}{}\n{}\n",
+                if is_error { " (error)" } else { "" },
+                mask(tool, &text, &fixture.root)
+            )
+        })
+        .collect()
+}
+
+/// Whether this build's `serde_json` keeps insertion order. Cargo feature
+/// unification enables `preserve_order` in a workspace build (and in the
+/// shipped binary) but not in a build of this crate alone, so the JSON golden
+/// exists once per key order and each build is checked byte for byte.
+fn json_keeps_insertion_order() -> bool {
+    let value: Value = serde_json::from_str(r#"{"b":1,"a":2}"#).expect("valid JSON");
+    value.to_string() == r#"{"b":1,"a":2}"#
 }
 
 fn check_golden(name: &str, actual: &str) {
+    let name = match name.strip_suffix(".txt") {
+        Some(stem) if stem.ends_with("_json") && json_keeps_insertion_order() => {
+            format!("{stem}_insertion_order.txt")
+        }
+        _ => name.to_owned(),
+    };
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/golden")
-        .join(name);
+        .join(&name);
     if std::env::var_os("COMPRESSO_UPDATE_GOLDEN").is_some() {
         fs::create_dir_all(path.parent().expect("golden dir")).expect("golden dir created");
         fs::write(&path, actual).expect("golden written");
@@ -450,4 +481,268 @@ async fn test_full_profile_results_are_byte_for_byte_unchanged() {
     let fixture = Fixture::new();
     let actual = transcript(&fixture, fixture.options(McpToolProfile::Full)).await;
     check_golden("full_profile_json.txt", &actual);
+}
+
+fn options_with(
+    fixture: &Fixture,
+    tools: McpToolProfile,
+    results: McpResultFormat,
+) -> McpServeOptions {
+    McpServeOptions {
+        results: Some(results),
+        ..fixture.options(tools)
+    }
+}
+
+#[tokio::test]
+async fn test_lean_profile_text_results_match_their_goldens() {
+    let fixture = Fixture::new();
+    let actual = transcript(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    check_golden("lean_profile_text.txt", &actual);
+}
+
+#[tokio::test]
+async fn test_each_profile_serves_the_other_form_when_the_operator_asks() {
+    let fixture = Fixture::new();
+    let lean_json = transcript(
+        &fixture,
+        options_with(&fixture, McpToolProfile::Lean, McpResultFormat::Json),
+    )
+    .await;
+    check_golden("full_profile_json.txt", &lean_json);
+    let full_text = transcript(
+        &fixture,
+        options_with(&fixture, McpToolProfile::Full, McpResultFormat::Text),
+    )
+    .await;
+    check_golden("lean_profile_text.txt", &full_text);
+}
+
+#[tokio::test]
+async fn test_errors_and_read_gates_are_identical_in_both_forms() {
+    let fixture = Fixture::new();
+    let json = results(&fixture, fixture.options(McpToolProfile::Full)).await;
+    let text = results(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    for ((label, _, json, json_error), (_, _, text, text_error)) in json.iter().zip(&text) {
+        assert_eq!(json_error, text_error, "{label}");
+        if *json_error {
+            assert_eq!(json, text, "{label}: errors keep one shape");
+        }
+    }
+    let error = |label: &str| {
+        text.iter()
+            .find(|(name, ..)| *name == label)
+            .map(|(_, _, text, _)| text.clone())
+            .expect("golden call")
+    };
+    assert_eq!(
+        error("error_secret"),
+        "[not_found] The requested file was not found on disk."
+    );
+    assert!(error("error_size").starts_with("[file_too_large]"));
+    assert_eq!(
+        error("error_symlink"),
+        "[not_found] The requested file was not found on disk."
+    );
+    // The same gates inside a multi-range read fail only their own range.
+    let ranges = error("read_ranges");
+    assert!(ranges.contains("@@ .env [not_found] The requested file was not found on disk.\n"));
+    assert!(ranges.contains("@@ big.txt [file_too_large] "));
+    assert!(ranges.contains("@@ link.txt [not_found] "));
+    assert!(ranges.starts_with(
+        "@@ src/lib.rs:4-5 of 14\n/// A constant whose source holds quotes, a tab, and backslashes.\n"
+    ));
+    assert!(
+        ranges.contains("@@ src/session.rs:17-31 of 31\npub fn open(name: &str) -> Session {\n")
+    );
+}
+
+#[tokio::test]
+async fn test_text_form_carries_source_verbatim_without_json_escaping() {
+    let fixture = Fixture::new();
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, _) = harness
+        .call("compresso_read", &json!({ "path": "src/lib.rs" }))
+        .await;
+    assert_eq!(text, format!("@@ src/lib.rs:1-14 of 14\n{LIB_RS}"));
+    let (text, _) = harness
+        .call(
+            "compresso_unfold",
+            &json!({ "path": "src/session.rs", "qualified_name": "Session::describe" }),
+        )
+        .await;
+    assert!(
+        text.contains("        format!(\"session \\\"{}\\\" C:\\\\tmp\", self.name)\n"),
+        "{text}"
+    );
+    let (text, _) = harness
+        .call("compresso_grep", &json!({ "pattern": "GREETING" }))
+        .await;
+    assert!(
+        text.contains("5 [def GREETING] pub const GREETING: &str = \"say \\\"hi\\\"\\t\\\\ok\";\n"),
+        "{text}"
+    );
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_text_form_never_exceeds_max_tokens() {
+    let fixture = Fixture::new();
+    let counter = counter_for(TokenProvider::OpenAiO200k);
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let mut cases = Vec::new();
+    for max_tokens in [100, 130, 200, 400, 900] {
+        cases.extend([
+            ("compresso_read", json!({ "path": "src/steps.rs", "max_tokens": max_tokens })),
+            ("compresso_read", json!({ "ranges": [
+                { "path": "src/steps.rs", "start_line": 1, "end_line": 300 },
+                { "path": "src/session.rs" },
+                { "path": ".env" }
+            ], "max_tokens": max_tokens })),
+            ("compresso_outline", json!({ "path": "src/steps.rs", "max_tokens": max_tokens })),
+            ("compresso_unfold", json!({ "path": "src/steps.rs", "qualified_name": "checksum_table", "max_tokens": max_tokens })),
+            ("compresso_search", json!({ "query": "step", "limit": 100, "max_tokens": max_tokens })),
+            ("compresso_trace", json!({ "to": "start_session", "max_tokens": max_tokens })),
+            ("compresso_repo_map", json!({ "cards": true, "max_tokens": max_tokens })),
+            ("compresso_context", json!({ "task": "how does a session open and describe itself", "max_tokens": max_tokens })),
+        ]);
+        if max_tokens >= 300 {
+            cases.push(("compresso_grep", json!({ "patterns": ["budget", "step_"], "max_matches_per_file": 50, "context_lines": 2, "max_tokens": max_tokens })));
+        }
+    }
+    for (tool, arguments) in cases {
+        let (text, is_error) = harness.call(tool, &arguments).await;
+        assert!(!is_error, "{tool} {arguments}: {text}");
+        let max_tokens = arguments["max_tokens"].as_u64().expect("budget") as usize;
+        let tokens = counter.count(&text);
+        assert!(
+            tokens <= max_tokens,
+            "{tool} {arguments}: {tokens} tokens over {max_tokens}:\n{text}"
+        );
+    }
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_text_form_states_truncation_and_continuation() {
+    let fixture = Fixture::new();
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, _) = harness
+        .call(
+            "compresso_read",
+            &json!({ "path": "src/steps.rs", "max_tokens": 200 }),
+        )
+        .await;
+    let last = text.lines().last().expect("trailing line");
+    assert!(last.starts_with("[lines "), "{text}");
+    assert!(
+        last.contains("tokens over budget; continue with start_line "),
+        "{text}"
+    );
+    let next = last
+        .rsplit(' ')
+        .next()
+        .and_then(|number| number.trim_end_matches(']').parse::<usize>().ok())
+        .expect("continuation line");
+    // The budget cut line 8 mid-line, so the next read starts on it again.
+    assert!(text.starts_with("@@ src/steps.rs:1-8 of 524\n"), "{text}");
+    assert_eq!(next, 8, "{text}");
+
+    let (text, _) = harness
+        .call(
+            "compresso_outline",
+            &json!({ "path": "src/steps.rs", "max_tokens": 150 }),
+        )
+        .await;
+    assert!(text.ends_with("symbols elided: token budget exceeded; read a line range or raise max_tokens for the rest]\n"), "{text}");
+    let (text, _) = harness
+        .call(
+            "compresso_grep",
+            &json!({ "pattern": "budget", "max_files": 1, "max_matches_per_file": 3 }),
+        )
+        .await;
+    assert!(
+        text.contains("matching lines counted but not listed"),
+        "{text}"
+    );
+    let (text, _) = harness
+        .call(
+            "compresso_search",
+            &json!({ "query": "step", "limit": 40, "max_tokens": 100 }),
+        )
+        .await;
+    assert!(
+        text.contains(" of 40 hits shown; more at src/steps.rs:"),
+        "{text}"
+    );
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_text_form_reports_a_stale_index() {
+    let fixture = Fixture::new();
+    write_file(
+        &fixture.root,
+        "src/session.rs",
+        &format!("{SESSION_RS}\npub fn added() {{}}\n"),
+    );
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    for (tool, arguments) in [
+        ("compresso_grep", json!({ "pattern": "added" })),
+        ("compresso_outline", json!({ "path": "src/session.rs" })),
+        ("compresso_search", json!({ "query": "Session" })),
+        (
+            "compresso_context",
+            json!({ "task": "how does a session open" }),
+        ),
+    ] {
+        let (text, _) = harness.call(tool, &arguments).await;
+        assert!(
+            text.ends_with("[Repository index is stale; run `compresso index` and retry.]\n"),
+            "{tool}: {text}"
+        );
+    }
+    let (text, _) = harness
+        .call("compresso_grep", &json!({ "pattern": "added" }))
+        .await;
+    assert!(
+        text.contains("src/session.rs (1, changed since indexed: no symbols)"),
+        "{text}"
+    );
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_ledger_records_the_tokens_of_the_text_sent() {
+    let fixture = Fixture::new();
+    let counter = counter_for(TokenProvider::OpenAiO200k);
+    for (tool, arguments) in [
+        ("compresso_read", json!({ "path": "src/lib.rs" })),
+        ("compresso_outline", json!({ "path": "src/steps.rs" })),
+    ] {
+        let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+        let (text, _) = harness.call(tool, &arguments).await;
+        harness.close().await;
+        let latest = fixture
+            .store
+            .detailed_stats(&compresso_store::StatsFilter {
+                operation_limit: Some(1),
+                ..compresso_store::StatsFilter::default()
+            })
+            .expect("stats")
+            .by_operation
+            .remove(0);
+        let operation = fixture
+            .store
+            .operation_by_id(&latest.operation_id)
+            .expect("lookup")
+            .expect("recorded");
+        assert_eq!(operation.tool, tool);
+        assert_eq!(
+            operation.tokens_served,
+            Some(counter.count(&text)),
+            "{tool}"
+        );
+        assert_eq!(operation.observed_tokens, counter.count(&text));
+    }
 }

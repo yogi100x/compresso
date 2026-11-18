@@ -60,11 +60,19 @@ impl ToolFailure {
     }
 }
 
-pub(crate) fn success(payload: Value) -> CallToolResult {
-    match serde_json::to_string(&payload) {
-        Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
-        Err(_) => ToolFailure::internal().into_result(),
+/// A successful result: one text block holding the JSON document or the
+/// compact text form.
+pub(crate) fn success_text(text: String) -> CallToolResult {
+    CallToolResult::success(vec![ContentBlock::text(text)])
+}
+
+/// Records the call's effective `max_tokens` in `payload` so the dispatcher
+/// can hold the text form to it. The key never reaches a client.
+pub(crate) fn with_budget(mut payload: Value, max_tokens: usize) -> Value {
+    if let Some(object) = payload.as_object_mut() {
+        object.insert(super::BUDGET_KEY.to_owned(), Value::from(max_tokens));
     }
+    payload
 }
 
 pub(crate) fn checked_arguments(
@@ -424,6 +432,34 @@ pub(crate) fn cap_values(
     }
     let rendered = serde_json::to_string(&kept).unwrap_or_else(|_| "[]".to_owned());
     let tokens_used = counter.count(&rendered);
+    let truncated = kept.len() < total;
+    (kept, tokens_used, truncated)
+}
+
+/// [`cap_values`] measured in the text form: the kept values rendered as one
+/// `row` per line.
+pub(crate) fn cap_rows(
+    values: Vec<Value>,
+    max_tokens: usize,
+    counter: &dyn TokenCounter,
+    row: fn(&Value) -> String,
+) -> (Vec<Value>, usize, bool) {
+    let total = values.len();
+    let mut kept = Vec::new();
+    let mut rendered = String::new();
+    let mut tokens_used = 0;
+    for value in values {
+        let mut candidate = rendered.clone();
+        candidate.push_str(&row(&value));
+        candidate.push('\n');
+        let tokens = counter.count(&candidate);
+        if tokens > max_tokens {
+            break;
+        }
+        rendered = candidate;
+        tokens_used = tokens;
+        kept.push(value);
+    }
     let truncated = kept.len() < total;
     (kept, tokens_used, truncated)
 }

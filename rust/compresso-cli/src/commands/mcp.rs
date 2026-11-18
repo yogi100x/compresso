@@ -4,7 +4,8 @@ use std::path::PathBuf;
 
 use compresso_core::{Config, Engine, StreamError, TokenProvider, counter_for};
 use compresso_mcp::{
-    McpDeps, McpInputError, McpRecallOptions, McpRootError, McpServeOptions, McpToolProfile,
+    McpDeps, McpInputError, McpRecallOptions, McpResultFormat, McpRootError, McpServeOptions,
+    McpToolProfile,
 };
 use compresso_recall::{RecallSource, SourceSupport};
 use compresso_store::Store;
@@ -12,7 +13,7 @@ use compresso_store::Store;
 use super::recall::system_home_dir;
 use super::{CliExitCode, McpCommand, write_error};
 
-const USAGE: &str = "mcp serve accepts only optional --root PATH, --recall-source SOURCE, and --tools full|lean arguments";
+const USAGE: &str = "mcp serve accepts only optional --root PATH, --recall-source SOURCE, --tools full|lean, and --results json|text arguments";
 
 /// Operator-supplied `mcp serve` options.
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -22,6 +23,9 @@ struct ServeOptions {
     recall_sources: Vec<RecallSource>,
     /// Advertised tool profile; `full` unless the operator opts into `lean`.
     tools: McpToolProfile,
+    /// Result form; `None` takes the profile's default (JSON for `full`,
+    /// text for `lean`).
+    results: Option<McpResultFormat>,
 }
 
 pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCode {
@@ -101,6 +105,7 @@ pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCo
         root,
         recall_sources,
         tools,
+        results,
     } = options;
     let recall = if recall_sources.is_empty() {
         None
@@ -125,6 +130,7 @@ pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCo
             root,
             recall,
             tools,
+            results,
         },
     ));
     match result {
@@ -195,6 +201,18 @@ fn parse_serve_arguments(arguments: &[OsString]) -> Result<ServeOptions, &'stati
                 .and_then(OsStr::to_str)
                 .and_then(McpToolProfile::parse)
                 .ok_or("--tools requires full or lean")?;
+        } else if flag == OsStr::new("--results") {
+            if options.results.is_some() {
+                return Err("--results may be given only once");
+            }
+            options.results = Some(
+                inline
+                    .or_else(|| arguments.next().cloned())
+                    .as_deref()
+                    .and_then(OsStr::to_str)
+                    .and_then(McpResultFormat::parse)
+                    .ok_or("--results requires json or text")?,
+            );
         } else {
             return Err(USAGE);
         }
@@ -253,6 +271,7 @@ mod tests {
                 root: Some(PathBuf::from("/repo")),
                 recall_sources: vec![RecallSource::Codex, RecallSource::ClaudeCode],
                 tools: McpToolProfile::Full,
+                results: None,
             }
         );
         assert!(parse(&["--recall-source"]).is_err());
@@ -281,6 +300,24 @@ mod tests {
         assert!(parse(&["--tools"]).is_err());
         assert!(parse(&["--tools", "minimal"]).is_err());
         assert!(parse(&["--tools", "lean", "--tools", "lean"]).is_err());
+    }
+
+    #[test]
+    fn test_result_form_follows_the_profile_unless_chosen_explicitly() {
+        assert_eq!(parse(&[]).unwrap().results, None);
+        assert_eq!(
+            parse(&["--tools", "lean", "--results", "json"])
+                .unwrap()
+                .results,
+            Some(McpResultFormat::Json)
+        );
+        assert_eq!(
+            parse(&["--results=text"]).unwrap().results,
+            Some(McpResultFormat::Text)
+        );
+        assert!(parse(&["--results"]).is_err());
+        assert!(parse(&["--results", "yaml"]).is_err());
+        assert!(parse(&["--results", "json", "--results", "json"]).is_err());
     }
 
     #[test]

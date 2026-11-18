@@ -69,6 +69,7 @@ impl Harness {
                 sources: vec![RecallSource::ClaudeCode],
             }),
             tools,
+            ..McpServeOptions::default()
         };
         let (client, server) = tokio::io::duplex(256 * 1024);
         let (server_read, server_write) = tokio::io::split(server);

@@ -11,11 +11,13 @@ use compresso_store::Store;
 use rmcp::model::JsonObject;
 use serde_json::{Value, json};
 
+use super::Form;
 use super::common::{
-    REINDEX_HINT, ToolFailure, ToolResult, cap_values, checked_arguments, map_atlas_error,
-    navigation_counter, optional_string, optional_u32, optional_usize, resolve_repository,
-    symbol_kind_name, token_budget,
+    REINDEX_HINT, ToolFailure, ToolResult, checked_arguments, map_atlas_error, navigation_counter,
+    optional_string, optional_u32, optional_usize, resolve_repository, symbol_kind_name,
+    token_budget, with_budget,
 };
+use super::text;
 
 pub(crate) const TOOL_NAME: &str = "compresso_trace";
 const TRACE_DEFAULT_TOKENS: usize = 4_000;
@@ -29,6 +31,7 @@ pub(crate) fn dispatch(
     store: &Store,
     repository_root: Option<&Path>,
     arguments: Option<JsonObject>,
+    form: Form,
 ) -> ToolResult {
     let mut arguments = checked_arguments(
         arguments,
@@ -80,14 +83,16 @@ pub(crate) fn dispatch(
     )
     .map_err(map_trace_error)?;
     let stale = repository_stale(store, repository.id).map_err(map_atlas_error)?;
-    Ok(render(
+    let payload = render(
         report,
         from,
         to,
         stale,
         max_tokens,
         navigation_counter(),
-    ))
+        form,
+    );
+    Ok(with_budget(payload, max_tokens))
 }
 
 fn map_trace_error(error: AtlasError) -> ToolFailure {
@@ -106,6 +111,7 @@ fn render(
     stale: bool,
     max_tokens: usize,
     counter: &dyn TokenCounter,
+    form: Form,
 ) -> Value {
     let (status, key, values, extra) = match &report.result {
         TraceResult::Paths(paths) => (
@@ -148,7 +154,12 @@ fn render(
         ),
         TraceResult::CallGraphMissing => ("reindex_required", "paths", Vec::new(), None),
     };
-    let (values, list_tokens, budget_truncated) = cap_values(values, max_tokens, counter);
+    let row: fn(&Value) -> String = match key {
+        "paths" => text::path_rows,
+        "candidates" => text::trace_candidate_row,
+        _ => text::neighbor_row,
+    };
+    let (values, list_tokens, budget_truncated) = form.cap(values, max_tokens, counter, row);
     let unfollowed = report
         .unfollowed
         .iter()
@@ -167,7 +178,12 @@ fn render(
     let (unfollowed, unfollowed_tokens, _) = if unfollowed.is_empty() {
         (unfollowed, 0, false)
     } else {
-        cap_values(unfollowed, max_tokens.saturating_sub(list_tokens), counter)
+        form.cap(
+            unfollowed,
+            max_tokens.saturating_sub(list_tokens),
+            counter,
+            text::unfollowed_row,
+        )
     };
     let tokens_used = list_tokens + unfollowed_tokens;
     let reindex_required = matches!(report.result, TraceResult::CallGraphMissing);

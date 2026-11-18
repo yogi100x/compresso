@@ -25,7 +25,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{Mutex, Notify};
 
 use crate::framing::{BoundedLineReader, Frame, MAX_INCOMING_MESSAGE_BYTES};
-use crate::profile::{McpToolProfile, lean_instructions, lean_tools};
+use crate::profile::{McpResultFormat, McpToolProfile, lean_instructions, lean_tools};
 use crate::session::{DiagnosticSink, OperationWriter, SessionRuntime, StderrDiagnosticSink};
 use crate::tools::recall::McpRecallOptions;
 
@@ -191,6 +191,7 @@ struct CompressoServer {
     recall: Option<Arc<McpRecallOptions>>,
     tools: Vec<Tool>,
     profile: McpToolProfile,
+    results: McpResultFormat,
     instructions: String,
 }
 
@@ -203,6 +204,7 @@ impl CompressoServer {
         session: SessionRuntime,
         recall: Option<McpRecallOptions>,
         profile: McpToolProfile,
+        results: McpResultFormat,
     ) -> Self {
         // The recall tool is advertised only after an operator enables a
         // verified source, so the default tool surface is unchanged.
@@ -215,6 +217,7 @@ impl CompressoServer {
             recall,
             tools,
             profile,
+            results,
             instructions,
         }
     }
@@ -276,6 +279,7 @@ impl ServerHandler for CompressoServer {
         // profile keeps its historical dispatch unchanged.
         let hidden = self.profile != McpToolProfile::Full && handled && !registered;
         let profile = self.profile;
+        let results = self.results;
         let deps = Arc::clone(&self.deps);
         let repository_root = self.repository_root.clone();
         let session = self.session.clone();
@@ -307,6 +311,7 @@ impl ServerHandler for CompressoServer {
                         recall.as_deref(),
                         &name,
                         arguments,
+                        results,
                     )
                 })
                 .await
@@ -363,6 +368,7 @@ where
         RootSource::Cwd,
         None,
         McpToolProfile::Full,
+        McpResultFormat::Json,
     )
     .await
 }
@@ -387,6 +393,7 @@ where
         RootSource::Explicit(root),
         None,
         McpToolProfile::Full,
+        McpResultFormat::Json,
     )
     .await
 }
@@ -428,6 +435,7 @@ where
         root.map_or(RootSource::Cwd, RootSource::Explicit),
         Some(recall),
         McpToolProfile::Full,
+        McpResultFormat::Json,
     )
     .await
 }
@@ -444,6 +452,9 @@ pub struct McpServeOptions {
     pub recall: Option<McpRecallOptions>,
     /// Which tools the process advertises and serves.
     pub tools: McpToolProfile,
+    /// How successful results are encoded; `None` takes the profile's
+    /// default (JSON for `full`, text for `lean`).
+    pub results: Option<McpResultFormat>,
 }
 
 /// Starts the MCP server over process stdin/stdout with explicit options.
@@ -475,6 +486,9 @@ where
         options.root.map_or(RootSource::Cwd, RootSource::Explicit),
         options.recall,
         options.tools,
+        options
+            .results
+            .unwrap_or_else(|| options.tools.default_results()),
     )
     .await
 }
@@ -512,6 +526,7 @@ where
         RootSource::Cwd,
         None,
         McpToolProfile::Full,
+        McpResultFormat::Json,
     )
     .await
 }
@@ -539,6 +554,7 @@ where
         RootSource::Cwd,
         None,
         McpToolProfile::Full,
+        McpResultFormat::Json,
     )
     .await
 }
@@ -567,6 +583,7 @@ where
         RootSource::Explicit(root),
         None,
         McpToolProfile::Full,
+        McpResultFormat::Json,
     )
     .await
 }
@@ -586,6 +603,7 @@ async fn serve_io_configured<R, W, F>(
     root_source: RootSource,
     recall: Option<McpRecallOptions>,
     profile: McpToolProfile,
+    results: McpResultFormat,
 ) -> anyhow::Result<()>
 where
     R: AsyncRead + Send + Unpin + 'static,
@@ -616,10 +634,16 @@ where
         diagnostics,
     );
     let outcome: anyhow::Result<()> = async {
-        let service_result =
-            CompressoServer::new(deps, repository_root, session.clone(), recall, profile)
-                .serve(transport)
-                .await;
+        let service_result = CompressoServer::new(
+            deps,
+            repository_root,
+            session.clone(),
+            recall,
+            profile,
+            results,
+        )
+        .serve(transport)
+        .await;
         let service = match service_result {
             Ok(service) => service,
             Err(ServerInitializeError::ConnectionClosed(_)) => {
