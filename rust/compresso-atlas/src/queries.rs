@@ -3349,12 +3349,15 @@ fn render_directory(directory: &DirectoryNode, depth: usize, output: &mut String
 #[cfg(test)]
 mod tests {
     use std::fs;
+    #[cfg(unix)]
     use std::io;
     use std::path::PathBuf;
 
+    #[cfg(unix)]
+    use super::read_utf8;
     use super::{
         QueryError, ResolvedEntry, ResolvedFile, STALENESS_HASH_BUFFER_BYTES,
-        content_matches_index, line_spells_word, read_utf8, read_utf8_capped, resolve_under_root,
+        content_matches_index, line_spells_word, read_utf8_capped, resolve_under_root,
     };
 
     /// Serves `total` zero bytes and records how it was read.

@@ -1439,11 +1439,10 @@ async fn test_read_ranges_reads_several_ranges_under_one_budget_and_gates_each()
     assert_eq!(ranges[2]["error"]["code"], "not_found");
     assert_eq!(ranges[3]["error"]["code"], "not_found");
     assert_eq!(ranges[4]["error"]["code"], "file_too_large");
-    if cfg!(unix) {
-        assert_eq!(ranges[5]["error"]["code"], "not_found");
-    }
+    // A link to the secret where links exist; a missing file elsewhere.
+    assert_eq!(ranges[5]["error"]["code"], "not_found");
     assert_eq!(ranges[6]["range_clamped"], true);
-    assert_eq!(result["ranges_failed"], if cfg!(unix) { 4 } else { 3 });
+    assert_eq!(result["ranges_failed"], 4);
     assert_eq!(result["truncated"], true);
     assert!(
         result["tokens_used"]
