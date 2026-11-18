@@ -227,7 +227,14 @@ fn record(
     let line = line_number(callee.name.start_position().row);
     let caller = enclosing.at(line)?;
     let name = node_text(callee.name, source)?;
-    if !valid_name(name) {
+    // Every call form passes this one check, so no extraction path can hand
+    // the store a name or qualifier it would reject and abort the index with.
+    if !valid_name(name)
+        || callee
+            .qualifier
+            .as_deref()
+            .is_some_and(|qualifier| !valid_qualifier(qualifier))
+    {
         return None;
     }
     let record = CallSiteRecord {
@@ -238,6 +245,16 @@ fn record(
         line,
     };
     Some((record, callee.name.start_byte()))
+}
+
+/// A qualifier is at most [`MAX_CALL_TEXT_BYTES`] and made of valid names
+/// joined by `::` (Rust paths) or `.` (dotted names). `Self`, `self`, `this`,
+/// and `cls` are single valid names.
+fn valid_qualifier(qualifier: &str) -> bool {
+    qualifier.len() <= MAX_CALL_TEXT_BYTES
+        && qualifier
+            .split("::")
+            .all(|segment| segment.split('.').all(valid_name))
 }
 
 fn valid_name(name: &str) -> bool {

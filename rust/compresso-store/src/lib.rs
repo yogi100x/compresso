@@ -15,7 +15,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use thiserror::Error;
 
-pub use calls::{CallForm, CallSiteRecord, IndexedSymbol, MAX_CALL_TEXT_BYTES, StoredCallSite};
+pub use calls::{
+    CallForm, CallSiteRecord, IndexedSymbol, MAX_CALL_TEXT_BYTES, StoredCallSite,
+    validate_call_sites,
+};
 pub use files::{FileLanguage, FileRecord, RelativePathError};
 pub use ops::{
     DetailedStatsSummary, ModeledCostSaved, OperationId, OperationRecord, OperationStatsSummary,

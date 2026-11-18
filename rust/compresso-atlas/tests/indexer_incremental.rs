@@ -601,3 +601,29 @@ fn test_a_file_with_a_huge_number_of_calls_never_aborts_the_index() {
     assert_eq!(report.call_site_files_truncated, 1);
     assert!(report.call_sites >= compresso_atlas::parsers::MAX_CALLS_PER_FILE);
 }
+
+#[test]
+fn test_an_oversized_macro_call_qualifier_never_aborts_the_index() {
+    let fixture = Fixture::new();
+    let owner = "A".repeat(300);
+    fs::write(
+        fixture.root.join("src/hostile.rs"),
+        format!(
+            "fn run() {{\n    assert!({owner}::make());\n    helper();\n}}\nfn helper() {{}}\n"
+        ),
+    )
+    .expect("fixture file should be written");
+
+    let report = fixture
+        .indexer()
+        .index(&fixture.root, |_| {})
+        .expect("one hostile qualifier must not fail the repository index");
+
+    assert_eq!(report.files_indexed, 9);
+    assert_eq!(report.call_site_files_rejected, 0);
+    let calls = fixture
+        .store
+        .call_sites_named(fixture.repo(), "helper")
+        .expect("calls should load");
+    assert!(calls.iter().any(|call| call.from_path == "src/hostile.rs"));
+}

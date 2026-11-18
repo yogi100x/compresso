@@ -204,6 +204,16 @@ impl Store {
     }
 }
 
+/// Checks call sites exactly as [`Store::replace_indexed_file_with_calls`]
+/// does, without writing: `symbols` is the length of the symbol slice the
+/// calls index into. Lets a caller drop one file's call sites instead of
+/// failing the whole write.
+pub fn validate_call_sites(calls: &[CallSiteRecord], symbols: usize) -> Result<(), StoreError> {
+    calls
+        .iter()
+        .try_for_each(|call| validate_call_site(call, symbols))
+}
+
 pub(crate) fn validate_call_site(call: &CallSiteRecord, symbols: usize) -> Result<(), StoreError> {
     validate_nonempty("call callee_name", &call.callee_name)?;
     if call.caller >= symbols {

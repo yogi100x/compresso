@@ -10,7 +10,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use compresso_core::TokenCounter;
 use compresso_store::{
-    CallSiteRecord, EdgeKind, EdgeRecord, EdgeResolution, FileRecord, Store, SymbolRecord,
+    CallSiteRecord, EdgeKind, EdgeRecord, EdgeResolution, FileRecord, RepoId, Store, SymbolRecord,
 };
 
 use crate::concurrency::{Concurrency, ReadAhead};
@@ -48,6 +48,9 @@ pub struct IndexReport {
     pub call_sites: usize,
     /// Files whose call extraction stopped at a per-file bound.
     pub call_site_files_truncated: usize,
+    /// Files whose call sites the store would reject: the file is indexed
+    /// with its symbols and imports, without call sites.
+    pub call_site_files_rejected: usize,
     pub duration_ms: u64,
     pub stale: bool,
 }
@@ -227,6 +230,7 @@ impl<'a> Indexer<'a> {
         let mut imports_unresolved = 0_usize;
         let mut call_sites = 0_usize;
         let mut call_site_files_truncated = 0_usize;
+        let mut call_site_files_rejected = 0_usize;
 
         let candidates = candidates.into_iter().collect::<Vec<_>>();
         let context = PrepareContext {
@@ -260,18 +264,15 @@ impl<'a> Indexer<'a> {
                 symbols += prepared.symbols.len();
                 imports_resolved += prepared.imports_resolved;
                 imports_unresolved += prepared.imports_unresolved;
-                call_sites += prepared.calls.len();
-                call_site_files_truncated += usize::from(prepared.calls_truncated);
             } else {
                 files_skipped += 1;
             }
-            self.store.replace_indexed_file_with_calls(
-                repo,
-                &prepared.record,
-                &prepared.symbols,
-                &prepared.edges,
-                &prepared.calls,
-            )?;
+            if write_prepared(self.store, repo, &prepared)? {
+                call_site_files_rejected += 1;
+            } else if prepared.parsed {
+                call_sites += prepared.calls.len();
+                call_site_files_truncated += usize::from(prepared.calls_truncated);
+            }
             Ok(())
         };
 
@@ -315,10 +316,38 @@ impl<'a> Indexer<'a> {
             imports_unresolved,
             call_sites,
             call_site_files_truncated,
+            call_site_files_rejected,
             duration_ms: elapsed_millis(started),
             stale,
         })
     }
+}
+
+/// Writes one prepared file in one transaction and reports whether its call
+/// sites were dropped.
+///
+/// The call extractor already drops every call the store would refuse; this
+/// is the second line of defence. If one file's call sites still fail the
+/// store's validation, the file is written with its symbols and imports and
+/// without call sites, so a hostile or generated file can never abort the
+/// repository index (the approach of the empty-import fix). Any other store
+/// failure still stops the run.
+fn write_prepared(
+    store: &Store,
+    repo: RepoId,
+    prepared: &PreparedFile,
+) -> Result<bool, AtlasError> {
+    let rejected =
+        compresso_store::validate_call_sites(&prepared.calls, prepared.symbols.len()).is_err();
+    let calls: &[CallSiteRecord] = if rejected { &[] } else { &prepared.calls };
+    store.replace_indexed_file_with_calls(
+        repo,
+        &prepared.record,
+        &prepared.symbols,
+        &prepared.edges,
+        calls,
+    )?;
+    Ok(rejected)
 }
 
 /// Read-only inputs shared by every file preparation, on any thread.
@@ -817,6 +846,66 @@ mod tests {
     use crate::parsers::ImportKind;
 
     use super::*;
+
+    #[test]
+    fn test_call_sites_the_store_rejects_are_dropped_without_failing_the_file() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let store = Store::open(&directory.path().join("compresso.db")).expect("store should open");
+        let repo = store
+            .approve_repo(directory.path())
+            .expect("repository should be approved");
+        let symbol = SymbolRecord {
+            name: "run".to_owned(),
+            qualified_name: "run".to_owned(),
+            kind: compresso_store::SymbolKind::Function,
+            signature: None,
+            start_line: 1,
+            end_line: 3,
+            token_estimate: 1,
+        };
+        let call = |qualifier: Option<String>| CallSiteRecord {
+            caller: 0,
+            callee_name: "make".to_owned(),
+            qualifier,
+            form: compresso_store::CallForm::Path,
+            line: 2,
+        };
+        let prepared = |calls| PreparedFile {
+            record: FileRecord {
+                path: "src/hostile.rs".to_owned(),
+                hash: "aa".to_owned(),
+                language: Some(compresso_store::FileLanguage::Rust),
+                size_bytes: 10,
+                token_estimate: 2,
+                indexed_at: 1,
+            },
+            symbols: vec![symbol.clone()],
+            edges: Vec::new(),
+            calls,
+            calls_truncated: false,
+            parsed: true,
+            imports_resolved: 0,
+            imports_unresolved: 0,
+        };
+
+        let hostile = prepared(vec![
+            call(Some("Store".to_owned())),
+            call(Some("A".repeat(300))),
+        ]);
+        assert!(write_prepared(&store, repo, &hostile).expect("the file must still be written"));
+        assert_eq!(
+            store
+                .symbols_in_file(repo, "src/hostile.rs")
+                .expect("symbols")
+                .len(),
+            1
+        );
+        assert_eq!(store.call_site_count(repo).expect("count"), 0);
+
+        let valid = prepared(vec![call(Some("Store".to_owned()))]);
+        assert!(!write_prepared(&store, repo, &valid).expect("valid write"));
+        assert_eq!(store.call_site_count(repo).expect("count"), 1);
+    }
 
     #[test]
     fn test_per_file_transaction_isolation() {
