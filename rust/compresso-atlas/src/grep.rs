@@ -421,14 +421,6 @@ pub fn validate_grep(options: &GrepOptions<'_>) -> Result<(), GrepError> {
     )
 }
 
-/// A file's matches for one pattern before ranking.
-struct FileHits {
-    record_index: usize,
-    matches_total: usize,
-    /// (line number, line start, line end, match start) of the first lines.
-    kept: Vec<(u32, usize, usize, usize)>,
-}
-
 /// Searches the indexed files of `repo` for every pattern.
 ///
 /// Files come from the index in path order. Secret paths are never read;
@@ -469,10 +461,9 @@ pub fn grep(
         scan_truncated: false,
         output_truncated: false,
     };
-    let mut per_pattern: Vec<Vec<FileHits>> = matchers.iter().map(|_| Vec::new()).collect();
-    // Sources of files with listed lines, kept until snippets are built.
-    let mut sources = Vec::<(usize, String, bool)>::new();
-    for (record_index, record) in records.iter().enumerate() {
+    let mut per_pattern: Vec<Vec<GrepFile>> = matchers.iter().map(|_| Vec::new()).collect();
+    let mut matches_totals = vec![0_usize; matchers.len()];
+    for record in &records {
         if is_secret_path(Path::new(&record.path))
             || filter
                 .as_ref()
@@ -506,80 +497,59 @@ pub fn grep(
         report.bytes_scanned = report
             .bytes_scanned
             .saturating_add(u64::try_from(source.len()).unwrap_or(u64::MAX));
-        let mut listed = false;
-        for (matcher, hits) in matchers.iter().zip(&mut per_pattern) {
-            let (matches_total, kept) =
-                matching_lines(matcher, &source, options.max_matches_per_file);
-            if matches_total > 0 {
-                listed = true;
-                hits.push(FileHits {
-                    record_index,
-                    matches_total,
-                    kept,
-                });
-            }
-        }
         let stale = u64::try_from(source.len()).ok() != Some(record.size_bytes)
             || blake3::hash(source.as_bytes()).to_hex().as_str() != record.hash;
         if stale {
             report.stale_files += 1;
         }
-        if listed {
-            sources.push((record_index, source, stale));
-        }
-    }
-
-    let mut symbols_cache = Vec::<(usize, Vec<SymbolRecord>)>::new();
-    for (pattern, hits) in options.patterns.iter().zip(per_pattern) {
-        let matches_total = hits.iter().map(|hit| hit.matches_total).sum();
-        let files_total = hits.len();
-        let mut files = Vec::with_capacity(hits.len());
-        for hit in hits {
-            let record = &records[hit.record_index];
-            let Some((_, source, stale)) = sources
-                .iter()
-                .find(|(index, _, _)| *index == hit.record_index)
-            else {
-                continue;
+        // Snippets and symbols are built while the source is at hand, so a
+        // search never holds more than one file's content.
+        let mut symbols = None;
+        for (index, matcher) in matchers.iter().enumerate() {
+            let (matches_total, kept) = if options.regex {
+                matching_lines_by_line(matcher, &source, options.max_matches_per_file)
+            } else {
+                matching_lines(matcher, &source, options.max_matches_per_file)
             };
-            let symbols = if *stale {
+            if matches_total == 0 {
+                continue;
+            }
+            let symbols: Option<&Vec<SymbolRecord>> = if stale {
                 None
             } else {
-                let position = match symbols_cache
-                    .iter()
-                    .position(|(index, _)| *index == hit.record_index)
-                {
-                    Some(position) => position,
-                    None => {
-                        symbols_cache
-                            .push((hit.record_index, store.symbols_in_file(repo, &record.path)?));
-                        symbols_cache.len() - 1
-                    }
-                };
-                Some(&symbols_cache[position].1)
+                Some(match &symbols {
+                    Some(symbols) => symbols,
+                    None => symbols.insert(store.symbols_in_file(repo, &record.path)?),
+                })
             };
-            let lines = hit
-                .kept
+            let lines = kept
                 .iter()
                 .map(|&(line, start, end, match_start)| {
                     let enclosing =
                         symbols.and_then(|symbols| smallest_enclosing_symbol(symbols, line));
                     GrepLine {
                         line,
-                        snippet: snippet(source, start, end, match_start),
+                        snippet: snippet(&source, start, end, match_start),
                         symbol: enclosing.map(|symbol| symbol.qualified_name.clone()),
                         definition: enclosing.is_some_and(|symbol| symbol.start_line == line),
                     }
                 })
-                .collect::<Vec<_>>();
-            files.push(GrepFile {
+                .collect();
+            matches_totals[index] += matches_total;
+            per_pattern[index].push(GrepFile {
                 path: record.path.clone(),
                 language: record.language,
-                matches_total: hit.matches_total,
+                matches_total,
                 lines,
-                stale: *stale,
+                stale,
             });
         }
+    }
+
+    for ((pattern, mut files), matches_total) in
+        options.patterns.iter().zip(per_pattern).zip(matches_totals)
+    {
+        let files_total = files.len();
         files.sort_by(|left, right| {
             let defines = |file: &GrepFile| file.lines.iter().any(|line| line.definition);
             defines(right)
@@ -608,8 +578,9 @@ pub fn grep(
     Ok(report)
 }
 
-/// Counts the lines of `source` that `matcher` matches and keeps the first
-/// `keep` of them as (line number, line start, line end, match start).
+/// Counts the lines of `source` that a literal `matcher` matches and keeps
+/// the first `keep` of them as (line number, line start, line end, match
+/// start). A literal holds no line break, so no match spans two lines.
 ///
 /// One pass: after a match the search resumes at the next line, newlines are
 /// counted once between consecutive matches, and a line's start is the last
@@ -662,6 +633,47 @@ fn matching_lines(
         }
         // The newline ending this line is counted when the next match is.
         position = end + 1;
+    }
+    (total, kept)
+}
+
+/// [`matching_lines`] for a regular expression, which may match across a
+/// line break: each line, without its `\n` or a trailing `\r`, is searched
+/// on its own, so every byte is searched once and a match never runs on into
+/// a later line.
+fn matching_lines_by_line(
+    matcher: &Regex,
+    source: &str,
+    keep: usize,
+) -> (usize, Vec<(u32, usize, usize, usize)>) {
+    let bytes = source.as_bytes();
+    let mut total = 0_usize;
+    let mut kept = Vec::new();
+    let mut line_start = 0_usize;
+    let mut line_number = 0_usize;
+    while line_start < bytes.len() {
+        let end = bytes[line_start..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(bytes.len(), |newline| line_start + newline);
+        line_number += 1;
+        let content_end = if end > line_start && bytes[end - 1] == b'\r' {
+            end - 1
+        } else {
+            end
+        };
+        if let Some(found) = matcher.find(&source[line_start..content_end]) {
+            total += 1;
+            if kept.len() < keep {
+                kept.push((
+                    u32::try_from(line_number).unwrap_or(u32::MAX),
+                    line_start,
+                    end,
+                    line_start + found.start(),
+                ));
+            }
+        }
+        line_start = end + 1;
     }
     (total, kept)
 }

@@ -217,6 +217,35 @@ fn test_plan_context_common_name_defined_many_times_does_not_lead() {
 }
 
 #[test]
+fn test_plan_context_bare_file_name_many_files_share_names_nothing() {
+    let fixture = Fixture::new();
+    fixture.seed_large_prose_index();
+    for directory in ["alpha", "beta", "gamma"] {
+        fixture.write(
+            &format!("src/{directory}/util.rs"),
+            "pub fn helper() -> usize {\n    0\n}\n",
+            &[symbol(
+                "helper",
+                SymbolKind::Function,
+                "pub fn helper() -> usize",
+                1,
+                3,
+            )],
+        );
+    }
+
+    let plan = fixture.plan(
+        "What does util.rs do when the evidence budget is tight and coverage of candidate files is truncated?",
+    );
+
+    assert!(
+        !leading(&plan).0.ends_with("util.rs"),
+        "a file name three files share must not lead: {}",
+        plan.rendered
+    );
+}
+
+#[test]
 fn test_plan_context_numeric_literal_sites_become_evidence() {
     let fixture = Fixture::new();
     fixture.write(

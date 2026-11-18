@@ -89,8 +89,15 @@ pub(crate) fn dispatch(
         let fitted = report.fit_to_budget(budget, counter);
         let mut payload = payload(&fitted, &options, &operation_id, stale, counter);
         let tokens = stabilize_tokens(&mut payload, counter)?;
-        if tokens <= max_tokens || budget == 0 {
+        if tokens <= max_tokens {
             return Ok(payload);
+        }
+        if budget == 0 {
+            // Even with no line listed, the per-pattern totals do not fit.
+            return Err(ToolFailure::invalid(format!(
+                "argument 'max_tokens' ({max_tokens}) cannot hold the totals of {} patterns; raise it or search fewer patterns per call.",
+                patterns.len()
+            )));
         }
         budget = budget.saturating_sub(tokens - max_tokens + 16);
     }
@@ -125,7 +132,7 @@ fn patterns_argument(arguments: &mut Map<String, Value>) -> Result<Vec<String>, 
 
 fn map_grep_error(error: AtlasError) -> ToolFailure {
     match error {
-        AtlasError::Grep(error) => ToolFailure::new("invalid_pattern", format!("{error}.")),
+        AtlasError::Grep(error) => ToolFailure::invalid(format!("{error}.")),
         other => map_atlas_error(other),
     }
 }

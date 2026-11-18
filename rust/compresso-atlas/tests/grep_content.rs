@@ -287,6 +287,36 @@ fn test_grep_stays_linear_on_one_very_long_line() {
 }
 
 #[test]
+fn test_grep_regex_never_runs_past_a_line_end() {
+    let fixture = Fixture::new();
+    // 50,000 short lines: a pattern that could match across line breaks
+    // must not rescan the rest of the file from every line.
+    let source = "let value = compute();\r\n".repeat(50_000);
+    fixture.write_indexed("src/many.rs", &source, &[]);
+
+    let started = Instant::now();
+    let report = fixture.grep(
+        &["(?s).+", "[\\s\\S]*compute", "compute\\(\\);$"],
+        |options| {
+            options.regex = true;
+        },
+    );
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "a cross-line pattern took {elapsed:?}; each line must be searched once"
+    );
+    for result in &report.results {
+        assert_eq!(result.matches_total, 50_000, "{}", result.pattern);
+    }
+    assert_eq!(
+        report.results[1].files[0].lines[1].snippet,
+        "let value = compute();"
+    );
+}
+
+#[test]
 fn test_grep_rejects_invalid_patterns_with_a_typed_error() {
     let fixture = Fixture::new();
     seed_secret_use_sites(&fixture);

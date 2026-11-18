@@ -931,9 +931,12 @@ pub fn plan_context(
             .then(right.score.total_cmp(&left.score))
             .then(left.order.cmp(&right.order))
     });
+    // Named symbols sort first, so the best score is not always the first.
     let score_floor = scored
-        .first()
-        .map_or(0.0, |best| best.score * PLAN_CONTEXT_SCORE_FLOOR_RATIO);
+        .iter()
+        .map(|candidate| candidate.score)
+        .reduce(f64::max)
+        .map_or(0.0, |best| best * PLAN_CONTEXT_SCORE_FLOOR_RATIO);
     scored.retain(|candidate| {
         candidate.score >= score_floor || candidate.score >= PLAN_CONTEXT_SPECIFIC_MATCH_SCORE
     });

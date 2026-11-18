@@ -33,7 +33,8 @@ pub(crate) enum NamedRank {
 /// ranking, so its definition is found however many other symbols mention it.
 /// A name defined more than three times is common, not a pointer, and names
 /// nothing. A path resolves to the indexed file with that exact path, or else
-/// to at most two whose path ends with it, and names their first two symbols.
+/// to the one or two whose path ends with it (more name nothing), and names
+/// their first two symbols.
 /// Secret paths, and text files when `exclude_text` is set, are never named.
 pub(crate) fn named_symbols(
     store: &Store,
@@ -60,14 +61,19 @@ pub(crate) fn named_symbols(
                 if paths.is_empty() {
                     *paths = store.indexed_files(repo)?;
                 }
-                let exact = paths.iter().find(|record| record.path == mention);
                 let suffix = format!("/{mention}");
-                let files = exact.into_iter().chain(
-                    paths
+                let files = match paths.iter().find(|record| record.path == mention) {
+                    Some(exact) => vec![exact],
+                    None => paths
                         .iter()
-                        .filter(|record| exact.is_none() && record.path.ends_with(&suffix))
-                        .take(FILES_PER_NAMED_PATH),
-                );
+                        .filter(|record| record.path.ends_with(&suffix))
+                        .take(FILES_PER_NAMED_PATH + 1)
+                        .collect(),
+                };
+                // A bare `mod.rs` that many files end with points at none.
+                if files.len() > FILES_PER_NAMED_PATH {
+                    continue;
+                }
                 for record in files {
                     if is_secret_path(Path::new(&record.path))
                         || (exclude_text && record.language == Some(FileLanguage::Text))

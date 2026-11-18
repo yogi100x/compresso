@@ -294,6 +294,32 @@ async fn test_grep_tool_reports_totals_and_truncation_under_caps_and_budget() {
         "{capped}"
     );
 
+    let eight = (0..8)
+        .map(|index| format!("RETRY_BUDGET{}", "x".repeat(index)))
+        .collect::<Vec<_>>();
+    let long_eight = (0..8)
+        .map(|index| format!("{index}{}", "y".repeat(511)))
+        .collect::<Vec<_>>();
+    for (patterns, max_tokens) in [(&eight, 300_u64), (&eight, 1_500), (&long_eight, 1_500)] {
+        let response = harness
+            .call(json!({ "patterns": patterns, "max_tokens": max_tokens }))
+            .await;
+        if response["result"]["isError"] == true {
+            assert_tool_error(&response, "invalid_arguments");
+            continue;
+        }
+        let payload = successful_json(&response);
+        let tokens = payload["tokens_used"].as_u64().expect("tokens used");
+        assert!(
+            tokens <= max_tokens,
+            "{tokens} > {max_tokens} for 8 patterns"
+        );
+    }
+    let rejected = harness
+        .call(json!({ "patterns": long_eight, "max_tokens": 300 }))
+        .await;
+    assert_tool_error(&rejected, "invalid_arguments");
+
     for max_tokens in [300, 400, 700] {
         let budgeted = successful_json(
             &harness
@@ -360,7 +386,7 @@ async fn test_grep_tool_rejects_invalid_patterns_and_arguments() {
         json!({ "pattern": "a\nb" }),
         json!({ "pattern": "x", "path": "../outside" }),
     ] {
-        assert_tool_error(&harness.call(arguments).await, "invalid_pattern");
+        assert_tool_error(&harness.call(arguments).await, "invalid_arguments");
     }
     for arguments in [
         json!({}),
