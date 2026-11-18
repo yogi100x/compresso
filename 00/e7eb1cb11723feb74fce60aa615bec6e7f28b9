@@ -1,0 +1,39 @@
+docs/adr/0033-call-sites-resolved-at-query-time.md
+  s_89a704cfae63f5::t_95107b8af99fcf 65-68
+docs/adr/0034-whole-file-agent-definition-ownership.md
+  s_89a704cfae63f5::t_a6939d015beec9 67-69
+  s_89a704cfae63f5::t_faac3d9758cacb 66,70
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_682850e292fec5 757
+  s_89a704cfae63f5::t_0c5ed9bb11c929 3,29,35,37,40,42,692,745
+docs/runbooks/mcp-manual-verification.md
+  s_89a704cfae63f5::t_790e19e7b2f625 54-60
+docs/plan/02-schemas.md
+  s_ab81dcf6f17e1c::t_4f22cfc754286e 373
+docs/plan/03-interfaces.md
+  s_ab81dcf6f17e1c::t_35e8a7857ea8ec 214-215,324,473,482
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "00e7eb1cb11723feb74fce60aa615bec6e7f28b9",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_ab81dcf6f17e1c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ad08cef6509d30e64",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
