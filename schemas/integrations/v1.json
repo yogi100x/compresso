@@ -100,7 +100,10 @@
         "schema_version": { "const": 1 },
         "document_type": { "const": "mutation_plan_preview" },
         "operation": { "type": "string", "enum": ["install", "uninstall"] },
-        "config_format": { "type": "string", "enum": ["json", "toml", "markdown"] },
+        "config_format": {
+          "type": "string",
+          "enum": ["json", "toml", "markdown"]
+        },
         "client": { "$ref": "#/$defs/client" },
         "config_path": { "type": "string", "minLength": 1 },
         "base_exists": { "type": "boolean" },
@@ -157,7 +160,10 @@
         "schema_version": { "const": 1 },
         "document_type": { "const": "mutation_plan" },
         "operation": { "type": "string", "enum": ["install", "uninstall"] },
-        "config_format": { "type": "string", "enum": ["json", "toml", "markdown"] },
+        "config_format": {
+          "type": "string",
+          "enum": ["json", "toml", "markdown"]
+        },
         "client": { "$ref": "#/$defs/client" },
         "config_path": { "type": "string", "minLength": 1 },
         "base_exists": { "type": "boolean" },
