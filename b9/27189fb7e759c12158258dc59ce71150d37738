@@ -1,0 +1,25 @@
+docs/adr/0035-opt-in-verified-edit-tool.md
+  s_89a704cfae63f5::t_63e53a3900e815 90-96,185-189
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_65511eeb3a1f04 546
+rust/compresso-atlas/src/edit.rs
+  s_89a704cfae63f5::t_f9ba4507fbf10d 695-701,1181-1184,1188,1195-1216,2266-2268
+rust/compresso-atlas/tests/edit.rs
+  s_89a704cfae63f5::t_28c5a550453b2c 1078-1150
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b927189fb7e759c12158258dc59ce71150d37738",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
