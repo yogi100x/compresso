@@ -105,6 +105,26 @@ pub enum ConfigFormat {
     Json,
     /// TOML configuration with format-preserved unowned text.
     Toml,
+    /// A whole Markdown file Compresso owns outright (E17-28). Its single
+    /// owned path names the file; an uninstall that removes it deletes the
+    /// file, represented by an empty target.
+    Markdown,
+}
+
+/// Backup sentinel for an uninstall that deletes a whole owned file whose
+/// bytes still equal what Compresso installed: nothing user-authored can be
+/// lost, so no backup is written.
+pub const UNMODIFIED_FILE_REMOVED_BACKUP_SENTINEL: &str =
+    "(none: unmodified Compresso file removed)";
+
+/// The file state a plan produces: a whole-file Markdown target that is
+/// empty means the file is deleted.
+fn planned_result(format: ConfigFormat, target_contents: &str) -> TargetState {
+    if format == ConfigFormat::Markdown && target_contents.is_empty() {
+        TargetState::Missing
+    } else {
+        TargetState::Present(target_contents.as_bytes().to_vec())
+    }
 }
 
 /// Exact before/after hashes for one adapter-owned key.
@@ -517,6 +537,13 @@ pub enum IntegrationError {
         entry: String,
     },
 
+    /// A file Compresso would own outright already exists and was not
+    /// written by Compresso. It is never overwritten.
+    #[error(
+        "{path} already exists and was not written by Compresso; refusing to overwrite it (move or rename it, then retry)"
+    )]
+    UserFilePresent { path: PathBuf },
+
     #[error("integration plan approval is forged or unknown")]
     ForgedPlan,
     /// Approval came from another local session.
@@ -628,7 +655,9 @@ impl PlanManager {
         request.warnings.dedup();
 
         let base = read_target(&request.config_path)?;
-        if let TargetState::Present(bytes) = &base {
+        if let TargetState::Present(bytes) = &base
+            && request.config_format != ConfigFormat::Markdown
+        {
             // Bind the plan to bytes that keep the file's byte-order mark and
             // line endings; every hash below covers this final shaping.
             request.target_contents = preserve_text_fidelity(bytes, &request.target_contents);
@@ -645,11 +674,15 @@ impl PlanManager {
         )?;
         validate_owned_semantics(&request, &owned_keys)?;
         let base_hash = hash_target(&base);
-        let target = TargetState::Present(request.target_contents.as_bytes().to_vec());
+        let target = planned_result(request.config_format, &request.target_contents);
         let result_hash = hash_target(&target);
         let issued_at = self.clock.now_unix_seconds();
         let backup_path = if matches!(base, TargetState::Missing) {
             CREATED_FILE_BACKUP_SENTINEL.to_owned()
+        } else if matches!(target, TargetState::Missing) {
+            // Ownership semantics allow deletion only while the file still
+            // equals the installed bytes.
+            UNMODIFIED_FILE_REMOVED_BACKUP_SENTINEL.to_owned()
         } else {
             planned_backup_path(&request.config_path, issued_at)?
                 .to_string_lossy()
@@ -1121,7 +1154,9 @@ fn authorize_uninstall_claim(
     claimed: &InstallReceipt,
     authenticated_commit_result: bool,
 ) -> Result<InstallReceipt, IntegrationError> {
-    if matches!(current, TargetState::Missing) {
+    // A whole-file removal whose target is already absent is the planned
+    // result (a crash between deletion and receipt persistence), not drift.
+    if matches!(current, TargetState::Missing) && hash_target(current) != plan.result_hash {
         if plan.base_exists {
             return Err(IntegrationError::ConfigDrift {
                 path: plan.config_path.clone(),
@@ -1366,11 +1401,14 @@ fn finish_commit(
                 path: commit.plan.config_path.clone(),
             });
         }
-        atomic_replace(
-            &commit.plan.config_path,
-            commit.plan.target_contents.as_bytes(),
-            &commit.plan.plan_hash[..12],
-        )
+        match planned_result(commit.plan.config_format, &commit.plan.target_contents) {
+            TargetState::Present(bytes) => atomic_replace(
+                &commit.plan.config_path,
+                &bytes,
+                &commit.plan.plan_hash[..12],
+            ),
+            TargetState::Missing => fs::remove_file(&commit.plan.config_path),
+        }
         .map_err(|source| IntegrationError::Io {
             path: commit.plan.config_path.clone(),
             source,
@@ -1446,8 +1484,9 @@ fn validate_pending_commit(commit: &PendingCommit) -> Result<(), IntegrationErro
         || commit.plan.document_type != "mutation_plan"
         || commit.plan.plan_hash != compute_plan_hash(&commit.plan)?
         || commit.plan.result_hash
-            != hash_target(&TargetState::Present(
-                commit.plan.target_contents.as_bytes().to_vec(),
+            != hash_target(&planned_result(
+                commit.plan.config_format,
+                &commit.plan.target_contents,
             ))
         || commit.plan.diff_hash
             != blake3::hash(commit.plan.unified_diff.as_bytes())
@@ -1646,6 +1685,9 @@ fn ensure_backup(commit: &PendingCommit) -> Result<(), IntegrationError> {
     let Some(base_contents) = &commit.base_contents else {
         return Ok(());
     };
+    if commit.plan.backup_path == UNMODIFIED_FILE_REMOVED_BACKUP_SENTINEL {
+        return Ok(());
+    }
     let path = PathBuf::from(&commit.plan.backup_path);
     if path.exists() {
         let existing = fs::read(&path).map_err(|source| IntegrationError::Io {
@@ -1806,7 +1848,27 @@ fn derive_owned_mutations(
     match format {
         ConfigFormat::Json => derive_json_owned_mutations(operation, base, target, owned_paths),
         ConfigFormat::Toml => derive_toml_owned_mutations(operation, base, target, owned_paths),
+        ConfigFormat::Markdown => derive_whole_file_owned_mutation(base, target, owned_paths),
     }
+}
+
+/// The single owned path of a whole-file format covers every byte.
+fn derive_whole_file_owned_mutation(
+    base: &TargetState,
+    target: &str,
+    owned_paths: &[String],
+) -> Result<Vec<OwnedKeyMutation>, IntegrationError> {
+    let [key_path] = owned_paths else {
+        return Err(invalid("a whole-file format owns exactly one path"));
+    };
+    Ok(vec![OwnedKeyMutation {
+        key_path: key_path.clone(),
+        before_value_hash: match base {
+            TargetState::Present(bytes) => Some(hash_owned_value(bytes)),
+            TargetState::Missing => None,
+        },
+        after_value_hash: (!target.is_empty()).then(|| hash_owned_value(target.as_bytes())),
+    }])
 }
 
 fn derive_json_owned_mutations(
@@ -2059,7 +2121,10 @@ fn make_unified_diff(
     let mut diff = format!(
         "--- {label} (current Compresso-owned values)\n+++ {label} ({action}; Compresso-owned values)\n"
     );
-    for change in owned {
+    if format == ConfigFormat::Markdown {
+        append_whole_file_diff(&mut diff, base, target, owned);
+    }
+    for change in owned.iter().filter(|_| format != ConfigFormat::Markdown) {
         let (before, after) = safe_owned_projections(format, base, target, &change.key_path)?;
         diff.push_str(&format!("@@ {} @@\n", change.key_path));
         append_projection_diff(&mut diff, format, &before, &after, change);
@@ -2093,6 +2158,9 @@ fn safe_owned_projections(
 ) -> Result<(SafeOwnedProjection, SafeOwnedProjection), IntegrationError> {
     let segments = key_path.split('.').collect::<Vec<_>>();
     match format {
+        ConfigFormat::Markdown => Err(invalid(
+            "whole-file formats are previewed by append_whole_file_diff",
+        )),
         ConfigFormat::Json => {
             let base = parse_json_target(base, "base")?;
             let target: serde_json::Value =
@@ -2340,6 +2408,34 @@ fn append_projection_diff(
     }
 }
 
+/// Previews a whole owned file. Only Compresso-rendered target lines are
+/// shown; current bytes, which a user may have edited, are summarized.
+fn append_whole_file_diff(
+    diff: &mut String,
+    base: &TargetState,
+    target: &str,
+    owned: &[OwnedKeyMutation],
+) {
+    for change in owned {
+        diff.push_str(&format!("@@ {} @@\n", change.key_path));
+        if let TargetState::Present(bytes) = base {
+            let lines = String::from_utf8_lossy(bytes).lines().count();
+            diff.push_str(&format!("- <current file: {lines} line(s)>\n"));
+        }
+        match (&change.before_value_hash, &change.after_value_hash) {
+            (before, Some(after)) if before.as_ref() == Some(after) => {
+                diff.push_str("  <file retained unchanged>\n");
+            }
+            (_, Some(_)) => {
+                for line in target.lines() {
+                    diff.push_str(&format!("+ {line}\n"));
+                }
+            }
+            (_, None) => diff.push_str("+ <file removed>\n"),
+        }
+    }
+}
+
 fn append_preview_line(
     diff: &mut String,
     prefix: char,
@@ -2350,6 +2446,7 @@ fn append_preview_line(
     match format {
         ConfigFormat::Json => diff.push_str(&format!("{prefix} \"{name}\": {value}\n")),
         ConfigFormat::Toml => diff.push_str(&format!("{prefix} {name} = {value}\n")),
+        ConfigFormat::Markdown => diff.push_str(&format!("{prefix} {name}: {value}\n")),
     }
 }
 
@@ -3345,6 +3442,126 @@ mod tests {
             Some(commit.persisted_receipt)
         );
         assert!(!journal_path(&path).exists());
+    }
+
+    fn whole_file_request(
+        path: PathBuf,
+        operation: MutationKind,
+        target: &str,
+        prior_receipt: Option<InstallReceipt>,
+    ) -> MutationRequest {
+        MutationRequest {
+            operation,
+            client: "claude-code".to_owned(),
+            config_path: path,
+            config_format: ConfigFormat::Markdown,
+            target_contents: target.to_owned(),
+            owned_paths: vec!["agent_definition".to_owned()],
+            compresso_version: "0.1.0".to_owned(),
+            prior_receipt,
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_whole_file_uninstall_recovers_after_deletion_before_or_after_receipt_save() {
+        for receipt_saved_before_crash in [false, true] {
+            let directory = tempdir().expect("temp directory");
+            let path = directory.path().join("agents").join("agent.md");
+            let clock = Arc::new(FakeClock::new(1_700_000_000));
+            let manager = manager(clock.clone());
+            let receipts = MemoryReceiptStore::default();
+            let install = manager
+                .issue(whole_file_request(
+                    path.clone(),
+                    MutationKind::Install,
+                    "---\nname: agent\n---\nbody\n",
+                    None,
+                ))
+                .expect("install plan");
+            assert_eq!(install.backup_path, CREATED_FILE_BACKUP_SENTINEL);
+            let receipt = manager
+                .apply_install(&PlanApproval::from(&install), &receipts)
+                .expect("install applies and creates the directory");
+            let uninstall = manager
+                .issue(whole_file_request(
+                    path.clone(),
+                    MutationKind::Uninstall,
+                    "",
+                    Some(receipt.clone()),
+                ))
+                .expect("uninstall plan");
+            assert_eq!(uninstall.result_hash, hash_target(&TargetState::Missing));
+            assert_eq!(
+                uninstall.backup_path,
+                UNMODIFIED_FILE_REMOVED_BACKUP_SENTINEL
+            );
+            let current = read_target(&path).expect("installed file readable");
+            let canonical = authorize_uninstall_receipt(&uninstall, &current, &receipts)
+                .expect("active receipt authorizes uninstall");
+            let commit = build_commit(&uninstall, clock.now_unix_seconds(), Some(&canonical))
+                .expect("uninstall commit built");
+            write_journal(&path, &commit, &receipts).expect("journal written");
+            fs::remove_file(&path).expect("simulated deletion before the crash");
+            if receipt_saved_before_crash {
+                receipts
+                    .save(&commit.persisted_receipt)
+                    .expect("receipt committed");
+            }
+
+            let fresh =
+                PlanManager::with_clock("whole-file-recovery", clock).expect("fresh manager");
+            let report = fresh
+                .recover(&path, &receipts)
+                .expect("recovery succeeds")
+                .expect("journal recovered");
+            assert_eq!(
+                report.restore.expect("restore report").removed_keys,
+                ["agent_definition"]
+            );
+            assert!(!path.exists(), "recovery never recreates the deleted file");
+            assert!(!journal_path(&path).exists());
+            assert!(
+                receipts
+                    .active_for("claude-code", &path)
+                    .expect("active lookup")
+                    .is_none()
+            );
+            assert_eq!(
+                fs::read_dir(directory.path().join("agents"))
+                    .expect("directory")
+                    .count(),
+                0,
+                "no backup is kept for an unmodified Compresso file"
+            );
+        }
+    }
+
+    #[test]
+    fn test_whole_file_format_owns_exactly_one_path() {
+        let directory = tempdir().expect("temp directory");
+        let manager = manager(Arc::new(FakeClock::new(1_700_000_000)));
+        let mut request = whole_file_request(
+            directory.path().join("agent.md"),
+            MutationKind::Install,
+            "body\n",
+            None,
+        );
+        request.owned_paths.push("second".to_owned());
+        assert!(matches!(
+            manager.issue(request),
+            Err(IntegrationError::InvalidRequest { .. })
+        ));
+        let empty = whole_file_request(
+            directory.path().join("agent.md"),
+            MutationKind::Install,
+            "",
+            None,
+        );
+        assert!(
+            manager.issue(empty).is_err(),
+            "an install must write the owned file"
+        );
     }
 
     #[test]

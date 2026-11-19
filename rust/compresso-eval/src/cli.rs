@@ -425,6 +425,7 @@ mod tests {
                 protected_probe_recall: 1.0,
                 overall_probe_recall: 1.0,
             },
+            retrieval: None,
         }
     }
 

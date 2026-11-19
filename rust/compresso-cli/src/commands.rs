@@ -34,7 +34,8 @@ pub use integrations::{IntegrationEnvironment, execute_integrations};
 pub use recall::{RecallArgs, RecallEnvironment, RecallSourceArg, execute_recall};
 pub use repos::{ReposCommand, ReposListArgs, ReposRemoveArgs};
 pub use retrieval::{
-    ContextArgs, ImpactArgs, MapArgs, OutlineArgs, ReadArgs, SearchArgs, UnfoldArgs,
+    ContextArgs, GrepArgs, ImpactArgs, MapArgs, OutlineArgs, ReadArgs, SearchArgs, TraceArgs,
+    UnfoldArgs,
 };
 pub use setup::{
     SetupArgs, SetupClientArg, SetupRuntime, SystemSetupRuntime, execute_setup,
@@ -60,11 +61,15 @@ pub enum RootCommand {
     Setup(SetupArgs),
     Map(MapArgs),
     Search(SearchArgs),
+    /// Search indexed file content for literal text or a regular expression.
+    Grep(GrepArgs),
     Read(ReadArgs),
     Outline(OutlineArgs),
     Unfold(UnfoldArgs),
     Context(ContextArgs),
     Impact(ImpactArgs),
+    /// Show who calls a symbol, what it calls, or how one reaches another.
+    Trace(TraceArgs),
     Compress(CompressArgs),
     Explain(ExplainArgs),
     /// Summarize locally recorded savings. Covers MCP sessions and `compress`;
@@ -172,6 +177,11 @@ pub struct IntegrationMutationArgs {
     /// transcripts (Claude Code and Codex only).
     #[arg(long, conflicts_with = "compaction_hook")]
     pub no_recall: bool,
+    /// Manage the opt-in Claude Code exploration agent definition
+    /// (`.claude/agents/compresso-explorer.md`) instead of the MCP server
+    /// entry. Project scope: `--project`, or else the working directory.
+    #[arg(long, conflicts_with_all = ["compaction_hook", "no_recall"])]
+    pub explore_agent: bool,
 }
 
 #[derive(Args, Debug)]
@@ -189,6 +199,10 @@ pub struct IntegrationReadArgs {
     /// not combined with `--project`).
     #[arg(long)]
     pub compaction_hook: bool,
+    /// Inspect the Claude Code exploration agent definition in `--project`,
+    /// or else the working directory, instead of the MCP server entry.
+    #[arg(long, conflicts_with = "compaction_hook")]
+    pub explore_agent: bool,
 }
 
 #[derive(Args, Debug, Default)]
@@ -876,11 +890,13 @@ impl RootCommand {
             self,
             Self::Map(_)
                 | Self::Search(_)
+                | Self::Grep(_)
                 | Self::Read(_)
                 | Self::Outline(_)
                 | Self::Unfold(_)
                 | Self::Context(_)
                 | Self::Impact(_)
+                | Self::Trace(_)
         )
     }
 
@@ -892,11 +908,13 @@ impl RootCommand {
             Self::Setup(arguments) => arguments.output.json,
             Self::Map(arguments) => arguments.output.json,
             Self::Search(arguments) => arguments.output.json,
+            Self::Grep(arguments) => arguments.output.json,
             Self::Read(arguments) => arguments.output.json,
             Self::Outline(arguments) => arguments.output.json,
             Self::Unfold(arguments) => arguments.output.json,
             Self::Context(arguments) => arguments.output.json,
             Self::Impact(arguments) => arguments.output.json,
+            Self::Trace(arguments) => arguments.output.json,
             Self::Compress(arguments) => arguments.output.json,
             Self::Explain(arguments) => arguments.output.json,
             Self::Stats(arguments) => arguments.output.json,

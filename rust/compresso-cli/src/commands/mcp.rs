@@ -3,15 +3,16 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use compresso_core::{Config, Engine, StreamError, TokenProvider, counter_for};
-use compresso_mcp::{McpDeps, McpInputError, McpRecallOptions, McpRootError};
+use compresso_mcp::{
+    McpDeps, McpInputError, McpRecallOptions, McpRootError, McpServeOptions, McpToolProfile,
+};
 use compresso_recall::{RecallSource, SourceSupport};
 use compresso_store::Store;
 
 use super::recall::system_home_dir;
 use super::{CliExitCode, McpCommand, write_error};
 
-const USAGE: &str =
-    "mcp serve accepts only optional --root PATH and --recall-source SOURCE arguments";
+const USAGE: &str = "mcp serve accepts only optional --root PATH, --recall-source SOURCE, and --tools full|lean arguments";
 
 /// Operator-supplied `mcp serve` options.
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -19,6 +20,8 @@ struct ServeOptions {
     root: Option<PathBuf>,
     /// Session sources the operator explicitly enabled for `compresso_recall`.
     recall_sources: Vec<RecallSource>,
+    /// Advertised tool profile; `full` unless the operator opts into `lean`.
+    tools: McpToolProfile,
 }
 
 pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCode {
@@ -97,12 +100,10 @@ pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCo
     let ServeOptions {
         root,
         recall_sources,
+        tools,
     } = options;
-    let result = if recall_sources.is_empty() {
-        match root {
-            Some(root) => runtime.block_on(compresso_mcp::serve_stdio_for_root(deps, root)),
-            None => runtime.block_on(compresso_mcp::serve_stdio(deps)),
-        }
+    let recall = if recall_sources.is_empty() {
+        None
     } else {
         let Some(home_dir) = system_home_dir() else {
             let _ = write_error(
@@ -113,15 +114,19 @@ pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCo
             );
             return CliExitCode::Failure;
         };
-        runtime.block_on(compresso_mcp::serve_stdio_with_recall(
-            deps,
-            root,
-            McpRecallOptions {
-                home_dir,
-                sources: recall_sources,
-            },
-        ))
+        Some(McpRecallOptions {
+            home_dir,
+            sources: recall_sources,
+        })
     };
+    let result = runtime.block_on(compresso_mcp::serve_stdio_with_options(
+        deps,
+        McpServeOptions {
+            root,
+            recall,
+            tools,
+        },
+    ));
     match result {
         Ok(()) => CliExitCode::Success,
         Err(error) => {
@@ -148,6 +153,7 @@ pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCo
 
 fn parse_serve_arguments(arguments: &[OsString]) -> Result<ServeOptions, &'static str> {
     let mut options = ServeOptions::default();
+    let mut tools_seen = false;
     let mut arguments = arguments.iter();
     while let Some(argument) = arguments.next() {
         let (flag, inline) = match argument.to_str().and_then(|text| text.split_once('=')) {
@@ -178,6 +184,17 @@ fn parse_serve_arguments(arguments: &[OsString]) -> Result<ServeOptions, &'stati
             if !options.recall_sources.contains(&source) {
                 options.recall_sources.push(source);
             }
+        } else if flag == OsStr::new("--tools") {
+            if tools_seen {
+                return Err("--tools may be given only once");
+            }
+            tools_seen = true;
+            options.tools = inline
+                .or_else(|| arguments.next().cloned())
+                .as_deref()
+                .and_then(OsStr::to_str)
+                .and_then(McpToolProfile::parse)
+                .ok_or("--tools requires full or lean")?;
         } else {
             return Err(USAGE);
         }
@@ -235,6 +252,7 @@ mod tests {
             ServeOptions {
                 root: Some(PathBuf::from("/repo")),
                 recall_sources: vec![RecallSource::Codex, RecallSource::ClaudeCode],
+                tools: McpToolProfile::Full,
             }
         );
         assert!(parse(&["--recall-source"]).is_err());
@@ -244,6 +262,25 @@ mod tests {
                 .unwrap_err()
                 .contains("unverified")
         );
+    }
+
+    #[test]
+    fn test_tool_profile_is_full_by_default_and_lean_only_explicitly() {
+        assert_eq!(parse(&[]).unwrap().tools, McpToolProfile::Full);
+        assert_eq!(
+            parse(&["--tools", "lean"]).unwrap().tools,
+            McpToolProfile::Lean
+        );
+        assert_eq!(
+            parse(&["--root=/repo", "--tools=full"]).unwrap().tools,
+            McpToolProfile::Full
+        );
+        let combined = parse(&["--tools", "lean", "--recall-source", "claude-code"]).unwrap();
+        assert_eq!(combined.tools, McpToolProfile::Lean);
+        assert_eq!(combined.recall_sources, vec![RecallSource::ClaudeCode]);
+        assert!(parse(&["--tools"]).is_err());
+        assert!(parse(&["--tools", "minimal"]).is_err());
+        assert!(parse(&["--tools", "lean", "--tools", "lean"]).is_err());
     }
 
     #[test]

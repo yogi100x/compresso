@@ -8,7 +8,8 @@
       "target/**",
       "node_modules/**",
       ".code-review-graph/**",
-      "fixtures/integrations/malformed.json"
+      "fixtures/integrations/malformed.json",
+      "fixtures/retrieval/repo/**"
     ],
     "ignoreUnknown": true
   },

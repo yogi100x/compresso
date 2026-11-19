@@ -210,6 +210,13 @@ impl Store {
     // files & symbols (used only by atlas)
     pub fn upsert_file(&self, repo: RepoId, rec: &FileRecord) -> Result<FileId>;
     pub fn replace_indexed_file(&self, repo: RepoId, rec: &FileRecord, symbols: &[SymbolRecord], edges: &[EdgeRecord]) -> Result<FileId>; // one per-file transaction
+    pub fn replace_indexed_file_with_calls(&self, repo: RepoId, rec: &FileRecord, symbols: &[SymbolRecord], edges: &[EdgeRecord], calls: &[CallSiteRecord]) -> Result<FileId>; // same transaction also replaces the file's call_sites (D89); replace_indexed_file == calls: &[]
+    pub fn indexed_symbols_named(&self, repo: RepoId, name: &str) -> Result<Vec<IndexedSymbol>>; // call-graph resolution (D89/D90): every exact-name definition, path/line order; IndexedSymbol { id, path, language, symbol }
+    pub fn symbols_named(&self, repo: RepoId, name: &str, limit: usize) -> Result<Vec<SymbolHit>>; // context planner (D88): bounded exact-name lookup; not the call-graph lookup above
+    pub fn symbols_by_ids(&self, repo: RepoId, ids: &[i64]) -> Result<Vec<IndexedSymbol>>; // other repositories' ids skipped
+    pub fn call_sites_from(&self, repo: RepoId, caller_ids: &[i64]) -> Result<Vec<StoredCallSite>>; // calls inside these callers
+    pub fn call_sites_named(&self, repo: RepoId, callee_name: &str) -> Result<Vec<StoredCallSite>>; // every call naming callee_name
+    pub fn call_site_count(&self, repo: RepoId) -> Result<usize>;
     pub fn file_hashes(&self, repo: RepoId) -> Result<HashMap<String, String>>;  // path -> blake3
     pub fn indexed_files(&self, repo: RepoId) -> Result<Vec<FileRecord>>; // deterministic path order
     pub fn indexed_file(&self, repo: RepoId, path: &str) -> Result<Option<FileRecord>>;
@@ -260,7 +267,7 @@ impl ParserRegistry {
 pub enum ImportKind { Use, Import, ExportFrom, Require, FromImport }
 pub struct ImportRecord { pub raw: String, pub kind: ImportKind, pub resolved_path: Option<String>, pub resolution: ImportResolution }
 pub enum ImportResolution { Resolved, Ambiguous(Vec<String>), Unresolved(String) }
-pub struct Extraction { pub symbols: Vec<SymbolRecord>, pub imports: Vec<ImportRecord> }
+pub struct Extraction { pub symbols: Vec<SymbolRecord>, pub imports: Vec<ImportRecord>, pub calls: Vec<CallSiteRecord> } // calls: D89; CallSiteRecord { caller /* index into symbols */, callee_name, qualifier, form: CallForm /* Plain|Path|SelfRef|Receiver|Reference */, line }; at most MAX_CALLS_PER_FILE (4,096) kept and MAX_CALL_NODES_PER_FILE (65,536) examined per file; pub calls_truncated: bool
 // code languages use pinned tree-sitter queries in queries/<lang>.scm; shell and inert text use bounded, non-executing structural scanners; all kinds normalize to store vocabulary
 
 // indexer.rs
@@ -271,7 +278,7 @@ impl Indexer<'_> {
     // pipeline: canonicalize+approve root -> scan -> parse ONLY added/changed -> replace_indexed_file per file transaction -> delete removed -> stamp index_versions
 }
 pub enum IndexProgress { Parsing { path: PathBuf }, Removed { path: String } }
-pub struct IndexReport { pub files_indexed: usize, pub files_removed: usize, pub files_skipped: usize, pub symbols: usize, pub imports_resolved: usize, pub imports_unresolved: usize, pub duration_ms: u64, pub stale: bool }
+pub struct IndexReport { pub files_indexed: usize, pub files_removed: usize, pub files_skipped: usize, pub symbols: usize, pub imports_resolved: usize, pub imports_unresolved: usize, pub call_sites: usize, pub call_site_files_truncated: usize, pub call_site_files_rejected: usize /* E17-29: call sites the store would refuse; the file is written without them */, pub duration_ms: u64, pub stale: bool }
 
 // queries.rs — all read-only, all bounded by token budget
 pub struct RepoMap { pub rendered: String, pub files_total: usize, pub files_shown: usize, pub truncated: bool, pub tokens_used: usize, pub token_provider: TokenProvider }
@@ -291,8 +298,18 @@ pub struct SearchDiagnostic { pub code: SearchDiagnosticCode, pub message: Strin
 pub struct SearchReport { pub hits: Vec<SearchHit>, pub diagnostics: Vec<SearchDiagnostic> }
 pub fn validate_search_query(query: &str) -> Result<(), QueryError>; // QueryError::InvalidSearchQuery { position /* byte offset */, reason }
 pub fn search_with_diagnostics(store: &Store, repo: RepoId, query: &str, options: SearchOptions<'_>) -> Result<SearchReport>; // errors only for InvalidSearchQuery / InvalidSearchPath
-pub fn read_bounded(root: &Path, path: &str, range: Option<(u32, u32)>, budget_tokens: usize, counter: &dyn TokenCounter) -> Result<BoundedRead>; // path canonicalized, MUST be under approved root; files over MAX_READ_FILE_BYTES (16 MiB) fail with QueryError::FileTooLarge before loading (D77) (symlink-resolved)
+// grep.rs (E17-22, D87) — bounded content search over indexed files; linear-time `regex` engine; same read gates as read_bounded
+pub struct GrepOptions<'a> { pub patterns: &'a [String], pub regex: bool, pub case_insensitive: bool, pub path: Option<&'a str>, pub max_files: usize, pub max_matches_per_file: usize, pub context_lines: usize /* 0..=10, E17-29 */ } // path: prefix or glob (*, **, ?); GrepLine gains before/after: Vec<GrepContextLine { line, text }>
+pub fn validate_grep(options: &GrepOptions<'_>) -> Result<(), GrepError>; // GrepError: NoPatterns, TooManyPatterns, EmptyPattern, PatternTooLong, PatternControlCharacter, InvalidPattern, InvalidPathFilter, InvalidLimit, InvalidContext (AtlasError::Grep)
+pub fn grep(store: &Store, repo: RepoId, options: &GrepOptions<'_>) -> Result<GrepReport>; // GrepReport { results: Vec<GrepPatternResult>, files_scanned, bytes_scanned, files_in_scope, files_skipped_oversize, files_skipped_unreadable, stale_files, scan_truncated, output_truncated }; fit_to_budget(budget, counter), render_text(), complete() /* false when files were skipped */; regex patterns stop at GREP_REGEX_MAX_BYTES_PER_PATTERN (64 MiB) and set scan_truncated
+pub fn read_bounded(root: &Path, path: &str, range: Option<(u32, u32)>, budget_tokens: usize, counter: &dyn TokenCounter) -> Result<BoundedRead>; // path canonicalized, MUST be under approved root; files over MAX_READ_FILE_BYTES (16 MiB) fail with QueryError::FileTooLarge before loading (D77) (symlink-resolved); a secret canonical target or any symbolic-link component below the root reads as NotFound, and on Unix the opened handle must be the inode the gate approved (04 §1.5a, E17-29)
+pub fn read_bounded_ranges(root: &Path, requests: &[ReadRequest<'_>], budget_tokens: usize, counter: &dyn TokenCounter) -> Result<Vec<Result<BoundedRead>>>; // E17-29: ReadRequest { path, start_line: Option<u32>, end_line: Option<u32> }, 1..=READ_MAX_RANGES (8); validate_read_requests rejects the whole list (QueryError::InvalidReadRanges); each range gated on its own; budget shared in order, equal share of what is left
 pub fn impact(store: &Store, repo: RepoId, path: &str) -> Result<ImpactReport>;              // reverse-edge closure, depth 2
+// trace.rs (D90) — call sites resolved at query time (ADR-0033); reads only
+pub fn trace(store: &Store, repo: RepoId, from: Option<&str>, to: Option<&str>, options: TraceOptions) -> Result<TraceReport>; // both: shortest paths; from: callees; to: callers. TraceOptions { max_depth: Option<u8> /* 1..=8; None = 6 path, 1 neighbors */, max_paths /* 1..=10 */, max_nodes /* 1..=20000 */, max_results /* 1..=500 */ }; QueryError::InvalidTraceOptions on bad bounds; at most TRACE_MAX_CALL_SITE_ROWS (100,000) call-site rows read per trace, reaching it sets truncated (E17-29); CallGraphMissing unless the stamped parser version carries `+calls-v1`, which with_parser_version appends
+// TraceHop and TraceNeighbor carry `reference: bool` (a function passed as a call argument); TraceNeighbor also `cycle`
+pub enum TraceResult { Paths(Vec<Vec<TraceHop>>), NoPath, Callees(Vec<TraceNeighbor>), Callers(Vec<TraceNeighbor>), Ambiguous { end, candidates, total }, NotFound { end, name }, CallGraphMissing }
+pub struct TraceReport { pub result: TraceResult, pub total: usize, pub nodes_visited: usize, pub depth_reached: u8, pub max_depth: u8, pub truncated: bool, pub depth_limited: bool /* path search, or explicit max_depth */, pub complete: bool /* among recorded calls and references */, pub unfollowed: Vec<UnfollowedCall>, pub unfollowed_total: usize }
 pub fn plan_context(store: &Store, repo: RepoId, task: &str, budget_tokens: usize) -> Result<ContextPlan>; // search-driven pack: focused map + file-diverse evidence excerpts within budget
 ```
 
@@ -305,7 +322,7 @@ pub async fn serve_stdio(deps: McpDeps) -> anyhow::Result<()>;   // binds cwd's 
 pub async fn serve_stdio_for_root(deps: McpDeps, root: PathBuf) -> anyhow::Result<()>; // exact approved canonical root or actionable startup failure
 pub struct McpDeps { pub store: Store, pub engine: Engine, pub config: Config }
 // One rmcp #[tool] handler per tool in 04-mcp-and-integrations.md §1; handlers call atlas/engine, record operations, and are pure request/response (no background tasks). Repository tools can only use the immutable session root; compression/stats/explain remain available in an unbound session.
-// Server instructions string: <=200 words, factual, lists tools, never instructs client to prefer Compresso over its own policy (build-doc §13.4).
+// Server instructions string (default profile): <=200 words, factual, lists tools, never instructs client to prefer Compresso over its own policy (build-doc §13.4), because it reaches every installed client without opt-in; compresso_grep is listed neutrally as "text search of indexed files with use sites" (D87). Opt-in surfaces (the lean profile's generated instructions, D92, §12; the exploration agent, D93) may direct the model to explore with Compresso "instead of shell search"; a tool description may state what the tool replaces (instruction-wording rule as amended 2026-11-19 in D92, 04 §1.2).
 ```
 
 ## 6. compresso-integrations
@@ -453,6 +470,16 @@ Public surfaces added by E17. Every one is local: none opens a network connectio
 - **`compresso-core::background_spawn`** (E17-05): `CREATE_NO_WINDOW`, `background_creation_flags()`, and `suppress_console_window(set_flags)`. Every child-process launch routes through it. The only permitted launch site is `compresso-cli::commands::mcp_probe` (ADR-0028).
 - **`compresso-recall`** (E17-02, new crate, `bounded-local`): `recall(&RecallRequest) -> Result<RecallReport, RecallError>`, plus `RecallRequest`, `RecallScope`, `RecallLimits`, `RecallHit`, `SourceReport`, `SourceStatus`, `RecallSource`, `SourceSupport`, `redact`, and `Redaction`. It reads transcripts read-only, keeps no index, and redacts before matching. E15-14's indexed recall extends this crate instead of creating a new one.
 - **`compresso-atlas::search`** (E17-07): `search_with_diagnostics(SearchOptions) -> SearchReport`, `SearchDiagnostic`, `SearchDiagnosticCode`, `validate_search_query`, and `SEARCH_MIN_QUERY_CHARS`. Multi-word queries match every term, with exact-phrase hits ranked first.
+- **`compresso-atlas::grep`** (E17-22, D87): `grep(&GrepOptions) -> GrepReport`, `validate_grep`, `GrepError`, `GrepFile`, `GrepLine`, `GrepPatternResult`, and the `GREP_MAX_*` bounds. Served as the `compresso_grep` MCP tool and the `compresso grep` CLI command (04 §1.4a).
+- **`compresso-store`** (E17-23, D88): `Store::symbols_named(repo, name, limit) -> Vec<SymbolHit>`, an exact, case-sensitive bare-name lookup through the `symbols(name)` index, path and line ordered, used by the context planner to resolve identifiers a task writes verbatim. It is distinct from `Store::indexed_symbols_named(repo, name) -> Vec<IndexedSymbol>` (E17-24, D89), the unbounded lookup `trace` uses to resolve call sites.
 - **`compresso-mcp`**: `tool_names()` (the served tool list, used by the drift-lint inventory) and `reminder::routing_reminder()` with `ROUTING_REMINDER_MAX_BYTES` = 640 (E17-01). The `compresso_recall` tool is served only when the server starts with `--recall-source`.
 - **`compresso-cli::surface`** (E17-08): `surface_inventory() -> serde_json::Value` (`SURFACE_SCHEMA_VERSION` = 1). It generates the CLI/MCP/config inventory consumed by `scripts/doc-drift-lint.ts`.
 - **`compresso-eval::campaign`** (E17-10): `CampaignRunner`, `CampaignPolicy`, `CampaignOutcome`, `StartMode`, `Checkpoint`, `TaskState`, `SuiteAdapter`, `SuiteDescriptor`, `TaskSpec`, `TaskContext`, `AdapterKind`, `resolve_adapter`, `FixtureSuiteAdapter`, and `CampaignReport`, exposed by the separate `compresso-eval-campaign` binary. Adapters for external suites are opt-in and not built in.
+
+## 12. E17-26..28 interfaces (owner-confirmed 2026-11-19)
+
+Opt-in surfaces for lower fixed overhead, tool substitution, and orientation (D91-D93). Defaults are unchanged; none adds a network or process capability.
+
+- **`compresso-mcp::profile`** (E17-27, D92): `McpToolProfile::{Full (default), Lean}` with `parse("full"|"lean")` and `name()`; `lean_tool_allowlist()` (the `LEAN_TOOLS` rows: context, repo_map, search, grep, trace, outline, unfold, read, recall); `McpServeOptions { root, recall, tools }` with `serve_stdio_with_options` / `serve_io_with_options` (the older `serve_*` entry points keep the full profile); `advertised_surface(profile, recall_enabled) -> (Vec<Tool>, String)` returns the exact advertised tools and instructions. `tool_names()` is unchanged and still lists every registered tool. CLI: `compresso mcp serve --tools full|lean`, combinable with `--root` and `--recall-source`.
+- **`compresso-atlas::cards`** (E17-26, D91): `module_cards(store, repo, root, CardOptions { path, max_cards, budget_tokens }) -> Result<ModuleCards, AtlasError>`; `ModuleCards { cards, cards_total, tokens_used, token_provider, truncated }`; `ModuleCard { path, purpose, files, symbols, entry_points, public_symbols: Vec<CardSymbol>, depends_on, depends_on_total, used_by, used_by_total, rendered, tokens }`; `CardSymbol { name, kind, file, line }`; `DEFAULT_MAX_CARDS` = 12, `MAX_CARDS` = 50. Read-only, deterministic, no model call; `path` is validated like `repo_map_focused`'s focus. `repo_map` and `repo_map_focused` are unchanged. MCP `compresso_repo_map` gains opt-in `cards` and `path`; CLI `compresso map` gains `--cards`, `--path`, and `--max-cards` (04 §1.3).
+- **`compresso-integrations::explore_agent`** (E17-28, D93, ADR-0034): `ExploreAgentIntegration::new(user_home, compresso_tools)` implementing `Integration` (client `claude-code`), plus `config_path(scope)`, `render()`, and `EXPLORE_AGENT_NAME` = `compresso-explorer`. `ConfigFormat::Markdown` is a whole-file owned format whose empty uninstall target deletes the file; `UNMODIFIED_FILE_REMOVED_BACKUP_SENTINEL`; `IntegrationError::UserFilePresent { path }` (CLI code `user_file_present`). CLI: `--explore-agent` on `integrations install|uninstall|status|verify` (04 §2.6). The CLI passes `compresso_mcp::lean_tool_allowlist()` minus `compresso_recall` as the agent's Compresso tools.

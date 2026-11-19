@@ -3,8 +3,10 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args, ValueEnum};
 use compresso_atlas::{
-    AtlasError, BoundedRead, ContextPlan, QueryError, SearchOptions, UnfoldResult, file_line_count,
-    impact, outline, plan_context, read_bounded, repo_map, search_with_diagnostics, unfold,
+    AtlasError, BoundedRead, CardOptions, ContextPlan, DEFAULT_MAX_CARDS, GrepOptions, MAX_CARDS,
+    ModuleCard, QueryError, SearchOptions, UnfoldResult, file_line_count, grep, impact,
+    module_cards, outline, plan_context, read_bounded, repo_map, repository_stale,
+    search_with_diagnostics, unfold,
 };
 use compresso_core::{TokenProvider, counter_for};
 use compresso_store::{
@@ -14,12 +16,18 @@ use serde_json::{Value, json};
 
 use super::{OutputArgs, RootCommand};
 
+mod trace;
+pub use trace::TraceArgs;
+
 const DEFAULT_MAP_TOKENS: usize = 2_000;
 const DEFAULT_READ_TOKENS: usize = 2_000;
 const DEFAULT_UNFOLD_TOKENS: usize = 4_000;
 const DEFAULT_CONTEXT_TOKENS: usize = 800;
 const DEFAULT_SEARCH_LIMIT: usize = 20;
 const DEFAULT_IMPACT_RESULTS: usize = 100;
+const DEFAULT_GREP_FILES: usize = 20;
+const DEFAULT_GREP_MATCHES_PER_FILE: usize = 5;
+const DEFAULT_GREP_TOKENS: usize = 1_500;
 const MIN_TOKEN_BUDGET: usize = 100;
 const MAX_TOKEN_BUDGET: usize = 100_000;
 
@@ -36,6 +44,15 @@ pub struct MapArgs {
     pub repository: RepositoryArgs,
     #[arg(long, default_value_t = DEFAULT_MAP_TOKENS)]
     pub max_tokens: usize,
+    /// Add deterministic per-directory module cards within --max-tokens.
+    #[arg(long)]
+    pub cards: bool,
+    /// Repository-relative directory whose subtree the cards cover; implies --cards.
+    #[arg(long, value_name = "REPO_PATH")]
+    pub path: Option<String>,
+    /// Maximum module cards (1-50).
+    #[arg(long, default_value_t = DEFAULT_MAX_CARDS)]
+    pub max_cards: usize,
     #[command(flatten)]
     pub output: OutputArgs,
 }
@@ -55,8 +72,50 @@ pub struct SearchArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct GrepArgs {
+    /// One to eight patterns, searched in one pass.
+    #[arg(required = true, num_args = 1..)]
+    pub patterns: Vec<String>,
+    #[command(flatten)]
+    pub repository: RepositoryArgs,
+    /// Treat patterns as regular expressions instead of literal text.
+    #[arg(long)]
+    pub regex: bool,
+    /// Match letters in any case.
+    #[arg(long, short = 'i')]
+    pub ignore_case: bool,
+    /// Repository-relative file or directory prefix, or a glob (`*`, `**`, `?`).
+    #[arg(long, value_name = "PATH_OR_GLOB")]
+    pub path: Option<String>,
+    /// Files listed per pattern (1-100).
+    #[arg(long, default_value_t = DEFAULT_GREP_FILES)]
+    pub max_files: usize,
+    /// Matching lines listed per file (1-50).
+    #[arg(long, default_value_t = DEFAULT_GREP_MATCHES_PER_FILE)]
+    pub max_matches_per_file: usize,
+    /// Lines shown before and after each listed match (0-10); overlapping
+    /// context is merged.
+    #[arg(long, short = 'C', default_value_t = 0)]
+    pub context_lines: usize,
+    #[arg(long, default_value_t = DEFAULT_GREP_TOKENS)]
+    pub max_tokens: usize,
+    #[command(flatten)]
+    pub output: OutputArgs,
+}
+
+#[derive(Args, Debug)]
 pub struct ReadArgs {
-    pub path: String,
+    /// Repository-relative file to read; omit when passing --range.
+    #[arg(required_unless_present = "ranges", conflicts_with = "ranges")]
+    pub path: Option<String>,
+    /// Read several ranges in one call (repeat up to 8 times) under one
+    /// shared --max-tokens: `PATH`, `PATH:START`, or `PATH:START-END`.
+    #[arg(
+        long = "range",
+        value_name = "PATH[:START[-END]]",
+        conflicts_with_all = ["start_line", "end_line"]
+    )]
+    pub ranges: Vec<String>,
     #[command(flatten)]
     pub repository: RepositoryArgs,
     #[arg(long)]
@@ -152,20 +211,47 @@ pub(crate) fn execute(
     match command {
         RootCommand::Map(arguments) => execute_map(store, cwd, arguments),
         RootCommand::Search(arguments) => execute_search(store, cwd, arguments),
+        RootCommand::Grep(arguments) => execute_grep(store, cwd, arguments),
         RootCommand::Read(arguments) => execute_read(store, cwd, arguments),
         RootCommand::Outline(arguments) => execute_outline(store, cwd, arguments),
         RootCommand::Unfold(arguments) => execute_unfold(store, cwd, arguments),
         RootCommand::Context(arguments) => execute_context(store, cwd, arguments),
         RootCommand::Impact(arguments) => execute_impact(store, cwd, arguments),
+        RootCommand::Trace(arguments) => trace::execute_trace(store, cwd, arguments),
         _ => Err(RetrievalError::internal()),
     }
 }
 
 fn execute_map(store: &Store, cwd: &Path, arguments: MapArgs) -> Result<Rendered, RetrievalError> {
     validate_budget(arguments.max_tokens)?;
+    if !(1..=MAX_CARDS).contains(&arguments.max_cards) {
+        return Err(RetrievalError::invalid(
+            "max-cards must be between 1 and 50",
+        ));
+    }
     let repository = resolve_repository(store, arguments.repository.root.as_deref(), cwd)?;
-    let result = repo_map(store, repository.id, arguments.max_tokens).map_err(map_atlas_error)?;
-    let data = json!({
+    let with_cards = arguments.cards || arguments.path.is_some();
+    // Cards take up to three quarters of the budget; the map keeps the rest.
+    let cards = with_cards
+        .then(|| {
+            module_cards(
+                store,
+                repository.id,
+                &repository.root,
+                CardOptions {
+                    path: arguments.path.as_deref(),
+                    max_cards: arguments.max_cards,
+                    budget_tokens: arguments.max_tokens.saturating_mul(3) / 4,
+                },
+            )
+        })
+        .transpose()
+        .map_err(map_atlas_error)?;
+    let map_budget = arguments
+        .max_tokens
+        .saturating_sub(cards.as_ref().map_or(0, |cards| cards.tokens_used));
+    let result = repo_map(store, repository.id, map_budget).map_err(map_atlas_error)?;
+    let mut data = json!({
         "root": repository.root,
         "map": result.rendered.clone(),
         "files_total": result.files_total,
@@ -174,7 +260,51 @@ fn execute_map(store: &Store, cwd: &Path, arguments: MapArgs) -> Result<Rendered
         "token_provider": result.token_provider,
         "truncated": result.truncated,
     });
-    Ok(rendered(data, result.rendered))
+    let mut human = result.rendered;
+    if let (Some(cards), Some(object)) = (cards, data.as_object_mut()) {
+        object.insert(
+            "cards".to_owned(),
+            Value::Array(cards.cards.iter().map(card_json).collect()),
+        );
+        object.insert("cards_total".to_owned(), json!(cards.cards_total));
+        object.insert("cards_shown".to_owned(), json!(cards.cards.len()));
+        object.insert("cards_tokens_used".to_owned(), json!(cards.tokens_used));
+        object.insert("cards_truncated".to_owned(), json!(cards.truncated));
+        for card in &cards.cards {
+            human.push_str("\n\n");
+            human.push_str(&card.rendered);
+        }
+        if cards.truncated {
+            human.push_str(&format!(
+                "\n\n[{} of {} module cards shown]",
+                cards.cards.len(),
+                cards.cards_total
+            ));
+        }
+    }
+    Ok(rendered(data, human))
+}
+
+fn card_json(card: &ModuleCard) -> Value {
+    json!({
+        "path": card.path,
+        "purpose": card.purpose,
+        "files": card.files,
+        "symbols": card.symbols,
+        "entry_points": card.entry_points,
+        "public_symbols": card.public_symbols.iter().map(|symbol| json!({
+            "name": symbol.name,
+            "kind": symbol_kind_name(symbol.kind),
+            "file": symbol.file,
+            "line": symbol.line,
+        })).collect::<Vec<_>>(),
+        "depends_on": card.depends_on,
+        "depends_on_total": card.depends_on_total,
+        "used_by": card.used_by,
+        "used_by_total": card.used_by_total,
+        "rendered": card.rendered,
+        "tokens": card.tokens,
+    })
 }
 
 fn execute_search(
@@ -230,13 +360,101 @@ fn execute_search(
     Ok(rendered_pretty(data))
 }
 
+fn execute_grep(
+    store: &Store,
+    cwd: &Path,
+    arguments: GrepArgs,
+) -> Result<Rendered, RetrievalError> {
+    validate_budget(arguments.max_tokens)?;
+    let options = GrepOptions {
+        patterns: &arguments.patterns,
+        regex: arguments.regex,
+        case_insensitive: arguments.ignore_case,
+        path: arguments.path.as_deref(),
+        max_files: arguments.max_files,
+        max_matches_per_file: arguments.max_matches_per_file,
+        context_lines: arguments.context_lines,
+    };
+    compresso_atlas::validate_grep(&options)
+        .map_err(|error| RetrievalError::invalid(&error.to_string()))?;
+    let repository = resolve_repository(store, arguments.repository.root.as_deref(), cwd)?;
+    let report = grep(store, repository.id, &options).map_err(map_atlas_error)?;
+    let stale = repository_stale(store, repository.id).map_err(map_atlas_error)?;
+    let counter = counter_for(TokenProvider::OpenAiO200k);
+    let report = report.fit_to_budget(arguments.max_tokens, counter);
+    let human = report.render_text();
+    let results = report
+        .results
+        .iter()
+        .map(|result| {
+            json!({
+                "pattern": result.pattern,
+                "matches_total": result.matches_total,
+                "files_total": result.files_total,
+                "files": result.files.iter().map(|file| json!({
+                    "path": file.path,
+                    "matches_total": file.matches_total,
+                    "stale": file.stale,
+                    "lines": file.lines.iter().map(grep_line_json).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let data = json!({
+        "mode": if arguments.regex { "regex" } else { "literal" },
+        "case_insensitive": arguments.ignore_case,
+        "path": arguments.path,
+        "results": results,
+        "scan": {
+            "files_in_scope": report.files_in_scope,
+            "files_scanned": report.files_scanned,
+            "files_skipped_oversize": report.files_skipped_oversize,
+            "files_skipped_unreadable": report.files_skipped_unreadable,
+            "stale_files": report.stale_files,
+            "scan_truncated": report.scan_truncated,
+        },
+        "complete": report.complete(),
+        "stale": stale,
+        "tokens_used": counter.count(&human),
+        "token_provider": counter.provider(),
+        "truncated": !report.complete(),
+    });
+    Ok(rendered(data, human))
+}
+
+/// One listed match; `before` and `after` appear only when context was asked for.
+fn grep_line_json(line: &compresso_atlas::GrepLine) -> Value {
+    let mut value = json!({
+        "line": line.line,
+        "snippet": line.snippet,
+        "symbol": line.symbol,
+        "definition": line.definition,
+    });
+    let context = |lines: &[compresso_atlas::GrepContextLine]| {
+        lines
+            .iter()
+            .map(|line| json!({ "line": line.line, "text": line.text }))
+            .collect::<Vec<_>>()
+    };
+    if !line.before.is_empty() {
+        value["before"] = Value::Array(context(&line.before));
+    }
+    if !line.after.is_empty() {
+        value["after"] = Value::Array(context(&line.after));
+    }
+    value
+}
+
 fn execute_read(
     store: &Store,
     cwd: &Path,
     arguments: ReadArgs,
 ) -> Result<Rendered, RetrievalError> {
     validate_budget(arguments.max_tokens)?;
-    if arguments.path.is_empty() {
+    let Some(path) = arguments.path.as_deref() else {
+        return execute_read_ranges(store, cwd, &arguments);
+    };
+    if path.is_empty() {
         return Err(RetrievalError::invalid("path must not be empty"));
     }
     let repository = resolve_repository(store, arguments.repository.root.as_deref(), cwd)?;
@@ -250,20 +468,108 @@ fn execute_read(
         (Some(start_line), None) => {
             // Only the line count is needed to close the range; a full read
             // would tokenize the whole file to learn it.
-            let total_lines =
-                file_line_count(&repository.root, &arguments.path).map_err(map_atlas_error)?;
+            let total_lines = file_line_count(&repository.root, path).map_err(map_atlas_error)?;
             Some((start_line, total_lines))
         }
     };
-    let result = read_bounded(
+    let result = read_bounded(&repository.root, path, range, arguments.max_tokens, counter)
+        .map_err(map_atlas_error)?;
+    Ok(render_bounded_read(result))
+}
+
+/// `PATH`, `PATH:START`, or `PATH:START-END`; a suffix that is not a line
+/// range stays part of the path.
+fn parse_range_argument(argument: &str) -> compresso_atlas::ReadRequest<'_> {
+    let whole = compresso_atlas::ReadRequest {
+        path: argument,
+        start_line: None,
+        end_line: None,
+    };
+    let Some((path, range)) = argument.rsplit_once(':') else {
+        return whole;
+    };
+    let (start, end) = match range.split_once('-') {
+        Some((start, end)) => (start, Some(end)),
+        None => (range, None),
+    };
+    let Ok(start) = start.parse::<u32>() else {
+        return whole;
+    };
+    let end = match end.map(str::parse::<u32>) {
+        Some(Ok(end)) => Some(end),
+        Some(Err(_)) => return whole,
+        None => None,
+    };
+    compresso_atlas::ReadRequest {
+        path,
+        start_line: Some(start),
+        end_line: end,
+    }
+}
+
+fn execute_read_ranges(
+    store: &Store,
+    cwd: &Path,
+    arguments: &ReadArgs,
+) -> Result<Rendered, RetrievalError> {
+    let requests = arguments
+        .ranges
+        .iter()
+        .map(|range| parse_range_argument(range))
+        .collect::<Vec<_>>();
+    compresso_atlas::validate_read_requests(&requests).map_err(map_atlas_error)?;
+    let repository = resolve_repository(store, arguments.repository.root.as_deref(), cwd)?;
+    let counter = counter_for(TokenProvider::OpenAiO200k);
+    let reads = compresso_atlas::read_bounded_ranges(
         &repository.root,
-        &arguments.path,
-        range,
+        &requests,
         arguments.max_tokens,
         counter,
     )
     .map_err(map_atlas_error)?;
-    Ok(render_bounded_read(result))
+    let mut human = String::new();
+    let mut values = Vec::with_capacity(reads.len());
+    let (mut tokens_used, mut truncated, mut failed) = (0_usize, false, 0_usize);
+    for (request, read) in requests.iter().zip(reads) {
+        match read {
+            Ok(read) => {
+                tokens_used += read.tokens_used;
+                truncated |= read.truncated;
+                human.push_str(&format!(
+                    "==> {}:{}-{} <==\n{}",
+                    read.path, read.start_line, read.end_line, read.content
+                ));
+                if !read.content.is_empty() && !read.content.ends_with('\n') {
+                    human.push('\n');
+                }
+                if let Some(elision) = &read.elision {
+                    human.push_str(elision);
+                    human.push('\n');
+                }
+                values.push(render_bounded_read(read).json["data"].take());
+            }
+            Err(error) => {
+                failed += 1;
+                let failure = map_atlas_error(error);
+                human.push_str(&format!(
+                    "==> {} <==\n[{}] {}\n",
+                    request.path, failure.code, failure.message
+                ));
+                values.push(json!({
+                    "path": request.path,
+                    "error": { "code": failure.code, "message": failure.message },
+                }));
+            }
+        }
+    }
+    let data = json!({
+        "ranges": values,
+        "ranges_failed": failed,
+        "tokens_used": tokens_used,
+        "token_provider": counter.provider(),
+        "truncated": truncated,
+    });
+    Ok(rendered(data, human))
 }
 
 fn execute_outline(
@@ -496,18 +802,21 @@ fn render_context(task: String, plan: ContextPlan) -> Rendered {
             })
         })
         .collect::<Vec<_>>();
-    let bodies = plan
-        .symbol_bodies
-        .iter()
-        .map(|body| {
-            json!({
-                "path": body.path,
-                "symbol": symbol_json(&body.symbol),
-                "content": body.content,
-                "excerpt_end_line": body.excerpt_end_line,
-                "truncated": body.truncated,
-            })
+    let body_json = |body: &compresso_atlas::ContextSymbolBody| {
+        json!({
+            "path": body.path,
+            "symbol": symbol_json(&body.symbol),
+            "content": body.content,
+            "excerpt_start_line": body.excerpt_start_line,
+            "excerpt_end_line": body.excerpt_end_line,
+            "truncated": body.truncated,
         })
+    };
+    let bodies = plan.symbol_bodies.iter().map(body_json).collect::<Vec<_>>();
+    let referenced_constants = plan
+        .referenced_constants
+        .iter()
+        .map(body_json)
         .collect::<Vec<_>>();
     let data = json!({
         "task": task,
@@ -519,10 +828,17 @@ fn render_context(task: String, plan: ContextPlan) -> Rendered {
             "files_included": plan.evidence_files_included,
             "candidate_files": plan.evidence_files_total,
         },
+        "task_coverage": {
+            "concepts_covered": plan.task_concepts_covered,
+            "concepts_total": plan.task_concepts_total,
+            "uncovered": &plan.uncovered_concepts,
+            "sufficient": plan.concept_coverage_sufficient(),
+        },
         "plan": {
             "map_excerpt": map_excerpt,
             "outlines": outlines,
             "bodies": bodies,
+            "referenced_constants": referenced_constants,
         },
         "tokens_used": plan.tokens_used,
         "token_provider": plan.token_provider,
@@ -666,6 +982,7 @@ fn map_atlas_error(error: AtlasError) -> RetrievalError {
         AtlasError::OutsideRoot { .. } => RetrievalError::outside_root(),
         AtlasError::FileNotIndexed { .. } => RetrievalError::not_found(),
         AtlasError::Query(error) => map_query_error(error),
+        AtlasError::Grep(error) => RetrievalError::invalid(&error.to_string()),
         AtlasError::Store(error) => map_store_error(error),
         AtlasError::Scan(_) | AtlasError::Index(_) => RetrievalError::internal(),
     }
@@ -678,6 +995,8 @@ fn map_query_error(error: QueryError) -> RetrievalError {
         | QueryError::InvalidSearchQuery { .. }
         | QueryError::InvalidSearchPath { .. }
         | QueryError::InvalidImpactOptions { .. }
+        | QueryError::InvalidTraceOptions { .. }
+        | QueryError::InvalidReadRanges { .. }
         | QueryError::InvalidRange { .. }
         | QueryError::InvalidSymbolRange { .. }) => RetrievalError::invalid(&invalid.to_string()),
         QueryError::NotAFile { .. } => {

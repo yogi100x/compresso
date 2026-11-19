@@ -19,3 +19,17 @@ p95_ms_max = 200
 protected_min = 1.0
 # D40 / 06-fixtures.md §4.9: all recall probes require at least 99% recall.
 overall_min = 0.99
+
+[retrieval]
+# D84 / 06-fixtures.md §12: gated tasks of fixtures/retrieval/, known_gap tasks excluded.
+# D85: measured 1.0 on 20 gold tasks, body-only tasks included. D86: 1.0 on 22 gold tasks, gold
+# symbols included; one fully missed task (0.9545) fails.
+mean_recall_min = 0.96
+# D86: measured 0.3835 on 22 gold tasks (D85: 0.3400 on 20, floor 0.30; D84: 0.2557 on 15, floor
+# 0.22). The margin absorbs one extra evidence item per task; a common body word flooding the
+# decoy task fails.
+mean_precision_min = 0.34
+# D84: a ready pack that lacks a gold file, or answers an absent concept, has zero tolerance.
+false_ready_max = 0
+# D84: measured 1 (role-permission is withheld although its gold file is present).
+ready_mismatches_max = 1

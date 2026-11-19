@@ -26,14 +26,16 @@ const PROJECT_CONFIG_RELATIVE_PATH: &str = ".cursor/mcp.json";
 const MAX_CLI_CANDIDATES: usize = 64;
 const MAX_APPLICATIONS: usize = 16;
 const MAX_VERSION_METADATA_BYTES: u64 = 256 * 1024;
-const EXPECTED_MCP_TOOLS: [&str; 10] = [
+const EXPECTED_MCP_TOOLS: [&str; 12] = [
     "compresso_repo_map",
     "compresso_search",
+    "compresso_grep",
     "compresso_read",
     "compresso_outline",
     "compresso_unfold",
     "compresso_context",
     "compresso_impact",
+    "compresso_trace",
     "compresso_compress",
     "compresso_stats",
     "compresso_explain",

@@ -118,6 +118,7 @@ fn test_eval_measurement_is_not_censored_by_the_engine_deadline() {
             .expect("runner lock should not be poisoned");
         EvalRunner.run(&FixtureSet {
             fixtures: vec![fixture],
+            retrieval: None,
         })
     };
     let row = &report.fixtures[0];
@@ -173,6 +174,7 @@ fn test_failed_expectation_isolated() {
         .clone();
     let isolated = FixtureSet {
         fixtures: vec![bad, good],
+        retrieval: None,
     };
 
     let report = {
@@ -238,6 +240,7 @@ fn test_atlas_fixture_is_evaluated_outside_compression_aggregates() {
             .expect("runner lock should not be poisoned");
         EvalRunner.run(&FixtureSet {
             fixtures: vec![atlas],
+            retrieval: None,
         })
     };
     let row = &report.fixtures[0];

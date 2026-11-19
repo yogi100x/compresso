@@ -385,6 +385,34 @@ async fn test_read_symlink_escape_via_mcp() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn test_indexed_file_swapped_for_a_symlink_to_a_secret_is_never_served() {
+    use std::os::unix::fs::symlink;
+
+    const SECRET: &str = "supersecret_swap_canary_5521";
+    let fixture = IndexedFixture::new();
+    fs::write(fixture.root.join(".env"), format!("TOKEN={SECRET}\n")).expect("secret file");
+    fs::remove_file(fixture.root.join("src/cache.rs")).expect("indexed file removed");
+    symlink(fixture.root.join(".env"), fixture.root.join("src/cache.rs")).expect("swap link");
+    let mut harness = Harness::start(fixture.store.clone()).await;
+
+    let mut read = fixture.arguments();
+    read.insert("path".to_owned(), json!("src/cache.rs"));
+    let response = harness.call("compresso_read", Value::Object(read)).await;
+    assert_tool_error(&response, "not_found");
+    assert!(!response.to_string().contains(SECRET));
+
+    let mut grep = fixture.arguments();
+    grep.insert("pattern".to_owned(), json!(SECRET));
+    let response = harness.call("compresso_grep", Value::Object(grep)).await;
+    assert!(!response.to_string().contains(&format!("TOKEN={SECRET}")));
+    let result = successful_json(response);
+    assert_eq!(result["results"][0]["matches_total"], 0);
+    assert_eq!(result["scan"]["files_skipped_unreadable"], 1);
+    harness.close().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn test_bound_root_retarget_cannot_leak_another_approved_repository() {
     use std::os::unix::fs::symlink;
 
@@ -1084,6 +1112,48 @@ async fn test_context_tool_only_advertises_two_calls_for_targeted_follow_up() {
 }
 
 #[tokio::test]
+async fn test_context_tool_generic_word_matches_do_not_claim_a_ready_pack() {
+    let fixture = IndexedFixture::new();
+    let mut harness = Harness::start(fixture.store.clone()).await;
+    let mut arguments = fixture.arguments();
+    arguments.insert(
+        "task".to_owned(),
+        json!("how does the session manager renew kerberos tickets from the keytab vault"),
+    );
+    arguments.insert("max_tokens".to_owned(), json!(4000));
+
+    let result = successful_json(
+        harness
+            .call("compresso_context", Value::Object(arguments))
+            .await,
+    );
+
+    assert_eq!(result["retrieval_status"], "matched");
+    assert_eq!(result["context_sufficiency"], "targeted_follow_up_needed");
+    assert_eq!(result["next_action"], "targeted_follow_up");
+    assert_eq!(result["targeted_follow_up_limit"], 2);
+    let uncovered = result["task_coverage"]["uncovered"]
+        .as_array()
+        .expect("uncovered concepts should be listed");
+    for missing in ["kerberos", "keytab", "vault"] {
+        assert!(
+            uncovered.iter().any(|term| term == missing),
+            "{missing} must be reported as uncovered: {uncovered:?}"
+        );
+    }
+    assert!(
+        result["task_coverage"]["concepts_covered"].as_u64()
+            < result["task_coverage"]["concepts_total"].as_u64()
+    );
+    assert_eq!(
+        result["budget_expanded"], false,
+        "a larger budget cannot add concepts the index did not match"
+    );
+    assert_eq!(result["budget_applied"], 800);
+    harness.close().await;
+}
+
+#[tokio::test]
 async fn test_context_tool_stale_pack_requests_reindex_without_targeted_calls() {
     let fixture = IndexedFixture::new();
     fs::write(
@@ -1314,4 +1384,113 @@ fn write_file(root: &Path, path: &str, source: &str) {
     )
     .expect("fixture parent should be created");
     fs::write(destination, source).expect("fixture should be written");
+}
+
+#[tokio::test]
+async fn test_read_ranges_reads_several_ranges_under_one_budget_and_gates_each() {
+    const IGNORED_CANARY: &str = "mcp_ranges_ignored_canary_2291";
+    const SECRET_CANARY: &str = "mcp_ranges_secret_canary_8830";
+    let fixture = IndexedFixture::new();
+    write_file(&fixture.root, ".gitignore", "private/\n");
+    write_file(&fixture.root, "private/notes.txt", IGNORED_CANARY);
+    write_file(&fixture.root, ".env", &format!("TOKEN={SECRET_CANARY}\n"));
+    let mut big = b"x".to_vec();
+    big.resize(17 * 1024 * 1024, b'x');
+    fs::write(fixture.root.join("big.txt"), big).expect("oversize file");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(fixture.root.join(".env"), fixture.root.join("link.txt"))
+        .expect("link");
+    let mut harness = Harness::start(fixture.store.clone()).await;
+
+    let mut arguments = fixture.arguments();
+    arguments.insert(
+        "ranges".to_owned(),
+        json!([
+            { "path": "src/session.rs", "start_line": 1, "end_line": 3 },
+            { "path": "src/sample.rs" },
+            { "path": ".env" },
+            { "path": "private/notes.txt", "start_line": 1 },
+            { "path": "big.txt" },
+            { "path": "link.txt" },
+            { "path": "src/cache.rs", "start_line": 2, "end_line": 50 },
+        ]),
+    );
+    arguments.insert("max_tokens".to_owned(), json!(300));
+    let response = harness
+        .call("compresso_read", Value::Object(arguments))
+        .await;
+    let serialized = response.to_string();
+    assert!(!serialized.contains(SECRET_CANARY));
+    assert!(!serialized.contains(IGNORED_CANARY));
+    let result = successful_json(response);
+    let ranges = result["ranges"].as_array().expect("ranges array");
+    assert_eq!(ranges.len(), 7);
+    assert_eq!(ranges[0]["path"], "src/session.rs");
+    assert_eq!(ranges[0]["range"]["end_line"], 3);
+    assert_eq!(ranges[0]["truncated"], false);
+    assert_eq!(
+        ranges[0]["content"],
+        "pub struct SessionManager {\n    attempts: usize,\n}\n"
+    );
+    assert_eq!(
+        ranges[1]["truncated"], true,
+        "a large file gets only its share"
+    );
+    assert_eq!(ranges[2]["error"]["code"], "not_found");
+    assert_eq!(ranges[3]["error"]["code"], "not_found");
+    assert_eq!(ranges[4]["error"]["code"], "file_too_large");
+    // A link to the secret where links exist; a missing file elsewhere.
+    assert_eq!(ranges[5]["error"]["code"], "not_found");
+    assert_eq!(ranges[6]["range_clamped"], true);
+    assert_eq!(result["ranges_failed"], 4);
+    assert_eq!(result["truncated"], true);
+    assert!(
+        result["tokens_used"]
+            .as_u64()
+            .is_some_and(|tokens| tokens <= 300)
+    );
+
+    // The single-range form is unchanged.
+    let mut single = fixture.arguments();
+    single.insert("path".to_owned(), json!("src/session.rs"));
+    let single = successful_json(harness.call("compresso_read", Value::Object(single)).await);
+    assert!(single.get("ranges").is_none());
+    assert_eq!(single["path"], "src/session.rs");
+
+    for bad in [
+        json!({ "ranges": [] }),
+        json!({ "ranges": "src/a.rs" }),
+        json!({ "ranges": [{ "start_line": 1 }] }),
+        json!({ "ranges": [{ "path": "src/session.rs", "end_line": 2 }] }),
+        json!({ "ranges": [{ "path": "src/session.rs", "start_line": 3, "end_line": 2 }] }),
+        json!({ "ranges": [{ "path": "src/session.rs", "extra": 1 }] }),
+        json!({ "ranges": [{ "path": "src/session.rs" }], "path": "src/session.rs" }),
+        json!({ "ranges": [{ "path": "src/session.rs" }], "gate": true }),
+        json!({ "ranges": vec![json!({ "path": "src/session.rs" }); 9] }),
+        json!({}),
+    ] {
+        let mut arguments = fixture.arguments();
+        if let Value::Object(extra) = bad {
+            arguments.extend(extra);
+        }
+        let response = harness
+            .call("compresso_read", Value::Object(arguments))
+            .await;
+        assert_tool_error(&response, "invalid_arguments");
+    }
+
+    // A path escaping the root fails that range only.
+    let mut arguments = fixture.arguments();
+    arguments.insert(
+        "ranges".to_owned(),
+        json!([{ "path": "../../etc/passwd" }, { "path": "src/cache.rs" }]),
+    );
+    let result = successful_json(
+        harness
+            .call("compresso_read", Value::Object(arguments))
+            .await,
+    );
+    assert_eq!(result["ranges"][0]["error"]["code"], "outside_root");
+    assert!(result["ranges"][1]["content"].is_string());
+    harness.close().await;
 }

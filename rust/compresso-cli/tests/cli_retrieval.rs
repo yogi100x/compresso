@@ -220,6 +220,45 @@ fn test_map_outline_and_context_use_approved_cwd_and_canonical_queries() {
     assert!(context["data"]["tokens_used"].as_u64().unwrap() <= 800);
     assert!(context["data"]["plan"]["outlines"].is_array());
     assert!(context["data"]["plan"]["bodies"].is_array());
+    assert!(context["data"]["plan"]["referenced_constants"].is_array());
+}
+
+#[test]
+fn test_map_cards_are_opt_in_bounded_and_zoomable() {
+    let fixture = Fixture::new();
+
+    let (_, plain, _) = fixture.run_json(&["map", "--json"]);
+    assert!(plain["data"].get("cards").is_none(), "cards are opt-in");
+
+    let (exit, output, errors) = fixture.run_json(&["map", "--cards", "--json"]);
+    assert_eq!(exit, CliExitCode::Success);
+    assert!(errors.is_null());
+    let card = &output["data"]["cards"][0];
+    assert_eq!(card["path"], "src");
+    assert_eq!(card["files"], 2);
+    assert!(
+        card["public_symbols"]
+            .as_array()
+            .expect("public symbols")
+            .iter()
+            .any(|symbol| symbol["name"] == "SessionManager" && symbol["kind"] == "struct")
+    );
+    assert_eq!(output["data"]["cards_total"], 1);
+    assert_eq!(output["data"]["cards_truncated"], false);
+    let used = output["data"]["tokens_used"].as_u64().unwrap()
+        + output["data"]["cards_tokens_used"].as_u64().unwrap();
+    assert!(used <= 2_000);
+
+    let (exit, zoomed, _) = fixture.run_json(&["map", "--path", "missing", "--json"]);
+    assert_eq!(exit, CliExitCode::Success);
+    assert_eq!(zoomed["data"]["cards"], serde_json::json!([]));
+
+    let (exit, _, errors) = fixture.run_json(&["map", "--cards", "--max-cards", "0", "--json"]);
+    assert_eq!(exit, CliExitCode::Failure);
+    assert_eq!(errors["error"]["code"], "invalid_arguments");
+    let (exit, _, errors) = fixture.run_json(&["map", "--path", "../escape", "--json"]);
+    assert_eq!(exit, CliExitCode::Failure);
+    assert_eq!(errors["error"]["code"], "invalid_arguments");
 }
 
 #[test]
@@ -323,6 +362,53 @@ fn test_search_multi_word_query_matches_symbols_containing_all_terms() {
     assert_eq!(exit, CliExitCode::Success);
     assert!(errors.is_null());
     assert_eq!(output["data"]["hits"], serde_json::json!([]));
+}
+
+#[test]
+fn test_grep_lists_use_sites_per_pattern_and_rejects_invalid_patterns() {
+    let fixture = Fixture::new();
+
+    let (exit, output, errors) = fixture.run_json(&[
+        "grep",
+        "SessionManager",
+        "fn importer",
+        "--path",
+        "src/*.rs",
+        "--root",
+        fixture.root_str(),
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success);
+    assert!(errors.is_null());
+    let results = &output["data"]["results"];
+    assert_eq!(results[0]["pattern"], "SessionManager");
+    assert_eq!(results[0]["files"][0]["path"], "src/session.rs");
+    assert_eq!(results[0]["files"][0]["lines"][0]["line"], 1);
+    assert_eq!(results[1]["files"][0]["path"], "src/importer.rs");
+    assert_eq!(output["data"]["complete"], true);
+
+    let (exit, _, ignored) = fixture.run_json(&[
+        "grep",
+        "sessionmanager",
+        "-i",
+        "--root",
+        fixture.root_str(),
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success);
+    assert!(ignored.is_null());
+
+    let (exit, output, errors) = fixture.run_json(&[
+        "grep",
+        "(",
+        "--regex",
+        "--root",
+        fixture.root_str(),
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Failure);
+    assert!(output.is_null());
+    assert_eq!(errors["error"]["code"], "invalid_arguments");
 }
 
 #[test]
@@ -447,3 +533,84 @@ const SESSION_SOURCE: &str = concat!(
     "pub fn duplicate(value: i32) -> i32 { value }\n",
     "pub fn duplicate(value: i64) -> i64 { value }\n",
 );
+
+#[test]
+fn test_grep_context_lines_and_multi_range_read() {
+    let fixture = Fixture::new();
+
+    let (exit, output, _) = fixture.run_json(&[
+        "grep",
+        "fn importer",
+        "-C",
+        "1",
+        "--root",
+        fixture.root_str(),
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success);
+    let line = &output["data"]["results"][0]["files"][0]["lines"][0];
+    assert_eq!(line["line"], 1);
+    assert!(line.get("before").is_none(), "nothing precedes line 1");
+    let (_, plain, _) = fixture.run_json(&[
+        "grep",
+        "fn importer",
+        "--root",
+        fixture.root_str(),
+        "--json",
+    ]);
+    assert!(
+        plain["data"]["results"][0]["files"][0]["lines"][0]
+            .get("after")
+            .is_none()
+    );
+    let (exit, _, errors) = fixture.run_json(&[
+        "grep",
+        "fn importer",
+        "-C",
+        "11",
+        "--root",
+        fixture.root_str(),
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Failure);
+    assert_eq!(errors["error"]["code"], "invalid_arguments");
+
+    let (exit, output, errors) = fixture.run_json(&[
+        "read",
+        "--range",
+        "src/session.rs:1-1",
+        "--range",
+        "src/importer.rs",
+        "--range",
+        ".env",
+        "--root",
+        fixture.root_str(),
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    let ranges = output["data"]["ranges"].as_array().expect("ranges");
+    assert_eq!(ranges.len(), 3);
+    assert_eq!(ranges[0]["end_line"], 1);
+    assert_eq!(ranges[1]["content"], "pub fn importer() {}\n");
+    assert_eq!(ranges[2]["error"]["code"], "not_found");
+    assert_eq!(output["data"]["ranges_failed"], 1);
+
+    let (exit, _, errors) = fixture.run_json(&[
+        "read",
+        "--range",
+        "src/session.rs:3-2",
+        "--root",
+        fixture.root_str(),
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Failure);
+    assert_eq!(errors["error"]["code"], "invalid_arguments");
+    let both = Cli::try_parse_from([
+        "compresso",
+        "read",
+        "src/session.rs",
+        "--range",
+        "src/importer.rs",
+    ]);
+    assert!(both.is_err(), "a path and --range are exclusive");
+}

@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::campaign::TaskState;
 use crate::fixtures::{AtlasExpectations, Fixture, FixtureInput, FixtureSet};
 use crate::recall::{EvalRunError, RecallReport, evaluate_corpus, validate_passthrough};
+use crate::retrieval::{RetrievalReport, evaluate_retrieval};
 
 static TEMPORARY_DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -30,6 +31,9 @@ pub struct EvalReport {
     pub fixtures: Vec<FixtureOutcome>,
     pub aggregate: AggregateMetrics,
     pub recall: RecallReport,
+    /// Present only when the fixture root has a `retrieval/` corpus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retrieval: Option<RetrievalReport>,
 }
 
 /// Whether a row exercises compression, repository indexing, or one task of
@@ -139,6 +143,7 @@ pub enum RunnerStage {
     LoadRepository,
     ReadEdges,
     SerializeTrace,
+    PlanContext,
 }
 
 /// Corpus metrics. `median_reduction_eligible` is a ratio in `[0, 1]` for the 0.25 gate.
@@ -188,11 +193,13 @@ impl EvalRunner {
             .collect::<Vec<_>>();
         let aggregate = aggregate_metrics(&fixtures);
         let recall = evaluate_corpus(&set.fixtures, &fixtures);
+        let retrieval = set.retrieval.as_ref().map(evaluate_retrieval);
         EvalReport {
             schema_version: 1,
             fixtures,
             aggregate,
             recall,
+            retrieval,
         }
     }
 }
@@ -639,12 +646,12 @@ fn panic_outcome(fixture: &Fixture) -> FixtureOutcome {
     }
 }
 
-struct TemporaryDirectory {
-    path: PathBuf,
+pub(crate) struct TemporaryDirectory {
+    pub(crate) path: PathBuf,
 }
 
 impl TemporaryDirectory {
-    fn new() -> io::Result<Self> {
+    pub(crate) fn new() -> io::Result<Self> {
         for _ in 0..100 {
             let suffix = TEMPORARY_DIRECTORY_COUNTER.fetch_add(1, Ordering::Relaxed);
             let path = std::env::temp_dir().join(format!("compresso-eval-{suffix}"));
@@ -667,7 +674,7 @@ impl Drop for TemporaryDirectory {
     }
 }
 
-fn copy_tree(source: &Path, destination: &Path) -> io::Result<()> {
+pub(crate) fn copy_tree(source: &Path, destination: &Path) -> io::Result<()> {
     fs::create_dir(destination)?;
     let mut entries = fs::read_dir(source)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(fs::DirEntry::file_name);
@@ -838,6 +845,9 @@ mod tests {
             symbols: 1,
             imports_resolved: 1,
             imports_unresolved: 0,
+            call_sites: 0,
+            call_site_files_truncated: 0,
+            call_site_files_rejected: 0,
             duration_ms: 1,
             stale: false,
         };

@@ -1,6 +1,6 @@
 use compresso_atlas::{
-    AtlasError, QueryError, UnfoldResult, outline_current, repo_map_focused, repository_stale,
-    unfold,
+    AtlasError, CardOptions, DEFAULT_MAX_CARDS, QueryError, UnfoldResult, module_cards,
+    outline_current, repo_map_focused, repository_stale, unfold,
 };
 use compresso_core::{TokenCounter, operation_identity};
 use compresso_store::{Store, SymbolKind, SymbolSelector};
@@ -10,8 +10,9 @@ use std::path::Path;
 
 use super::common::{
     PathState, ToolFailure, ToolResult, cap_values, checked_arguments, language_name,
-    map_atlas_error, navigation_counter, optional_string, optional_u32, required_string,
-    resolve_repository, symbol_kind_name, symbol_value, token_budget, validate_repo_path,
+    map_atlas_error, navigation_counter, optional_bool, optional_string, optional_u32,
+    required_string, resolve_repository, symbol_kind_name, symbol_value, token_budget,
+    validate_repo_path,
 };
 
 const MAP_DEFAULT_TOKENS: usize = 2_000;
@@ -45,17 +46,46 @@ fn repo_map_tool(
     repository_root: Option<&Path>,
     arguments: Option<JsonObject>,
 ) -> ToolResult {
-    let mut arguments = checked_arguments(arguments, &["root", "focus", "max_tokens"])?;
+    let mut arguments =
+        checked_arguments(arguments, &["root", "focus", "max_tokens", "cards", "path"])?;
     let root = optional_string(&mut arguments, "root", false)?;
     let focus = optional_string(&mut arguments, "focus", true)?;
     let max_tokens = token_budget(&mut arguments, MAP_DEFAULT_TOKENS)?;
+    let cards_requested = optional_bool(&mut arguments, "cards")?;
+    let cards_path = optional_string(&mut arguments, "path", false)?;
+    // A card zoom path implies cards; `cards: false` with a path is contradictory.
+    let with_cards = match (cards_requested, cards_path.is_some()) {
+        (Some(false), true) => {
+            return Err(ToolFailure::invalid(
+                "argument 'path' zooms module cards and requires 'cards' to be true or omitted.",
+            ));
+        }
+        (requested, has_path) => requested.unwrap_or(false) || has_path,
+    };
     let repository = resolve_repository(store, repository_root, root.as_deref())?;
 
-    let map = repo_map_focused(store, repository.id, focus.as_deref(), max_tokens)
+    // Cards take up to three quarters of the budget; the map keeps the rest.
+    let cards = with_cards
+        .then(|| {
+            module_cards(
+                store,
+                repository.id,
+                &repository.root,
+                CardOptions {
+                    path: cards_path.as_deref(),
+                    max_cards: DEFAULT_MAX_CARDS,
+                    budget_tokens: max_tokens.saturating_mul(3) / 4,
+                },
+            )
+        })
+        .transpose()
+        .map_err(map_atlas_error)?;
+    let map_budget = max_tokens.saturating_sub(cards.as_ref().map_or(0, |cards| cards.tokens_used));
+    let map = repo_map_focused(store, repository.id, focus.as_deref(), map_budget)
         .map_err(map_atlas_error)?;
     let stale = repository_stale(store, repository.id).map_err(map_atlas_error)?;
     let operation_id = operation_identity().id;
-    Ok(json!({
+    let mut payload = json!({
         "schema_version": 1,
         "operation_id": operation_id,
         "root": repository.root.to_string_lossy(),
@@ -67,7 +97,25 @@ fn repo_map_tool(
         "tokens_used": map.tokens_used,
         "token_provider": map.token_provider,
         "truncated": map.truncated
-    }))
+    });
+    if let (Some(cards), Some(object)) = (cards, payload.as_object_mut()) {
+        // Additive fields, present only when cards were requested.
+        object.insert(
+            "cards".to_owned(),
+            json!(
+                cards
+                    .cards
+                    .iter()
+                    .map(|card| card.rendered.as_str())
+                    .collect::<Vec<_>>()
+            ),
+        );
+        object.insert("cards_total".to_owned(), json!(cards.cards_total));
+        object.insert("cards_shown".to_owned(), json!(cards.cards.len()));
+        object.insert("cards_tokens_used".to_owned(), json!(cards.tokens_used));
+        object.insert("cards_truncated".to_owned(), json!(cards.truncated));
+    }
+    Ok(payload)
 }
 
 fn outline_tool(

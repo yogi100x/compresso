@@ -2699,7 +2699,7 @@ Test cases:
 
 ## E17 — Session continuity, savings fidelity, and platform hardening
 
-Added 2026-11-14 (D70). Clean-room follow-ups to the local slice; E17-01..10 landed together through `integration/e17`, E17-11..14 are open follow-ups; E17-15 is open and E17-16 landed 2026-11-15 (D77).
+Added 2026-11-14 (D70). Clean-room follow-ups to the local slice; E17-01..10 landed together through `integration/e17`, E17-11..14 are open follow-ups; E17-15 is open and E17-16 landed 2026-11-15 (D77). E17-17..21 landed 2026-11-16 (D83–D86); E17-22..29 landed 2026-11-18 (D87–D94). D83–D94 were confirmed by the owner on 2026-11-19.
 
 ### [x] E17-01: Re-assert tool routing after client compaction
 Owner: D1 · Estimate: 2d · Depends: E5-01, E6-01, E6-02, E6-03
@@ -3000,6 +3000,235 @@ Follow-up (D82), files rust/compresso-atlas/src/queries.rs, rust/compresso-mcp/s
 - `test_growing_window_stays_within_budget_and_close_to_counting_everything`
 - `test_file_line_count_matches_a_full_read_without_counting_tokens`
 
+### [x] E17-17: Context pack ranks by task concepts and reports honest readiness
+Owner: R2 · Estimate: 2d · Depends: E3-12, E5-03
+Files: rust/compresso-atlas/src/queries.rs, rust/compresso-atlas/tests/queries_impact_plan.rs, rust/compresso-mcp/src/tools/atlas_read.rs, rust/compresso-mcp/tests/tools_read.rs, rust/compresso-cli/src/commands/retrieval.rs, docs/plan/04-mcp-and-integrations.md, decisions.md
+Description: D83. `plan_context` scores symbols across every task query, adds compound-identifier queries and body-content scoring, lowers test code, drops single-common-word noise, and centres long excerpts on the matching lines. `ContextPlan` reports task-concept coverage; `compresso_context` and `compresso context --json` expose it as `task_coverage`, and a pack whose evidence misses half of the task's salient words is `targeted_follow_up_needed` without budget expansion.
+Acceptance criteria:
+- A symbol naming or containing a compound of adjacent task words leads the pack ahead of symbols matching one common word.
+- A body longer than its excerpt allowance is excerpted from the matching lines, and the evidence header cites the excerpt's own range.
+- Test code is lowered unless the task mentions tests.
+- Evidence matching only common words never yields `task_pack_ready`; uncovered words are listed; no budget expansion follows.
+- No store migration; reads only; existing context tests unchanged.
+Test cases:
+- `test_plan_context_ranks_compound_identifier_and_body_matches_above_generic_word_hits`: ranking, centred excerpt, header range.
+- `test_plan_context_reports_uncovered_concepts_when_only_generic_words_match`: coverage below half, uncovered words listed.
+- `test_plan_context_test_code_ranks_normally_when_the_task_asks_for_tests`: penalty lifted.
+- `test_context_tool_generic_word_matches_do_not_claim_a_ready_pack`: MCP status, `task_coverage`, no expansion.
+
+### [x] E17-18: Retrieval eval gates context-pack quality
+Owner: PQ+R2 · Estimate: 2d · Depends: E17-17, E7-03
+Files: fixtures/retrieval/tasks.toml, fixtures/retrieval/repo/, fixtures/corpus.toml, rust/compresso-eval/src/retrieval.rs, rust/compresso-eval/src/gates.rs, rust/compresso-eval/src/runner.rs, rust/compresso-eval/src/fixtures.rs, rust/compresso-eval/tests/retrieval.rs, rust/compresso-eval/tests/corpus_integrity.rs, docs/plan/gates.toml, docs/plan/06-fixtures.md, decisions.md
+Description: D84. `compresso-eval` indexes the committed source corpus under `fixtures/retrieval/repo/` into a temporary store with the production indexer and runs `plan_context` at a fixed 1600-token budget for every task in `fixtures/retrieval/tasks.toml` (06 §12). Each task records gold-file recall, evidence precision, tokens, and readiness; the report gains an additive top-level `retrieval` section, and `gates.toml` gains a `[retrieval]` table that the existing `run --gates` CI step enforces. Tasks marked `known_gap = "body_only"` are reported but kept out of the gated aggregate.
+Acceptance criteria:
+- `compresso-eval run fixtures/ --gates docs/plan/gates.toml --json` includes `retrieval` and exits non-zero when a `[retrieval]` threshold is missed; a fixture root without `retrieval/` has no section and no retrieval rows.
+- The corpus holds decoys sharing single common words with targets, test files, compound-identifier targets, body-only targets, and absent-concept tasks; `fixtures/corpus.toml` pins its tree hash.
+- A corpus that cannot be indexed or planned, or a gold file with no indexed symbols, fails the gates instead of dropping the section.
+- A ready pack that lacks a gold file, or a ready pack for an absent concept, counts as `false_ready` with zero tolerance.
+- The report is deterministic; `schema_version` stays 1 because keys are only added; no network or process capability is added.
+Test cases:
+- `test_committed_retrieval_corpus_passes_committed_gates`: committed corpus against committed thresholds; absent concepts never ready.
+- `test_retrieval_ranking_regression_fails_recall_and_precision_gates`: a synthetic below-threshold report fails by name.
+- `test_retrieval_false_ready_fails_gate`, `test_ready_on_absent_concept_is_false_ready`: false-ready counting and gate.
+- `test_known_gap_tasks_are_reported_outside_the_gated_aggregate`: exclusion from gated aggregates.
+- `test_retrieval_corpus_that_was_not_evaluated_fails_closed`, `test_gold_file_without_indexed_symbols_fails_closed`: fail closed.
+- `test_retrieval_report_is_deterministic`, `test_retrieval_corpus_path_hash_and_size`: determinism and corpus lock.
+
+### [x] E17-19: Bounded content scan feeds the context planner
+Owner: R2+PQ · Estimate: 2d · Depends: E17-17, E17-18
+Files: rust/compresso-atlas/src/queries.rs, rust/compresso-atlas/tests/queries_impact_plan.rs, fixtures/retrieval/tasks.toml, fixtures/retrieval/repo/, fixtures/corpus.toml, rust/compresso-eval/src/gates.rs, rust/compresso-eval/tests/retrieval.rs, docs/plan/gates.toml, docs/plan/04-mcp-and-integrations.md, docs/plan/06-fixtures.md, decisions.md
+Description: D85. `plan_context` searches the bound repository's indexed files for task concepts no symbol is named after — at most eight per task: compounds, then salient words whose name query returned nothing — and adds the smallest indexed symbol containing each matching line to the candidate pool, where the D83 ranking, penalty, floor, and readiness rules apply unchanged. The scan is literal, read-only, and bounded by counts and bytes (512 KiB per file, 2,000 files, 32 MiB), never by time. The two `known_gap` retrieval tasks become gated and three body-only tasks, one with a common-word decoy, join the corpus.
+Acceptance criteria:
+- A symbol whose body alone spells a task compound reaches the pack and leads it; one whose body alone contains a salient task word reaches the pack; in both the excerpt shows the matching line.
+- Secret paths, files above the per-file cap, text files for a task that does not ask for documentation, files changed since indexing, and unreadable or non-UTF-8 files are never scanned and never fail the plan; root resolution rejects paths outside the repository as for every other read.
+- Reaching the file or byte cap sets `content_scan_truncated` and `truncated`; there is no wall-clock limit and two runs return equal plans.
+- A single word found in more than eight symbols adds no evidence; an absent-concept task stays not ready.
+- No store write, schema migration, or response field; D83's readiness rule is unchanged.
+- `[retrieval]` thresholds are raised to the new measured values minus a margin and no threshold is lowered.
+Test cases:
+- `test_plan_context_body_only_compound_reaches_the_pack_and_leads_it`: compound in a body, smallest enclosing symbol, centred excerpt, determinism, no store writes.
+- `test_plan_context_body_only_single_word_reaches_the_pack_with_the_matching_line`: single word, centred excerpt, coverage.
+- `test_plan_context_content_scan_never_reads_secret_or_oversize_files`: secret path, file above the cap, missing file.
+- `test_plan_context_content_scan_reads_text_files_only_when_the_task_asks_for_docs`: text files.
+- `test_plan_context_content_scan_file_cap_sets_truncated`: file cap and both flags.
+- `test_plan_context_content_scan_ignores_a_word_common_to_many_bodies`: common-word rule.
+- `test_line_spells_word_matches_whole_identifier_words_only`: whole-word matching.
+- `test_committed_retrieval_corpus_passes_committed_gates`, `test_gates_toml_retrieval_thresholds_match_d85` (renamed `..._match_d86` by E17-20): 20 gated gold tasks against the raised thresholds.
+
+### [x] E17-20: Context pack carries use sites and referenced constants, not a broad-word tail
+Owner: R2+PQ · Estimate: 2d · Depends: E17-17, E17-18, E17-19
+Files: rust/compresso-atlas/src/queries.rs, rust/compresso-atlas/tests/queries_impact_plan.rs, rust/compresso-cli/src/commands/retrieval.rs, rust/compresso-cli/tests/cli_retrieval.rs, rust/compresso-eval/src/retrieval.rs, rust/compresso-eval/src/gates.rs, rust/compresso-eval/tests/retrieval.rs, fixtures/retrieval/tasks.toml, fixtures/retrieval/repo/, fixtures/corpus.toml, docs/plan/gates.toml, docs/plan/04-mcp-and-integrations.md, docs/plan/06-fixtures.md, decisions.md
+Description: D86. Four changes to how `plan_context` fills its budget, none adding a scan pass or a dependency. (A) Up to three specific named compounds are use-site concepts: a symbol that defines or uses one may take a third evidence slot in its file, and a file missing such an excerpt does not count as included. (B) Constants that included excerpts reference by name are added after the referencing excerpt: at most four per pack, 40 tokens each, 16 index lookups. (C) Once the evidence that is above the score floor, uses a use-site concept, or matched a specific task word covers the task, candidates that matched only broad words are dropped. (D) The three best strong excerpts get one twelfth of the pack budget, between 96 and 224 tokens, and an excerpt that reaches the end of its body grows upward. The retrieval corpus gains `gold_symbols` and two tasks.
+Acceptance criteria:
+- A raise site that shares a file with the definition and another user of a named concept is in the pack; a file never holds more than three excerpts, and more than two only for use-site evidence.
+- Use-site evidence comes from the one bounded content scan: a use site in a file above the per-file cap or past the file cap is not read, and the cap still sets `content_scan_truncated`.
+- A pack that left a use-site excerpt out reports fewer included files than candidate files, so it is not `task_pack_ready` and `compresso_context` expands the budget.
+- A constant an included excerpt references is rendered after it as `(Const, referenced above)`; it is listed in `ContextPlan.referenced_constants` and `plan.referenced_constants` of `compresso context --json`, and never counts toward evidence files, coverage, or `truncated`.
+- Broad-word tail candidates are dropped only when the remaining evidence covers at least half of the task's salient words; a symbol named after a specific task word is kept.
+- Every budget is hard: `tokens_used` never exceeds the requested budget, and two runs return equal plans.
+- `[retrieval]` precision threshold is raised to the new measured value minus a margin; no threshold is lowered.
+Test cases:
+- `test_plan_context_use_site_of_a_named_concept_joins_its_definition_in_one_file`: definition leads, third slot for the raise site, two-per-file share for other symbols.
+- `test_plan_context_is_not_file_complete_while_a_use_site_excerpt_is_left_out`: file completeness withheld at tight budgets.
+- `test_plan_context_use_site_expansion_stays_within_the_content_scan_caps`: oversize file and file cap.
+- `test_plan_context_includes_the_definition_of_a_constant_an_excerpt_references`: definition line, placement, accounting.
+- `test_plan_context_referenced_constants_are_capped_in_count_and_tokens`: four constants, 40 tokens, tight budgets.
+- `test_plan_context_drops_broad_word_tail_only_when_specific_evidence_covers_the_task`: tail dropped when covered, kept when not, specific-word symbol kept.
+- `test_plan_context_top_evidence_gets_a_larger_excerpt_that_scales_with_the_budget`: 224-token ceiling, one twelfth of the budget, upward growth.
+- `test_plan_context_expansion_never_exceeds_any_budget_and_is_deterministic`: eighteen budgets from 0 to 4,000, determinism, no store writes.
+- `test_score_evidence_requires_each_gold_symbol_not_only_its_file`: gold-symbol scoring.
+- `test_committed_retrieval_corpus_passes_committed_gates`, `test_gates_toml_retrieval_thresholds_match_d86`: 22 gated gold tasks against the raised threshold.
+
+
+### [x] E17-21: One malformed import cannot abort a repository index
+Owner: R2 · Estimate: 0.5d · Depends: E3-04
+Files: rust/compresso-atlas/src/parsers.rs, rust/compresso-atlas/tests/parsers_python.rs, rust/compresso-atlas/tests/indexer_incremental.rs
+Description: Parser error recovery can yield an import whose module name is a zero-width placeholder (a Python file containing `import ,`). The empty edge target was rejected by the store (`edge to_path must not be empty`) and `compresso index` failed for the whole repository with `index_failed`; found indexing a public 7,788-file repository whose parser test corpus contains such a file. Imports that name nothing are dropped at extraction, for every language. No parser version bump: a repository holding such a file could not be indexed before, so no stored index changes meaning.
+Acceptance criteria:
+- A repository containing a source file whose import statement has no module name indexes successfully; the other imports in that file are still recorded.
+- No extracted import has an empty or whitespace-only `raw` value.
+Test cases:
+- `test_python_import_with_no_module_name_is_not_extracted`: `import ,\nimport x, y,\n` extracts exactly `x` and `y`.
+- `test_index_survives_python_import_statement_with_no_module_name`: the fixture repository plus that file indexes nine files and records the file's named imports as unresolved edges.
+
+### [x] E17-22: Bounded content search replaces shell grep for the bound repository
+Owner: R2 · Estimate: 2d · Depends: E17-19, E17-07
+Files: rust/compresso-atlas/src/grep.rs, rust/compresso-atlas/src/lib.rs, rust/compresso-atlas/src/queries.rs, rust/compresso-atlas/src/scanner.rs, rust/compresso-atlas/Cargo.toml, rust/compresso-atlas/tests/grep_content.rs, rust/compresso-mcp/src/tools/atlas_grep.rs, rust/compresso-mcp/src/tools/mod.rs, rust/compresso-mcp/src/server.rs, rust/compresso-mcp/Cargo.toml, rust/compresso-mcp/tests/tools_grep.rs, rust/compresso-mcp/tests/handshake.rs, rust/compresso-mcp/tests/tools_recall.rs, rust/compresso-cli/src/commands.rs, rust/compresso-cli/src/commands/retrieval.rs, rust/compresso-cli/tests/cli_retrieval.rs, rust/compresso-cli/tests/cli_app.rs, rust/compresso-core/src/transcript.rs, rust/compresso-store/src/ops.rs, rust/compresso-integrations/src/cursor.rs, rust/compresso-integrations/tests/launcher_upgrade.rs, Cargo.toml, Cargo.lock, docs/plan/03-interfaces.md, docs/plan/04-mcp-and-integrations.md, docs/runbooks/mcp-manual-verification.md
+Description: D87. Benchmarks showed models calling Compresso and then running shell grep, because `compresso_search` is an exact symbol lookup and cannot return use sites; with shell search removed, 28 of 64 calls were `compresso_search` fanned out one identifier at a time and repeated with larger limits. A new read-only `compresso_grep` MCP tool and `compresso grep` CLI command search the bound repository's indexed files for one to eight literal or regular-expression patterns in one pass. Results are grouped per pattern, then per file, ranked (definition on a listed line first, non-test before test, more matches, path), each line as `LINE [SYMBOL] SNIPPET` with the enclosing indexed symbol. Exact `matches_total`/`files_total` are reported however far the listing is capped, with `complete`, `truncated`, and a note that says not to repeat with larger limits. Reads go through the existing gates; matching uses the linear-time `regex` crate (new workspace dependency, already in the lock graph). No existing tool is renamed or removed.
+Acceptance criteria:
+- Only indexed files are searched, in index path order, through canonical-root resolution; secret paths are never read even when an index lists them; files over 16 MiB and missing or non-UTF-8 files are skipped and counted.
+- A file changed since indexing is searched as it is now, marked stale, and given no symbol names; the payload carries `stale` and `reindex_hint`.
+- At most 8 patterns of 512 bytes; snippets at most 160 bytes; `max_files` (1-100, default 20), `max_matches_per_file` (1-50, default 5), and `max_tokens` (300-10,000, default 1,500) are hard caps; the scan stops at 20,000 files or 256 MiB, never at a deadline.
+- Totals count every in-scope match; any cap sets `truncated` and clears `complete`.
+- A long line, a pathological pattern, or a regular expression that could cross line breaks is searched in linear time (regular expressions are matched within each line); an invalid pattern or path filter is a typed `GrepError` (`invalid_arguments`) before any file is read.
+- `tokens_used` never exceeds `max_tokens`; a budget too small for every pattern's totals is rejected.
+- Path filter: a repository-relative prefix or a glob (`*`, `**`, `?`; no `/` means file name); case-insensitive flag.
+- The tool description says it replaces shell text search for this repository; the default server instructions list it policy-neutrally as "text search of indexed files with use sites" (instructions that direct the client away from shell search exist only on opt-in surfaces, the lean profile and the exploration agent, under the instruction-wording rule as amended in D92).
+Test cases:
+- `test_grep_returns_use_sites_with_enclosing_symbols_grouped_and_ranked`, `test_grep_never_reads_secret_paths`, `test_grep_skips_files_above_the_read_ceiling`, `test_grep_reports_caps_and_totals_when_output_is_truncated`, `test_grep_stays_linear_on_one_very_long_line`, `test_grep_regex_never_runs_past_a_line_end`, `test_grep_rejects_invalid_patterns_with_a_typed_error`, `test_grep_case_flag`, `test_grep_path_filter_prefix_and_glob`, `test_grep_searches_changed_files_as_they_are_now_without_symbols`, `test_grep_skips_missing_and_non_utf8_files` (Atlas).
+- `test_grep_tool_returns_use_sites_for_several_patterns_in_one_call`, `test_grep_tool_reports_totals_and_truncation_under_caps_and_budget`, `test_grep_tool_never_returns_secret_or_oversize_file_content`, `test_grep_tool_rejects_invalid_patterns_and_arguments`, `test_grep_tool_case_flag_and_path_filter`, `test_grep_tool_stays_linear_on_a_long_line_and_a_pathological_pattern`, `test_grep_tool_marks_changed_files_and_the_stale_index` (MCP).
+- `test_grep_lists_use_sites_per_pattern_and_rejects_invalid_patterns` (CLI); tool-list, runbook, transcript, store-classification, and client-integration tool-set tests updated for the added tool (eleven tools on this branch; twelve, thirteen with recall, once merged with E17-25).
+
+### [x] E17-23: Verbatim identifiers lead the context pack and numeric literals are searched
+Owner: R2+PQ · Estimate: 1.5d · Depends: E17-20, E17-22
+Files: rust/compresso-atlas/src/task_identifiers.rs, rust/compresso-atlas/src/queries.rs, rust/compresso-atlas/src/lib.rs, rust/compresso-atlas/tests/queries_task_named.rs, rust/compresso-store/src/symbols.rs, rust/compresso-eval/tests/retrieval.rs, fixtures/retrieval/tasks.toml, fixtures/corpus.toml, docs/plan/03-interfaces.md, docs/plan/04-mcp-and-integrations.md, docs/plan/06-fixtures.md
+Description: D88. The planner lowercased the task before reading it, so a type named verbatim scored like any prose word (it ranked about thirteenth on a large repository), and numbers of two digits were never searched. `plan_context` now reads identifiers from the raw task (`CamelCase`, inner `_`, `::`-qualified, paths), resolves them through a new exact-name store lookup (`Store::symbols_named(repo, name, limit)`; not the call-graph lookup `Store::indexed_symbols_named` added by E17-24), and orders named symbols first in the pack; the first two also get use-site content-scan slots. Integer literals of two or more digits get two reserved content-scan slots with digit-boundary matching. The retrieval corpus gains three tasks.
+Acceptance criteria:
+- A type, function, or constant the task names verbatim leads the pack in an index where ninety files match the task's prose; a path the task names leads with that file's symbols.
+- A name defined more than three times, or a bare file name more than two files end with, does not lead.
+- A body holding a task literal (`320`, `45`) is evidence; `1320`, `3200`, `450` are not matches.
+- The 22 earlier retrieval tasks are unchanged; every gate passes and none is lowered.
+Test cases:
+- `test_plan_context_named_type_leads_the_pack_in_a_large_index`, `test_plan_context_snake_screaming_and_path_identifiers_lead_prose_matches`, `test_plan_context_common_name_defined_many_times_does_not_lead`, `test_plan_context_bare_file_name_many_files_share_names_nothing`, `test_plan_context_numeric_literal_sites_become_evidence` (all fail without the change).
+- `test_task_identifiers_keep_code_shaped_words_only`, `test_task_numbers_take_standalone_integers_of_two_or_more_digits`, `test_line_has_number_respects_digit_boundaries`, `test_symbols_named_matches_the_exact_name_only`.
+- `test_committed_retrieval_corpus_passes_committed_gates`: 28 tasks, 25 gold; `two-digit-literal` (recall 0 before) and `named-error-raise` (false-ready before) pass.
+
+### [x] E17-24: Record call sites in the index
+Owner: R2 · Estimate: 2d · Depends: E3-04, E17-21
+Files: rust/compresso-store/migrations/0008_call_sites.sql, rust/compresso-store/src/calls.rs, rust/compresso-store/src/lib.rs, rust/compresso-store/src/symbols.rs, rust/compresso-store/src/files.rs, rust/compresso-store/tests/migrations.rs, rust/compresso-atlas/src/parsers.rs, rust/compresso-atlas/src/parsers/calls.rs, rust/compresso-atlas/src/parsers/shell.rs, rust/compresso-atlas/src/parsers/text.rs, rust/compresso-atlas/src/indexer.rs, rust/compresso-atlas/tests/parsers_calls.rs, rust/compresso-atlas/tests/indexer_incremental.rs, rust/compresso-cli/src/commands/index.rs, rust/compresso-eval/src/runner.rs, docs/adr/0033-call-sites-resolved-at-query-time.md, docs/adr/0026-safe-shell-and-generic-text-indexing.md, docs/plan/02-schemas.md, docs/plan/03-interfaces.md
+Description: D89. Multi-file trace tasks cost about twenty model turns because the index had symbols and file imports but no calls. The parsers walk the syntax tree they already built and record each call inside an indexed Rust, Python, JavaScript, TypeScript, or TSX function or method: callee name as written, optional qualifier, call form (`plain`, `path`, `self`, `receiver`, or `reference` for a bare name passed as a call argument, a function used as a value), and the line of the callee name; Rust calls inside macro arguments are read from the token tree. Migration `0008_call_sites.sql` adds `call_sites`, written in the caller file's transaction and cascading with its file and caller symbol. Rows hold no callee symbol id; the callee is resolved at query time (ADR-0033) through `Store::indexed_symbols_named(repo, name)` (every exact-name definition with its path; distinct from E17-23's bounded `Store::symbols_named(repo, name, limit)`). The parser-version suffix gains `+calls-v1`, so existing indexes reparse once.
+Acceptance criteria:
+- Every call inside an indexed function or method is recorded once per caller, callee name, qualifier, and form, with the first call site; calls at module level or in class bodies, macro invocations, and calls whose callee is not a name are not.
+- A malformed file never yields an empty, garbled, or over-long callee name or qualifier and never aborts an index.
+- Per-file bounds: 4,096 kept records and 65,536 examined call expressions; reaching either is reported (`Extraction.calls_truncated`, `IndexReport.call_site_files_truncated`). Tree and member-chain walks are iterative; the enclosing caller is found in O(1) per call.
+- Re-indexing or deleting a file replaces or removes its call sites; no row ever names a callee symbol id.
+- A store at migration 7 with indexed rows opens, migrates to 8, and keeps its rows; an index stamped by the previous parser version reparses every file.
+- Full index time on this repository stays within 25% of the previous build (measured: about 15%).
+Test cases:
+- `test_rust_calls_record_form_qualifier_caller_and_line`, `test_python_calls_record_self_dotted_and_receiver_forms`, `test_script_calls_record_this_member_new_and_skip_require`, `test_rust_calls_inside_macro_arguments_are_recorded`: forms, qualifiers, callers, lines per language.
+- `test_names_passed_as_call_arguments_are_recorded_as_references`: Rust and Python, including keyword arguments.
+- `test_repeated_calls_keep_the_first_site_per_caller_and_form`, `test_calls_per_file_are_capped`, `test_shell_and_text_record_no_calls`.
+- `test_malformed_calls_never_yield_empty_or_garbled_names`: Rust, Python, JavaScript, TypeScript, TSX.
+- `test_very_deep_member_chain_does_not_overflow_and_is_a_receiver_call`: 40,000-deep chain on a 256 KiB stack.
+- `test_huge_number_of_calls_and_functions_is_bounded_and_reports_truncation`, `test_a_file_with_a_huge_number_of_calls_never_aborts_the_index`.
+- `test_index_records_call_sites_and_survives_malformed_calls`, `test_default_parser_version_marks_call_site_extraction`.
+- `test_call_sites_are_replaced_with_their_file_and_cascade_on_delete`, `test_invalid_call_sites_are_rejected_before_any_write`, `test_indexed_symbols_named_and_by_ids_stay_inside_the_repository`.
+- `test_migration_8_opens_a_store_indexed_before_call_sites`, `test_open_fresh_creates_all_tables` (14 tables), migration-ledger tests updated for version 8.
+
+### [x] E17-25: One call answers who calls X, what X calls, and how A reaches B
+Owner: R2 · Estimate: 2d · Depends: E17-24, E5-02
+Files: rust/compresso-atlas/src/trace.rs, rust/compresso-atlas/src/lib.rs, rust/compresso-atlas/src/queries.rs, rust/compresso-atlas/tests/queries_trace.rs, rust/compresso-mcp/src/tools/atlas_trace.rs, rust/compresso-mcp/src/tools/mod.rs, rust/compresso-mcp/src/server.rs, rust/compresso-mcp/tests/tools_trace.rs, rust/compresso-mcp/tests/handshake.rs, rust/compresso-cli/src/commands.rs, rust/compresso-cli/src/commands/retrieval.rs, rust/compresso-cli/src/commands/retrieval/trace.rs, rust/compresso-cli/src/lib.rs, rust/compresso-cli/tests/cli_trace.rs, rust/compresso-cli/tests/cli_app.rs, rust/compresso-core/src/transcript.rs, rust/compresso-store/src/ops.rs, rust/compresso-integrations/src/cursor.rs, rust/compresso-integrations/tests/launcher_upgrade.rs, docs/plan/03-interfaces.md, docs/plan/04-mcp-and-integrations.md, docs/runbooks/mcp-manual-verification.md
+Description: D90. New Atlas query `trace`, MCP tool `compresso_trace`, and CLI `compresso trace`. `to` alone lists callers, `from` alone lists callees (breadth first, default depth 1), both give the shortest call paths (default depth 6). Each hop carries symbol, kind, definition `path:line`, call-site `path:line`, a one-line signature, and the resolution rule. Call sites are resolved at query time: candidates by name narrowed by call form, then the only candidate in the caller's file, in a file it imports, or in the repository (`name_only` for a method call on an expression of unknown type). Only resolved calls are followed; ambiguous calls are listed, library calls ignored. No existing tool is renamed or removed.
+Acceptance criteria:
+- Bounds: `max_depth` 1–8, `max_paths` 1–10, `max_results` 1–500, 2,000 visited symbols, 10,000 path-enumeration steps, `max_tokens` (default 4,000) over the returned list; `total`, `shown`, `truncated`, `depth_limited`, and `complete` let one call stand as the answer.
+- An ambiguous name returns candidates and traces nothing; `path:name` and `Type::name` select one.
+- Cycles and recursion terminate and are marked `cycle`; a symbol is never expanded twice.
+- A function passed by name as a call argument is listed as a caller with `reference: true`; a call never resolves across languages; `depth_limited` is reported for path searches and explicit depths only; `unfollowed` shares the token budget.
+- An index stamped before call sites returns `reindex_required`; a stale index is answered with `stale: true` and the reindex hint.
+- Same repository binding, approval, and indexed-repository gates as the other repository tools; secret paths are never returned; nothing is executed or written to the store; the MCP call records one retrieval operation.
+Test cases:
+- Atlas: `test_trace_finds_the_shortest_call_path_across_files`, `test_trace_reports_no_path_when_none_exists`, `test_trace_returns_candidates_for_an_ambiguous_name_and_labels_ambiguous_calls`, `test_trace_depth_cap_stops_the_search_and_says_so`, `test_trace_is_cycle_safe_and_marks_recursion`, `test_trace_callers_report_call_sites_totals_and_truncation`, `test_trace_resolves_self_type_and_python_calls`, `test_trace_labels_a_receiver_call_resolved_only_by_a_unique_name`, `test_trace_never_resolves_a_call_across_languages`, `test_trace_lists_a_function_passed_as_a_value_as_a_reference_caller`, `test_trace_reports_unknown_names_and_invalid_options`, `test_trace_requires_a_reindex_when_the_index_predates_call_sites`, `test_trace_writes_nothing_to_the_store`.
+- MCP: `test_trace_tool_returns_a_call_path_with_sites_and_signatures`, `test_trace_tool_reports_no_path`, `test_trace_tool_returns_candidates_for_an_ambiguous_name`, `test_trace_tool_depth_cap_is_reported`, `test_trace_tool_is_cycle_safe_and_marks_recursion`, `test_trace_tool_callers_report_total_and_truncation_in_one_call`, `test_trace_tool_reports_a_stale_index`, `test_trace_tool_requires_reindex_when_the_index_predates_call_sites`, `test_trace_tool_rejects_invalid_arguments_and_unbound_sessions`, `test_trace_tool_is_listed_and_records_a_retrieval_operation`; handshake tool list and runbook row.
+- CLI: `test_cli_trace_prints_a_call_path_as_json_and_text`, `test_cli_trace_requires_an_end_and_valid_bounds`, `test_canonical_command_snapshot`.
+
+### [x] E17-26: Module cards give cheap, deterministic orientation
+Owner: R2 · Estimate: 1.5d · Depends: E3-12, E5-02
+Files: rust/compresso-atlas/src/cards.rs, rust/compresso-atlas/src/lib.rs, rust/compresso-atlas/src/queries.rs, rust/compresso-atlas/tests/module_cards.rs, rust/compresso-mcp/src/tools/atlas_nav.rs, rust/compresso-mcp/src/server.rs, rust/compresso-mcp/tests/tools_nav.rs, rust/compresso-cli/src/commands/retrieval.rs, rust/compresso-cli/tests/cli_retrieval.rs, scripts/doc-drift-lint.config.json
+Description: On unfamiliar repositories, conceptual questions ("how does recovery work") need an orientation layer cheaper than reading files. `compresso_repo_map` (and `compresso map`) gains opt-in per-directory module cards built only from the index (D91): a purpose line from the module or file doc comment, top public symbols with kinds, entry points, internal dependencies and dependents from resolved import edges, and file and symbol counts. No model call; bounded by card count and token budget; `path` zooms into a subtree. The existing result is unchanged unless cards are requested.
+Acceptance criteria:
+- Without `cards`/`path` the MCP and CLI map results are byte-for-byte the previous contract; card fields are additive and opt-in.
+- Cards are deterministic for one index, write nothing to SQLite, and never include secret paths or edges that touch them.
+- Cards plus map stay within `max_tokens`; cards take at most three quarters of it; at most 12 cards (CLI `--max-cards` 1-50); `cards_truncated` reports omission.
+- Purpose text comes only from in-root, non-secret files that still match their index record, reading at most 4 KiB of at most three files per card.
+- Approval, session-root, `not_indexed`, and `stale` behavior are unchanged; an unsafe `path` is `invalid_arguments`.
+Test cases:
+- `test_cards_summarize_each_directory_deterministically`, `test_card_dependencies_come_from_import_edges`, `test_cards_exclude_secret_paths_and_their_edges`, `test_cards_respect_card_cap_and_token_budget`, `test_card_path_zooms_into_a_subtree_and_rejects_unsafe_prefixes`, `test_stale_files_never_contribute_a_purpose_line`, `test_cards_leave_the_existing_repo_map_unchanged` (Atlas); four `cards::tests` unit tests for doc extraction and visibility.
+- `test_repo_map_omits_card_fields_unless_requested`, `test_repo_map_cards_are_bounded_and_zoomable`, `test_repo_map_cards_require_an_indexed_bound_repository` (MCP); `test_map_cards_are_opt_in_bounded_and_zoomable` (CLI).
+
+### [x] E17-27: Opt-in lean MCP tool profile
+Owner: R2 · Estimate: 1d · Depends: E5-01, E17-02
+Files: rust/compresso-mcp/src/profile.rs, rust/compresso-mcp/src/server.rs, rust/compresso-mcp/src/lib.rs, rust/compresso-mcp/tests/tool_profile.rs, rust/compresso-cli/src/commands/mcp.rs
+Description: Preloading every Compresso tool schema adds fixed cost to each session. `compresso mcp serve --tools lean` (D92) advertises only a data-driven exploration allowlist (`LEAN_TOOLS` in `profile.rs`: context, repo_map, search, grep, trace, outline, unfold, read, and recall only when `--recall-source` enables it) with one-sentence descriptions, no compatibility-only `root` argument, and shorter instructions generated from the served rows. `compresso_grep` and `compresso_trace` joined the allowlist as one `LeanTool` row each when E17-22 and E17-25 merged. The default profile, tool list, descriptions, and instructions are unchanged.
+Acceptance criteria:
+- `mcp serve` without `--tools`, and every installed client entry, serves exactly the default tools (twelve after the E17-22/E17-25 merge, thirteen with recall) and the default instructions.
+- `--tools lean` lists exactly the allowlist, in order; every allowlisted name is a registered tool.
+- Calling a registered tool that lean does not serve returns `isError` text starting `[tool_unavailable]`, naming the tool and the restart remedy, and dispatches nothing; unknown names keep the protocol error.
+- Lean instructions keep the no-network, model-provider, and untrusted-content disclosures and name only served tools.
+- Lean fixed cost (tools/list payload plus instructions) is under half of full for both counters. Measured after the merge (eight lean tools, twelve full): o200k 4,033 → 2,011 tokens; Anthropic-calibrated 4,639 → 2,314 (about 49.9% of full; at the E17-27 commit, before grep and trace: 2,801 → 1,224 and 3,222 → 1,408).
+Test cases:
+- `test_default_profile_tool_list_and_instructions_are_unchanged`, `test_lean_profile_advertises_exactly_the_allowlist`, `test_lean_initialize_sends_the_lean_instructions`, `test_lean_profile_rejects_a_hidden_tool_with_a_clean_error`, `test_lean_profile_with_operator_enabled_recall_serves_recall_last`, `test_lean_allowlist_names_only_registered_tools`, `test_lean_instructions_keep_the_mandatory_disclosures_and_name_only_served_tools`, `test_lean_schema_and_instructions_cost_less_than_half_of_default`, `test_profile_names_round_trip`; CLI `test_tool_profile_is_full_by_default_and_lean_only_explicitly`.
+
+### [x] E17-28: Opt-in Claude Code exploration agent definition
+Owner: D1 · Estimate: 1.5d · Depends: E6-02, E17-27
+Files: rust/compresso-integrations/src/explore_agent.rs, rust/compresso-integrations/src/plan.rs, rust/compresso-integrations/src/server_entry.rs, rust/compresso-integrations/src/lib.rs, schemas/integrations/v1.json, rust/compresso-cli/src/commands.rs, rust/compresso-cli/src/commands/integrations.rs, rust/compresso-cli/tests/cli_explore_agent.rs, docs/adr/0034-whole-file-agent-definition-ownership.md
+Description: Models use Compresso in addition to shell search, not instead of it. `compresso integrations install claude-code --explore-agent` (D93, ADR-0034) writes `<project>/.claude/agents/compresso-explorer.md`: a Claude Code subagent whose `tools` are the lean exploration allowlist (minus recall) as `mcp__compresso__*` plus `Read, Edit, Write`, and whose instructions route exploration through Compresso. The integration framework gains a whole-file `ConfigFormat::Markdown` whose uninstall deletes the file, with the same preview, receipt, journal, and recovery guarantees. Never installed by default.
+Acceptance criteria:
+- `setup` and plain `integrations install` never create the file; `--dry-run` writes nothing.
+- Install creates the file with a receipt; re-install is a no-op; a same-named file Compresso did not write is refused with `user_file_present` and unchanged; symlinked `.claude` or `.claude/agents` is refused.
+- Uninstall deletes an unchanged file with no backup left behind and retains an edited one with `key_modified`; crash recovery after deletion, before or after receipt persistence, completes without recreating the file.
+- `status`/`verify --explore-agent` report presence, marker, and currency; other clients are `unsupported`; the flag conflicts with `--compaction-hook` and `--no-recall`.
+- Tests use only temporary home and project directories.
+Test cases:
+- `explore_agent::tests` (7): render shape, install/uninstall tree restore, preview writes nothing, user file refused, edited file retained, idempotent reinstall, symlink refused.
+- `plan::tests::test_whole_file_uninstall_recovers_after_deletion_before_or_after_receipt_save`, `test_whole_file_format_owns_exactly_one_path`.
+- `cli_explore_agent` (5): `test_setup_and_default_installs_never_create_the_agent`, `test_agent_dry_run_previews_and_writes_nothing`, `test_agent_install_status_verify_and_uninstall_round_trip` (tools tied to the lean allowlist), `test_agent_is_claude_code_only_and_exclusive_with_other_surfaces`, `test_agent_install_refuses_a_user_agent_of_the_same_name`.
+
+### [x] E17-29: Review-round hardening, grep context lines, and multi-range read
+Owner: R2 · Estimate: 2.5d · Depends: E17-22, E17-24, E17-25, E17-27, E17-28
+Files: rust/compresso-atlas/src/parsers.rs, rust/compresso-atlas/src/parsers/calls.rs, rust/compresso-atlas/src/indexer.rs, rust/compresso-atlas/src/trace.rs, rust/compresso-atlas/src/queries.rs, rust/compresso-atlas/src/grep.rs, rust/compresso-atlas/src/cards.rs, rust/compresso-atlas/src/lib.rs, rust/compresso-atlas/tests/{parsers_calls,indexer_incremental,queries_trace,symlink_swap,grep_content,queries_unfold_search_read}.rs, rust/compresso-store/src/{calls,symbols,lib}.rs, rust/compresso-mcp/src/{server,profile}.rs, rust/compresso-mcp/src/tools/{atlas_read,atlas_grep,common}.rs, rust/compresso-mcp/tests/{tools_read,tools_grep,tool_profile}.rs, rust/compresso-integrations/src/explore_agent.rs, rust/compresso-cli/src/commands/{index,retrieval}.rs, rust/compresso-cli/tests/{cli_index,cli_retrieval}.rs, rust/compresso-eval/src/runner.rs, docs/plan/03-interfaces.md, docs/plan/04-mcp-and-integrations.md
+Description: A review of the E17 call-graph, grep, lean-profile, and explorer-agent work found that untrusted repository content could abort indexing, make a trace quadratic, or reach a secret file through a symbolic link, plus several smaller defects. All are fixed. Benchmark traces also showed about 2 `compresso_grep` calls followed by about 3.7 single-range `compresso_read` calls per task; `compresso_grep` gains `context_lines` and `compresso_read` gains `ranges` so one call returns what took several turns.
+Acceptance criteria:
+- A call qualifier written in macro arguments (`assert!(<300 A's>::make())`) is dropped by the one record path that every call form passes (valid names joined by `::` or `.`, at most 256 bytes). If the store would still reject a file's call sites, that file is indexed without call sites and counted in `IndexReport.call_site_files_rejected`. `index_failed` names its cause chain on one line of at most 512 bytes.
+- Callers of one of many same-named definitions resolve in about one lookup per call site: candidates are held by id, filtered once per call shape and grouped by path, and resolutions are cached per calling file. A trace reads at most 100,000 call-site rows (`TRACE_MAX_CALL_SITE_ROWS`) in a fixed SQL order and sets `truncated` when it reaches the cap. On the generated 1,000- and 2,000-file repositories, `trace --to pkg/m0.py:handle` drops from 6.0 s and 23.4 s to 0.19 s and 0.36 s (release build).
+- Repository files are served only through `resolve_under_root`. It refuses a secret canonical target and any symbolic-link component below the root, and reports both as `not_found`. On Unix the reader opens only the inode the gate approved, so a file or parent swapped for a link after the check is never read. A link that escapes the root is still `outside_root`. Hard links are served (04 §1.5a). Read, grep, unfold, outline staleness, the context-pack content scan, and module-card purpose lines all pass this gate.
+- Grep reports `complete: false` when in-scope files were skipped, and the MCP `note` names the skipped count. Snippets and a symbol lookup are kept only for files that can still rank within `max_files`, and the result equals sort-then-truncate. The compiled regex limit is 256 KiB, and each regex pattern searches at most 64 MiB, after which `scan_truncated` is set.
+- A call is attributed to its enclosing function by byte range, so functions that share a line each own their calls. Lines remain the fallback. There is no parser version bump.
+- `trace` checks for the `+calls-v1` marker, which `with_parser_version` appends, instead of the default version string.
+- A lean server asked for `compresso_recall` without `--recall-source` says to start the server with `--recall-source`.
+- The explorer agent's instructions name every tool in the 8-tool lean list, and its test checks that list.
+- The store's two lookups by symbol name are documented as distinct: search versus call resolution.
+- `compresso_grep` and `compresso grep -C` accept `context_lines` from 0 to 10. Context lines are merged, cut like snippets, and counted with their match inside `max_tokens`. With the default 0 the output is unchanged.
+- `compresso_read` accepts `ranges`, up to 8 `{path, start_line, end_line}` (CLI: `--range PATH[:START[-END]]`). Each range passes every read gate on its own and fails on its own with the single-read error code. The budget is shared in request order as equal shares of what is left. `gate` and the single-path arguments are refused alongside `ranges`, and the single form is unchanged.
+- The full and lean descriptions mention both features. The lean surface stays under half of the full one.
+Test cases:
+- `test_an_oversized_or_garbled_qualifier_drops_only_that_call`, `test_an_oversized_macro_call_qualifier_never_aborts_the_index`, `test_call_sites_the_store_rejects_are_dropped_without_failing_the_file`, and `test_index_failed_names_the_cause_chain_on_one_bounded_line`.
+- `test_trace_callers_scale_with_many_same_named_definitions` (1,500 files under an 8 s bound in debug; 19.8 s before the fix), `test_call_site_row_budget_truncates_a_trace_deterministically`, `test_trace_works_on_an_index_built_with_a_custom_parser_version`, and `test_every_stamped_parser_version_carries_the_call_graph_marker`.
+- `symlink_swap.rs` (four tests covering read, grep, unfold, outline, context, cards, staleness, internal links, directory links, and escapes), `test_a_file_swapped_for_a_symlink_after_resolution_is_never_opened`, `test_a_parent_directory_swapped_for_a_symlink_after_resolution_is_never_opened`, `test_hard_linked_ordinary_files_are_served`, and `test_indexed_file_swapped_for_a_symlink_to_a_secret_is_never_served` (MCP).
+- `test_grep_keeps_only_the_files_that_rank_and_matches_sort_then_truncate`, `test_grep_context_lines_surround_each_match_and_merge_when_overlapping`, `test_regex_byte_budget_stops_a_pattern_and_marks_the_scan_truncated`, `test_grep_tool_context_lines_surround_matches_within_the_token_cap` (MCP), and the skipped-file assertions in the existing oversize and unreadable tests.
+- `test_functions_sharing_a_line_each_own_their_calls`.
+- `test_read_bounded_ranges_share_one_budget_and_gate_each_range`, `test_read_ranges_reads_several_ranges_under_one_budget_and_gates_each` (MCP), and `test_grep_context_lines_and_multi_range_read` (CLI).
+- `test_lean_profile_rejects_a_hidden_tool_with_a_clean_error` (recall message) and the explorer render test (8 tools, every granted tool mentioned).
+
 ## Execution order (flat, dependency-ordered)
 
 Slice: E1-01, E1-02, E1-03, E1-04, E1-05, E1-06, E2-01, E2-02, E2-02a, E3-01, E2-03, E3-02, E3-03, E2-04, E2-05, E2-06, E2-07, E2-08, E2-12, E2-13, E2-14, E3-04, E3-05, E3-06, E3-07, E3-08, E2-09, E7-01, E7-07, E2-10, E2-11, E3-09, E7-02, E3-10, E3-11, E3-12, E4-01, E4-02, E4-03, E4-04, E4-05, E5-01, E5-02, E5-03, E5-04, E5-05, E5-06, E2-15, E7-03, E7-04, E7-05, E7-06, E5-07, E6-01, E6-02, E6-03, E6-04, E6-05.
@@ -3015,7 +3244,7 @@ Wave 6 — release engineering and hardening close-out: E12-01, E13-32, E12-02, 
 Wave 7 — E15 A-F plus threat-model and sandbox foundations: E15-01, E14-17, E14-18, E15-02, E15-03, E15-05, E15-09, E15-11, E15-14, E15-19, E15-06..E15-17, E15-18, E15-18b, E15-18c, E15-20..E15-30 subject to dependencies.
 Wave 8 — full-product completion: E16-01..E16-16 subject to listed dependencies.
 Wave 9 — deferred sandbox actions: E14-19, E14-20, E15-04, E15-31, E15-32.
-E17 (delivered after the slice, independent of waves 1–9): E17-05, E17-03, E17-04, E17-07, E17-02, E17-09, E17-01, E17-06, E17-10, E17-08; follow-ups E17-11, E17-12, E17-13, E17-14, E17-15; E17-16 delivered 2026-11-15.
+E17 (delivered after the slice, independent of waves 1–9): E17-05, E17-03, E17-04, E17-07, E17-02, E17-09, E17-01, E17-06, E17-10, E17-08; follow-ups E17-11, E17-12, E17-13, E17-14, E17-15; E17-16 delivered 2026-11-15; E17-17, E17-18, E17-19, E17-20, E17-21 delivered 2026-11-16; E17-22, E17-23, E17-24, E17-25, E17-26, E17-27, E17-28, E17-29 delivered 2026-11-18.
 
 Parallelism notes:
 - Slice: E2 (R1) and E3 (R2) run concurrently after E1; E7-01/E7-02 (PQ/R1) overlap E2's tail; E4 (D1) starts once E2-09 and E3-12 land; E5 (R2) follows E3; E6 (D1) follows E5-01 and overlaps E5-02..07; E1-06 and E4-05 (I1) slot in any time after E1-02/E4-04. E2-02a is a maintainer task (needs an Anthropic API key) and can land any time after E2-02 without blocking anything — until it lands, the interim 1.15 factor applies.
@@ -3046,6 +3275,6 @@ Parallelism notes:
 | E14 IP & secure deployment | 17 | 39 | ~8 wk | +E15 threat/sandbox gates |
 | E15 Clean-room advanced capabilities | 34 | 121.5 | ~24.5 engineer-wk | A-F incremental; G deferred |
 | E16 Full-product completion | 16 | 59 | ~12 engineer-wk, dependency-phased | |
-| E17 Session continuity & hardening | 16 | 34 | ~6.8 engineer-wk | E17-01..10 delivered 2026-11-14, E17-16 2026-11-15; E17-11..15 open |
-| **Post-slice + PB total** | **170** | **496 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
-| **Grand total** | **228** | **592 gross** | **~118.4 engineer-wk** | |
+| E17 Session continuity & hardening | 29 | 56.5 | ~11.3 engineer-wk | E17-01..10 delivered 2026-11-14, E17-16 2026-11-15, E17-17, E17-18, E17-19, E17-20, and E17-21 2026-11-16, E17-22..29 2026-11-18; E17-11..15 open |
+| **Post-slice + PB total** | **183** | **518.5 gross** | heavily parallel across roles | Includes the separately authorized PB lane |
+| **Grand total** | **241** | **614.5 gross** | **~122.9 engineer-wk** | |

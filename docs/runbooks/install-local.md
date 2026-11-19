@@ -87,6 +87,10 @@ cp "$HOME/.local/bin/compresso.previous" "$HOME/.local/bin/compresso"
 chmod 0755 "$HOME/.local/bin/compresso"
 ```
 
+A binary released before store migration 0008 (D89) refuses a store that a newer build has opened,
+and fails with `InvalidMigrationHistory`. To go back to such a binary, reinstall it with a fresh
+store and run `compresso index` in each repository.
+
 If `~/.local/bin` is absent from `PATH`, the installer prints the shell export to add it. It never
 edits shell startup files.
 

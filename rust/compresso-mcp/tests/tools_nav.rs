@@ -251,6 +251,124 @@ async fn test_repo_map_budget() {
     harness.close().await;
 }
 
+fn card_fixture() -> IndexedFixture {
+    IndexedFixture::new(&[
+        (
+            "src/lib.rs",
+            "//! Session recovery core.\n\nmod store;\n\npub use crate::store::load;\n\npub struct Recovery;\n\npub fn recover() -> usize { store::load() }\n",
+        ),
+        (
+            "src/store/mod.rs",
+            "//! Durable session storage.\n\npub fn load() -> usize { 1 }\n",
+        ),
+        ("docs/notes.txt", "Plain notes.\n"),
+    ])
+}
+
+#[tokio::test]
+async fn test_repo_map_omits_card_fields_unless_requested() {
+    let fixture = card_fixture();
+    let mut harness = Harness::start(fixture.store.clone()).await;
+    let result = successful_json(harness.call("compresso_repo_map", json!({})).await);
+    for field in [
+        "cards",
+        "cards_total",
+        "cards_shown",
+        "cards_tokens_used",
+        "cards_truncated",
+    ] {
+        assert!(result.get(field).is_none(), "{field} must be opt-in");
+    }
+    let disabled = successful_json(
+        harness
+            .call("compresso_repo_map", json!({ "cards": false }))
+            .await,
+    );
+    assert!(disabled.get("cards").is_none());
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_repo_map_cards_are_bounded_and_zoomable() {
+    let fixture = card_fixture();
+    let mut harness = Harness::start(fixture.store.clone()).await;
+
+    let result = successful_json(
+        harness
+            .call(
+                "compresso_repo_map",
+                json!({ "cards": true, "max_tokens": 2000 }),
+            )
+            .await,
+    );
+    let cards = result["cards"].as_array().expect("cards array");
+    assert_eq!(result["cards_shown"], cards.len());
+    assert_eq!(result["cards_total"], 3);
+    assert_eq!(result["cards_truncated"], false);
+    let rendered = cards
+        .iter()
+        .map(|card| card.as_str().expect("card text"))
+        .collect::<Vec<_>>();
+    assert!(rendered[0].starts_with("src/store/ ("), "{rendered:?}");
+    assert!(rendered[0].contains("purpose: Durable session storage."));
+    assert!(rendered[0].contains("used by: src"));
+    let src = rendered
+        .iter()
+        .find(|card| card.starts_with("src/ ("))
+        .expect("src card");
+    assert!(src.contains("purpose: Session recovery core."));
+    assert!(src.contains("entry: lib.rs"));
+    assert!(src.contains("Recovery (struct lib.rs:"));
+    let used = result["tokens_used"].as_u64().expect("map tokens")
+        + result["cards_tokens_used"].as_u64().expect("card tokens");
+    assert!(used <= 2000);
+    assert!(result.get("map").is_some_and(Value::is_string));
+
+    let zoomed = successful_json(
+        harness
+            .call("compresso_repo_map", json!({ "path": "src/store" }))
+            .await,
+    );
+    assert_eq!(zoomed["cards_total"], 1);
+    assert_eq!(zoomed["cards_shown"], 1);
+
+    let tight = successful_json(
+        harness
+            .call(
+                "compresso_repo_map",
+                json!({ "cards": true, "max_tokens": 100 }),
+            )
+            .await,
+    );
+    assert!(tight["cards_tokens_used"].as_u64().expect("tokens") <= 75);
+    assert!(tight["tokens_used"].as_u64().expect("tokens") <= 100);
+    assert_eq!(tight["cards_truncated"], true);
+
+    let contradictory = harness
+        .call(
+            "compresso_repo_map",
+            json!({ "cards": false, "path": "src" }),
+        )
+        .await;
+    assert_tool_error(&contradictory, "invalid_arguments");
+    let escape = harness
+        .call("compresso_repo_map", json!({ "path": "../outside" }))
+        .await;
+    assert_tool_error(&escape, "invalid_arguments");
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_repo_map_cards_require_an_indexed_bound_repository() {
+    let fixture = card_fixture();
+    let mut harness = Harness::start_without_root(fixture.store.clone()).await;
+    let response = harness
+        .call("compresso_repo_map", json!({ "cards": true }))
+        .await;
+    assert_tool_error(&response, "not_indexed");
+    harness.close().await;
+}
+
 #[tokio::test]
 async fn test_outline_matches_atlas() {
     let fixture = IndexedFixture::new(&[(

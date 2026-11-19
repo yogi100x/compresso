@@ -66,7 +66,9 @@ pub(crate) fn is_adapter_args(args: &[String], base: &[String], client: &str) ->
 /// may carry.
 const fn format_recall_client(format: ConfigFormat) -> &'static str {
     match format {
-        ConfigFormat::Json => CLAUDE_CODE_CLIENT,
+        // Whole-file Markdown (the exploration agent) is never a server
+        // entry; it is grouped with the client that reads it.
+        ConfigFormat::Json | ConfigFormat::Markdown => CLAUDE_CODE_CLIENT,
         ConfigFormat::Toml => CODEX_CLIENT,
     }
 }
@@ -122,6 +124,7 @@ pub fn read_configured_server(
     match format {
         ConfigFormat::Json => read_json_entry(&bytes, expected_args, format),
         ConfigFormat::Toml => read_toml_entry(&bytes, expected_args, format),
+        ConfigFormat::Markdown => ConfiguredServer::Unreadable,
     }
 }
 
@@ -144,6 +147,7 @@ pub fn receipt_authenticates_server(
     let (key, current) = match format {
         ConfigFormat::Json => ("mcpServers.compresso", current_json_hash(config_path)),
         ConfigFormat::Toml => ("mcp_servers.compresso", current_toml_hash(config_path)),
+        ConfigFormat::Markdown => return false,
     };
     match (receipt.owned_value_hashes.get(key), current) {
         (Some(installed), Some(current)) => *installed == current,

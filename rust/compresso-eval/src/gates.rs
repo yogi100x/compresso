@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::EvalReport;
+use crate::retrieval::RetrievalReport;
 
 const GATES_SCHEMA_VERSION: u32 = 1;
 // 06-fixtures.md §4.5: the eligible median needs a non-gameable population.
@@ -19,6 +20,7 @@ pub struct Gates {
     pub safety: SafetyGates,
     pub latency: LatencyGates,
     pub recall: RecallGates,
+    pub retrieval: RetrievalGates,
 }
 
 /// Safe-mode reduction thresholds.
@@ -49,6 +51,16 @@ pub struct LatencyGates {
 pub struct RecallGates {
     pub protected_min: f64,
     pub overall_min: f64,
+}
+
+/// D84 retrieval thresholds over the gated tasks of the retrieval corpus.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetrievalGates {
+    pub mean_recall_min: f64,
+    pub mean_precision_min: f64,
+    pub false_ready_max: usize,
+    pub ready_mismatches_max: usize,
 }
 
 /// Errors at the versioned release-gate configuration boundary.
@@ -106,6 +118,10 @@ pub enum GateName {
     RecallProbeCount,
     ProtectedProbeRecall,
     OverallProbeRecall,
+    RetrievalMeanRecall,
+    RetrievalMeanPrecision,
+    RetrievalFalseReady,
+    RetrievalReadyMismatches,
 }
 
 /// Stable reasons for gate failures requiring more context than a comparison.
@@ -114,6 +130,7 @@ pub enum GateName {
 pub enum GateFailureReason {
     InsufficientEligibleFixtures,
     NoProbes,
+    RetrievalNotEvaluated,
 }
 
 /// The strict comparison required by one release gate.
@@ -127,6 +144,8 @@ pub enum GateOperator {
     LessThan,
     #[serde(rename = ">=")]
     GreaterThanOrEqual,
+    #[serde(rename = "<=")]
+    LessThanOrEqual,
 }
 
 impl Gates {
@@ -163,7 +182,7 @@ impl Gates {
         if aggregate.eligible_fixtures < MIN_ELIGIBLE_FIXTURES {
             reduction = reduction.fail_with_reason(GateFailureReason::InsufficientEligibleFixtures);
         }
-        let gates = vec![
+        let mut gates = vec![
             reduction,
             GateOutcome::new(
                 GateName::ProtectedMutations,
@@ -203,6 +222,9 @@ impl Gates {
                 report.recall.overall_probe_recall,
             ),
         ];
+        if let Some(retrieval) = &report.retrieval {
+            gates.extend(self.retrieval.evaluate(retrieval));
+        }
         let mut failed_fixtures = report
             .fixtures
             .iter()
@@ -263,7 +285,57 @@ impl Gates {
                 reason: "D40 requires a finite threshold between 0.99 and 1.0",
             });
         }
+        for (name, value) in [
+            ("mean_recall_min", self.retrieval.mean_recall_min),
+            ("mean_precision_min", self.retrieval.mean_precision_min),
+        ] {
+            if !value.is_finite() || !(0.0..=1.0).contains(&value) || value == 0.0 {
+                return Err(GateError::InvalidThreshold {
+                    name,
+                    reason: "D84 requires a finite threshold above zero and at most one",
+                });
+            }
+        }
         Ok(())
+    }
+}
+
+impl RetrievalGates {
+    /// The D84 rows. A corpus that could not be evaluated fails every row.
+    fn evaluate(&self, retrieval: &RetrievalReport) -> Vec<GateOutcome> {
+        let aggregate = &retrieval.aggregate;
+        let rows = vec![
+            GateOutcome::new(
+                GateName::RetrievalMeanRecall,
+                GateOperator::GreaterThanOrEqual,
+                self.mean_recall_min,
+                aggregate.mean_recall,
+            ),
+            GateOutcome::new(
+                GateName::RetrievalMeanPrecision,
+                GateOperator::GreaterThanOrEqual,
+                self.mean_precision_min,
+                aggregate.mean_precision,
+            ),
+            GateOutcome::new(
+                GateName::RetrievalFalseReady,
+                GateOperator::LessThanOrEqual,
+                self.false_ready_max as f64,
+                aggregate.false_ready as f64,
+            ),
+            GateOutcome::new(
+                GateName::RetrievalReadyMismatches,
+                GateOperator::LessThanOrEqual,
+                self.ready_mismatches_max as f64,
+                aggregate.ready_mismatches as f64,
+            ),
+        ];
+        if retrieval.failure.is_none() {
+            return rows;
+        }
+        rows.into_iter()
+            .map(|row| row.fail_with_reason(GateFailureReason::RetrievalNotEvaluated))
+            .collect()
     }
 }
 
@@ -348,6 +420,10 @@ impl GateName {
             Self::RecallProbeCount => "recall_probe_count",
             Self::ProtectedProbeRecall => "protected_probe_recall",
             Self::OverallProbeRecall => "overall_probe_recall",
+            Self::RetrievalMeanRecall => "retrieval_mean_recall",
+            Self::RetrievalMeanPrecision => "retrieval_mean_precision",
+            Self::RetrievalFalseReady => "retrieval_false_ready",
+            Self::RetrievalReadyMismatches => "retrieval_ready_mismatches",
         }
     }
 }
@@ -357,6 +433,7 @@ impl GateFailureReason {
         match self {
             Self::InsufficientEligibleFixtures => "insufficient_eligible_fixtures",
             Self::NoProbes => "no_probes",
+            Self::RetrievalNotEvaluated => "retrieval_not_evaluated",
         }
     }
 }
@@ -368,6 +445,7 @@ impl GateOperator {
             Self::Equal => "==",
             Self::LessThan => "<",
             Self::GreaterThanOrEqual => ">=",
+            Self::LessThanOrEqual => "<=",
         }
     }
 
@@ -377,6 +455,7 @@ impl GateOperator {
             Self::Equal => observed == threshold,
             Self::LessThan => observed < threshold,
             Self::GreaterThanOrEqual => observed >= threshold,
+            Self::LessThanOrEqual => observed <= threshold,
         }
     }
 }
@@ -435,6 +514,7 @@ mod tests {
                 protected_probe_recall: 1.0,
                 overall_probe_recall: 1.0,
             },
+            retrieval: None,
         }
     }
 
@@ -464,6 +544,148 @@ mod tests {
             overall_probe_recall,
         };
         report
+    }
+
+    fn retrieval_outcome(
+        id: &str,
+        gold: &[&str],
+        evidence: &[&str],
+        ready: bool,
+    ) -> crate::RetrievalTaskOutcome {
+        crate::retrieval::score_task(
+            &crate::RetrievalTask {
+                id: id.to_owned(),
+                task: "How does it work?".to_owned(),
+                gold_files: gold.iter().map(|path| (*path).to_owned()).collect(),
+                gold_symbols: Vec::new(),
+                expect_ready: gold.is_empty().then_some(false),
+                known_gap: None,
+            },
+            evidence,
+            100,
+            ready,
+        )
+    }
+
+    fn report_with_retrieval(tasks: Vec<crate::RetrievalTaskOutcome>) -> EvalReport {
+        let mut report = report(0.50, 0, 0, 100);
+        report.retrieval = Some(RetrievalReport::from_outcomes(1600, 4, tasks));
+        report
+    }
+
+    #[test]
+    fn test_gates_toml_retrieval_thresholds_match_d86() {
+        let gates = Gates::load(&gates_path()).expect("committed gates should load");
+
+        assert_eq!(gates.retrieval.mean_recall_min, 0.96);
+        assert_eq!(gates.retrieval.mean_precision_min, 0.34);
+        assert_eq!(gates.retrieval.false_ready_max, 0);
+        assert_eq!(gates.retrieval.ready_mismatches_max, 1);
+    }
+
+    #[test]
+    fn test_report_without_retrieval_section_has_no_retrieval_rows() {
+        let gates = Gates::load(&gates_path()).expect("committed gates should load");
+
+        let evaluated = gates.evaluate(&report(0.50, 0, 0, 100));
+
+        assert!(evaluated.passed);
+        assert!(evaluated.gate(GateName::RetrievalMeanRecall).is_none());
+    }
+
+    #[test]
+    fn test_retrieval_report_at_thresholds_passes() {
+        let gates = Gates::load(&gates_path()).expect("committed gates should load");
+        let report = report_with_retrieval(vec![
+            retrieval_outcome("found", &["a.rs"], &["a.rs", "b.rs"], true),
+            retrieval_outcome("absent", &[], &["c.rs"], false),
+        ]);
+
+        let evaluated = gates.evaluate(&report);
+
+        assert!(evaluated.passed, "{:?}", evaluated.lines());
+        assert_eq!(evaluated.gates.len(), 11);
+    }
+
+    #[test]
+    fn test_retrieval_ranking_regression_fails_recall_and_precision_gates() {
+        let gates = Gates::load(&gates_path()).expect("committed gates should load");
+        // One of two gold files is buried under single-word noise.
+        let report = report_with_retrieval(vec![
+            retrieval_outcome("found", &["a.rs"], &["a.rs", "x.rs", "y.rs", "z.rs"], false),
+            retrieval_outcome("lost", &["b.rs"], &["x.rs", "y.rs", "z.rs"], false),
+        ]);
+
+        let evaluated = gates.evaluate(&report);
+
+        assert!(!evaluated.passed);
+        let recall = evaluated
+            .gate(GateName::RetrievalMeanRecall)
+            .expect("recall row");
+        assert_eq!(recall.observed, 0.5);
+        assert!(!recall.passed);
+        assert!(
+            !evaluated
+                .gate(GateName::RetrievalMeanPrecision)
+                .expect("precision row")
+                .passed
+        );
+        assert!(evaluated.failed_names().contains("retrieval_mean_recall"));
+    }
+
+    #[test]
+    fn test_retrieval_false_ready_fails_gate() {
+        let gates = Gates::load(&gates_path()).expect("committed gates should load");
+        let report = report_with_retrieval(vec![
+            retrieval_outcome("found", &["a.rs"], &["a.rs"], true),
+            retrieval_outcome("absent", &[], &["c.rs"], true),
+        ]);
+
+        let evaluated = gates.evaluate(&report);
+
+        let false_ready = evaluated
+            .gate(GateName::RetrievalFalseReady)
+            .expect("false-ready row");
+        assert_eq!(false_ready.observed, 1.0);
+        assert!(!false_ready.passed);
+        assert!(!evaluated.passed);
+    }
+
+    #[test]
+    fn test_retrieval_corpus_that_was_not_evaluated_fails_closed() {
+        let gates = Gates::load(&gates_path()).expect("committed gates should load");
+        let mut report =
+            report_with_retrieval(vec![retrieval_outcome("found", &["a.rs"], &["a.rs"], true)]);
+        report
+            .retrieval
+            .as_mut()
+            .expect("retrieval section")
+            .failure = Some(crate::RunnerStage::IndexRepository);
+
+        let evaluated = gates.evaluate(&report);
+
+        assert!(!evaluated.passed);
+        let recall = evaluated
+            .gate(GateName::RetrievalMeanRecall)
+            .expect("recall row");
+        assert_eq!(
+            recall.reason,
+            Some(GateFailureReason::RetrievalNotEvaluated)
+        );
+    }
+
+    #[test]
+    fn test_retrieval_threshold_of_zero_is_rejected() {
+        let mut gates = Gates::load(&gates_path()).expect("committed gates should load");
+        gates.retrieval.mean_recall_min = 0.0;
+
+        assert!(matches!(
+            gates.validate(),
+            Err(GateError::InvalidThreshold {
+                name: "mean_recall_min",
+                ..
+            })
+        ));
     }
 
     #[test]

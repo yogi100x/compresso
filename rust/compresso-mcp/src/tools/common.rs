@@ -26,6 +26,14 @@ impl ToolFailure {
         }
     }
 
+    pub(crate) const fn code(&self) -> &'static str {
+        self.code
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+
     pub(crate) fn invalid(message: impl Into<String>) -> Self {
         Self::new("invalid_arguments", message)
     }
@@ -325,6 +333,9 @@ pub(crate) fn map_atlas_error(error: AtlasError) -> ToolFailure {
         ),
         AtlasError::Query(error @ QueryError::InvalidSearchQuery { .. }) => {
             ToolFailure::invalid(format!("argument 'query' is invalid: {error}."))
+        }
+        AtlasError::Query(error @ QueryError::InvalidReadRanges { .. }) => {
+            ToolFailure::invalid(format!("argument 'ranges' is invalid: {error}."))
         }
         AtlasError::Query(QueryError::InvalidSearchPath { .. }) => ToolFailure::invalid(
             "argument 'path' must be a repository-relative path without '..' or backslashes.",

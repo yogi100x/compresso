@@ -1,5 +1,6 @@
 //! Local SQLite persistence boundaries for repositories, files, symbols, and operations.
 
+mod calls;
 mod files;
 mod ops;
 mod receipts;
@@ -14,6 +15,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use thiserror::Error;
 
+pub use calls::{
+    CallForm, CallSiteRecord, IndexedSymbol, MAX_CALL_TEXT_BYTES, StoredCallSite,
+    validate_call_sites,
+};
 pub use files::{FileLanguage, FileRecord, RelativePathError};
 pub use ops::{
     DetailedStatsSummary, ModeledCostSaved, OperationId, OperationRecord, OperationStatsSummary,
@@ -47,6 +52,10 @@ const MIGRATIONS: &[Migration] = &[
     Migration {
         version: 7,
         sql: include_str!("../migrations/0007_reset_unqualified_retrieval_baselines.sql"),
+    },
+    Migration {
+        version: 8,
+        sql: include_str!("../migrations/0008_call_sites.sql"),
     },
 ];
 
@@ -680,7 +689,7 @@ mod tests {
     #[test]
     fn test_failed_migration_rolls_back() {
         const BAD_MIGRATION: Migration = Migration {
-            version: 8,
+            version: 9,
             sql: "CREATE TABLE test_table (id INTEGER PRIMARY KEY); THIS IS INVALID SQL;",
         };
         let (_directory, path) = test_database_path();
@@ -689,12 +698,18 @@ mod tests {
         let error = match Store::open_with_migrations(
             &path,
             StoreOptions::default(),
-            &[MIGRATIONS[0], MIGRATIONS[1], MIGRATIONS[2], BAD_MIGRATION],
+            &[
+                MIGRATIONS[0],
+                MIGRATIONS[1],
+                MIGRATIONS[2],
+                MIGRATIONS[3],
+                BAD_MIGRATION,
+            ],
         ) {
             Ok(_) => panic!("bad migration should fail"),
             Err(error) => error,
         };
-        assert!(matches!(error, StoreError::Migration { version: 8, .. }));
+        assert!(matches!(error, StoreError::Migration { version: 9, .. }));
 
         let connection = Connection::open(path).expect("database should reopen");
         let version: i64 = connection
@@ -702,7 +717,7 @@ mod tests {
                 row.get(0)
             })
             .expect("migration version should be readable");
-        assert_eq!(version, 7);
+        assert_eq!(version, 8);
         let test_table_exists: bool = connection
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'test_table')",
@@ -747,6 +762,53 @@ mod tests {
             )
             .expect("corrected row should load");
         assert_eq!((pack, raw, follow_ups), (800, 800, 0));
+    }
+
+    #[test]
+    fn test_migration_8_opens_a_store_indexed_before_call_sites() {
+        let (_directory, path) = test_database_path();
+        let store = Store::open_with_migrations(
+            &path,
+            StoreOptions::default(),
+            &[MIGRATIONS[0], MIGRATIONS[1], MIGRATIONS[2]],
+        )
+        .expect("store through migration 7 should open");
+        {
+            let connection = store.connection().expect("connection should lock");
+            connection
+                .execute_batch(
+                    "INSERT INTO repositories (id, root, approved_at, parser_version, last_indexed_at) VALUES (1, '/tmp/old-repo', 1, '0.1.0+atlas-shell-text-v1+rust-imports-v2', 2);
+                     INSERT INTO files (id, repo_id, path, hash, size_bytes, token_estimate, indexed_at) VALUES (1, 1, 'src/lib.rs', 'aa', 10, 2, 2);
+                     INSERT INTO symbols (id, file_id, name, qualified_name, kind, start_line, end_line, token_estimate) VALUES (1, 1, 'run', 'run', 'function', 1, 3, 2);",
+                )
+                .expect("pre-0008 index rows should insert");
+        }
+        drop(store);
+
+        let store = Store::open(&path).expect("migration 8 should apply to an indexed store");
+        let repository = store
+            .repo_by_root(Path::new("/tmp/old-repo"))
+            .expect("repository lookup should succeed")
+            .expect("repository should survive the migration");
+        assert_eq!(
+            repository.parser_version,
+            "0.1.0+atlas-shell-text-v1+rust-imports-v2"
+        );
+        assert_eq!(
+            store
+                .symbols_in_file(repository.id, "src/lib.rs")
+                .expect("symbols should load")
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .call_site_count(repository.id)
+                .expect("call sites should count"),
+            0
+        );
+        drop(store);
+        drop(Store::open(&path).expect("reopening a migrated store should succeed"));
     }
 
     #[test]
@@ -842,7 +904,7 @@ mod tests {
             .expect("migration rows should be queryable")
             .collect::<Result<_, _>>()
             .expect("migration rows should decode");
-        assert_eq!(rows, [1, 6, 7]);
+        assert_eq!(rows, [1, 6, 7, 8]);
     }
 
     #[test]
@@ -865,18 +927,18 @@ mod tests {
         assert!(matches!(
             error,
             StoreError::InvalidMigrationHistory { found, expected }
-                if found == [1, 6, 7, 99] && expected == [1, 6, 7]
+                if found == [1, 6, 7, 8, 99] && expected == [1, 6, 7, 8]
         ));
     }
 
     #[test]
     fn test_gap_in_migration_history_rejected() {
-        const MIGRATION_8: Migration = Migration {
-            version: 8,
-            sql: "SELECT 1;",
-        };
         const MIGRATION_9: Migration = Migration {
             version: 9,
+            sql: "SELECT 1;",
+        };
+        const MIGRATION_10: Migration = Migration {
+            version: 10,
             sql: "SELECT 1;",
         };
         let (_directory, path) = test_database_path();
@@ -884,7 +946,7 @@ mod tests {
         let connection = Connection::open(&path).expect("database should be inspectable");
         connection
             .execute(
-                "INSERT INTO schema_migrations (version, applied_at) VALUES (9, 1)",
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (10, 1)",
                 [],
             )
             .expect("gapped migration row should insert");
@@ -897,8 +959,9 @@ mod tests {
                 MIGRATIONS[0],
                 MIGRATIONS[1],
                 MIGRATIONS[2],
-                MIGRATION_8,
+                MIGRATIONS[3],
                 MIGRATION_9,
+                MIGRATION_10,
             ],
         ) {
             Ok(_) => panic!("gapped migration history should be rejected"),
@@ -907,7 +970,7 @@ mod tests {
         assert!(matches!(
             error,
             StoreError::InvalidMigrationHistory { found, expected }
-                if found == [1, 6, 7, 9] && expected == [1, 6, 7, 8]
+                if found == [1, 6, 7, 8, 10] && expected == [1, 6, 7, 8, 9]
         ));
     }
 

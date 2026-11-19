@@ -36,6 +36,16 @@ struct CorpusPins {
     hash_algorithm: String,
     quality: Vec<QualityPin>,
     benchmark: Vec<BenchmarkPin>,
+    retrieval: RetrievalPin,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RetrievalPin {
+    path: String,
+    file_count: usize,
+    size_bytes: u64,
+    sha256: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -193,6 +203,20 @@ fn test_canonical_quality_corpus_paths_hashes_and_sizes() {
     for pin in &pins.quality {
         lint_quality_pin(&root, pin).unwrap_or_else(|error| panic!("{error}"));
     }
+}
+
+#[test]
+fn test_retrieval_corpus_path_hash_and_size() {
+    let root = fixtures_root();
+    let pin = load_pins(&root).retrieval;
+
+    assert_eq!(pin.path, "retrieval");
+    let actual = tree_snapshot(&root.join(&pin.path)).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        actual,
+        (pin.file_count, pin.size_bytes, pin.sha256),
+        "fixtures/retrieval drifted from fixtures/corpus.toml"
+    );
 }
 
 #[test]

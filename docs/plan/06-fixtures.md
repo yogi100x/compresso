@@ -134,7 +134,7 @@ The production gate (build-doc §25.6, D37) is: **safe-mode median token reducti
 Per 03-interfaces §1, `compresso-eval` owns `FixtureSet`, `EvalRunner`, and `Gates`, depending only on `compresso-core` and `compresso-atlas`.
 
 ```rust
-pub struct FixtureSet { pub fixtures: Vec<Fixture> }
+pub struct FixtureSet { pub fixtures: Vec<Fixture>, pub retrieval: Option<RetrievalCorpus> }  // §12
 impl FixtureSet {
     /// Walks <root>/<category>/<name>/fixture.toml (exactly two levels).
     /// Errors: unknown TOML keys, name/dir or category/dir mismatch, more than one
@@ -212,8 +212,10 @@ remain identical on every CI platform.
 Each benchmark entry pins the exact file path, byte size, exact `openai_o200k`
 token count, generator command, and SHA-256 file hash. Corpus integrity tests
 require the complete path sets, so an absent member cannot be silently skipped.
-The loader recognizes only the exact top-level `benchmarks/` and
-`integrations/` directories as non-quality data. The latter contains E6-05
+The single `[retrieval]` entry pins the whole `retrieval/` tree (§12) with the
+same file count, byte size, and tree hash. The loader recognizes only the exact
+top-level `benchmarks/`, `integrations/`, and `retrieval/` directories as
+non-quality data. The latter contains E6-05
 client-configuration parity fixtures and never enters compression gates. Every
 other unknown category remains an error.
 
@@ -1176,3 +1178,128 @@ and SHA-256 hashes are pinned in `fixtures/corpus.toml`.
 and returns exactly the fifteen quality fixtures. Consequently benchmark
 payloads never enter the eligible-fixture population or its quality median;
 the separate corpus-integrity lint still validates them on every Rust test run.
+
+## 12. Retrieval corpus and gate
+
+D84. `fixtures/retrieval/` measures whether the context planner returns the
+code that answers a task. It is not a quality fixture: it never enters
+`FixtureSet::fixtures`, the eligible population, or the reduction median.
+
+```text
+fixtures/retrieval/
+  tasks.toml     # gold task set (schema below)
+  repo/          # synthetic source corpus: a fictional job service in Rust, TypeScript, and Python
+```
+
+The corpus is authored for this purpose and is never compiled or executed. It
+contains target symbols, decoys that share one common word with a target
+(`file`, `read`, `error`, `server`, `config`, `limit`, `token`), test files that
+repeat the same words, targets whose concept exists only as a compound
+identifier (`PayloadTooLarge`, `retry_backoff`), targets whose concept is
+written only inside a function body (a compound such as `graceful shutdown`
+or `clock skew`, or a single word such as `checksum` or `jitter`), and a
+body-only target whose task also uses a word found in more bodies than a
+specific query returns (`execute`, in every migration step). D86 adds a raise
+site that shares its file with the enum variant and an operator report that
+both use the same named concept (`tenant suspended`), and a limit held by a
+constant in a file no task word names (`SEGMENT_CEILING`).
+
+```toml
+schema_version = 1
+budget_tokens = 1600              # planner budget for every task, openai_o200k
+
+[[task]]
+id = "retry-backoff"              # kebab-case, unique
+task = "How is the retry backoff delay worked out between failed attempts?"
+gold_files = ["engine/src/retry.rs"]   # relative to repo/; every one must appear as evidence
+gold_symbols = ["engine/src/retry.rs::retry_backoff"]  # optional; <gold file>::<qualified name>, each must be an evidence item
+expect_ready = true               # optional; required to be false when gold_files is empty
+known_gap = "body_only"           # optional; reported but excluded from the gated aggregate
+```
+
+Load rules (`RetrievalCorpus::load`): unknown keys, a duplicate or non-kebab-case
+id, an empty task, a gold path that is not a regular file below `repo/`, a
+gold symbol that is not `<gold file>::<qualified name>` or is listed twice, a
+task without gold files that does not set `expect_ready = false` or that sets
+`known_gap`, and a manifest with no gated gold task are load errors. A fixture
+root without `retrieval/` loads with no corpus and produces no report section.
+
+Evaluation (`EvalRunner`): copy `repo/` to a temporary directory, index it with
+the production indexer into a temporary store, then call `plan_context` once
+per task at `budget_tokens`. Per task:
+
+- Evidence is every excerpt in the pack: the ranked symbol bodies and the
+  constants they reference (D86).
+- `recall`: gold files present among the evidence paths plus gold symbols
+  present among the evidence items, over gold files plus gold symbols.
+- `precision`: evidence items whose path is a gold file, over evidence items;
+  zero when there is no evidence.
+- `ready`: every candidate evidence file fitted, there is at least one, and the
+  evidence covers the task's concepts — the rule behind `task_pack_ready`.
+- `false_ready`: ready while a gold file or gold symbol is missing, or ready
+  with no gold files.
+
+The report gains a top-level `retrieval` key; `schema_version` stays 1 because
+keys are only added. No corpus content is emitted.
+
+```text
+retrieval.budget_tokens, retrieval.corpus_files
+retrieval.aggregate   tasks, gold_tasks, full_recall_tasks, mean_recall, mean_precision,
+                      false_ready, ready_mismatches, mean_tokens
+retrieval.known_gaps  tasks, full_recall_tasks, mean_recall
+retrieval.tasks[]     id, known_gap?, gold_files, gold_files_found, missing_gold_files,
+                      gold_symbols, gold_symbols_found, missing_gold_symbols?,
+                      evidence_items, recall, precision, tokens_used, ready, expect_ready?, false_ready
+retrieval.failure     present only when the corpus could not be evaluated
+```
+
+`aggregate` covers the tasks without a `known_gap`. `mean_recall`,
+`mean_precision`, and `full_recall_tasks` average the `gold_tasks`; tasks
+without gold files count toward `tasks`, `false_ready`, `ready_mismatches`, and
+`mean_tokens` only. `ready_mismatches` counts tasks whose `ready` differs from
+a declared `expect_ready`.
+
+Gates (`docs/plan/gates.toml` `[retrieval]`), evaluated only when the section
+is present:
+
+| Gate | Rule | Committed | Measured |
+|---|---|---|---|
+| `retrieval_mean_recall` | `>= mean_recall_min` | 0.96 | 1.0 (25 of 25) |
+| `retrieval_mean_precision` | `>= mean_precision_min` | 0.34 | 0.3885 |
+| `retrieval_false_ready` | `<= false_ready_max` | 0 | 0 |
+| `retrieval_ready_mismatches` | `<= ready_mismatches_max` | 1 | 1 |
+
+A corpus that cannot be indexed or planned, a gold file with no indexed
+symbols, or a gold symbol the index does not hold, sets `failure` and fails every retrieval row with reason
+`retrieval_not_evaluated`. Thresholds are the measured values minus a small
+margin; raise them when the planner improves, never lower them to pass.
+
+Body-only tasks (D85): the index covers symbol names and signatures, so a
+concept written only in a body is reached by the planner's bounded content
+scan (04 §`compresso_context`). Five tasks cover it and all are gated:
+`graceful-shutdown` and `upload-checksum` (missed before D85, recall 0),
+`clock-skew`, `reconnect-jitter`, and the decoy `vacuum-statement`. With the
+common-word rule removed the decoy returns 11 evidence items instead of 1 and
+mean precision falls to 0.2945, below the committed floor. No committed task
+carries `known_gap` any more, so `retrieval.known_gaps` reports zero tasks;
+the key stays in the schema for a future measured gap.
+
+Use sites and referenced constants (D86): `tenant-suspended-raise` lists the
+raising function as a gold symbol, because its file is evidence either way;
+without the third per-file slot for use-site evidence the symbol is missing
+and recall is 0.5. `multipart-part-ceiling` has the limit's file as a second
+gold file, reached only through the constant the top excerpt references;
+without referenced constants recall is 0.5. A task's full recall, and
+`full_recall_tasks`, require every gold symbol as well as every gold file.
+
+Verbatim names and numbers (D88): three tasks copy text from the code.
+`two-digit-literal` names the default `14`, written only in a body; before
+D88 a two-digit number was never searched and recall was 0. `status-literal`
+names the status `423`, also written only in a body. `named-error-raise` names
+`TooManyAttemptsError`; its definition and its raise site are both gold files,
+and before D88 the raise site was missing and the pack was false-ready. With
+the three tasks the measured precision is 0.3885 (the 22 earlier tasks are
+unchanged at 0.3835); the committed thresholds are unchanged.
+
+Changing any file below `fixtures/retrieval/` requires updating the
+`[retrieval]` pin in `fixtures/corpus.toml` and re-measuring the thresholds.

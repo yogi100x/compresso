@@ -239,3 +239,16 @@ fn test_python_malformed_returns_partial_without_panic() {
         Err(error) => panic!("unexpected malformed-source error: {error}"),
     }
 }
+
+#[test]
+fn test_python_import_with_no_module_name_is_not_extracted() {
+    let extraction = ParserRegistry::extract(Language::Python, "import ,\nimport x, y,\n")
+        .expect("malformed imports should still extract");
+    let raw = extraction
+        .imports
+        .iter()
+        .map(|import| import.raw.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(raw, ["x", "y"]);
+}

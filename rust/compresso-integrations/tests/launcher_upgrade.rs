@@ -15,14 +15,16 @@ use serde_json::Value;
 use tempfile::tempdir;
 use toml_edit::DocumentMut;
 
-const EXPECTED_MCP_TOOLS: [&str; 10] = [
+const EXPECTED_MCP_TOOLS: [&str; 12] = [
     "compresso_repo_map",
     "compresso_search",
+    "compresso_grep",
     "compresso_read",
     "compresso_outline",
     "compresso_unfold",
     "compresso_context",
     "compresso_impact",
+    "compresso_trace",
     "compresso_compress",
     "compresso_stats",
     "compresso_explain",

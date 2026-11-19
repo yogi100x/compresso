@@ -73,11 +73,6 @@
     },
     {
       "kind": "undocumented_cli_command",
-      "reference": "compresso map",
-      "reason": "Documentation gap that predates the drift linter; remove this entry when the command is documented."
-    },
-    {
-      "kind": "undocumented_cli_command",
       "reference": "compresso outline",
       "reason": "Documentation gap that predates the drift linter; remove this entry when the command is documented."
     },
