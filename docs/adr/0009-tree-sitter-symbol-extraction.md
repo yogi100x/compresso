@@ -10,7 +10,7 @@ Atlas needs symbols, signatures, line boundaries, and import relationships acros
 
 ## Decision
 
-Use tree-sitter with a parser registry: `tree-sitter-rust`, `tree-sitter-typescript` (TS + TSX), `tree-sitter-javascript`, and `tree-sitter-python` in the first slice, with per-language extraction queries in `queries/<lang>.scm` and the remaining build-doc §12.4 languages added later behind the same registry.
+Use tree-sitter with a parser registry: `tree-sitter-rust`, `tree-sitter-typescript` (TS + TSX), `tree-sitter-javascript`, and `tree-sitter-python` in the first slice, with per-language extraction queries in `queries/<lang>.scm` and the remaining build-doc §12.4 languages added later behind the same registry. Update (E17-37, D102): the registry is one table, `compresso_atlas::parsers::LANGUAGES`, and Go (`tree-sitter-go`) is its first later language.
 
 ## Consequences
 

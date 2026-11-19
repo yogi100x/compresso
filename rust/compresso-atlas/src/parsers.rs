@@ -5,17 +5,16 @@ use compresso_store::{CallSiteRecord, SymbolKind, SymbolRecord};
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
 
 mod calls;
+mod go;
+pub mod languages;
 mod shell;
 mod text;
 
 use calls::CallSyntax;
 pub use calls::{MAX_CALL_NODES_PER_FILE, MAX_CALLS_PER_FILE};
+use languages::Extractor;
+pub use languages::{LANGUAGES, LanguageSpec};
 
-const RUST_QUERY: &str = include_str!("../queries/rust.scm");
-const JAVASCRIPT_QUERY: &str = include_str!("../queries/javascript.scm");
-const PYTHON_QUERY: &str = include_str!("../queries/python.scm");
-const TYPESCRIPT_QUERY: &str = include_str!("../queries/typescript.scm");
-const TSX_QUERY: &str = include_str!("../queries/tsx.scm");
 const NOT_INDEXED: &str = "not_indexed";
 
 pub type Language = compresso_store::FileLanguage;
@@ -79,33 +78,25 @@ pub struct ParserRegistry;
 impl ParserRegistry {
     pub fn for_path(path: &Path) -> Option<Language> {
         let extension = path.extension()?.to_str()?;
-        match extension {
-            "rs" => Some(Language::Rust),
-            "ts" => Some(Language::TypeScript),
-            "tsx" => Some(Language::Tsx),
-            "js" | "jsx" | "mjs" | "cjs" => Some(Language::JavaScript),
-            "py" => Some(Language::Python),
-            "sh" | "bash" | "zsh" => Some(Language::Shell),
-            "md" | "markdown" | "txt" | "rst" | "adoc" => Some(Language::Text),
-            _ => None,
-        }
+        languages::for_extension(extension).map(|spec| spec.language)
     }
 
     pub fn extract(lang: Language, source: &str) -> Result<Extraction, ParseError> {
-        match lang {
-            Language::Rust => extract_rust(source),
-            Language::TypeScript => extract_typescript(Language::TypeScript, source),
-            Language::Tsx => extract_typescript(Language::Tsx, source),
-            Language::JavaScript => extract_javascript(source),
-            Language::Python => extract_python(source),
-            Language::Shell => Ok(shell::extract(source)),
-            Language::Text => Ok(text::extract(source)),
+        let spec = languages::spec(lang);
+        match spec.extractor {
+            Extractor::Query {
+                grammar,
+                query,
+                calls,
+                process,
+            } => extract_with_query(grammar(), spec.name, query, source, calls, process),
+            Extractor::Custom(extract) => Ok(extract(source)),
         }
     }
 }
 
 #[derive(Clone, Copy)]
-enum CaptureKind {
+pub(crate) enum CaptureKind {
     Symbol(SymbolKind),
     Variable,
     ModuleExport,
@@ -115,66 +106,9 @@ enum CaptureKind {
 }
 
 #[derive(Clone, Copy)]
-struct Candidate<'tree> {
+pub(crate) struct Candidate<'tree> {
     node: Node<'tree>,
     kind: CaptureKind,
-}
-
-fn extract_rust(source: &str) -> Result<Extraction, ParseError> {
-    extract_with_query(
-        tree_sitter_rust::LANGUAGE.into(),
-        "Rust",
-        RUST_QUERY,
-        source,
-        CallSyntax::Rust,
-        process_rust_candidate,
-    )
-}
-
-fn extract_typescript(lang: Language, source: &str) -> Result<Extraction, ParseError> {
-    let (language, language_name, query) = match lang {
-        Language::TypeScript => (
-            tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-            "TypeScript",
-            TYPESCRIPT_QUERY,
-        ),
-        Language::Tsx => (
-            tree_sitter_typescript::LANGUAGE_TSX.into(),
-            "TSX",
-            TSX_QUERY,
-        ),
-        _ => return Err(ParseError::UnsupportedLanguage(lang)),
-    };
-    extract_with_query(
-        language,
-        language_name,
-        query,
-        source,
-        CallSyntax::Script,
-        process_typescript_candidate,
-    )
-}
-
-fn extract_javascript(source: &str) -> Result<Extraction, ParseError> {
-    extract_with_query(
-        tree_sitter_javascript::LANGUAGE.into(),
-        "JavaScript",
-        JAVASCRIPT_QUERY,
-        source,
-        CallSyntax::Script,
-        process_javascript_candidate,
-    )
-}
-
-fn extract_python(source: &str) -> Result<Extraction, ParseError> {
-    extract_with_query(
-        tree_sitter_python::LANGUAGE.into(),
-        "Python",
-        PYTHON_QUERY,
-        source,
-        CallSyntax::Python,
-        process_python_candidate,
-    )
 }
 
 fn extract_with_query(

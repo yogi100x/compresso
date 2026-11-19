@@ -944,15 +944,7 @@ const fn symbol_kind_name(kind: SymbolKind) -> &'static str {
 }
 
 const fn language_name(language: FileLanguage) -> &'static str {
-    match language {
-        FileLanguage::Rust => "rust",
-        FileLanguage::TypeScript => "typescript",
-        FileLanguage::Tsx => "tsx",
-        FileLanguage::JavaScript => "javascript",
-        FileLanguage::Python => "python",
-        FileLanguage::Shell => "shell",
-        FileLanguage::Text => "text",
-    }
+    language.as_str()
 }
 
 const fn edge_kind_name(kind: EdgeKind) -> &'static str {

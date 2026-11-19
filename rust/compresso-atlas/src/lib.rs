@@ -3,6 +3,7 @@
 pub mod cards;
 pub mod concurrency;
 pub mod edit;
+mod go_imports;
 pub mod grep;
 pub mod indexer;
 pub mod parsers;

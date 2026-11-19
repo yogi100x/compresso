@@ -2950,14 +2950,9 @@ fn task_requests_text_evidence(task: &str) -> bool {
 const fn context_language_order(language: Option<FileLanguage>) -> u8 {
     match language {
         Some(FileLanguage::Shell) => 0,
-        Some(
-            FileLanguage::Rust
-            | FileLanguage::TypeScript
-            | FileLanguage::Tsx
-            | FileLanguage::JavaScript
-            | FileLanguage::Python,
-        ) => 1,
         Some(FileLanguage::Text) => 2,
+        // Every grammar-parsed language.
+        Some(_) => 1,
         None => 3,
     }
 }

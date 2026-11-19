@@ -14,6 +14,8 @@ use compresso_store::{
 };
 
 use crate::concurrency::{Concurrency, ReadAhead};
+use crate::go_imports::GoModules;
+use crate::parsers::languages::{self, ImportStyle};
 use crate::parsers::{ImportRecord, ImportResolution, ParseError, ParserRegistry};
 use crate::rust_imports::{self, RustWorkspace};
 use crate::scanner::{AtlasError, DEFAULT_MAX_FILE_BYTES, ScanOptions, scan_with_concurrency};
@@ -21,7 +23,7 @@ use crate::scanner::{AtlasError, DEFAULT_MAX_FILE_BYTES, ScanOptions, scan_with_
 const INDEX_SCHEMA_VERSION: u32 = 1;
 pub(crate) const DEFAULT_PARSER_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
-    "+atlas-shell-text-v1+rust-imports-v2+calls-v1"
+    "+atlas-shell-text-v1+rust-imports-v2+go-v1+calls-v1"
 );
 /// Marks an index whose parser recorded call sites (D89). Every version this
 /// indexer stamps carries it, including one set with
@@ -193,7 +195,17 @@ impl<'a> Indexer<'a> {
         let removed_set = scan.removed.iter().cloned().collect::<HashSet<_>>();
         let known_paths = known_repository_paths(&previous_hashes, &scan, &removed_set)?;
         let rust_workspace = RustWorkspace::discover(&canonical_root, &known_paths);
+        let go_modules = GoModules::discover(&canonical_root, &known_paths);
         let paths_expanded = !scan.added.is_empty();
+        // A file added to a Go package directory belongs to every import of
+        // that package, so files importing the package are re-resolved.
+        let grown_packages = scan
+            .added
+            .iter()
+            .filter_map(|path| path.to_str())
+            .filter(|path| languages::package_is_directory(path))
+            .map(|path| parent_path(path).to_owned())
+            .collect::<HashSet<_>>();
         let mut candidates = scan
             .added
             .into_iter()
@@ -206,6 +218,16 @@ impl<'a> Indexer<'a> {
                     .into_iter()
                     .filter(|path| !removed_set.contains(path))
                     .map(PathBuf::from),
+            );
+        }
+        if !grown_packages.is_empty() {
+            candidates.extend(
+                self.store
+                    .resolved_edges(repo)?
+                    .into_iter()
+                    .filter(|edge| grown_packages.contains(parent_path(&edge.to_path)))
+                    .filter(|edge| !removed_set.contains(&edge.from_path))
+                    .map(|edge| PathBuf::from(edge.from_path)),
             );
         }
         if !removed_set.is_empty() {
@@ -248,6 +270,7 @@ impl<'a> Indexer<'a> {
             root: &canonical_root,
             known_paths: &known_paths,
             rust_workspace: &rust_workspace,
+            go_modules: &go_modules,
             counter: self.counter,
             indexed_at,
         };
@@ -366,6 +389,7 @@ struct PrepareContext<'a> {
     root: &'a Path,
     known_paths: &'a BTreeSet<String>,
     rust_workspace: &'a RustWorkspace,
+    go_modules: &'a GoModules,
     counter: &'a dyn TokenCounter,
     indexed_at: i64,
 }
@@ -450,6 +474,7 @@ fn prepare_file(
             &mut extraction.imports,
             context.known_paths,
             context.rust_workspace,
+            context.go_modules,
         );
         symbols = extraction.symbols;
         calls = extraction.calls;
@@ -638,19 +663,42 @@ fn known_repository_paths(
 
 fn resolve_repository_imports(
     importer: &str,
-    imports: &mut [ImportRecord],
+    imports: &mut Vec<ImportRecord>,
     known_paths: &BTreeSet<String>,
     rust_workspace: &RustWorkspace,
+    go_modules: &GoModules,
 ) {
-    for import in imports {
-        let candidates = match importer.rsplit_once('.').map(|(_, extension)| extension) {
-            Some("rs") => {
+    let style = ParserRegistry::for_path(Path::new(importer))
+        .map_or(ImportStyle::None, |language| {
+            languages::spec(language).imports
+        });
+    if style == ImportStyle::Go {
+        // A Go import names a package directory: one edge per file in it.
+        *imports = imports
+            .drain(..)
+            .flat_map(|import| {
+                go_modules
+                    .resolve(importer, &import.raw, known_paths)
+                    .into_iter()
+                    .map(move |(resolved_path, resolution)| ImportRecord {
+                        raw: import.raw.clone(),
+                        kind: import.kind,
+                        resolved_path,
+                        resolution,
+                    })
+            })
+            .collect();
+        return;
+    }
+    for import in imports.iter_mut() {
+        let candidates = match style {
+            ImportStyle::Rust => {
                 (import.resolved_path, import.resolution) =
                     rust_imports::resolve(importer, &import.raw, known_paths, rust_workspace);
                 continue;
             }
-            Some("py") => python_candidates(importer, &import.raw),
-            Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs") => {
+            ImportStyle::Python => python_candidates(importer, &import.raw),
+            ImportStyle::Script => {
                 // The `node:` scheme only ever names a runtime built-in.
                 if import.raw.starts_with("node:") {
                     import.resolved_path = None;
@@ -660,7 +708,7 @@ fn resolve_repository_imports(
                 }
                 script_candidates(importer, &import.raw)
             }
-            _ => BTreeSet::new(),
+            ImportStyle::None | ImportStyle::Go => BTreeSet::new(),
         };
         let matches = candidates
             .into_iter()
@@ -1060,6 +1108,7 @@ mod tests {
             root: &root,
             known_paths: &known_paths,
             rust_workspace: &RustWorkspace::default(),
+            go_modules: &GoModules::default(),
             counter: counter_for(TokenProvider::Heuristic),
             indexed_at: 1,
         };
@@ -1275,7 +1324,7 @@ mod tests {
     #[test]
     fn test_local_import_resolution_preserves_ambiguity_and_unresolved_state() {
         let known = BTreeSet::from(["src/choice.js".to_owned(), "src/choice.ts".to_owned()]);
-        let mut imports = [
+        let mut imports = vec![
             ImportRecord {
                 raw: "./choice".to_owned(),
                 kind: ImportKind::Import,
@@ -1295,9 +1344,10 @@ mod tests {
             &mut imports,
             &known,
             &RustWorkspace::default(),
+            &GoModules::default(),
         );
 
-        let mut builtins = [ImportRecord {
+        let mut builtins = vec![ImportRecord {
             raw: "node:fs/promises".to_owned(),
             kind: ImportKind::Import,
             resolved_path: None,
@@ -1308,6 +1358,7 @@ mod tests {
             &mut builtins,
             &known,
             &RustWorkspace::default(),
+            &GoModules::default(),
         );
         assert_eq!(
             builtins[0].resolution,

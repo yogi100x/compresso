@@ -17,6 +17,7 @@ use compresso_store::{
 
 use crate::AtlasError;
 use crate::parsers::ParserRegistry;
+use crate::parsers::languages::package_is_directory;
 use crate::queries::QueryError;
 use crate::scanner::is_secret_path;
 
@@ -85,6 +86,9 @@ impl TraceEnd {
 pub enum CallResolution {
     /// The only candidate in the caller's file.
     SameFile,
+    /// The only candidate in another file of the caller's Go package (its
+    /// directory): Go code calls its own package without importing it.
+    SamePackage,
     /// The only candidate in a file the caller's file imports.
     Import,
     /// The only candidate in the repository.
@@ -98,6 +102,7 @@ impl CallResolution {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::SameFile => "same_file",
+            Self::SamePackage => "same_package",
             Self::Import => "import",
             Self::UniqueName => "unique_name",
             Self::NameOnly => "name_only",
@@ -442,7 +447,21 @@ fn strip_generics(text: &str) -> String {
 /// The module name a file provides: its stem, or its directory for
 /// `mod.rs`, `__init__.py`, `index.*`, `lib.rs`, and `main.rs`, or the crate
 /// directory for `src/lib.rs`. `-` reads as `_`.
+fn parent_directory(path: &str) -> &str {
+    path.rsplit_once('/').map_or("", |(parent, _)| parent)
+}
+
 fn module_name(path: &str) -> String {
+    if package_is_directory(path) {
+        // A Go package is its directory; `store.Open()` names `store/*.go`.
+        if let Some((parent, _)) = path.rsplit_once('/') {
+            return parent
+                .rsplit('/')
+                .next()
+                .unwrap_or(parent)
+                .replace('-', "_");
+        }
+    }
     let mut segments = path.rsplit('/');
     let file = segments.next().unwrap_or(path);
     let stem = file.split('.').next().unwrap_or(file);
@@ -602,7 +621,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve(&mut self, call: &StoredCallSite) -> Result<Resolution, AtlasError> {
-        // A call never crosses languages: Rust, Python, and the script
+        // A call never crosses languages: Rust, Python, Go, and the script
         // family (JavaScript, TypeScript, TSX) resolve only within themselves.
         let shape = ShapeKey {
             name: call.callee_name.clone(),
@@ -637,6 +656,21 @@ impl<'a> Resolver<'a> {
         let same_file = by_path.get(&key.from_path).map_or(&[][..], Vec::as_slice);
         if let Some(resolution) = tier(same_file, CallResolution::SameFile) {
             return Ok(silent_reference_ambiguity(form, resolution));
+        }
+        if package_is_directory(&key.from_path) {
+            let directory = parent_directory(&key.from_path);
+            let mut package_paths = by_path
+                .keys()
+                .filter(|path| *path != &key.from_path && parent_directory(path) == directory)
+                .collect::<Vec<_>>();
+            package_paths.sort();
+            let same_package = package_paths
+                .into_iter()
+                .flat_map(|path| by_path[path].iter().copied())
+                .collect::<Vec<_>>();
+            if let Some(resolution) = tier(&same_package, CallResolution::SamePackage) {
+                return Ok(silent_reference_ambiguity(form, resolution));
+            }
         }
         self.load_imports()?;
         let mut imported_paths = self
@@ -778,12 +812,7 @@ fn silent_reference_ambiguity(form: CallForm, resolution: Resolution) -> Resolut
 }
 
 fn language_family(language: Option<FileLanguage>) -> Option<u8> {
-    match language? {
-        FileLanguage::Rust => Some(0),
-        FileLanguage::Python => Some(1),
-        FileLanguage::JavaScript | FileLanguage::TypeScript | FileLanguage::Tsx => Some(2),
-        FileLanguage::Shell | FileLanguage::Text => None,
-    }
+    crate::parsers::languages::spec(language?).call_family
 }
 
 fn tier(ids: &[i64], rule: CallResolution) -> Option<Resolution> {
@@ -1349,6 +1378,8 @@ mod tests {
         assert_eq!(module_name("pkg/util/__init__.py"), "util");
         assert_eq!(module_name("src/parsers/mod.rs"), "parsers");
         assert_eq!(module_name("web/api.ts"), "api");
+        assert_eq!(module_name("internal/store/db.go"), "store");
+        assert_eq!(module_name("main.go"), "main");
     }
 
     #[test]
