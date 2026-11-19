@@ -692,6 +692,13 @@ pub(crate) fn apply_edits_with_hook(
         bytes_written = bytes_written.saturating_add(size);
     }
     bound(EditBound::WriteBytes, EDIT_MAX_WRITE_BYTES, bytes_written)?;
+    // Only the files that will change are asked, and in a dry run too, so
+    // both runs refuse alike.
+    for (path, _) in &changed {
+        if let Some(reason) = os_write_refusal(&root.join(path)) {
+            return Err(refused(path, reason));
+        }
+    }
 
     let mut files = changed
         .iter()
@@ -1171,16 +1178,40 @@ pub fn is_control_path(relative: &Path) -> bool {
 }
 
 /// Why this process may not replace a file with `owner` and `mode`, as
-/// effective user `euid`: another user's file would change owner, and for
-/// the owner only the owner write bit counts (POSIX); root writes its own.
+/// effective user `euid`: another user's file would change owner, and a file
+/// without the owner write bit is read-only for everyone, root included.
+/// This is the cheap first check at load; [`os_write_refusal`] asks the OS
+/// for the files that will actually change.
 fn ownership_refusal(owner: u32, mode: u32, euid: u32) -> Option<Refusal> {
     if owner != euid {
         Some(Refusal::ForeignOwner)
-    } else if euid != 0 && mode & 0o200 == 0 {
+    } else if mode & 0o200 == 0 {
         Some(Refusal::ReadOnly)
     } else {
         None
     }
+}
+
+/// Asks the OS whether this process may write `path`, opening nothing
+/// (`faccessat` with `W_OK` and `AT_EACCESS`), so access-control lists,
+/// read-only mounts, and immutable flags refuse the edit up front.
+#[cfg(unix)]
+fn os_write_refusal(path: &Path) -> Option<Refusal> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return Some(Refusal::ReadOnly);
+    };
+    // SAFETY: `path` is a valid NUL-terminated string for the whole call and
+    // faccessat only reads it.
+    let status =
+        unsafe { libc::faccessat(libc::AT_FDCWD, path.as_ptr(), libc::W_OK, libc::AT_EACCESS) };
+    (status != 0).then_some(Refusal::ReadOnly)
+}
+
+#[cfg(not(unix))]
+fn os_write_refusal(path: &Path) -> Option<Refusal> {
+    let writable = matches!(fs::metadata(path), Ok(metadata) if !metadata.permissions().readonly());
+    (!writable).then_some(Refusal::ReadOnly)
 }
 
 fn write_refusal(metadata: &fs::Metadata) -> Option<Refusal> {
@@ -2232,8 +2263,9 @@ mod tests {
             ownership_refusal(501, 0o644, 0),
             Some(Refusal::ForeignOwner)
         );
-        // Root may write its own file whatever the bits.
-        assert_eq!(ownership_refusal(0, 0o444, 0), None);
+        // No exemption for root: no owner write bit is read-only for anyone.
+        assert_eq!(ownership_refusal(0, 0o444, 0), Some(Refusal::ReadOnly));
+        assert_eq!(ownership_refusal(0, 0o644, 0), None);
     }
 
     #[test]

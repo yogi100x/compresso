@@ -1075,3 +1075,76 @@ fn test_scala_and_dart_dollar_names_are_listed_for_a_hand_check() {
         assert!(fixture.text(path).contains("$name"), "{path}");
     }
 }
+
+// ---- Write-check review (E17-32).
+
+/// An immutable file passes every mode-bit check but cannot be written; the
+/// OS query refuses it as read-only, the same way in a dry run and a real one.
+#[cfg(target_os = "macos")]
+#[test]
+fn test_an_immutable_file_is_refused_in_dry_and_real_runs_alike() {
+    let fixture = Fixture::new(&[("frozen.txt", b"x\n")]);
+    let path = fixture.root.join("frozen.txt");
+    // Set and clear the user-immutable flag through the C library, as
+    // `chflags uchg` would.
+    let flag = |flags: libc::c_uint| {
+        use std::os::unix::ffi::OsStrExt as _;
+        let path = std::ffi::CString::new(path.as_os_str().as_bytes()).expect("path");
+        // SAFETY: `path` is a valid NUL-terminated string for the whole call.
+        assert_eq!(unsafe { libc::chflags(path.as_ptr(), flags) }, 0);
+    };
+    flag(libc::UF_IMMUTABLE);
+    let dry =
+        fixture.apply_request(&fixture.request(vec![replace("frozen.txt", "x", "y", 1)], true));
+    let real = fixture.apply(vec![replace("frozen.txt", "x", "y", 1)]);
+    flag(0);
+    assert_eq!(
+        refusal(dry.expect_err("dry run refused")),
+        Refusal::ReadOnly
+    );
+    assert_eq!(
+        refusal(real.expect_err("real run refused")),
+        Refusal::ReadOnly
+    );
+    assert_eq!(fixture.text("frozen.txt"), "x\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_write_checks_agree_across_dry_and_real_runs_and_touch_nothing_in_scope() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let fixture = Fixture::new(&[
+        ("locked.txt", b"x\n"),
+        ("open.txt", b"x\n"),
+        ("other.rs", b"fn unrelated() {}\n"),
+    ]);
+    fs::set_permissions(
+        fixture.root.join("locked.txt"),
+        fs::Permissions::from_mode(0o444),
+    )
+    .expect("chmod");
+    for dry_run in [true, false] {
+        let error = fixture
+            .apply_request(&fixture.request(vec![replace("locked.txt", "x", "y", 1)], dry_run))
+            .expect_err("0o444 refused");
+        assert_eq!(refusal(error), Refusal::ReadOnly, "dry_run {dry_run}");
+    }
+    let before = fs::metadata(fixture.root.join("other.rs"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    fixture
+        .apply(vec![replace("open.txt", "x", "y", 1)])
+        .expect("0o644 accepted");
+    fixture
+        .apply(vec![rename("y", "z", None, None)])
+        .expect("rename sweep over every file");
+    let after = fs::metadata(fixture.root.join("other.rs"))
+        .unwrap()
+        .modified()
+        .unwrap();
+    assert_eq!(
+        before, after,
+        "a file in scope without a match is not touched"
+    );
+}

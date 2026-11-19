@@ -87,11 +87,13 @@ adds a narrower tool now, ahead of E15.
    not under `.git`; not a control file, meaning a path any of whose components, compared case-insensitively after trimming trailing dots and spaces, is: a name starting with `.git` (`.gitignore`, `.gitattributes`, `.gitmodules`, `.gitlab-ci.yml`, ...) or `.aider`, or ending in `.code-workspace`; an ignore file `.ignore`, `.rgignore`, `.cursorignore`, `.aiexclude`, `.codeiumignore`, `.geminiignore`; an agent instruction or configuration name `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules`, `.clinerules`, `.claude.json`, `.mcp.json`; a hook, CI, environment, or package-manager name `.pre-commit-config.yaml`, `.travis.yml`, `azure-pipelines.yml`, `Jenkinsfile`, `.envrc`, `lefthook.yml`, `.lefthook.yml` (and `.yaml`/`.yml` forms), `.devcontainer.json`, `CODEOWNERS`, `.npmrc`, `.yarnrc.yml`; `.cargo/config` or `.cargo/config.toml`; or `.claude`, `.codex`, `.cursor`, `.windsurf`, `.gemini`, `.continue`, `.zed`, `.vscode`, `.idea`, `.github`, `.gitlab`, `.husky`, `.circleci`, `.devcontainer`, `.buildkite`, `.woodpecker`. Every list is matched at every component, so a directory named like a control file is refused too. This is a denylist of known control files, not a guarantee: build scripts and other code a tool may later run (`build.rs`, `package.json` scripts, `Makefile`) stay editable because editing code is the tool's purpose, and the client's permission prompt is the control for them (an edit to an ignore file would widen what the gates allow, and an
    edit to agent, CI, or hook configuration could turn text into command
    execution); owned by this user on Unix (a replacement would otherwise
-   change the owner, `foreign_owner`) with the owner write bit set (`read_only`;
-   for the owner only the owner bits count, and root may write its own files),
-   decided from the open handle's metadata so nothing is opened for writing,
-   also during a rename sweep or a dry run (non-Unix: the read-only
-   attribute); not excluded by the scanner (for example gitignored);
+   change the owner, `foreign_owner`) with the owner write bit set
+   (`read_only`, root included), decided at load from the open handle's
+   metadata; and, for every file the call will change, writable according
+   to the OS (`faccessat` with `W_OK` and `AT_EACCESS`, which honours
+   access-control lists, read-only mounts, and immutable flags; the
+   read-only attribute on non-Unix), asked in dry runs and real runs alike.
+   Nothing is ever opened for writing to decide this; not excluded by the scanner (for example gitignored);
    listed in the index; resolved by the shared read gate (`resolve_under_root`:
    inside the root, no symbolic-link component, device and inode bound to the
    open on Unix); not the Compresso store's database files, nor anything in the
@@ -180,7 +182,11 @@ adds a narrower tool now, ahead of E15.
 - The language for `$` and lifetimes is chosen by file extension only; a file
   without a known extension is treated like shell (`$name` renamed).
 - The owner and write-bit decision is tested as a function; a file owned by
-  another user could not be created in a test.
+  another user could not be created in a test. The OS write query is tested
+  with an immutable file on macOS.
+- The OS write query and the later rename are not atomic: permissions,
+  flags, or mounts changed in between are caught only by the rename failing
+  (then the call rolls back as for any failed rename).
 - A multi-character name after an odd backslash run whose first letter forms
   an escape (`"\name"`, renaming `name`) is renamed as a whole identifier,
   because only one-character and hexadecimal names count as escape forms.
