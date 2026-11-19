@@ -77,7 +77,9 @@ adds a narrower tool now, ahead of E15.
    searched or edited (it is listed in `files_skipped`) or the index could not
    be refreshed first, or (E17-36, D101) when a rename scoped by `path` leaves
    whole matches of the old name in indexed files outside the scope, which the
-   report counts and lists (bounded read, the same gates, nothing written). A
+   report counts and lists after every operation of the call (read gate only,
+   the call's read budget, nothing written; files it could not search are
+   listed as not searched and do not make the rename incomplete). A
    rename is done only at 0 remaining whole matches with `complete: true`,
    after checking adjacent matches by hand. The call-level
    totals `incomplete_operations`, `remaining_whole_total`,
