@@ -1,0 +1,27 @@
+decisions.md
+  s_89a704cfae63f5::t_4113a06ad7f089 110
+docs/plan/00-overview.md
+  s_89a704cfae63f5::t_81d409b5b9d4c6 59,94
+docs/plan/03-interfaces.md
+  s_89a704cfae63f5::t_fba719ba91850c 487-495
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_184ef468493ad4 48,56,809
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_e0acac6a343f67 2702,3286-3302,3318,3349-3351
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "96f8706cdc4cbe2a86fafb6c5c3d356aacac6e62",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
