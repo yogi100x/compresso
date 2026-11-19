@@ -1352,11 +1352,12 @@ async fn test_text_grep_lists_test_rows_when_the_pattern_targets_tests_or_lists_
 }
 
 /// E17-34 (D99): a file path cannot imitate the header's counts or named
-/// lines; ordinary paths print unchanged.
+/// lines; ordinary paths print unchanged. The hostile name has no `:` because
+/// Windows reads that as an alternate data stream, not as part of the name.
 #[tokio::test]
 async fn test_text_grep_header_path_cannot_forge_counts_or_named_lines() {
     let fixture = Fixture::new();
-    write_file(&fixture.root, "src/evil (9; tests: 1).rs", "// marker\n");
+    write_file(&fixture.root, "src/evil (9; tests 1).rs", "// marker\n");
     Indexer::new(&fixture.store, counter_for(TokenProvider::OpenAiO200k))
         .index(&fixture.root, |_| {})
         .expect("fixture reindexes");
@@ -1364,7 +1365,7 @@ async fn test_text_grep_header_path_cannot_forge_counts_or_named_lines() {
     let (text, _) = harness
         .call("compresso_grep", &json!({ "pattern": "marker" }))
         .await;
-    assert!(text.contains("src/evil ?9? tests: 1).rs (1)\n"), "{text}");
+    assert!(text.contains("src/evil ?9? tests 1).rs (1)\n"), "{text}");
     assert!(!text.contains("(9;"), "{text}");
     harness.close().await;
 }
