@@ -77,7 +77,7 @@ use crate::AtlasError;
 use crate::grep::PathFilter;
 use crate::indexer::Indexer;
 use crate::queries::{QueryError, ResolvedEntry, canonical_query_root, resolve_under_root};
-use crate::scanner::{DEFAULT_MAX_FILE_BYTES, is_scanner_excluded, is_secret_path};
+use crate::scanner::{DEFAULT_MAX_FILE_BYTES, ScannerExclusions, is_secret_path};
 
 /// Most operations one call applies.
 pub const EDIT_MAX_OPERATIONS: usize = 16;
@@ -623,8 +623,10 @@ pub(crate) fn apply_edits_with_hook(
         .into_iter()
         .map(|record| (record.path.clone(), record))
         .collect::<BTreeMap<_, _>>();
+    let exclusions = ScannerExclusions::load(&root);
     let gate = Gate {
         root: &root,
+        exclusions: &exclusions,
         indexed: &indexed,
         protected: &request.protected,
         index_refreshed,
@@ -915,6 +917,8 @@ fn validate_path(path: &str) -> Result<(), EditError> {
 /// The checks every target passes before it is read.
 struct Gate<'a> {
     root: &'a Path,
+    /// The scanner's exclusion rules, loaded once for the whole call.
+    exclusions: &'a ScannerExclusions,
     indexed: &'a BTreeMap<String, FileRecord>,
     protected: &'a [PathBuf],
     /// The index was refreshed before a rename read its scope from it.
@@ -1018,7 +1022,7 @@ fn load(gate: &Gate<'_>, path: &str) -> Result<WorkingFile, EditError> {
     if is_control_path(relative) {
         return Err(refused(path, Refusal::ControlFile));
     }
-    if is_scanner_excluded(gate.root, relative) {
+    if gate.exclusions.excludes(gate.root, relative) {
         return Err(refused(path, Refusal::Excluded));
     }
     let Some(record) = gate.indexed.get(path) else {
@@ -2176,6 +2180,40 @@ mod tests {
     }
 
     #[test]
+    fn test_a_rename_loads_the_exclude_rules_independently_of_its_file_count() {
+        let loads_for = |files: usize| {
+            let mut sources = vec![(".git/info/exclude".to_owned(), "*.log\n".to_owned())];
+            for number in 0..files {
+                sources.push((
+                    format!("src/f{number}.rs"),
+                    "fn shared_name() {}\n".to_owned(),
+                ));
+            }
+            let borrowed = sources
+                .iter()
+                .map(|(path, text)| (path.as_str(), text.as_str()))
+                .collect::<Vec<_>>();
+            let fixture = Fixture::new(&borrowed);
+            let before = crate::scanner::exclude_loads_on_this_thread();
+            let report = fixture
+                .apply(
+                    vec![EditOperation::Rename {
+                        old: "shared_name".to_owned(),
+                        new: "renamed".to_owned(),
+                        path: None,
+                        expected_count: None,
+                        allow_existing: false,
+                    }],
+                    &mut |_, _| Ok(()),
+                )
+                .expect("rename applies");
+            assert_eq!(report.operations[0].files.len(), files);
+            crate::scanner::exclude_loads_on_this_thread() - before
+        };
+        assert_eq!(loads_for(2), loads_for(12));
+    }
+
+    #[test]
     fn test_identifier_boundaries_are_explicit() {
         let text = "format_utc(); format_utc_now(); reformat_utc(); x.format_utc2; café_format_utc; $format_utc";
         let found = identifier_occurrences(text, "format_utc", SourceLanguage::Other);
@@ -2315,8 +2353,10 @@ mod tests {
             .into_iter()
             .map(|record| (record.path.clone(), record))
             .collect::<BTreeMap<_, _>>();
+        let exclusions = ScannerExclusions::load(&root);
         let gate = Gate {
             root: &root,
+            exclusions: &exclusions,
             indexed: &indexed,
             protected: &[],
             index_refreshed: true,

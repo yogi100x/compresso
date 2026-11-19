@@ -519,3 +519,25 @@ fn test_a_changed_go_mod_re_resolves_go_imports() {
         [("cmd/main.go".to_owned(), "store/store.go".to_owned())]
     );
 }
+
+/// E17-35 (D100) with E17-37: a `go.mod` the repository's own
+/// `info/exclude` hides is never read, so it declares no module.
+#[test]
+fn test_an_excluded_go_mod_declares_no_module() {
+    let (_temp, store, repo) = index_files(&[
+        (".git/info/exclude", "/go.mod\n"),
+        ("go.mod", "module example.com/svc\n"),
+        (
+            "cmd/main.go",
+            "package main\n\nimport \"example.com/svc/store\"\n\nfunc main() { store.Open() }\n",
+        ),
+        ("store/store.go", "package store\n\nfunc Open() {}\n"),
+    ]);
+    assert!(store.resolved_edges(repo).expect("edges").is_empty());
+    assert!(
+        store
+            .indexed_file(repo, "go.mod")
+            .expect("lookup")
+            .is_none()
+    );
+}

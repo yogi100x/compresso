@@ -61,12 +61,14 @@ impl GoModules {
                 directory = parent_path(directory);
             }
         }
+        // Loaded once: every `go.mod` is judged by the scanner's rules.
+        let exclusions = crate::scanner::ScannerExclusions::load(root);
         let mut modules = BTreeMap::<String, Vec<String>>::new();
         for directory in directories {
             if !module_directory_allowed(&directory) {
                 continue;
             }
-            if let Some(module) = read_go_mod(root, &directory)
+            if let Some(module) = read_go_mod(root, &exclusions, &directory)
                 .as_deref()
                 .and_then(module_path)
             {
@@ -185,11 +187,18 @@ fn module_path(text: &str) -> Option<String> {
     })
 }
 
-fn read_go_mod(root: &Path, directory: &str) -> Option<String> {
+/// Reads `<directory>/go.mod` under the rules the scanner applies to any
+/// file: a regular file the scanner's exclusions allow, read through a size
+/// cap. Only ancestors of scanned `.go` files are asked.
+fn read_go_mod(
+    root: &Path,
+    exclusions: &crate::scanner::ScannerExclusions,
+    directory: &str,
+) -> Option<String> {
     use std::io::Read as _;
 
     let relative = Path::new(directory).join("go.mod");
-    if crate::scanner::is_scanner_excluded(root, &relative) {
+    if exclusions.excludes(root, &relative) {
         return None;
     }
     let path = root.join(&relative);
