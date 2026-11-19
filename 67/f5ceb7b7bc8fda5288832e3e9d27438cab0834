@@ -1,0 +1,68 @@
+rust/compresso-cli/examples/replay_results.rs
+  s_89a704cfae63f5::t_dd2e29c2219ae0 215
+  s_89a704cfae63f5::t_853af874e2afaf 180,182-186,189-191
+  s_89a704cfae63f5::t_5cc8da40242d04 1-179,181,187-188,192-214,216-314
+  s_89a704cfae63f5::t_67fcd2ae8de523 315-324
+rust/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_f137ceef0b9c2b 31-36
+rust/compresso-mcp/src/tools/text.rs
+  s_89a704cfae63f5::t_2fa1b30de0939e 434-440,446-452,454-455
+  s_89a704cfae63f5::t_61f7b56236d68d 418
+  s_89a704cfae63f5::t_302334c509e460 433,441-445,453,456-457
+  s_89a704cfae63f5::t_b61d13719de82a 417,419-420
+rust/compresso-mcp/src/tools/atlas_grep.rs
+  s_89a704cfae63f5::t_b1c50f38f783ac 260-262
+  s_89a704cfae63f5::t_0929a2c719eedd 76-80,89-93
+  s_89a704cfae63f5::t_3efa5b5cc19ed8 28,30-31
+  s_89a704cfae63f5::t_42ddcf3131254f 117
+  s_89a704cfae63f5::t_5f30aca458004b 29
+  s_89a704cfae63f5::t_a7fefc66c75af7 263-300
+rust/compresso-mcp/tests/result_format.rs
+  s_89a704cfae63f5::t_e90edf4e6ccdf8 790-827,829-839,858,861-868,870,872-982,984-985,988-997,999-1010
+  s_89a704cfae63f5::t_125a61f19ddac5 859-860,869,871
+  s_89a704cfae63f5::t_568bd6a3a2a6d1 840-857
+  s_89a704cfae63f5::t_6900eca07e3e87 983,986-987,998
+  s_89a704cfae63f5::t_c6bb2aada87f7e 828
+  s_89a704cfae63f5::t_c5a4f2ff60ee05 1011-1046
+rust/compresso-mcp/src/tools/atlas_read.rs
+  s_89a704cfae63f5::t_3e4f1dcc488f8b 327-332,337,339-365,511
+  s_89a704cfae63f5::t_577a269fcd6ab1 369
+  s_89a704cfae63f5::t_7913d0692f4034 3
+  s_89a704cfae63f5::t_6e780e41339e41 166-173,506
+  s_89a704cfae63f5::t_fe87aab9068d06 2
+  s_89a704cfae63f5::t_1c88bffc188231 201,208-210,216-218,222-252,255-256,267-268,270-274,277,279-288,326,333-336,338,366-368,370-382
+  s_89a704cfae63f5::t_619c3152d6178b 253-254,257-266,269,275-276,278
+  s_89a704cfae63f5::t_31cb77c8ef1740 202-207,1095
+  s_89a704cfae63f5::t_5a6378990524bc 289-325,383,1099
+  s_89a704cfae63f5::t_bb3c36f65df519 494-502,552,1068-1069,1098
+  s_89a704cfae63f5::t_419bc9eca36522 533-535,542-543
+  s_89a704cfae63f5::t_55649efb0554bb 536-537
+  s_89a704cfae63f5::t_0707d1b094bbd9 1096
+  s_89a704cfae63f5::t_b8d804955b4f7d 219-221
+  s_89a704cfae63f5::t_1b5da0a1802f9d 4-5,174,384-393,503-505,507-510,529-532,544-551,1061-1067,1070-1094,1097,1100-1111
+rust/compresso-integrations/src/explore_agent.rs
+  s_89a704cfae63f5::t_90cece4379c4ce 49
+  s_89a704cfae63f5::t_864a52b8e88ce8 513,515-523
+  s_89a704cfae63f5::t_1c34ffda75bceb 514
+rust/compresso-mcp/tests/tool_profile.rs
+  s_89a704cfae63f5::t_8321c712e8a0b3 319-338
+rust/compresso-mcp/src/profile.rs
+  s_89a704cfae63f5::t_8e8606a0461298 120
+  s_89a704cfae63f5::t_d00f4ea884445f 140
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "67f5ceb7b7bc8fda5288832e3e9d27438cab0834",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
