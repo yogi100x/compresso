@@ -75,8 +75,11 @@ adds a narrower tool now, ahead of E15.
    matches of the old name in the scope after the edit, with locations, and
    `complete`, which is false when a file holding the old name could not be
    searched or edited (it is listed in `files_skipped`) or the index could not
-   be refreshed first. A rename is done only at 0 remaining whole matches with
-   `complete: true`, after checking adjacent matches by hand. The call-level
+   be refreshed first, or (E17-36, D101) when a rename scoped by `path` leaves
+   whole matches of the old name in indexed files outside the scope, which the
+   report counts and lists (bounded read, the same gates, nothing written). A
+   rename is done only at 0 remaining whole matches with `complete: true`,
+   after checking adjacent matches by hand. The call-level
    totals `incomplete_operations`, `remaining_whole_total`,
    `remaining_substring_total`, `remaining_adjacent_total`,
    `files_skipped_total`, and `unverified_files` are never dropped when the
