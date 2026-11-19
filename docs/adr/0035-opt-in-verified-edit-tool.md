@@ -48,28 +48,46 @@ adds a narrower tool now, ahead of E15.
 3. **Identifier boundaries** are defined explicitly, not by a regex `\b`: an
    identifier character is `_` or any Unicode alphanumeric character
    (`char::is_alphanumeric`); `$` is not one. A rename matches only where the
-   neighbouring characters are not identifier characters, and never where it
-   is preceded by `\` (an escape such as `\n`) or directly followed by `"`,
-   `'`, or `#` (a literal prefix such as `f"`, `b'`, or `r#`); those count as
-   substring matches and are not rewritten. Otherwise matching is textual, so
-   comments and strings are renamed too. A rename into a name that already
-   occurs as an identifier in scope is refused (`name_exists`) unless the call
-   passes `allow_existing`.
+   neighbouring characters are not identifier characters. A match is never
+   rewritten, and is reported as *adjacent* ("next to a string prefix, escape,
+   or sigil; check by hand"), when: an odd run of backslashes precedes it and
+   the name can be an escape (one character, or `x`/`u`/`U` followed by
+   hexadecimal digits), so `\n` is kept but `\App\User` and `\\n` are
+   renamed; a quote or `#` follows a name that is a literal prefix (`f`, `r`,
+   `b`, `u`, `rb`, `br`, `fr`, `rf`, `c`, `cr`, `L`, `U`, `u8`, `R`, any case),
+   so `f"` is kept but `foo"` is renamed; `%` precedes a one-character name
+   (`%d`); or, in Rust, `'` precedes it (`'a`). The file's language comes from
+   its extension: in JavaScript, TypeScript, Java, Kotlin, Scala, and Dart
+   `$name` is a different identifier and counts as a substring; in shell, PHP,
+   Perl, and anything else `$name` and `${name}` are the variable `name` and
+   are renamed. Otherwise matching is textual, so comments and strings are
+   renamed too. A rename into a name that already
+   occurs as an identifier in scope (by the same matcher) is refused
+   (`name_exists`) unless the call passes `allow_existing`.
 4. **Verification in the report.** Per file: sites and their lines, whether the
    file was stale against the index, line ending, BOM, byte sizes, hashes
    before and after, and whether the file was re-read after the write and found
    to hold exactly the edited bytes. Per rename: files searched and skipped
-   (with reasons), and the remaining whole-identifier and substring matches of
-   the old name in the scope after the edit, with locations, and `complete`,
-   which is false when a file holding the old name could not be searched or
-   edited (it is listed in `files_skipped`). A rename is done only at 0
-   remaining whole matches with `complete: true`. `dry_run` returns the same report plus a
+   (with reasons), and the remaining whole-identifier, substring, and adjacent
+   matches of the old name in the scope after the edit, with locations, and
+   `complete`, which is false when a file holding the old name could not be
+   searched or edited (it is listed in `files_skipped`) or the index could not
+   be refreshed first. A rename is done only at 0 remaining whole matches with
+   `complete: true`, after checking adjacent matches by hand. The call-level
+   totals `incomplete_operations`, `remaining_whole_total`,
+   `remaining_substring_total`, `remaining_adjacent_total`,
+   `files_skipped_total`, and `unverified_files` are never dropped when the
+   report is cut, and the text form's first line carries every non-zero one
+   (`INCOMPLETE`, remaining, adjacent, not verified). `dry_run` returns the same report plus a
    compact unified diff and writes nothing.
 5. **Gates** (repository content and arguments are untrusted): the path must be
    repository-relative without `.`, `..`, backslash, or NUL; not a secret path;
-   not under `.git`; not a control file, meaning at any depth and compared case-insensitively after trimming trailing dots and spaces: every name starting with `.git` (`.gitignore`, `.gitattributes`, `.gitmodules`, `.gitlab-ci.yml`, ...) or `.aider`; the ignore files `.ignore` and `.rgignore`; agent instruction and configuration files `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules`, `.clinerules`, `.claude.json`, `.mcp.json`; hook, CI, and environment files `.pre-commit-config.yaml`, `.travis.yml`, `azure-pipelines.yml`, `Jenkinsfile`, `.envrc`, `lefthook.yml`, `.lefthook.yml` (and `.yaml` forms); and anything under a `.claude`, `.codex`, `.cursor`, `.windsurf`, `.gemini`, `.continue`, `.zed`, `.vscode`, `.idea`, `.github`, `.gitlab`, `.husky`, `.circleci`, `.devcontainer`, `.buildkite`, or `.woodpecker` directory. This is a denylist of known control files, not a guarantee: build scripts and other code a tool may later run (`build.rs`, `package.json` scripts, `Makefile`) stay editable because editing code is the tool's purpose, and the client's permission prompt is the control for them (an edit to an ignore file would widen what the gates allow, and an
+   not under `.git`; not a control file, meaning a path any of whose components, compared case-insensitively after trimming trailing dots and spaces, is: a name starting with `.git` (`.gitignore`, `.gitattributes`, `.gitmodules`, `.gitlab-ci.yml`, ...) or `.aider`, or ending in `.code-workspace`; an ignore file `.ignore`, `.rgignore`, `.cursorignore`, `.aiexclude`, `.codeiumignore`, `.geminiignore`; an agent instruction or configuration name `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules`, `.clinerules`, `.claude.json`, `.mcp.json`; a hook, CI, environment, or package-manager name `.pre-commit-config.yaml`, `.travis.yml`, `azure-pipelines.yml`, `Jenkinsfile`, `.envrc`, `lefthook.yml`, `.lefthook.yml` (and `.yaml`/`.yml` forms), `.devcontainer.json`, `CODEOWNERS`, `.npmrc`, `.yarnrc.yml`; `.cargo/config` or `.cargo/config.toml`; or `.claude`, `.codex`, `.cursor`, `.windsurf`, `.gemini`, `.continue`, `.zed`, `.vscode`, `.idea`, `.github`, `.gitlab`, `.husky`, `.circleci`, `.devcontainer`, `.buildkite`, `.woodpecker`. Every list is matched at every component, so a directory named like a control file is refused too. This is a denylist of known control files, not a guarantee: build scripts and other code a tool may later run (`build.rs`, `package.json` scripts, `Makefile`) stay editable because editing code is the tool's purpose, and the client's permission prompt is the control for them (an edit to an ignore file would widen what the gates allow, and an
    edit to agent, CI, or hook configuration could turn text into command
-   execution); not read-only (no write permission); not excluded by the scanner (for example gitignored);
+   execution); writable by this user (probed by opening it for writing
+   without truncation, since mode bits alone do not say who may write); owned
+   by this user on Unix (a replacement would otherwise change the owner,
+   `foreign_owner`); not excluded by the scanner (for example gitignored);
    listed in the index; resolved by the shared read gate (`resolve_under_root`:
    inside the root, no symbolic-link component, device and inode bound to the
    open on Unix); not the Compresso store's database files, nor anything in the
@@ -77,8 +95,9 @@ adds a narrower tool now, ahead of E15.
    repository; valid UTF-8; and at
    most 1 MB (the scanner's limit) before and after the edit, so an edited file
    never falls out of the index. A rename skips files it may not edit and lists
-   them; a control, protected, or read-only file that does not hold the old
-   name is searched but not listed, so it does not make the rename incomplete.
+   them; a control, protected, read-only, foreign-owned, or non-UTF-8 file that
+   does not hold the old name (searched as text, or as bytes when it is not
+   text) is not listed, so it does not make the rename incomplete.
    A secret path and a path through a symbolic link are both reported as
    `not_found`, exactly as the read tools report them. `new` and inserted text
    may not contain NUL.
@@ -91,8 +110,9 @@ adds a narrower tool now, ahead of E15.
    the edited file renamed over it; directories are synced on Unix. If a rename
    fails, every file already renamed is restored by renaming its original copy
    back, after checking it still holds exactly the edited bytes (a file changed
-   again by someone else is left alone and reported as not restored), and the
-   error names the files restored and any that were not. Line endings (LF or
+   again by someone else is left alone and reported as not restored, and its
+   original copy is kept beside it), and the error names the files restored,
+   any that were not, and the kept copies. Line endings (LF or
    CRLF: `\n` in arguments becomes `\r\n` in a CRLF file) and a UTF-8 BOM are
    preserved.
 7. **Stale files** are edited against their current content (the model has
@@ -107,7 +127,12 @@ adds a narrower tool now, ahead of E15.
    2,000) over the report, cut by halving the diff and then the longest list,
    with `truncated: true`. A call runs exactly once; only its report is fitted,
    never the edit re-run. No shell command, no network request.
-9. **Index freshness.** After a write the repository is re-indexed through the
+9. **Index freshness.** A call that renames first refreshes the index
+   incrementally, because a rename's scope is the indexed file list and a file
+   created or changed since the last index would otherwise be missed; this
+   writes only Compresso's index (also on a dry run), never a repository file,
+   and if it fails every rename in the call reports `complete: false`. After a
+   write the repository is re-indexed through the
    incremental indexer with the counter `compresso index` uses, so only changed
    files are re-parsed and grep, search, trace, and outline see the edit at once.
    If re-indexing fails the edit stands and the report says `index: stale`.
@@ -147,11 +172,11 @@ adds a narrower tool now, ahead of E15.
   permissions are. Hard links to an edited file are split by the rename.
 - A process killed between staging and the last rename leaves
   `.<name>.compresso-edit-*.tmp` files beside the edited files; nothing
-  removes them automatically; a later `compresso index` may index them until
-  they are deleted (a successful call removes its own before re-indexing).
-- `$name` is the identifier `name` (as in shell), so in JavaScript, TypeScript,
-  or PHP a rename of `name` also rewrites `$name`; `allow_existing` and the
-  report make this visible but do not prevent it.
+  removes them automatically, but the scanner never indexes them.
+- The language for `$` and lifetimes is chosen by file extension only; a file
+  without a known extension is treated like shell (`$name` renamed).
+- The owner check could not be exercised by a test (it needs a file owned by
+  another user); the writability probe is tested.
 
 ## Out of scope
 

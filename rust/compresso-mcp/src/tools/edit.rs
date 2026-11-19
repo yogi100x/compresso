@@ -113,7 +113,8 @@ pub fn protected_paths(store: &Store, root: &Path) -> Vec<PathBuf> {
         .iter()
         .map(|suffix| directory.join(format!("{name}{suffix}")))
         .collect::<Vec<_>>();
-    if directory.starts_with(root) && directory != root {
+    let root = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    if directory.starts_with(&root) && directory != root {
         protected.push(directory);
     }
     protected
@@ -260,13 +261,15 @@ pub fn edit_failure_message(error: &EditError) -> (&'static str, String) {
             path,
             restored,
             unrestored,
+            backups,
             ..
         } => (
             "write_failed",
             format!(
-                "Writing '{path}' failed. Restored to their original content: [{}]. Left with the edit applied (restore failed): [{}]. No other file was changed.",
+                "Writing '{path}' failed. Restored to their original content: [{}]. Left with the edit applied (restore failed): [{}]. Original copies of those kept at: [{}]. No other file was changed.",
                 restored.join(", "),
-                unrestored.join(", ")
+                unrestored.join(", "),
+                backups.join(", ")
             ),
         ),
         EditError::Read { .. } => ("read_failed", format!("{error}.")),
@@ -371,6 +374,18 @@ pub fn report_payload(
                     locations_value(&rename.remaining_substring),
                 );
                 object.insert(
+                    "remaining_adjacent_total".to_owned(),
+                    json!(rename.remaining_adjacent_total),
+                );
+                object.insert(
+                    "remaining_adjacent".to_owned(),
+                    locations_value(&rename.remaining_adjacent),
+                );
+                object.insert(
+                    "files_skipped_total".to_owned(),
+                    json!(rename.files_skipped.len()),
+                );
+                object.insert(
                     "new_name_preexisting".to_owned(),
                     json!(rename.new_name_preexisting),
                 );
@@ -379,12 +394,23 @@ pub fn report_payload(
             value
         })
         .collect::<Vec<_>>();
+    let renames = report
+        .operations
+        .iter()
+        .filter_map(|operation| operation.rename.as_ref());
     json!({
         "schema_version": 1,
         "operation_id": operation_id,
         "dry_run": report.dry_run,
         "files_total": report.files.len(),
         "sites_total": report.files.iter().map(|file| file.sites).sum::<usize>(),
+        // Call-level safety totals: never dropped when the report is cut.
+        "incomplete_operations": renames.clone().filter(|rename| !rename.complete).count(),
+        "remaining_whole_total": renames.clone().map(|rename| rename.remaining_whole_total).sum::<usize>(),
+        "remaining_substring_total": renames.clone().map(|rename| rename.remaining_substring_total).sum::<usize>(),
+        "remaining_adjacent_total": renames.clone().map(|rename| rename.remaining_adjacent_total).sum::<usize>(),
+        "files_skipped_total": renames.clone().map(|rename| rename.files_skipped.len()).sum::<usize>(),
+        "unverified_files": if report.dry_run { 0 } else { report.files.iter().filter(|file| !file.verified).count() },
         "files": files,
         "operations": operations,
         "diff": report.diff,
@@ -434,6 +460,7 @@ fn longest_list(payload: &Value) -> Option<String> {
     {
         for key in [
             "remaining_substring",
+            "remaining_adjacent",
             "remaining_whole",
             "files_skipped",
             "files",
@@ -494,8 +521,10 @@ pub fn fit(
                             | "new"
                             | "path"
                             | "complete"
+                            | "files_skipped_total"
                             | "remaining_whole_total"
                             | "remaining_substring_total"
+                            | "remaining_adjacent_total"
                     )
                 });
             }

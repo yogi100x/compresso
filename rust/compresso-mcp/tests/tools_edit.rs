@@ -528,3 +528,77 @@ async fn test_the_report_cap_holds_for_a_full_batch_of_operations() {
         32
     );
 }
+
+#[tokio::test]
+async fn test_the_safety_totals_survive_any_report_cut() {
+    let fixture = Fixture::new();
+    let mut source = String::new();
+    for index in 0..16 {
+        source.push_str(&format!(
+            "pub fn a_quite_long_function_name_for_the_cap_test_{index:02}() {{}}\n"
+        ));
+    }
+    fs::write(fixture.root.join("src/long.rs"), &source).expect("long");
+    // An agent instruction file names one of them: that rename is incomplete.
+    fs::write(
+        fixture.root.join("AGENTS.md"),
+        "Call a_quite_long_function_name_for_the_cap_test_00 first.\n",
+    )
+    .expect("agents");
+    Indexer::new(&fixture.store, counter_for(TokenProvider::OpenAiO200k))
+        .index(&fixture.root, |_| {})
+        .expect("reindex");
+    let counter = counter_for(TokenProvider::OpenAiO200k);
+    for (profile, prefix) in [(McpToolProfile::Full, "b"), (McpToolProfile::Lean, "c")] {
+        let from = if prefix == "b" { "a" } else { "b" };
+        fs::write(
+            fixture.root.join("AGENTS.md"),
+            format!("Call {from}_quite_long_function_name_for_the_cap_test_00 first.\n"),
+        )
+        .expect("agents");
+        let operations = (0..16)
+            .map(|index| {
+                json!({
+                    "op": "rename",
+                    "old": format!("{from}_quite_long_function_name_for_the_cap_test_{index:02}"),
+                    "new": format!("{prefix}_quite_long_function_name_for_the_cap_test_{index:02}")
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut harness = Harness::start(&fixture, fixture.options(profile, true)).await;
+        let (text, is_error) = harness
+            .call(
+                "compresso_edit",
+                &json!({ "operations": operations, "max_tokens": 300 }),
+            )
+            .await;
+        harness.close().await;
+        assert!(!is_error, "{text}");
+        assert!(counter.count(&text) <= 300, "{text}");
+        if profile == McpToolProfile::Full {
+            let report: Value = serde_json::from_str(&text).expect("JSON");
+            assert_eq!(report["incomplete_operations"], 1, "{text}");
+            assert_eq!(report["files_skipped_total"], 1, "{text}");
+            assert_eq!(report["remaining_whole_total"], 0, "{text}");
+            assert_eq!(report["unverified_files"], 0, "{text}");
+            assert!(report["remaining_adjacent_total"].is_u64(), "{text}");
+        } else {
+            let header = text.lines().next().expect("header");
+            assert!(header.contains("INCOMPLETE"), "{text}");
+        }
+    }
+}
+
+#[test]
+fn test_the_store_directory_is_protected_under_a_non_canonical_root() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    // On macOS the temporary directory is reached through a symbolic link
+    // (/var -> /private/var), so this root is not canonical.
+    let root = temp.path().join("home");
+    let data = root.join(".local/share/compresso");
+    fs::create_dir_all(&data).expect("data");
+    let store = Store::open(&data.join("compresso.db")).expect("store");
+    let protected = compresso_mcp::edit::protected_paths(&store, &root);
+    let canonical = fs::canonicalize(&data).expect("canonical");
+    assert!(protected.contains(&canonical), "{protected:?}");
+}

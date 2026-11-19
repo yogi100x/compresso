@@ -472,13 +472,14 @@ fn test_secret_gitignored_and_unindexed_paths_are_refused() {
     );
     assert_eq!(fixture.text("ignored.rs"), "fn x() {}\n");
     assert_eq!(fixture.text(".env"), "KEY=value\n");
-    // A rename skips what it may not edit and says so; it never edits it.
+    // A rename refreshes the index first, so the file created since the
+    // last index is renamed too; ignored and secret files never are.
     let report = fixture
         .apply(vec![rename("x", "y", None, None)])
-        .expect("rename applies to kept.rs");
-    assert_eq!(report.operations[0].files, ["kept.rs"]);
+        .expect("rename applies to kept.rs and late.rs");
+    assert_eq!(report.operations[0].files, ["kept.rs", "late.rs"]);
     assert_eq!(fixture.text("ignored.rs"), "fn x() {}\n");
-    assert_eq!(fixture.text("late.rs"), "fn x() {}\n");
+    assert_eq!(fixture.text("late.rs"), "fn y() {}\n");
 }
 
 #[test]
@@ -904,4 +905,150 @@ fn test_agent_instruction_files_are_refused_in_any_case() {
     skipped.sort_unstable();
     assert_eq!(skipped, ["AGENTS.md", "Jenkinsfile", "docs/claude.md"]);
     assert_eq!(fixture.text("AGENTS.md"), "Use helper_name.\n");
+}
+
+// ---- Second review round (E17-32): each test below failed before its fix.
+
+fn renamed(fixture: &Fixture, old: &str, new: &str, expected: usize) -> EditReport {
+    fixture
+        .apply(vec![rename(old, new, None, Some(expected))])
+        .unwrap_or_else(|error| panic!("rename {old} -> {new}: {error:?}"))
+}
+
+#[test]
+fn test_a_backslash_before_a_name_is_a_boundary_unless_it_is_an_escape() {
+    // PHP namespaces: `\App\User` names the class.
+    let fixture = Fixture::new(&[("a.php", b"<?php\nuse \\App\\User;\nnew User();\n")]);
+    renamed(&fixture, "User", "Member", 2);
+    assert_eq!(
+        fixture.text("a.php"),
+        "<?php\nuse \\App\\Member;\nnew Member();\n"
+    );
+    // An even run of backslashes is not an escape of the letter after it.
+    let fixture = Fixture::new(&[("b.py", b"s = \"\\\\\\\\n\"\nn = 1\n")]);
+    renamed(&fixture, "n", "m", 2);
+    // A single backslash before a one-letter name is an escape and is kept.
+    let fixture = Fixture::new(&[("c.py", b"n = 1\nprint(\"a\\n\", n)\n")]);
+    renamed(&fixture, "n", "m", 2);
+    assert_eq!(fixture.text("c.py"), "m = 1\nprint(\"a\\n\", m)\n");
+}
+
+#[test]
+fn test_a_quote_after_a_name_skips_only_known_literal_prefixes() {
+    let fixture = Fixture::new(&[("a.txt", b"foo\"x\" foo\n")]);
+    renamed(&fixture, "foo", "bar", 2);
+    assert_eq!(fixture.text("a.txt"), "bar\"x\" bar\n");
+    let fixture = Fixture::new(&[("b.py", b"f = 1\ns = f\"{f}\"\n")]);
+    renamed(&fixture, "f", "g", 2);
+    assert_eq!(fixture.text("b.py"), "g = 1\ns = f\"{g}\"\n");
+}
+
+#[test]
+fn test_printf_conversions_and_rust_lifetimes_are_not_renamed() {
+    let fixture = Fixture::new(&[("a.c", b"printf(\"%d\", d);\n")]);
+    renamed(&fixture, "d", "count", 1);
+    assert_eq!(fixture.text("a.c"), "printf(\"%d\", count);\n");
+    let fixture = Fixture::new(&[("a.rs", b"fn f<'a>(x: &'a str, a: u8) {}\n")]);
+    renamed(&fixture, "a", "b", 1);
+    assert_eq!(fixture.text("a.rs"), "fn f<'a>(x: &'a str, b: u8) {}\n");
+}
+
+#[test]
+fn test_a_dollar_sign_follows_the_language() {
+    // In JavaScript `$name` is its own identifier.
+    let fixture = Fixture::new(&[("a.js", b"const $name = 1;\nconst name = 2;\nuse(name);\n")]);
+    renamed(&fixture, "name", "label", 2);
+    assert_eq!(
+        fixture.text("a.js"),
+        "const $name = 1;\nconst label = 2;\nuse(label);\n"
+    );
+    // In shell `$name` and `${name}` are the variable itself.
+    let fixture = Fixture::new(&[("a.sh", b"name=1\necho $name ${name}\n")]);
+    renamed(&fixture, "name", "label", 3);
+    assert_eq!(fixture.text("a.sh"), "label=1\necho $label ${label}\n");
+}
+
+#[test]
+fn test_a_rename_sees_files_created_since_the_last_index() {
+    let fixture = Fixture::new(&[("a.rs", b"fn shared_fn() {}\n")]);
+    write(&fixture.root, "b.rs", b"fn main() { shared_fn(); }\n");
+    let report = renamed(&fixture, "shared_fn", "common_fn", 2);
+    assert_eq!(fixture.text("b.rs"), "fn main() { common_fn(); }\n");
+    assert!(
+        report.operations[0]
+            .rename
+            .as_ref()
+            .expect("outcome")
+            .complete
+    );
+}
+
+#[test]
+fn test_more_control_files_are_refused_at_any_component() {
+    use compresso_atlas::edit::is_control_path;
+    for path in [
+        ".clinerules/rules.md",
+        ".cargo/config.toml",
+        ".cargo/config",
+        "team.code-workspace",
+        "docs/CODEOWNERS",
+        ".npmrc",
+        ".yarnrc.yml",
+        ".devcontainer.json",
+        ".cursorignore",
+        ".aiexclude",
+        ".codeiumignore",
+        ".geminiignore",
+        "AGENTS.md/notes.txt",
+    ] {
+        assert!(is_control_path(Path::new(path)), "{path}");
+    }
+    assert!(!is_control_path(Path::new(".cargo/registry.txt")));
+}
+
+#[test]
+fn test_edit_temporary_files_are_never_indexed() {
+    let fixture = Fixture::new(&[
+        ("a.rs", b"fn a() {}\n"),
+        (".a.rs.compresso-edit-new-1-1.tmp", b"fn a() {}\n"),
+    ]);
+    assert!(
+        fixture
+            .store
+            .indexed_file(fixture.repo(), ".a.rs.compresso-edit-new-1-1.tmp")
+            .expect("store")
+            .is_none()
+    );
+}
+
+#[test]
+fn test_a_non_text_file_without_the_name_does_not_make_a_rename_incomplete() {
+    let fixture = Fixture::new(&[("a.rs", b"fn keep_me() {}\n"), ("data.txt", b"plain\n")]);
+    write(&fixture.root, "data.txt", b"\xff\xfe binary \x00\n");
+    let report = renamed(&fixture, "keep_me", "kept", 1);
+    let outcome = report.operations[0].rename.as_ref().expect("outcome");
+    assert!(outcome.complete, "{outcome:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_a_file_the_user_cannot_write_is_refused_whatever_its_other_bits() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let fixture = Fixture::new(&[("group.txt", b"x\n")]);
+    // Group may write, the owner may not.
+    fs::set_permissions(
+        fixture.root.join("group.txt"),
+        fs::Permissions::from_mode(0o464),
+    )
+    .expect("chmod");
+    let error = fixture
+        .apply(vec![replace("group.txt", "x", "y", 1)])
+        .expect_err("not writable by this user");
+    assert_eq!(refusal(error), Refusal::ReadOnly);
+    fs::set_permissions(
+        fixture.root.join("group.txt"),
+        fs::Permissions::from_mode(0o644),
+    )
+    .expect("chmod back");
+    assert_eq!(fixture.text("group.txt"), "x\n");
 }

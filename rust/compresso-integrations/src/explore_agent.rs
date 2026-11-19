@@ -55,7 +55,7 @@ const INSTRUCTIONS: &str = "You are an exploration-first coding agent for this r
 const EDIT_TOOL: &str = "compresso_edit";
 /// Instructions added only when the agent is granted the edit tool.
 const EDIT_INSTRUCTIONS: &str = "
-- Make multi-site edits and renames with compresso_edit, not shell text substitution. A rename is done only when its report shows 0 remaining whole matches and is not marked incomplete (complete: true); check any substring matches and skipped files it lists. Use dry_run to preview a diff.
+- Make multi-site edits and renames with compresso_edit, not shell text substitution. A rename is done only when its report shows 0 remaining whole matches and is not marked incomplete (complete: true); check by hand any adjacent matches (next to a string prefix, escape, or sigil) and skipped files it lists. Use dry_run to preview a diff.
 - If compresso_edit reports tool_unavailable, ask the user to run `compresso integrations install claude-code --edits` so the server entry enables it.";
 
 /// Reversible adapter for the Claude Code exploration agent file.

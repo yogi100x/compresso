@@ -591,11 +591,36 @@ fn edit_locations(kind: &str, locations: &[Value], total: u64, out: &mut Out) {
 fn edit(payload: &Value, out: &mut Out) {
     let dry_run = flag(payload, "dry_run");
     let files = number(payload, "files_total");
-    out.line(format!(
+    // The header carries every safety total, so no cut can hide them.
+    let mut header = format!(
         "{} {} site(s) in {files} file(s)",
         if dry_run { "would edit" } else { "edited" },
         number(payload, "sites_total")
-    ));
+    );
+    let incomplete = number(payload, "incomplete_operations");
+    if incomplete > 0 {
+        header.push_str(&format!(
+            "; INCOMPLETE: {incomplete} rename(s), {} skipped file(s) hold the old name",
+            number(payload, "files_skipped_total")
+        ));
+    }
+    for (key, label) in [
+        (
+            "remaining_whole_total",
+            "whole match(es) of an old name remain",
+        ),
+        (
+            "remaining_adjacent_total",
+            "adjacent match(es) to check by hand",
+        ),
+        ("unverified_files", "file(s) NOT verified on disk"),
+    ] {
+        let count = number(payload, key);
+        if count > 0 {
+            header.push_str(&format!("; {count} {label}"));
+        }
+    }
+    out.line(header);
     for file in array(payload, "files") {
         let lines = array(file, "lines")
             .iter()
@@ -643,9 +668,10 @@ fn edit(payload: &Value, out: &mut Out) {
             row.push_str(&format!(" under {scope}"));
         }
         row.push_str(&format!(
-            "; remaining: {} whole, {} substring",
+            "; remaining: {} whole, {} substring, {} adjacent",
             number(operation, "remaining_whole_total"),
-            number(operation, "remaining_substring_total")
+            number(operation, "remaining_substring_total"),
+            number(operation, "remaining_adjacent_total")
         ));
         if operation.get("complete") == Some(&Value::Bool(false)) {
             row.push_str("; INCOMPLETE: skipped files hold the old name");
@@ -661,6 +687,13 @@ fn edit(payload: &Value, out: &mut Out) {
             "substring",
             array(operation, "remaining_substring"),
             number(operation, "remaining_substring_total"),
+            out,
+        );
+        // Next to a string prefix, escape, or sigil: left as is, check by hand.
+        edit_locations(
+            "adjacent",
+            array(operation, "remaining_adjacent"),
+            number(operation, "remaining_adjacent_total"),
             out,
         );
         for skipped in array(operation, "files_skipped") {

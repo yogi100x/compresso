@@ -211,7 +211,9 @@ where
             Some(SkipReason::SecretPattern)
         } else if entry.metadata.file_type().is_symlink() {
             Some(SkipReason::Symlink)
-        } else if !entry.metadata.is_file() {
+        } else if !entry.metadata.is_file() || is_edit_temporary(&relative) {
+            // A crash can leave an edit's temporary file behind; it is
+            // never repository content.
             Some(SkipReason::UnsupportedFileType)
         } else if entry.metadata.len() > options.max_file_bytes {
             Some(SkipReason::TooLarge)
@@ -686,6 +688,13 @@ fn is_builtin_excluded_name(name: &OsStr) -> bool {
 fn is_builtin_excluded_directory(entry: &DirEntry) -> bool {
     entry.file_type().is_some_and(|kind| kind.is_dir())
         && is_builtin_excluded_name(entry.file_name())
+}
+
+/// Whether `relative` names a temporary file the edit tool writes beside an
+/// edited file (`.<name>.compresso-edit-<role>-<pid>-<n>.tmp`).
+pub(crate) fn is_edit_temporary(relative: &str) -> bool {
+    let name = relative.rsplit('/').next().unwrap_or(relative);
+    name.starts_with('.') && name.contains(".compresso-edit-") && name.ends_with(".tmp")
 }
 
 fn is_secret_pattern(relative: &str) -> bool {

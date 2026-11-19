@@ -26,9 +26,15 @@
 //! identifier `name`. A rename matches `old` only where the character before
 //! the match (if any) and the character after it (if any) are not identifier
 //! characters. Both names must consist of identifier characters only and must
-//! not start with a number. Matching is textual: occurrences inside comments
-//! and strings are renamed too, and the report lists every remaining substring
-//! occurrence (for example inside a longer identifier) so nothing is hidden.
+//! not start with a number. A match is not renamed, and is reported as
+//! adjacent, when it is an escape (`\n` after an odd run of backslashes, for a
+//! one-character or `x`/`u` hexadecimal name), a string literal prefix before
+//! a quote or `#` (`f"`, `b'`, `r#`), a printf conversion (`%d`), or, in Rust,
+//! a lifetime (`'a`). In JavaScript, TypeScript, Java, Kotlin, Scala, and Dart
+//! `$name` is a different identifier and is not renamed; elsewhere `$name` and
+//! `${name}` are the variable `name` and are. Otherwise matching is textual:
+//! occurrences inside comments and strings are renamed too, and the report
+//! lists every remaining substring and adjacent occurrence.
 //!
 //! # Gates
 //!
@@ -99,6 +105,7 @@ const LOCATION_TEXT_MAX_BYTES: usize = 160;
 const MAX_PATH_BYTES: usize = 4_096;
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+const FOREIGN_OWNER: &str = "the file belongs to another user";
 
 /// Where `insert` places its text relative to the anchor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -229,8 +236,10 @@ pub enum Refusal {
     Protected,
     /// An ignore file, or agent, editor, CI, or git-hook configuration.
     ControlFile,
-    /// The file has no write permission.
+    /// The file has no write permission for this user.
     ReadOnly,
+    /// The file belongs to another user; replacing it would change its owner.
+    ForeignOwner,
 }
 
 impl Refusal {
@@ -246,6 +255,7 @@ impl Refusal {
             Self::Protected => "protected",
             Self::ControlFile => "control_file",
             Self::ReadOnly => "read_only",
+            Self::ForeignOwner => "foreign_owner",
         }
     }
 
@@ -262,7 +272,8 @@ impl Refusal {
             Self::ControlFile => {
                 "the path is an ignore file or agent, editor, CI, or git-hook configuration"
             }
-            Self::ReadOnly => "the file is not writable",
+            Self::ReadOnly => "the file is not writable by this user",
+            Self::ForeignOwner => "the file belongs to another user",
         }
     }
 }
@@ -287,6 +298,10 @@ pub struct RenameOutcome {
     /// Occurrences of `old` inside longer identifiers after the edit.
     pub remaining_substring_total: usize,
     pub remaining_substring: Vec<EditLocation>,
+    /// Occurrences of `old` next to a string prefix, escape, or sigil, left
+    /// unchanged: check them by hand.
+    pub remaining_adjacent_total: usize,
+    pub remaining_adjacent: Vec<EditLocation>,
     /// Whole-identifier occurrences of `new` that existed before the edit.
     pub new_name_preexisting: usize,
     /// Every file in scope was searched. `false` when a file holding the old
@@ -398,13 +413,16 @@ pub enum EditError {
     },
     #[error("{path:?} changed while the edit was prepared; nothing was written")]
     Changed { path: String },
-    #[error("writing {path:?} failed; restored {} file(s), could not restore {}", restored.len(), unrestored.len())]
+    #[error("writing {path:?} failed; restored {} file(s), could not restore {}; original copies kept at {backups:?}", restored.len(), unrestored.len())]
     WriteFailed {
         path: String,
         /// Files written and then restored to their original bytes.
         restored: Vec<String>,
         /// Files left with the edited bytes because restoring them failed.
         unrestored: Vec<String>,
+        /// Repository-relative copies of the originals of `unrestored` files,
+        /// kept beside them.
+        backups: Vec<String>,
         #[source]
         source: io::Error,
     },
@@ -439,31 +457,109 @@ pub fn is_identifier(name: &str) -> bool {
         && !name.chars().next().is_some_and(char::is_numeric)
 }
 
-/// Byte offsets of whole-identifier and substring-only occurrences of
-/// `name` in `text`, in order.
-pub fn identifier_occurrences(text: &str, name: &str) -> (Vec<usize>, Vec<usize>) {
-    let mut whole = Vec::new();
-    let mut substring = Vec::new();
-    if name.is_empty() {
-        return (whole, substring);
+/// How a file's language treats `$` before a name, and whether `'name` is
+/// a Rust lifetime. Chosen from the file extension.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourceLanguage {
+    /// `$` is an identifier character (JavaScript, TypeScript, Java, Kotlin,
+    /// Scala, Dart): `$name` is a different identifier.
+    DollarIdentifier,
+    /// Rust: `'name` is a lifetime or a character literal.
+    Rust,
+    /// Shell, PHP, Perl, and everything else: `$name` and `${name}` are the
+    /// variable `name`.
+    Other,
+}
+
+impl SourceLanguage {
+    /// The language of a repository path, by extension.
+    pub fn for_path(path: &str) -> Self {
+        let extension = path
+            .rsplit('/')
+            .next()
+            .and_then(|name| name.rsplit_once('.'))
+            .map(|(_, extension)| extension.to_ascii_lowercase())
+            .unwrap_or_default();
+        match extension.as_str() {
+            "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts" | "java" | "kt" | "kts"
+            | "scala" | "sc" | "dart" => Self::DollarIdentifier,
+            "rs" => Self::Rust,
+            _ => Self::Other,
+        }
     }
+}
+
+/// Where a name occurs in a text.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Occurrences {
+    /// Whole identifiers: renamed.
+    pub whole: Vec<usize>,
+    /// Inside a longer identifier: never renamed.
+    pub substring: Vec<usize>,
+    /// Next to a string prefix, an escape, or a sigil (`f"`, `\n`, `%d`,
+    /// `'a`): never renamed, reported to be checked by hand.
+    pub adjacent: Vec<usize>,
+}
+
+/// Names that are string or character literal prefixes in Python, Rust, C,
+/// or C++ when a quote or `#` follows (compared case-insensitively: `f`, `r`,
+/// `b`, `u`, `rb`, `br`, `fr`, `rf`, `c`, `cr`, `L`, `U`, `u8`, `R`).
+const LITERAL_PREFIXES: &[&str] = &[
+    "f", "r", "b", "u", "rb", "br", "fr", "rf", "c", "cr", "l", "u8",
+];
+
+fn is_literal_prefix(name: &str) -> bool {
+    LITERAL_PREFIXES.contains(&name.to_ascii_lowercase().as_str())
+}
+
+/// Whether `\name` can be an escape sequence: one character (`\n`, `\t`,
+/// `\0`, ...) or a hexadecimal or Unicode escape (`\x41`, `é`).
+fn is_escape_form(name: &str) -> bool {
+    let mut characters = name.chars();
+    match (characters.next(), name.chars().count()) {
+        (Some(_), 1) => true,
+        (Some('x' | 'u' | 'U'), _) => characters.all(|character| character.is_ascii_hexdigit()),
+        _ => false,
+    }
+}
+
+/// Byte offsets of `name` in `text`, classified as whole identifiers,
+/// substrings of longer identifiers, or occurrences adjacent to a string
+/// prefix, escape, or sigil (see the module docs).
+pub fn identifier_occurrences(text: &str, name: &str, language: SourceLanguage) -> Occurrences {
+    let mut found = Occurrences::default();
+    if name.is_empty() {
+        return found;
+    }
+    let single = name.chars().count() == 1;
     for (start, _) in text.match_indices(name) {
         let end = start + name.len();
         let before = text[..start].chars().next_back();
         let after = text[end..].chars().next();
-        // `\n` is an escape and `f"`, `r#`, `b'` are literal prefixes, not
-        // identifiers: never rewrite them.
-        let escape_or_prefix = before == Some('\\') || matches!(after, Some('"' | '\'' | '#'));
+        let dollar_identifier = language == SourceLanguage::DollarIdentifier && before == Some('$');
         if before.is_some_and(is_identifier_char)
             || after.is_some_and(is_identifier_char)
-            || escape_or_prefix
+            || dollar_identifier
         {
-            substring.push(start);
+            found.substring.push(start);
+            continue;
+        }
+        let backslashes = text[..start]
+            .bytes()
+            .rev()
+            .take_while(|byte| *byte == b'\\')
+            .count();
+        let escape = backslashes % 2 == 1 && is_escape_form(name);
+        let prefix = matches!(after, Some('"' | '\'' | '#')) && is_literal_prefix(name);
+        let conversion = before == Some('%') && single;
+        let lifetime = language == SourceLanguage::Rust && before == Some('\'');
+        if escape || prefix || conversion || lifetime {
+            found.adjacent.push(start);
         } else {
-            whole.push(start);
+            found.whole.push(start);
         }
     }
-    (whole, substring)
+    found
 }
 
 /// Applies `request` to the repository at `root`, then re-indexes it.
@@ -495,6 +591,14 @@ pub(crate) fn apply_edits_with_hook(
     if repository.last_indexed_at.is_none() {
         return Err(EditError::NotIndexed);
     }
+    // A rename's scope is the indexed file list, so files created or changed
+    // since the last index must be indexed first or they would be missed.
+    // This writes only the index (also on a dry run), never a repository file.
+    let has_rename = request
+        .operations
+        .iter()
+        .any(|operation| matches!(operation, EditOperation::Rename { .. }));
+    let index_refreshed = !has_rename || Indexer::new(store, counter).index(&root, |_| {}).is_ok();
     let indexed = store
         .indexed_files(repository.id)?
         .into_iter()
@@ -504,6 +608,7 @@ pub(crate) fn apply_edits_with_hook(
         root: &root,
         indexed: &indexed,
         protected: &request.protected,
+        index_refreshed,
     };
 
     let mut working = BTreeMap::<String, WorkingFile>::new();
@@ -783,6 +888,8 @@ struct Gate<'a> {
     root: &'a Path,
     indexed: &'a BTreeMap<String, FileRecord>,
     protected: &'a [PathBuf],
+    /// The index was refreshed before a rename read its scope from it.
+    index_refreshed: bool,
 }
 
 /// A file read for editing, with its edited text.
@@ -799,6 +906,10 @@ struct WorkingFile {
     sites: usize,
     /// Byte offsets of every site in `text`, kept current across splices.
     site_offsets: Vec<usize>,
+    /// The file's owner (Unix), so a replacement never changes it.
+    owner: Option<u32>,
+    /// How identifiers are matched in this file.
+    language: SourceLanguage,
 }
 
 impl WorkingFile {
@@ -916,7 +1027,15 @@ fn load(gate: &Gate<'_>, path: &str) -> Result<WorkingFile, EditError> {
     if metadata.len() > EDIT_MAX_FILE_BYTES {
         return Err(refused(path, Refusal::TooLarge));
     }
-    if metadata.permissions().readonly() {
+    // Probe for write permission as this user (the mode bits alone say
+    // nothing about who may write). Opening without truncation changes
+    // nothing.
+    if metadata.permissions().readonly()
+        || fs::OpenOptions::new()
+            .write(true)
+            .open(resolved.path())
+            .is_err()
+    {
         return Err(refused(path, Refusal::ReadOnly));
     }
     let mut original = Vec::new();
@@ -946,11 +1065,14 @@ fn load(gate: &Gate<'_>, path: &str) -> Result<WorkingFile, EditError> {
         text,
         sites: 0,
         site_offsets: Vec::new(),
+        owner: file_owner(&metadata),
+        language: SourceLanguage::for_path(path),
     })
 }
 
-/// Directories (at any depth) whose files configure agents, editors, CI,
-/// development containers, or git hooks. Compared case-insensitively.
+/// Names (as any path component) of directories whose files configure
+/// agents, editors, CI, development containers, or git hooks. Both lists are
+/// matched at every component, case-insensitively.
 const CONTROL_DIRECTORIES: &[&str] = &[
     ".claude",
     ".codex",
@@ -994,6 +1116,14 @@ const CONTROL_FILES: &[&str] = &[
     "lefthook.yaml",
     ".lefthook.yml",
     ".lefthook.yaml",
+    ".devcontainer.json",
+    "codeowners",
+    ".cursorignore",
+    ".aiexclude",
+    ".codeiumignore",
+    ".geminiignore",
+    ".npmrc",
+    ".yarnrc.yml",
 ];
 
 /// A path component as case-insensitive file systems and Windows compare it:
@@ -1016,21 +1146,34 @@ fn control_key(name: &str) -> String {
 /// other scripts names a different file, which clients do not load as the
 /// control file.
 pub fn is_control_path(relative: &Path) -> bool {
-    let mut components = relative.components().peekable();
-    while let Some(component) = components.next() {
-        let name = control_key(&component.as_os_str().to_string_lossy());
-        let is_file = components.peek().is_none();
-        if name.starts_with(".git") || name.starts_with(".aider") {
-            return true;
-        }
-        if !is_file && CONTROL_DIRECTORIES.contains(&name.as_str()) {
-            return true;
-        }
-        if is_file && CONTROL_FILES.contains(&name.as_str()) {
-            return true;
-        }
+    let names = relative
+        .components()
+        .map(|component| control_key(&component.as_os_str().to_string_lossy()))
+        .collect::<Vec<_>>();
+    names.iter().enumerate().any(|(index, name)| {
+        name.starts_with(".git")
+            || name.starts_with(".aider")
+            || name.ends_with(".code-workspace")
+            || CONTROL_DIRECTORIES.contains(&name.as_str())
+            || CONTROL_FILES.contains(&name.as_str())
+            || (name == ".cargo"
+                && names
+                    .get(index + 1)
+                    .is_some_and(|next| next == "config" || next == "config.toml"))
+    })
+}
+
+fn file_owner(metadata: &fs::Metadata) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        Some(metadata.uid())
     }
-    false
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
+    }
 }
 
 fn line_ending(text: &str) -> LineEnding {
@@ -1217,17 +1360,22 @@ const fn skippable(reason: Refusal) -> bool {
     !matches!(reason, Refusal::InvalidPath | Refusal::NotIndexed)
 }
 
-/// Refusals for files that may still be read (only writing them is refused),
-/// so a rename can confirm they hold no match instead of skipping them.
+/// Refusals for files that may still be read (only writing them is refused,
+/// or they are not text), so a rename can confirm they do not hold the old
+/// name instead of listing them as skipped.
 const fn readable_refusal(reason: Refusal) -> bool {
     matches!(
         reason,
-        Refusal::ControlFile | Refusal::Protected | Refusal::ReadOnly
+        Refusal::ControlFile
+            | Refusal::Protected
+            | Refusal::ReadOnly
+            | Refusal::ForeignOwner
+            | Refusal::NotUtf8
     )
 }
 
-/// The text of an in-root file for searching only, through the read gate.
-fn peek_text(root: &Path, path: &str) -> Option<String> {
+/// The bytes of an in-root file for searching only, through the read gate.
+fn peek_bytes(root: &Path, path: &str) -> Option<Vec<u8>> {
     let Ok(ResolvedEntry::File(resolved)) = resolve_under_root(root, path) else {
         return None;
     };
@@ -1238,11 +1386,7 @@ fn peek_text(root: &Path, path: &str) -> Option<String> {
         .take(EDIT_MAX_FILE_BYTES + 1)
         .read_to_end(&mut bytes)
         .ok()?;
-    if bytes.len() as u64 > EDIT_MAX_FILE_BYTES {
-        return None;
-    }
-    let text = String::from_utf8(bytes).ok()?;
-    Some(text.strip_prefix('\u{feff}').unwrap_or(&text).to_owned())
+    (bytes.len() as u64 <= EDIT_MAX_FILE_BYTES).then_some(bytes)
 }
 
 /// One rename's arguments.
@@ -1262,6 +1406,8 @@ struct RenameScan {
     matched: Vec<(String, Vec<usize>)>,
     untouched_substring: Vec<EditLocation>,
     untouched_substring_total: usize,
+    untouched_adjacent: Vec<EditLocation>,
+    untouched_adjacent_total: usize,
     new_name_preexisting: usize,
     new_name_locations: Vec<EditLocation>,
 }
@@ -1269,8 +1415,14 @@ struct RenameScan {
 impl RenameScan {
     /// Records one searched text; returns its whole-identifier matches.
     fn search(&mut self, path: &str, text: &str, spec: &RenameSpec<'_>) -> Vec<usize> {
-        let (whole, substring) = identifier_occurrences(text, spec.old);
-        let existing = identifier_occurrences(text, spec.new).0;
+        let language = SourceLanguage::for_path(path);
+        let Occurrences {
+            whole,
+            substring,
+            adjacent,
+        } = identifier_occurrences(text, spec.old, language);
+        // The same matcher decides what counts as the new name in use.
+        let existing = identifier_occurrences(text, spec.new, language).whole;
         self.new_name_preexisting += existing.len();
         if self.new_name_locations.len() < EDIT_MAX_LISTED_LOCATIONS {
             self.new_name_locations
@@ -1282,6 +1434,11 @@ impl RenameScan {
             if self.untouched_substring.len() < EDIT_MAX_LISTED_LOCATIONS {
                 self.untouched_substring
                     .extend(locations(path, text, &substring));
+            }
+            self.untouched_adjacent_total += adjacent.len();
+            if self.untouched_adjacent.len() < EDIT_MAX_LISTED_LOCATIONS {
+                self.untouched_adjacent
+                    .extend(locations(path, text, &adjacent));
             }
         }
         whole
@@ -1325,15 +1482,28 @@ fn apply_rename(
                     // A file the edit may not write but may read is skipped
                     // only when it actually holds the old name.
                     let peeked = readable_refusal(reason)
-                        .then(|| peek_text(gate.root, &path))
+                        .then(|| peek_bytes(gate.root, &path))
                         .flatten();
                     match peeked {
-                        Some(text) => {
-                            *scanned = scanned.saturating_add(text.len() as u64);
+                        Some(bytes) => {
+                            *scanned = scanned.saturating_add(bytes.len() as u64);
                             bound(EditBound::ScanBytes, EDIT_MAX_SCAN_BYTES, *scanned)?;
-                            if !scan.search(&path, &text, &spec).is_empty() {
+                            let holds_name = match std::str::from_utf8(&bytes) {
+                                Ok(text) => {
+                                    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+                                    !scan.search(&path, text, &spec).is_empty()
+                                }
+                                // Not text: skipped only if the bytes hold the
+                                // name at all, since it cannot be edited.
+                                Err(_) => bytes
+                                    .windows(old.len())
+                                    .any(|window| window == old.as_bytes()),
+                            };
+                            if holds_name {
                                 scan.searched.remove(&path);
                                 scan.skipped.push(SkippedFile { path, reason });
+                            } else {
+                                scan.searched.insert(path);
                             }
                         }
                         None => scan.skipped.push(SkippedFile { path, reason }),
@@ -1366,6 +1536,8 @@ fn apply_rename(
         matched,
         mut untouched_substring,
         untouched_substring_total,
+        untouched_adjacent,
+        untouched_adjacent_total,
         new_name_preexisting,
         mut new_name_locations,
     } = scan;
@@ -1414,13 +1586,23 @@ fn apply_rename(
     let mut remaining_whole_total = 0_usize;
     let mut remaining_substring = untouched_substring;
     let mut remaining_substring_total = untouched_substring_total;
+    let mut remaining_adjacent = untouched_adjacent;
+    let mut remaining_adjacent_total = untouched_adjacent_total;
     let mut files = Vec::with_capacity(matched.len());
     for (path, offsets) in &matched {
         let file = working.get_mut(path).expect("matched files are loaded");
         splice_sites(file, offsets, old.len(), new);
         // Verify against the edited text rather than assume: a new name that
         // contains the old one, or adjacent sites, would show up here.
-        let (whole, substring) = identifier_occurrences(&file.text, old);
+        let Occurrences {
+            whole,
+            substring,
+            adjacent,
+        } = identifier_occurrences(&file.text, old, file.language);
+        remaining_adjacent_total += adjacent.len();
+        if remaining_adjacent.len() < EDIT_MAX_LISTED_LOCATIONS {
+            remaining_adjacent.extend(locations(path, &file.text, &adjacent));
+        }
         remaining_whole_total += whole.len();
         if remaining_whole.len() < EDIT_MAX_LISTED_LOCATIONS {
             remaining_whole.extend(locations(path, &file.text, &whole));
@@ -1433,6 +1615,7 @@ fn apply_rename(
     }
     remaining_whole.truncate(EDIT_MAX_LISTED_LOCATIONS);
     remaining_substring.truncate(EDIT_MAX_LISTED_LOCATIONS);
+    remaining_adjacent.truncate(EDIT_MAX_LISTED_LOCATIONS);
     Ok(OperationOutcome {
         kind: "rename",
         sites: total,
@@ -1440,12 +1623,14 @@ fn apply_rename(
         rename: Some(RenameOutcome {
             scope: spec.filter.map(str::to_owned),
             files_searched: searched.len(),
-            complete: skipped.is_empty(),
+            complete: skipped.is_empty() && gate.index_refreshed,
             files_skipped: skipped,
             remaining_whole_total,
             remaining_whole,
             remaining_substring_total,
             remaining_substring,
+            remaining_adjacent_total,
+            remaining_adjacent,
             new_name_preexisting,
         }),
     })
@@ -1575,10 +1760,14 @@ fn commit(
         }
     }
     let mut staged = Vec::<Staged<'_>>::with_capacity(changed.len());
-    let cleanup = |staged: &[Staged<'_>]| {
-        for entry in staged {
+    // Removes the staged files, except the original copies in `keep`: for a
+    // file left unrestored that copy is the only one left.
+    let cleanup = |staged: &[Staged<'_>], keep: &[usize]| {
+        for (index, entry) in staged.iter().enumerate() {
             let _ = fs::remove_file(&entry.edited);
-            let _ = fs::remove_file(&entry.original);
+            if !keep.contains(&index) {
+                let _ = fs::remove_file(&entry.original);
+            }
         }
     };
     for (path, file) in changed {
@@ -1587,6 +1776,20 @@ fn commit(
             let edited_bytes = file.edited_bytes();
             let edited = temp_beside(&target, "new")?;
             write_temp(&edited, &edited_bytes, &file.permissions)?;
+            // A replacement is owned by this process's user; refuse rather than
+            // change the owner of another user's file.
+            if file.owner.is_some()
+                && fs::symlink_metadata(&edited)
+                    .ok()
+                    .and_then(|metadata| file_owner(&metadata))
+                    != file.owner
+            {
+                let _ = fs::remove_file(&edited);
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    FOREIGN_OWNER,
+                ));
+            }
             let original = temp_beside(&target, "old")?;
             if let Err(error) = write_temp(&original, &file.original, &file.permissions) {
                 let _ = fs::remove_file(&edited);
@@ -1604,11 +1807,15 @@ fn commit(
         match prepared {
             Ok(entry) => staged.push(entry),
             Err(source) => {
-                cleanup(&staged);
+                cleanup(&staged, &[]);
+                if source.to_string() == FOREIGN_OWNER {
+                    return Err(refused(path, Refusal::ForeignOwner));
+                }
                 return Err(EditError::WriteFailed {
                     path: path.clone(),
                     restored: Vec::new(),
                     unrestored: Vec::new(),
+                    backups: Vec::new(),
                     source,
                 });
             }
@@ -1637,6 +1844,7 @@ fn commit(
             Err(source) => {
                 let mut restored = Vec::new();
                 let mut unrestored = Vec::new();
+                let mut kept = Vec::new();
                 for (done, identity) in renamed.into_iter().rev() {
                     let entry = &staged[done];
                     let back = reverify(root, entry.path, identity, &entry.hash_after)
@@ -1646,22 +1854,37 @@ fn commit(
                             sync_directory(&entry.target);
                             restored.push(entry.path.to_owned());
                         }
-                        Err(_) => unrestored.push(entry.path.to_owned()),
+                        Err(_) => {
+                            unrestored.push(entry.path.to_owned());
+                            kept.push(done);
+                        }
                     }
                 }
                 restored.reverse();
                 unrestored.reverse();
-                cleanup(&staged);
+                kept.reverse();
+                cleanup(&staged, &kept);
+                let backups = kept
+                    .iter()
+                    .filter_map(|index| {
+                        staged[*index]
+                            .original
+                            .strip_prefix(root)
+                            .ok()
+                            .map(|path| path.to_string_lossy().into_owned())
+                    })
+                    .collect();
                 return Err(EditError::WriteFailed {
                     path: entry.path.to_owned(),
                     restored,
                     unrestored,
+                    backups,
                     source,
                 });
             }
         }
     }
-    cleanup(&staged);
+    cleanup(&staged, &[]);
     Ok(())
 }
 
@@ -1852,9 +2075,11 @@ mod tests {
     #[test]
     fn test_identifier_boundaries_are_explicit() {
         let text = "format_utc(); format_utc_now(); reformat_utc(); x.format_utc2; café_format_utc; $format_utc";
-        let (whole, substring) = identifier_occurrences(text, "format_utc");
-        assert_eq!(whole.len(), 2, "call and `$format_utc`");
-        assert_eq!(substring.len(), 4);
+        let found = identifier_occurrences(text, "format_utc", SourceLanguage::Other);
+        assert_eq!(found.whole.len(), 2, "call and `$format_utc`");
+        assert_eq!(found.substring.len(), 4);
+        let found = identifier_occurrences(text, "format_utc", SourceLanguage::DollarIdentifier);
+        assert_eq!(found.whole.len(), 1, "`$format_utc` is another identifier");
         assert!(is_identifier("naïve_ß"));
         assert!(!is_identifier("1abc"));
         assert!(!is_identifier("a-b"));
@@ -1917,20 +2142,43 @@ mod tests {
     }
 
     #[test]
-    fn test_escapes_and_literal_prefixes_are_never_whole_identifiers() {
-        let (whole, substring) = identifier_occurrences("let n = 1; print(\"a\\n\", n)", "n");
-        assert_eq!(whole.len(), 2, "the binding and the argument");
-        assert_eq!(substring.len(), 2, "`print` and the `\\n` escape");
-        let (whole, substring) = identifier_occurrences("f = 1\ns = f\"x{f}\"\n", "f");
+    fn test_escapes_and_literal_prefixes_are_adjacent_not_whole() {
+        let other = SourceLanguage::Other;
+        let found = identifier_occurrences("let n = 1; print(\"a\\n\", n)", "n", other);
+        assert_eq!(found.whole.len(), 2, "the binding and the argument");
+        assert_eq!(found.substring.len(), 1, "`print`");
+        assert_eq!(found.adjacent.len(), 1, "the `\\n` escape");
+        let found = identifier_occurrences("f = 1\ns = f\"x{f}\"\n", "f", other);
+        assert_eq!((found.whole.len(), found.adjacent.len()), (2, 1));
+        let found = identifier_occurrences("let r = r#type; b'x'; r", "r", other);
+        assert_eq!((found.whole.len(), found.adjacent.len()), (2, 1));
+        assert!(identifier_occurrences("b'x'", "b", other).whole.is_empty());
+        // Not a known prefix: a quote after the name is an ordinary boundary.
         assert_eq!(
-            (whole.len(), substring.len()),
-            (2, 1),
-            "f-string prefix kept"
+            identifier_occurrences("foo\"x\"", "foo", other).whole.len(),
+            1
         );
-        let (whole, substring) = identifier_occurrences("let r = r#type; b'x'; r", "r");
-        assert_eq!((whole.len(), substring.len()), (2, 1));
-        let (whole, _) = identifier_occurrences("b'x'", "b");
-        assert!(whole.is_empty());
+        // Not an escape form: `\App\User` is a namespace.
+        assert_eq!(
+            identifier_occurrences("\\App\\User", "User", other)
+                .whole
+                .len(),
+            1
+        );
+        // An even run of backslashes escapes itself, not the letter after it.
+        assert_eq!(identifier_occurrences("\\\\n", "n", other).whole.len(), 1);
+        assert_eq!(identifier_occurrences("%d d", "d", other).adjacent.len(), 1);
+        let rust = SourceLanguage::Rust;
+        assert_eq!(
+            identifier_occurrences("<'a>(a)", "a", rust).adjacent.len(),
+            1
+        );
+        assert_eq!(
+            SourceLanguage::for_path("src/app.TS"),
+            SourceLanguage::DollarIdentifier
+        );
+        assert_eq!(SourceLanguage::for_path("lib.rs"), SourceLanguage::Rust);
+        assert_eq!(SourceLanguage::for_path("run.sh"), SourceLanguage::Other);
     }
 
     #[test]
@@ -1948,6 +2196,7 @@ mod tests {
             root: &root,
             indexed: &indexed,
             protected: &[],
+            index_refreshed: true,
         };
         // An earlier rename in the call already read almost the whole budget.
         let mut scanned = EDIT_MAX_SCAN_BYTES - 4;
@@ -2020,7 +2269,52 @@ mod tests {
             .filter_map(Result::ok)
             .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
             .count();
-        assert_eq!(leftovers, 0);
+        assert_eq!(
+            leftovers, 1,
+            "only the unrestored file's original copy is kept"
+        );
+    }
+
+    #[test]
+    fn test_an_unrestored_file_keeps_its_original_copy() {
+        let fixture = Fixture::new(&[("a.rs", "fn a() {}\n"), ("b.rs", "fn b() {}\n")]);
+        let root = fixture.root.clone();
+        let error = fixture
+            .apply(
+                vec![
+                    replace("a.rs", "fn a", "fn aa"),
+                    replace("b.rs", "fn b", "fn bb"),
+                ],
+                &mut |index, _| {
+                    if index == 1 {
+                        fs::write(root.join("a.rs"), "fn theirs() {}\n")?;
+                        Err(io::Error::other("injected"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .expect_err("second write fails");
+        let EditError::WriteFailed { .. } = error else {
+            panic!("unexpected {error:?}");
+        };
+        let originals = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("compresso-edit-old")
+            })
+            .map(|entry| fs::read_to_string(entry.path()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            originals,
+            ["fn a() {}\n"],
+            "the only copy of the original is kept"
+        );
+        assert!(error.to_string().contains("compresso-edit-old"), "{error}");
     }
 
     #[cfg(unix)]
