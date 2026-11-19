@@ -1,0 +1,29 @@
+rust/compresso-cli/src/commands/edit.rs
+  s_89a704cfae63f5::t_ea2e775b7bf899 167
+rust/compresso-mcp/src/tools/edit.rs
+  s_89a704cfae63f5::t_ea2e775b7bf899 67,97-101,112,115-119
+docs/adr/0035-opt-in-verified-edit-tool.md
+  s_89a704cfae63f5::t_628fcb20c2997b 66-68
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_84e8c62e4bf69b 546
+docs/plan/08-ip-and-secure-deployment.md
+  s_89a704cfae63f5::t_e8e05b10d2dcf1 138
+rust/compresso-cli/tests/cli_edit.rs
+  s_89a704cfae63f5::t_8194d4e37b166d 188-248
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "86aa7ddae91bc7b44f2d85abaef543f7f9ed0628",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
