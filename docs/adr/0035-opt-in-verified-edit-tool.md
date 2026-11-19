@@ -6,7 +6,7 @@ Accepted 2026-11-19 by the owner (D97, E17-32): the owner approved building
 the edit tool in reply to a proposal that stated it "ends the read-only server
 guarantee stated in the docs and security model". The design below (opt-in
 flag, gates, bounds, atomicity, report shape) was chosen by the implementing
-session and awaits owner confirmation. It adds no network or process
+session and confirmed by the owner on 2026-11-19. It adds no network or process
 capability.
 
 ## Context
