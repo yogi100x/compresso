@@ -1702,3 +1702,83 @@ async fn test_grep_clamps_limits_above_their_maximum_with_a_note() {
     assert!(is_error, "{text}");
     harness.close().await;
 }
+
+/// E17-36 (D101, review): even the smallest max_tokens holds for a packed
+/// call in both forms, or the call fails with a reason; never over budget.
+#[tokio::test]
+async fn test_packed_call_at_the_smallest_budget_never_exceeds_it() {
+    let fixture = Fixture::new();
+    let counter = counter_for(TokenProvider::OpenAiO200k);
+    for results in [McpResultFormat::Json, McpResultFormat::Text] {
+        let mut harness = Harness::start(
+            &fixture,
+            options_with(&fixture, McpToolProfile::Lean, results),
+        )
+        .await;
+        let (text, is_error) = harness
+            .call(
+                "compresso_grep",
+                &json!({
+                    "patterns": ["budget", "Session"],
+                    "ranges": [
+                        { "path": "src/steps.rs", "start_line": 1, "end_line": 40 },
+                        { "path": "src/session.rs" }
+                    ],
+                    "max_tokens": 300
+                }),
+            )
+            .await;
+        if is_error {
+            assert!(
+                text.starts_with("[invalid_arguments]"),
+                "{results:?}: {text}"
+            );
+        } else {
+            assert!(
+                counter.count(&text) <= 300,
+                "{results:?}: {} tokens",
+                counter.count(&text)
+            );
+        }
+        harness.close().await;
+    }
+}
+
+/// E17-36 (D101, review): a failed scope prints at the caller's position,
+/// later errors keep the caller's pattern index, and caller text cannot
+/// break a header line.
+#[tokio::test]
+async fn test_packed_call_keeps_the_callers_order_and_indexes() {
+    let fixture = Fixture::new();
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, is_error) = harness
+        .call(
+            "compresso_grep",
+            &json!({ "patterns": [{ "pattern": "open", "path": "../etc" }, "start_session"] }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    assert!(
+        text.starts_with("# open in ../etc — [invalid_arguments]"),
+        "{text}"
+    );
+    assert!(text.contains("\n# start_session — "), "{text}");
+    let (text, is_error) = harness
+        .call(
+            "compresso_grep",
+            &json!({
+                "patterns": [{ "pattern": "open", "path": "../etc" }, "start_session", "("],
+                "regex": true
+            }),
+        )
+        .await;
+    assert!(is_error && text.contains("pattern 2 "), "{text}");
+    let (text, _) = harness
+        .call(
+            "compresso_grep",
+            &json!({ "patterns": ["start\tsession", "start_session"] }),
+        )
+        .await;
+    assert!(text.starts_with("# start?session — no matches\n"), "{text}");
+    harness.close().await;
+}

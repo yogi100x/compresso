@@ -44,13 +44,15 @@ pub const GREP_REGEX_MAX_BYTES_PER_PATTERN: u64 = 64 * 1024 * 1024;
 /// Upper bound for [`GrepOptions::context_lines`].
 pub const GREP_MAX_CONTEXT_LINES: usize = 10;
 
-/// Compiled program ceiling for a search pattern: rejects patterns whose
-/// automaton would be large. Matching is linear-time whatever the pattern,
-/// so this bounds memory only: at most 8 patterns per call, 32 MiB in all.
-/// Raised from 256 KiB (E17-36, D101), which refused ordinary patterns
-/// such as `\D{0,30}` (a counted repetition of a Unicode class compiles to
-/// about 1 MiB).
-const REGEX_SIZE_LIMIT: usize = 4 << 20;
+/// Compiled program ceiling for a search pattern. Matching is linear-time
+/// whatever the pattern, so this bounds memory: it applies to each compiled
+/// program (the regex crate builds a forward and a reverse one), and the
+/// lazy DFA caches are bounded separately by [`REGEX_DFA_SIZE_LIMIT`], so a
+/// pattern holds at most about 8 MiB (2 x 2 MiB + 2 x 2 MiB), 64 MiB for 8.
+/// Measured (E17-36, D101): 8 patterns at this limit searching 2.4 MB of
+/// text added 22.7 MB of peak resident memory. Raised from 256 KiB, which
+/// refused ordinary patterns such as `\D{0,30}` (about 1 MiB compiled).
+const REGEX_SIZE_LIMIT: usize = 2 << 20;
 /// Compiled program ceiling for a path glob (unchanged).
 const GLOB_SIZE_LIMIT: usize = 256 * 1024;
 const REGEX_DFA_SIZE_LIMIT: usize = 2 << 20;

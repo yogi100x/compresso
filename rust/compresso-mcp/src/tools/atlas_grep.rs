@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use compresso_atlas::{
-    AtlasError, GrepFile, GrepLine, GrepOptions, GrepReport, grep, repository_stale, validate_grep,
+    AtlasError, GrepError, GrepFile, GrepLine, GrepOptions, GrepReport, grep, repository_stale,
+    validate_grep,
 };
 use compresso_core::{TokenCounter, operation_identity};
 use compresso_store::{RepoId, Store, SymbolKind};
@@ -127,7 +128,21 @@ pub(crate) fn dispatch(
         scopes: &scopes,
     };
     // Reject a bad pattern before the repository is even resolved.
-    validate_grep(&options).map_err(|error| map_grep_error(error.into()))?;
+    // Errors name the caller's pattern index, even after a pattern whose
+    // scope failed was dropped.
+    let caller_index = |index: usize| {
+        let dropped = failed
+            .iter()
+            .filter_map(|entry| entry["index"].as_u64())
+            .map(|index| index as usize)
+            .collect::<Vec<_>>();
+        (0..)
+            .filter(|i| !dropped.contains(i))
+            .nth(index)
+            .unwrap_or(index)
+    };
+    validate_grep(&options)
+        .map_err(|error| map_grep_error(remap_index(error, caller_index).into()))?;
     let repository = resolve_repository(store, repository_root, root.as_deref())?;
     let report = grep(store, repository.id, &options).map_err(map_grep_error)?;
     let stale = repository_stale(store, repository.id).map_err(map_atlas_error)?;
@@ -145,8 +160,9 @@ pub(crate) fn dispatch(
     let grep_tokens = if range_count == 0 {
         max_tokens
     } else {
+        // At most half of a small budget, so the ranges keep room too.
         (max_tokens * grep_default / (grep_default + ranges_default))
-            .max(MIN_TOKENS.min(max_tokens))
+            .max(MIN_TOKENS.min(max_tokens / 2))
     };
     let mut budget = grep_tokens.saturating_mul(4) / 5;
     let (mut payload, tokens) = loop {
@@ -195,8 +211,15 @@ pub(crate) fn dispatch(
                 break;
             }
             let sent = stabilize_tokens(&mut payload, counter)?;
-            if sent <= max_tokens || left == 0 || attempt == JSON_FIT_ATTEMPTS {
+            if sent <= max_tokens {
                 break;
+            }
+            if left == 0 || attempt == JSON_FIT_ATTEMPTS {
+                // Even with no content read, the envelope does not fit.
+                return Err(ToolFailure::invalid(format!(
+                    "argument 'max_tokens' ({max_tokens}) cannot hold the totals of {} patterns and the headers of {range_count} ranges; raise it or send fewer lookups per call.",
+                    patterns.len()
+                )));
             }
             left = left.saturating_sub(sent - max_tokens + 16);
         }
@@ -304,10 +327,11 @@ fn patterns_argument(arguments: &mut Map<String, Value>) -> Result<Patterns, Too
         ));
     }
     let (mut kept, mut failed, mut first_failure) = (Vec::new(), Vec::new(), None);
-    for (pattern, scope) in entries {
+    for (index, (pattern, scope)) in entries.into_iter().enumerate() {
         match scope.as_deref().and_then(scope_failure) {
             Some(failure) => {
                 failed.push(json!({
+                    "index": index,
                     "pattern": pattern,
                     "path": scope,
                     "error": { "code": failure.code(), "message": failure.message() },
@@ -347,6 +371,27 @@ fn scope_failure(scope: &str) -> Option<ToolFailure> {
     })
     .err()
     .map(|error| map_grep_error(error.into()))
+}
+
+/// `error` with its pattern index mapped through `caller_index`.
+fn remap_index(error: GrepError, caller_index: impl Fn(usize) -> usize) -> GrepError {
+    match error {
+        GrepError::EmptyPattern { index } => GrepError::EmptyPattern {
+            index: caller_index(index),
+        },
+        GrepError::PatternTooLong { index, max } => GrepError::PatternTooLong {
+            index: caller_index(index),
+            max,
+        },
+        GrepError::PatternControlCharacter { index } => GrepError::PatternControlCharacter {
+            index: caller_index(index),
+        },
+        GrepError::InvalidPattern { index, reason } => GrepError::InvalidPattern {
+            index: caller_index(index),
+            reason,
+        },
+        other => other,
+    }
 }
 
 fn map_grep_error(error: AtlasError) -> ToolFailure {

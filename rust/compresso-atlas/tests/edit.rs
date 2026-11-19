@@ -1268,3 +1268,26 @@ fn test_a_scoped_rename_counts_whole_matches_outside_its_scope() {
     assert_eq!(outcome.outside_whole_total, 0);
     assert!(outcome.complete);
 }
+
+/// E17-36 (D101, review): the outside-scope count is taken after every
+/// operation of the call, so a match a later scoped rename renames is not
+/// reported as left behind.
+#[test]
+fn test_scoped_renames_count_outside_matches_after_every_operation() {
+    let fixture = Fixture::new(&[
+        ("src/a/one.rs", b"pub fn tally_votes() {}\n"),
+        ("src/b/two.rs", b"fn run() { crate::a::tally_votes(); }\n"),
+    ]);
+    let report = fixture
+        .apply(vec![
+            rename("tally_votes", "count_votes", Some("src/a"), None),
+            rename("tally_votes", "count_votes", Some("src/b"), None),
+        ])
+        .expect("renames apply");
+    for operation in &report.operations {
+        let outcome = operation.rename.as_ref().expect("outcome");
+        assert_eq!(outcome.outside_whole_total, 0, "{outcome:?}");
+        assert!(outcome.outside_unsearched.is_empty(), "{outcome:?}");
+        assert!(outcome.complete, "{outcome:?}");
+    }
+}

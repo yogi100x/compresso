@@ -47,7 +47,7 @@ const INSTRUCTIONS: &str = "You are an exploration-first coding agent for this r
 - Exact definitions or signatures: compresso_search. Text, use sites, or several names at once: compresso_grep, with context_lines to see the surrounding code without a follow-up read. Who calls a function, what it calls, or how A reaches B: compresso_trace.
 - A file's structure: compresso_outline. One symbol body: compresso_unfold. Specific line ranges: compresso_read, passing ranges to read several in one call.
 - Spend the fewest lines per fact. A grep hit with a few context_lines usually replaces a read. compresso_unfold serves exactly one symbol, so prefer it to reading around a function. Read narrow windows of about 30 lines around the line you need, never a whole file; a read longer than its window names the symbols it left out, so ask for exactly those. A grep match row without a [symbol] tag is in the same symbol as the match row just above it in that file; every file's first row is tagged, [-] meaning no symbol.
-- Every call is a full round trip, so pack each call with every lookup you can already name. The usual turn is one compresso_grep call carrying both: the names the last result raised (patterns: up to 8, each a string or {\"pattern\", \"path\"} to search only that path) and the lines it showed you need to read (ranges, from any files). Never send a read alone and a search alone in consecutive turns when they could have gone together. Use compresso_read only when there is nothing to search, and then pass every range you need in one call. Example, one call, three lookups: {\"patterns\": [\"parseConfig\", {\"pattern\": \"func NewServer\", \"path\": \"internal/server\"}], \"ranges\": [{\"path\": \"cmd/main.go\", \"start_line\": 1, \"end_line\": 40}], \"context_lines\": 2}. Its result has one # section per pattern, then one @@ section per range.
+- Every call is a full round trip, so pack each call with every lookup you can already name. The usual turn is one compresso_grep call carrying both: the names the last result raised (patterns: up to 8, each a string or {\"pattern\", \"path\"} to search only that path) and the lines it showed you need to read (ranges, from any files). Never send a read alone and a search alone in consecutive turns when they could have gone together. Use compresso_read only when there is nothing to search, and then pass every range you need in one call. Example, one call, three lookups: {\"patterns\": [\"retry_limit\", {\"pattern\": \"RetryPolicy\", \"path\": \"src/net\"}], \"ranges\": [{\"path\": \"config/defaults.toml\", \"start_line\": 1, \"end_line\": 40}], \"context_lines\": 2}. Its result has one # section per pattern, then one @@ section per range.
 - Send lookups that do not depend on each other's results together in one message: one packed call rather than several single ones; for a task with several parts, search for several parts at once instead of one part per turn.
 - Read exists only so Edit and Write can work: call Read on a file immediately before you edit it, never to explore.
 - If a Compresso tool reports that the repository is not indexed, tell the user to run `compresso index` instead of falling back to other search.
@@ -58,7 +58,7 @@ const INSTRUCTIONS: &str = "You are an exploration-first coding agent for this r
 const EDIT_TOOL: &str = "compresso_edit";
 /// Instructions added only when the agent is granted the edit tool.
 const EDIT_INSTRUCTIONS: &str = "
-- Make multi-site edits and renames with compresso_edit, not shell text substitution. A rename is done only when its report shows 0 remaining whole matches and is not marked incomplete (complete: true); check the substring and adjacent matches and skipped files it lists; a rename scoped by path is done only when 0 whole matches also remain outside its scope, or you mean to leave them (it is then marked incomplete for that reason alone). Use dry_run to preview a diff.
+- Make multi-site edits and renames with compresso_edit, not shell text substitution. A rename is done only when its report shows 0 remaining whole matches and is not marked incomplete (complete: true); check the substring and adjacent matches and skipped files it lists; a rename scoped by path is done only when 0 whole matches also remain outside its scope, or you mean to leave them (it is then marked incomplete for that reason alone); files outside the scope that were not searched do not make it incomplete; grep the old name there once if it matters, then stop. Use dry_run to preview a diff.
 - If compresso_edit reports tool_unavailable, ask the user to run `compresso integrations install claude-code --edits` so the server entry enables it.";
 
 /// Reversible adapter for the Claude Code exploration agent file.
@@ -547,7 +547,7 @@ mod tests {
     fn test_instructions_show_one_packed_call_with_three_lookups() {
         assert!(INSTRUCTIONS.contains("pack each call with every lookup you can already name"));
         assert!(INSTRUCTIONS.contains(
-            r#"{"patterns": ["parseConfig", {"pattern": "func NewServer", "path": "internal/server"}], "ranges": [{"path": "cmd/main.go", "start_line": 1, "end_line": 40}], "context_lines": 2}"#
+            r#"{"patterns": ["retry_limit", {"pattern": "RetryPolicy", "path": "src/net"}], "ranges": [{"path": "config/defaults.toml", "start_line": 1, "end_line": 40}], "context_lines": 2}"#
         ));
         assert!(INSTRUCTIONS.contains("one call, three lookups"));
     }
@@ -585,6 +585,7 @@ mod tests {
         assert!(text.contains("0 remaining whole matches"));
         // E17-36 (D101): a scoped rename also counts matches outside its scope.
         assert!(text.contains("a rename scoped by path is done only when 0 whole matches also remain outside its scope, or you mean to leave them"));
+        assert!(text.contains("files outside the scope that were not searched do not make it incomplete; grep the old name there once if it matters, then stop"));
         assert!(is_compresso_agent(&text));
         // Either rendering verifies, since verify takes no --edits flag.
         let scope = Scope::Project(harness.project.clone());

@@ -401,8 +401,12 @@ pub fn report_payload(
                         locations_value(&rename.outside_whole),
                     );
                     object.insert(
-                        "outside_scope_searched".to_owned(),
-                        json!(rename.outside_searched),
+                        "outside_scope_unsearched_total".to_owned(),
+                        json!(rename.outside_unsearched_total),
+                    );
+                    object.insert(
+                        "outside_scope_unsearched".to_owned(),
+                        json!(rename.outside_unsearched),
                     );
                 }
                 object.insert("complete".to_owned(), json!(rename.complete));
@@ -488,6 +492,7 @@ fn longest_list(payload: &Value) -> Option<String> {
             "remaining_adjacent",
             "remaining_whole",
             "outside_scope_whole",
+            "outside_scope_unsearched",
             "files_skipped",
             "files",
         ] {
