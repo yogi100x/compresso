@@ -464,12 +464,50 @@ pub fn fit(
             list.truncate(list.len() / 2);
         }
     }
-    // Still too long (very many files): keep only the totals.
+    // Still too long (many files or operations): keep only the totals,
+    // first per operation, then for the call as a whole.
     payload["truncated"] = Value::Bool(true);
     payload["diff"] = Value::Null;
     if let Some(files) = payload["files"].as_array_mut() {
         files.clear();
     }
+    if let Some(operations) = payload["operations"].as_array_mut() {
+        for operation in operations.iter_mut() {
+            if let Some(object) = operation.as_object_mut() {
+                object.retain(|key, _| {
+                    matches!(
+                        key.as_str(),
+                        "op" | "sites"
+                            | "old"
+                            | "new"
+                            | "path"
+                            | "remaining_whole_total"
+                            | "remaining_substring_total"
+                    )
+                });
+            }
+        }
+    }
     let rendered = render(&payload, text);
-    (payload, rendered)
+    if counter.count(&rendered) <= max_tokens {
+        return (payload, rendered);
+    }
+    if let Some(operations) = payload["operations"].as_array_mut() {
+        operations.clear();
+    }
+    let rendered = render(&payload, text);
+    if !text || counter.count(&rendered) <= max_tokens {
+        return (payload, rendered);
+    }
+    // Text only: the longest whole-line prefix that fits, with the notice.
+    let notice = "[report cut to max_tokens; totals are exact]\n";
+    let mut kept = String::new();
+    for line in rendered.split_inclusive('\n') {
+        if counter.count(&format!("{kept}{line}{notice}")) > max_tokens {
+            break;
+        }
+        kept.push_str(line);
+    }
+    kept.push_str(notice);
+    (payload, kept)
 }

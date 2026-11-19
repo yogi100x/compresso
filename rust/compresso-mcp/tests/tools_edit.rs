@@ -471,3 +471,52 @@ fn test_lean_instructions_name_the_edit_rule_only_when_it_is_served() {
         Some("compresso_edit")
     );
 }
+
+#[tokio::test]
+async fn test_the_report_cap_holds_for_a_full_batch_of_operations() {
+    let fixture = Fixture::new();
+    let mut source = String::new();
+    for index in 0..32 {
+        source.push_str(&format!(
+            "pub const A_RATHER_LONG_CONFIGURATION_VALUE_NAME_{index:02}: u32 = 0;\n"
+        ));
+    }
+    fs::write(fixture.root.join("src/values.rs"), &source).expect("values");
+    Indexer::new(&fixture.store, counter_for(TokenProvider::OpenAiO200k))
+        .index(&fixture.root, |_| {})
+        .expect("reindex");
+    let counter = counter_for(TokenProvider::OpenAiO200k);
+    for (profile, offset) in [(McpToolProfile::Full, 0), (McpToolProfile::Lean, 16)] {
+        let operations = (offset..offset + 16)
+            .map(|index| {
+                json!({
+                    "op": "replace",
+                    "path": "src/values.rs",
+                    "old": format!("A_RATHER_LONG_CONFIGURATION_VALUE_NAME_{index:02}: u32 = 0"),
+                    "new": format!("A_RATHER_LONG_CONFIGURATION_VALUE_NAME_{index:02}: u32 = 1")
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut harness = Harness::start(&fixture, fixture.options(profile, true)).await;
+        let (text, is_error) = harness
+            .call(
+                "compresso_edit",
+                &json!({ "operations": operations, "max_tokens": 300 }),
+            )
+            .await;
+        assert!(!is_error, "{text}");
+        assert!(counter.count(&text) <= 300, "{profile:?}: {text}");
+        if profile == McpToolProfile::Full {
+            let report: Value = serde_json::from_str(&text).expect("JSON");
+            assert_eq!(report["truncated"], true);
+            assert_eq!(report["sites_total"], 16);
+        } else {
+            assert!(text.starts_with("edited 16 site(s) in 1 file(s)"), "{text}");
+        }
+        harness.close().await;
+    }
+    assert_eq!(
+        fixture.text("src/values.rs").matches("u32 = 1;").count(),
+        32
+    );
+}
