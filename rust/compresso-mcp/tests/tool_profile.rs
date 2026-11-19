@@ -336,6 +336,26 @@ fn test_lean_descriptions_steer_toward_grep_hits_unfold_and_narrow_reads() {
     assert!(read.contains("80 lines per range"), "{read}");
 }
 
+/// E17-33 (D98): the lean grep schema states the defaults the lean profile
+/// applies; the full schema keeps its own.
+#[test]
+fn test_lean_grep_schema_states_the_defaults_that_apply() {
+    let grep_defaults = |profile| {
+        let (tools, _) = advertised_surface(profile, false);
+        let grep = tools
+            .into_iter()
+            .find(|tool| tool.name == "compresso_grep")
+            .expect("grep served");
+        let properties = grep.input_schema["properties"].clone();
+        (
+            properties["max_matches_per_file"]["default"].clone(),
+            properties["max_tokens"]["default"].clone(),
+        )
+    };
+    assert_eq!(grep_defaults(McpToolProfile::Lean), (json!(3), json!(1000)));
+    assert_eq!(grep_defaults(McpToolProfile::Full), (json!(5), json!(1500)));
+}
+
 /// The fixed per-session cost of a profile's default surface: recall and the
 /// edit tool are separate operator opt-ins and are measured separately.
 fn surface_tokens(profile: McpToolProfile, provider: TokenProvider) -> usize {

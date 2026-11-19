@@ -166,6 +166,20 @@ pub(crate) fn lean_tools(tools: Vec<Tool>) -> Vec<Tool> {
             let mut schema = (*tool.input_schema).clone();
             if let Some(Value::Object(properties)) = schema.get_mut("properties") {
                 properties.remove("root");
+                if lean.name == "compresso_grep" {
+                    // The lean profile's grep defaults (E17-33, D98).
+                    for (key, default) in [
+                        (
+                            "max_matches_per_file",
+                            crate::tools::atlas_grep::LEAN_DEFAULT_MAX_MATCHES_PER_FILE,
+                        ),
+                        ("max_tokens", crate::tools::atlas_grep::LEAN_DEFAULT_TOKENS),
+                    ] {
+                        if let Some(Value::Object(property)) = properties.get_mut(key) {
+                            property.insert("default".to_owned(), default.into());
+                        }
+                    }
+                }
             }
             tool.input_schema = std::sync::Arc::new(schema);
             Some(tool)

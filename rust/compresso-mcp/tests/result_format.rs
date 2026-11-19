@@ -1043,4 +1043,51 @@ async fn test_text_grep_lists_fewer_lines_by_default_and_keeps_requested_context
         .count();
     assert_eq!(rows, 3, "{text}");
     harness.close().await;
+
+    // The lower defaults belong to the lean profile, whose schema states
+    // them; the full profile keeps its advertised defaults in either form.
+    let mut harness = Harness::start(
+        &fixture,
+        options_with(&fixture, McpToolProfile::Full, McpResultFormat::Text),
+    )
+    .await;
+    let (text, _) = harness
+        .call("compresso_grep", &json!({ "pattern": "budget" }))
+        .await;
+    let rows = text
+        .lines()
+        .filter(|line| {
+            line.split_once(' ')
+                .is_some_and(|(number, _)| number.parse::<u32>().is_ok())
+        })
+        .count();
+    assert_eq!(rows, 5, "{text}");
+    harness.close().await;
+}
+
+const SWAP_RS: &str = "// swap first\npub fn swap(pair: [u8; 2]) -> [u8; 2] {\n    let swapped = [pair[1], pair[0]];\n    [swapped[0], swapped[1]] // swap back\n}\n";
+
+#[tokio::test]
+async fn test_text_grep_rows_are_unambiguous_at_a_block_start_and_before_a_bracket() {
+    let fixture = Fixture::new();
+    write_file(&fixture.root, "src/swap.rs", SWAP_RS);
+    Indexer::new(&fixture.store, counter_for(TokenProvider::OpenAiO200k))
+        .index(&fixture.root, |_| {})
+        .expect("fixture reindexes");
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, _) = harness
+        .call(
+            "compresso_grep",
+            &json!({ "pattern": "swap", "path": "src/swap.rs", "max_matches_per_file": 20 }),
+        )
+        .await;
+    // A first row without a symbol says so; an untagged row always shares
+    // the row above; a snippet starting with `[` keeps its tag.
+    assert!(
+        text.contains(
+            "src/swap.rs (4)\n1 [-] // swap first\n2 [def swap] pub fn swap(pair: [u8; 2]) -> [u8; 2] {\n3 let swapped = [pair[1], pair[0]];\n4 [swap] [swapped[0], swapped[1]] // swap back\n"
+        ),
+        "{text}"
+    );
+    harness.close().await;
 }

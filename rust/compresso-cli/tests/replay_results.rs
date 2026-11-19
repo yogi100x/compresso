@@ -25,7 +25,35 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use compresso_core::suppress_console_window;
 use serde_json::{Value, json};
+
+/// Points a spawned binary at an isolated home on every platform (the
+/// store lives under `HOME`/XDG on Unix and `APPDATA`/`LOCALAPPDATA` on
+/// Windows), as the other CLI process tests do.
+fn isolate(command: &mut Command, home: &Path) {
+    command
+        .env("HOME", home)
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("APPDATA", home.join("appdata"))
+        .env("LOCALAPPDATA", home.join("localappdata"))
+        .env_remove("COMPRESSO_LAUNCHER_PATH");
+}
+
+/// Keeps a spawned binary from opening a console window on Windows.
+fn without_console(command: &mut Command) {
+    let applied = suppress_console_window(|flags| {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt as _;
+            command.creation_flags(flags);
+        }
+        #[cfg(not(windows))]
+        let _ = (flags, &command);
+    });
+    assert_eq!(applied, cfg!(windows));
+}
 
 /// One recorded call.
 #[derive(Clone, Debug, PartialEq)]
@@ -114,8 +142,8 @@ fn summary(totals: &BTreeMap<String, ToolTotals>) -> Value {
 struct Replay<'a> {
     bin: &'a Path,
     root: &'a Path,
-    /// Overrides `HOME` (and the XDG data and config homes beneath it) for
-    /// the server; `None` inherits the caller's environment.
+    /// Isolates the server's home (see [`isolate`]); `None` inherits the
+    /// caller's environment.
     home: Option<&'a Path>,
     tools: &'a str,
     results: Option<&'a str>,
@@ -134,11 +162,9 @@ fn replay(options: &Replay<'_>, calls: &[Call]) -> Result<(Vec<String>, Value), 
         command.args(["--results", results]);
     }
     if let Some(home) = options.home {
-        command
-            .env("HOME", home)
-            .env("XDG_DATA_HOME", home.join("xdg-data"))
-            .env("XDG_CONFIG_HOME", home.join("xdg-config"));
+        isolate(&mut command, home);
     }
+    without_console(&mut command);
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -273,12 +299,12 @@ fn test_replay_measures_both_forms_against_the_built_binary() {
         .collect::<String>();
     fs::write(root.join("src/long.rs"), long).expect("fixture written");
     let bin = PathBuf::from(env!("CARGO_BIN_EXE_compresso"));
-    let status = Command::new(&bin)
+    let mut index = Command::new(&bin);
+    isolate(&mut index, &home);
+    without_console(&mut index);
+    let status = index
         .args(["index", "."])
         .current_dir(&root)
-        .env("HOME", &home)
-        .env("XDG_DATA_HOME", home.join("xdg-data"))
-        .env("XDG_CONFIG_HOME", home.join("xdg-config"))
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
