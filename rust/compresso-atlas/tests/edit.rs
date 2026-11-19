@@ -483,6 +483,82 @@ fn test_secret_gitignored_and_unindexed_paths_are_refused() {
 }
 
 #[test]
+fn test_unscoped_rename_never_reaches_a_worktree_copy_excluded_by_info_exclude() {
+    let fixture = Fixture::new(&[
+        (".git/HEAD", b"ref: refs/heads/main\n"),
+        (".git/info/exclude", b"**/.claude/worktrees/\n/trees/\n"),
+        ("src/lib.rs", b"fn shared_name() {}\n"),
+        // Under `.claude` the control-file denylist already refused a write;
+        // elsewhere only the exclude rule keeps the copy out of reach.
+        (
+            ".claude/worktrees/other/src/lib.rs",
+            b"fn shared_name() {}\n",
+        ),
+        ("trees/other/src/lib.rs", b"fn shared_name() {}\n"),
+    ]);
+    let report = fixture
+        .apply(vec![rename("shared_name", "renamed", None, None)])
+        .expect("rename applies");
+    assert_eq!(report.operations[0].files, ["src/lib.rs"]);
+    for copy in [
+        ".claude/worktrees/other/src/lib.rs",
+        "trees/other/src/lib.rs",
+    ] {
+        assert_eq!(
+            fixture.text(copy),
+            "fn shared_name() {}\n",
+            "another session's working tree was rewritten: {copy}"
+        );
+    }
+}
+
+#[test]
+fn test_unscoped_rename_never_reaches_a_nested_linked_worktree() {
+    let fixture = Fixture::new(&[
+        (".git/HEAD", b"ref: refs/heads/main\n"),
+        ("src/lib.rs", b"fn shared_name() {}\n"),
+        ("copies/other/.git", b"gitdir: ../../.git/worktrees/other\n"),
+        ("copies/other/src/lib.rs", b"fn shared_name() {}\n"),
+    ]);
+    let report = fixture
+        .apply(vec![rename("shared_name", "renamed", None, None)])
+        .expect("rename applies");
+    assert_eq!(report.operations[0].files, ["src/lib.rs"]);
+    assert_eq!(
+        fixture.text("copies/other/src/lib.rs"),
+        "fn shared_name() {}\n"
+    );
+    assert_eq!(
+        refusal(
+            fixture
+                .apply(vec![replace("copies/other/src/lib.rs", "shared", "x", 1)])
+                .unwrap_err()
+        ),
+        Refusal::Excluded
+    );
+}
+
+#[test]
+fn test_a_stale_row_for_a_newly_excluded_file_is_refused() {
+    let fixture = Fixture::new(&[
+        (".git/HEAD", b"ref: refs/heads/main\n"),
+        ("src/lib.rs", b"fn a() {}\n"),
+        ("copy/lib.rs", b"fn a() {}\n"),
+    ]);
+    // The rule arrives after indexing; the row for copy/lib.rs is stale.
+    write(&fixture.root, ".git/info/exclude", b"copy/\n");
+    assert_eq!(
+        refusal(
+            fixture
+                .apply(vec![replace("copy/lib.rs", "a", "b", 1)])
+                .unwrap_err()
+        ),
+        Refusal::Excluded
+    );
+    assert_eq!(fixture.text("copy/lib.rs"), "fn a() {}\n");
+}
+
+#[test]
 fn test_protected_directories_are_refused() {
     let fixture = Fixture::new(&[("store/notes.txt", b"x\n")]);
     let request = EditRequest {

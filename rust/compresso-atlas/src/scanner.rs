@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use compresso_store::{RepoId, Store, StoreError};
-use ignore::gitignore::Gitignore;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use ignore::{DirEntry, WalkBuilder, WalkState};
 
 use crate::concurrency::Concurrency;
@@ -416,6 +416,7 @@ fn metadata_classification_walk(
     let Some(matcher) = matcher_builder.build_matchers().into_iter().next() else {
         return Err(ScanError::IgnoreMatcherUnavailable);
     };
+    let exclude = repository_exclude(root);
     let matcher = Arc::new(Mutex::new(matcher));
     let ignored = Arc::new(Mutex::new(BTreeSet::<PathBuf>::new()));
     let matcher_errors = Arc::new(Mutex::new(Vec::<ignore::Error>::new()));
@@ -470,7 +471,11 @@ fn metadata_classification_walk(
                 return false;
             }
         };
-        if matched.is_ignore() {
+        // `.gitignore` files outrank the repository's `info/exclude`, as in git.
+        let excluded = matched.is_ignore()
+            || (matched.is_none() && exclude.matched(relative, file_type.is_dir()).is_ignore())
+            || (file_type.is_dir() && is_nested_linked_worktree(entry.path()));
+        if excluded {
             if let Ok(mut ignored) = ignored_for_filter.lock() {
                 ignored.insert(entry.path().to_path_buf());
             } else {
@@ -606,10 +611,13 @@ fn configure_ignore_filters(builder: &mut WalkBuilder, respect_gitignore: bool) 
 /// Whether the scanner's own exclusion rules skip `relative` under `root`.
 ///
 /// This applies the same policy a scan does to one path, without walking the
-/// tree: a secret-pattern name, a built-in excluded directory, or a match in
-/// a `.gitignore` inside the repository. A direct read can use it to refuse
-/// content the index was never allowed to hold. Like the scanner, it ignores
-/// rules outside the repository (global and parent ignore files).
+/// tree: a secret-pattern name, a built-in excluded directory or `.git`
+/// entry, a match in a `.gitignore` inside the repository or in the
+/// repository's own `info/exclude`, or a directory that is a nested linked
+/// worktree. A direct read or an edit can use it to refuse content the index
+/// was never allowed to hold, even while a stale index row still names it.
+/// Like the scanner, it ignores global and user ignore rules and ignore files
+/// above the root.
 pub fn is_scanner_excluded(root: &Path, relative: &Path) -> bool {
     if is_excluded_by_policy(root, relative) {
         return true;
@@ -629,7 +637,7 @@ pub fn is_scanner_excluded(root: &Path, relative: &Path) -> bool {
 }
 
 fn is_excluded_by_policy(root: &Path, relative: &Path) -> bool {
-    if is_secret_path(relative) {
+    if is_secret_path(relative) || relative.file_name() == Some(OsStr::new(".git")) {
         return true;
     }
     let Some(parent) = relative.parent() else {
@@ -648,16 +656,25 @@ fn is_excluded_by_policy(root: &Path, relative: &Path) -> bool {
         .filter(|directory| !directory.as_os_str().is_empty())
         .collect::<Vec<_>>();
     directories.reverse();
-    directories
-        .into_iter()
-        .any(|directory| is_gitignored(root, directory, true))
-        || is_gitignored(root, relative, false)
+    let exclude = repository_exclude(root);
+    directories.into_iter().any(|directory| {
+        is_ignored(root, &exclude, directory, true)
+            || is_nested_linked_worktree(&root.join(directory))
+    }) || is_ignored(root, &exclude, relative, false)
 }
 
-/// Whether the `.gitignore` files above `relative` ignore it. The deepest
-/// file with a matching rule decides, so a nested file can re-include a path
-/// an outer one ignores.
-fn is_gitignored(root: &Path, relative: &Path, is_directory: bool) -> bool {
+/// Whether the `.gitignore` files above `relative` or, when none of them
+/// decides, the repository's `info/exclude` ignore it.
+fn is_ignored(root: &Path, exclude: &Gitignore, relative: &Path, is_directory: bool) -> bool {
+    gitignore_decision(root, relative, is_directory)
+        .unwrap_or_else(|| exclude.matched(relative, is_directory).is_ignore())
+}
+
+/// The `.gitignore` decision for `relative`: `Some(true)` ignored,
+/// `Some(false)` re-included, `None` when no rule matches. The deepest file
+/// with a matching rule decides, so a nested file can re-include a path an
+/// outer one ignores.
+fn gitignore_decision(root: &Path, relative: &Path, is_directory: bool) -> Option<bool> {
     for directory in relative.ancestors().skip(1) {
         let ignore_file = root.join(directory).join(".gitignore");
         if !ignore_file.is_file() {
@@ -669,13 +686,13 @@ fn is_gitignored(root: &Path, relative: &Path, is_directory: bool) -> bool {
         };
         let matched = matcher.matched(within, is_directory);
         if matched.is_ignore() {
-            return true;
+            return Some(true);
         }
         if matched.is_whitelist() {
-            return false;
+            return Some(false);
         }
     }
-    false
+    None
 }
 
 fn is_builtin_excluded_name(name: &OsStr) -> bool {
@@ -685,9 +702,135 @@ fn is_builtin_excluded_name(name: &OsStr) -> bool {
         || name == OsStr::new(".git")
 }
 
+/// A built-in excluded directory, or a `.git` entry of any type: git never
+/// tracks a path named `.git`, and a `.git` file only points at git metadata.
 fn is_builtin_excluded_directory(entry: &DirEntry) -> bool {
-    entry.file_type().is_some_and(|kind| kind.is_dir())
-        && is_builtin_excluded_name(entry.file_name())
+    entry.file_name() == OsStr::new(".git")
+        || (entry.file_type().is_some_and(|kind| kind.is_dir())
+            && is_builtin_excluded_name(entry.file_name()))
+}
+
+/// Largest `.git` pointer or `commondir` file the scanner reads.
+const GIT_POINTER_MAX_BYTES: u64 = 4 * 1024;
+/// Largest `info/exclude` file the scanner reads; a larger one is not applied.
+const GIT_EXCLUDE_MAX_BYTES: u64 = 1024 * 1024;
+
+/// The rules of the indexed repository's own `info/exclude`, rooted at
+/// `root`, or no rules when there is none or it cannot be read safely.
+///
+/// For a `.git` directory this is `<root>/.git/info/exclude`. For a `.git`
+/// file (a linked worktree or a submodule) it follows the `gitdir:` pointer
+/// and, when present, that directory's `commondir` pointer, exactly as git
+/// finds its common directory. Only those two pointer files and the exclude
+/// file are read; each must be a regular file within its size bound. Nothing
+/// above `root` is searched and no global or user configuration is read.
+fn repository_exclude(root: &Path) -> Gitignore {
+    let mut builder = GitignoreBuilder::new(root);
+    let Some(bytes) = git_common_dir(root).and_then(|common| {
+        read_bounded(&common.join("info").join("exclude"), GIT_EXCLUDE_MAX_BYTES)
+    }) else {
+        return Gitignore::empty();
+    };
+    for line in String::from_utf8_lossy(&bytes).lines() {
+        // Git skips a pattern it cannot parse; so does the scanner.
+        let _ = builder.add_line(None, line);
+    }
+    builder.build().unwrap_or_else(|_| Gitignore::empty())
+}
+
+fn git_common_dir(root: &Path) -> Option<PathBuf> {
+    let dot_git = root.join(".git");
+    let metadata = fs::symlink_metadata(&dot_git).ok()?;
+    if metadata.is_dir() {
+        return Some(dot_git);
+    }
+    let git_dir = resolve_pointer(root, &gitdir_pointer(&dot_git)?)?;
+    let commondir = git_dir.join("commondir");
+    if fs::symlink_metadata(&commondir).is_err() {
+        // A submodule or a separate git directory is its own common directory.
+        return Some(git_dir);
+    }
+    let bytes = read_bounded(&commondir, GIT_POINTER_MAX_BYTES)?;
+    resolve_pointer(&git_dir, first_line(&bytes)?)
+}
+
+/// Whether `directory` is the working tree of a linked worktree: its `.git`
+/// is a regular file whose `gitdir:` pointer names `<repo>/.git/worktrees/<name>`.
+///
+/// The decision is lexical: the named directory is never opened. A missing,
+/// oversized, or malformed pointer, and a submodule (whose git directory
+/// lives under `.git/modules/`), are not linked worktrees.
+fn is_nested_linked_worktree(directory: &Path) -> bool {
+    gitdir_pointer(&directory.join(".git")).is_some_and(|target| is_worktree_pointer(&target))
+}
+
+fn is_worktree_pointer(target: &str) -> bool {
+    let components = target
+        .split(['/', '\\'])
+        .filter(|component| !component.is_empty() && *component != ".")
+        .collect::<Vec<_>>();
+    let [.., dot_git, worktrees, name] = components.as_slice() else {
+        return false;
+    };
+    *dot_git == ".git"
+        && *worktrees == "worktrees"
+        && *name != ".."
+        && !components
+            .windows(2)
+            .any(|pair| pair[0] == ".git" && pair[1] == "modules")
+}
+
+/// The target of a `gitdir: <path>` file, read within the pointer bound.
+fn gitdir_pointer(dot_git: &Path) -> Option<String> {
+    let bytes = read_bounded(dot_git, GIT_POINTER_MAX_BYTES)?;
+    let target = first_line(&bytes)?.strip_prefix("gitdir: ")?.trim_end();
+    (!target.is_empty()).then(|| target.to_owned())
+}
+
+/// The first line of a pointer file without its line ending, if it is
+/// non-empty UTF-8 without NUL.
+fn first_line(bytes: &[u8]) -> Option<&str> {
+    let line = std::str::from_utf8(bytes).ok()?.lines().next()?;
+    (!line.is_empty() && !line.contains('\0')).then_some(line)
+}
+
+/// Resolves a pointer against `base` lexically, so `..` works the same on a
+/// verbatim Windows path as elsewhere.
+fn resolve_pointer(base: &Path, target: &str) -> Option<PathBuf> {
+    let target = Path::new(target);
+    let mut resolved = if target.is_absolute() {
+        PathBuf::new()
+    } else {
+        base.to_path_buf()
+    };
+    for component in target.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => resolved.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !resolved.pop() {
+                    return None;
+                }
+            }
+            Component::Normal(name) => resolved.push(name),
+        }
+    }
+    Some(resolved)
+}
+
+/// Reads a regular, non-symlink file of at most `max_bytes`.
+fn read_bounded(path: &Path, max_bytes: u64) -> Option<Vec<u8>> {
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > max_bytes {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    File::open(path)
+        .ok()?
+        .take(max_bytes + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() as u64 <= max_bytes).then_some(bytes)
 }
 
 /// Whether `relative` names a temporary file the edit tool writes beside an
@@ -932,6 +1075,55 @@ mod tests {
         assert!(!excluded("scratch.tmp"));
         assert!(!excluded("src/lib.rs"));
         assert!(!excluded("target"));
+    }
+
+    #[test]
+    fn test_worktree_pointer_classification_is_lexical() {
+        for linked in [
+            "/home/u/repo/.git/worktrees/x",
+            "../../.git/worktrees/x",
+            "C:\\work\\repo\\.git\\worktrees\\x",
+            "C:/work/repo/.git/worktrees/x/",
+        ] {
+            assert!(is_worktree_pointer(linked), "{linked}");
+        }
+        for other in [
+            "../.git/modules/sub",
+            "../.git/modules/a/.git/worktrees/b",
+            "/repo/.git/worktrees",
+            "/repo/.git/worktrees/..",
+            "/repo/.git",
+            "worktrees/x",
+        ] {
+            assert!(!is_worktree_pointer(other), "{other}");
+        }
+    }
+
+    #[test]
+    fn test_oversized_or_unreadable_exclude_sources_fail_open() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let root = directory.path();
+        fs::create_dir_all(root.join(".git/info")).expect("git dir");
+        let mut oversized = "a.log\n".repeat(200_000);
+        oversized.push_str("*.rs\n");
+        fs::write(root.join(".git/info/exclude"), oversized).expect("exclude written");
+        assert!(!is_scanner_excluded(root, Path::new("a.log")));
+
+        // A worktree pointer whose commondir is oversized reads no exclude.
+        let worktree = root.join("wt");
+        fs::create_dir_all(root.join("main/.git/worktrees/wt")).expect("git dir");
+        fs::create_dir_all(root.join("main/.git/info")).expect("info");
+        fs::write(root.join("main/.git/info/exclude"), "*.log\n").expect("exclude");
+        fs::write(
+            root.join("main/.git/worktrees/wt/commondir"),
+            "../".repeat(2_000),
+        )
+        .expect("commondir");
+        fs::create_dir_all(&worktree).expect("worktree");
+        fs::write(worktree.join(".git"), "gitdir: ../main/.git/worktrees/wt\n").expect("pointer");
+        assert!(!is_scanner_excluded(&worktree, Path::new("a.log")));
+        fs::write(root.join("main/.git/worktrees/wt/commondir"), "../..\n").expect("commondir");
+        assert!(is_scanner_excluded(&worktree, Path::new("a.log")));
     }
 
     #[test]
