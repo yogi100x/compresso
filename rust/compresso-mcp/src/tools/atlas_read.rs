@@ -9,12 +9,14 @@ use rmcp::model::JsonObject;
 use serde_json::{Value, json};
 use std::path::Path;
 
+use super::Form;
 use super::common::{
-    MAX_TOKENS, MIN_TOKENS, REINDEX_HINT, ToolFailure, ToolResult, cap_values, checked_arguments,
+    MAX_TOKENS, MIN_TOKENS, REINDEX_HINT, ToolFailure, ToolResult, checked_arguments,
     map_atlas_error, navigation_counter, optional_bool, optional_string, optional_u32,
     optional_usize, required_string, resolve_repository, symbol_kind_name, token_budget,
-    validate_repo_path,
+    validate_repo_path, with_budget,
 };
+use super::text;
 
 const SEARCH_DEFAULT_LIMIT: usize = 8;
 const SEARCH_DEFAULT_TOKENS: usize = 500;
@@ -39,11 +41,12 @@ pub(crate) fn dispatch(
     repository_root: Option<&Path>,
     name: &str,
     arguments: Option<JsonObject>,
+    form: Form,
 ) -> ToolResult {
     match name {
-        "compresso_search" => search_tool(store, repository_root, arguments),
-        "compresso_read" => read_tool(store, repository_root, arguments),
-        "compresso_context" => context_tool(store, repository_root, arguments),
+        "compresso_search" => search_tool(store, repository_root, arguments, form),
+        "compresso_read" => read_tool(store, repository_root, arguments, form),
+        "compresso_context" => context_tool(store, repository_root, arguments, form),
         _ => Err(ToolFailure::internal()),
     }
 }
@@ -52,6 +55,7 @@ fn search_tool(
     store: &Store,
     repository_root: Option<&Path>,
     arguments: Option<JsonObject>,
+    form: Form,
 ) -> ToolResult {
     let mut arguments =
         checked_arguments(arguments, &["root", "query", "path", "limit", "max_tokens"])?;
@@ -75,7 +79,7 @@ fn search_tool(
     .map_err(map_atlas_error)?;
     let hits_total = report.hits.len();
     let counter = navigation_counter();
-    let capped = cap_search_hits(&report.hits, max_tokens, counter);
+    let capped = cap_search_hits(&report.hits, max_tokens, counter, form);
     let (hits, tokens_used, truncated) = (capped.hits, capped.tokens_used, capped.truncated);
     let diagnostics = report
         .diagnostics
@@ -91,7 +95,7 @@ fn search_tool(
     let stale = repository_stale(store, repository.id).map_err(map_atlas_error)?;
     let operation_id = operation_identity().id;
 
-    Ok(json!({
+    let payload = json!({
         "schema_version": 1,
         "operation_id": operation_id,
         "query": query,
@@ -111,13 +115,15 @@ fn search_tool(
         "tokens_used": tokens_used,
         "token_provider": counter.provider(),
         "truncated": truncated
-    }))
+    });
+    Ok(with_budget(payload, max_tokens))
 }
 
 fn read_tool(
     store: &Store,
     repository_root: Option<&Path>,
     arguments: Option<JsonObject>,
+    form: Form,
 ) -> ToolResult {
     let mut arguments = checked_arguments(
         arguments,
@@ -132,7 +138,7 @@ fn read_tool(
         ],
     )?;
     if let Some(ranges) = arguments.remove("ranges") {
-        return read_ranges_tool(store, repository_root, arguments, ranges);
+        return read_ranges_tool(store, repository_root, arguments, ranges, form);
     }
     let root = optional_string(&mut arguments, "root", false)?;
     let path = required_string(&mut arguments, "path")?;
@@ -166,11 +172,18 @@ fn read_tool(
             range,
             max_tokens,
             counter,
-        );
+        )
+        .map(|payload| with_budget(payload, max_tokens));
     }
 
-    let result = read_bounded(&repository.root, &path, range, max_tokens, counter)
-        .map_err(map_atlas_error)?;
+    let result = read_bounded(
+        &repository.root,
+        &path,
+        range,
+        form.content_budget(max_tokens),
+        counter,
+    )
+    .map_err(map_atlas_error)?;
     let operation_id = operation_identity().id;
     let mut payload = json!({
         "schema_version": 1,
@@ -179,7 +192,7 @@ fn read_tool(
     if let (Some(payload), Value::Object(read)) = (payload.as_object_mut(), read_value(&result)) {
         payload.extend(read);
     }
-    Ok(payload)
+    Ok(with_budget(payload, max_tokens))
 }
 
 /// The fields of one bounded read, shared by the single and multi-range forms.
@@ -243,6 +256,7 @@ fn read_ranges_tool(
     repository_root: Option<&Path>,
     mut arguments: serde_json::Map<String, Value>,
     ranges: Value,
+    form: Form,
 ) -> ToolResult {
     for single in ["path", "start_line", "end_line"] {
         if arguments.contains_key(single) {
@@ -285,8 +299,13 @@ fn read_ranges_tool(
     let mut reads = if admitted.is_empty() {
         Vec::new()
     } else {
-        read_bounded_ranges(&repository.root, &admitted, max_tokens, counter)
-            .map_err(map_atlas_error)?
+        read_bounded_ranges(
+            &repository.root,
+            &admitted,
+            form.content_budget(max_tokens),
+            counter,
+        )
+        .map_err(map_atlas_error)?
     }
     .into_iter();
 
@@ -315,7 +334,7 @@ fn read_ranges_tool(
             }
         }
     }
-    Ok(json!({
+    let payload = json!({
         "schema_version": 1,
         "operation_id": operation_identity().id,
         "ranges": values,
@@ -323,7 +342,8 @@ fn read_ranges_tool(
         "tokens_used": tokens_used,
         "token_provider": counter.provider(),
         "truncated": truncated
-    }))
+    });
+    Ok(with_budget(payload, max_tokens))
 }
 
 type RangeArgument = (String, Option<u32>, Option<u32>);
@@ -458,6 +478,7 @@ fn context_tool(
     store: &Store,
     repository_root: Option<&Path>,
     arguments: Option<JsonObject>,
+    form: Form,
 ) -> ToolResult {
     let mut arguments = checked_arguments(arguments, &["root", "task", "max_tokens"])?;
     let root = optional_string(&mut arguments, "root", false)?;
@@ -487,6 +508,7 @@ fn context_tool(
             budget_clamped,
             expanded,
             counter,
+            form,
         )?;
         let targeted_follow_up_required =
             payload["targeted_follow_up_required"].as_bool() == Some(true);
@@ -495,7 +517,7 @@ fn context_tool(
         let files_missing = payload["evidence_coverage"]["files_included"].as_u64()
             < payload["evidence_coverage"]["files_required"].as_u64();
         if !targeted_follow_up_required || !files_missing || budget_applied == budget_ceiling {
-            return Ok(payload);
+            return Ok(with_budget(payload, budget_applied));
         }
         expanded = true;
     }
@@ -514,6 +536,7 @@ fn context_payload_for_budget(
     budget_clamped: bool,
     budget_expanded: bool,
     counter: &dyn TokenCounter,
+    form: Form,
 ) -> ToolResult {
     let mut planner_budget = budget_applied.saturating_mul(4) / 5;
     loop {
@@ -531,7 +554,12 @@ fn context_payload_for_budget(
         let telemetry = payload
             .as_object_mut()
             .and_then(|object| object.remove("_compresso_telemetry"));
-        let payload_tokens = stabilize_payload_tokens(&mut payload, counter)?;
+        // Each form is held to the applied budget as it is sent.
+        let payload_tokens = if form.is_text() {
+            text::render("compresso_context", &payload).map_or(0, |text| counter.count(&text))
+        } else {
+            stabilize_payload_tokens(&mut payload, counter)?
+        };
         if let (Some(object), Some(telemetry)) = (payload.as_object_mut(), telemetry) {
             object.insert("_compresso_telemetry".to_owned(), telemetry);
         }
@@ -571,10 +599,9 @@ fn compact_context_payload(
         "matched"
     };
     let evidence_files_required = plan.evidence_files_total;
-    let files_ready =
-        evidence_files_required > 0 && plan.evidence_files_included >= evidence_files_required;
     let concepts_ready = plan.concept_coverage_sufficient();
-    let evidence_ready = files_ready && concepts_ready;
+    let facets_ready = plan.task_facets_covered >= plan.task_facets_total;
+    let evidence_ready = plan.evidence_ready();
     let broad_follow_up_required = plan.matches_total == 0 || stale;
     let targeted_follow_up_required =
         !broad_follow_up_required && plan.matches_total > 0 && !evidence_ready;
@@ -599,6 +626,10 @@ fn compact_context_payload(
     let retrieval_note = if plan.matches_total == 0 {
         Some(
             "No indexed symbols matched the derived task queries. This is not proof that the repository contains no relevant implementation.",
+        )
+    } else if targeted_follow_up_required && !facets_ready {
+        Some(
+            "The evidence found does not cover every part of the task (see task_coverage.uncovered_facets). Answer only the covered parts from the pack and use at most two precise Compresso follow-ups naming exact identifiers for the rest; do not repeat broad retrieval.",
         )
     } else if targeted_follow_up_required && !concepts_ready {
         Some(
@@ -629,7 +660,10 @@ fn compact_context_payload(
         "task_coverage": {
             "concepts_covered": plan.task_concepts_covered,
             "concepts_total": plan.task_concepts_total,
-            "uncovered": &plan.uncovered_concepts
+            "uncovered": &plan.uncovered_concepts,
+            "facets_covered": plan.task_facets_covered,
+            "facets_total": plan.task_facets_total,
+            "uncovered_facets": &plan.uncovered_facets
         },
         "matches_total": plan.matches_total,
         "content_pack": plan.rendered,
@@ -696,12 +730,14 @@ fn cap_search_hits(
     hits: &[SearchHit],
     max_tokens: usize,
     counter: &dyn TokenCounter,
+    form: Form,
 ) -> CappedSearchHits {
     let values = hits
         .iter()
         .map(|hit| search_hit_value(&hit.path, &hit.symbol, hit.score))
         .collect::<Vec<_>>();
-    let (mut kept, mut hit_tokens, truncated) = cap_values(values, max_tokens, counter);
+    let (mut kept, mut hit_tokens, truncated) =
+        form.cap(values, max_tokens, counter, text::search_row);
     if !truncated {
         return CappedSearchHits {
             hits: kept,
@@ -712,11 +748,31 @@ fn cap_search_hits(
         };
     }
 
-    let mut locations = truncated_locations(&hits[kept.len()..], max_tokens - hit_tokens, counter);
+    let budget = form.content_budget(max_tokens);
+    let mut locations = truncated_locations(
+        &hits[kept.len()..],
+        budget.saturating_sub(hit_tokens),
+        counter,
+        form,
+    );
     if locations.0.is_empty() && kept.len() > 1 {
         kept.pop();
-        hit_tokens = counter.count(&serde_json::to_string(&kept).unwrap_or_default());
-        locations = truncated_locations(&hits[kept.len()..], max_tokens - hit_tokens, counter);
+        hit_tokens = if form.is_text() {
+            counter.count(
+                &kept
+                    .iter()
+                    .map(|hit| text::search_row(hit) + "\n")
+                    .collect::<String>(),
+            )
+        } else {
+            counter.count(&serde_json::to_string(&kept).unwrap_or_default())
+        };
+        locations = truncated_locations(
+            &hits[kept.len()..],
+            budget.saturating_sub(hit_tokens),
+            counter,
+            form,
+        );
     }
     let (truncated_hits, location_tokens) = locations;
     CappedSearchHits {
@@ -733,6 +789,7 @@ fn truncated_locations(
     dropped: &[SearchHit],
     budget: usize,
     counter: &dyn TokenCounter,
+    form: Form,
 ) -> (Vec<Value>, usize) {
     let mut locations = Vec::new();
     let mut tokens = 0;
@@ -742,7 +799,17 @@ fn truncated_locations(
             "start_line": hit.symbol.start_line,
             "end_line": hit.symbol.end_line
         }));
-        let rendered = counter.count(&serde_json::to_string(&locations).unwrap_or_default());
+        let rendered = if form.is_text() {
+            counter.count(
+                &locations
+                    .iter()
+                    .map(text::location_row)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )
+        } else {
+            counter.count(&serde_json::to_string(&locations).unwrap_or_default())
+        };
         if rendered > budget {
             locations.pop();
             break;

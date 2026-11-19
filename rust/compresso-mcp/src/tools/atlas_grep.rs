@@ -11,10 +11,12 @@ use compresso_store::Store;
 use rmcp::model::JsonObject;
 use serde_json::{Map, Value, json};
 
+use super::Form;
 use super::common::{
     REINDEX_HINT, ToolFailure, ToolResult, checked_arguments, map_atlas_error, navigation_counter,
-    optional_bool, optional_string, optional_usize, resolve_repository,
+    optional_bool, optional_string, optional_usize, resolve_repository, with_budget,
 };
+use super::text;
 
 pub(crate) const TOOL_NAME: &str = "compresso_grep";
 const DEFAULT_MAX_FILES: usize = 20;
@@ -32,6 +34,7 @@ pub(crate) fn dispatch(
     store: &Store,
     repository_root: Option<&Path>,
     arguments: Option<JsonObject>,
+    form: Form,
 ) -> ToolResult {
     let mut arguments = checked_arguments(
         arguments,
@@ -97,9 +100,14 @@ pub(crate) fn dispatch(
     loop {
         let fitted = report.fit_to_budget(budget, counter);
         let mut payload = payload(&fitted, &options, &operation_id, stale, counter);
-        let tokens = stabilize_tokens(&mut payload, counter)?;
+        // Each form is held to max_tokens as it is sent.
+        let tokens = if form.is_text() {
+            text::render(TOOL_NAME, &payload).map_or(0, |text| counter.count(&text))
+        } else {
+            stabilize_tokens(&mut payload, counter)?
+        };
         if tokens <= max_tokens {
-            return Ok(payload);
+            return Ok(with_budget(payload, max_tokens));
         }
         if budget == 0 {
             // Even with no line listed, the per-pattern totals do not fit.

@@ -340,6 +340,7 @@ dependencies = [
  "compresso-store",
  "criterion",
  "ignore",
+ "libc",
  "regex",
  "tempfile",
  "thiserror",

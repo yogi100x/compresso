@@ -686,6 +686,18 @@ fn execute_mutation(
             "--no-recall applies only to `integrations install`; uninstall removes the whole Compresso entry",
         ));
     }
+    if arguments.edits && action == MutationAction::Uninstall {
+        return Err(IntegrationCliError::new(
+            "invalid_arguments",
+            "--edits applies only to `integrations install`; uninstall removes the whole Compresso entry",
+        ));
+    }
+    if arguments.edits && arguments.client != IntegrationClientArg::ClaudeCode {
+        return Err(IntegrationCliError::new(
+            "unsupported",
+            "--edits is available for claude-code only; other clients can run `compresso mcp serve --edits` from their own configuration",
+        ));
+    }
     let requested_scope = if arguments.explore_agent {
         explore_agent_scope(arguments.project.as_deref(), &environment.cwd)?
     } else {
@@ -705,7 +717,9 @@ fn execute_mutation(
         (requested_scope, None)
     };
     let selected = if arguments.explore_agent {
-        SelectedIntegration::explore_agent(arguments.client, environment, &scope)?
+        SelectedIntegration::explore_agent(arguments.client, environment, &scope, arguments.edits)?
+    } else if arguments.edits {
+        SelectedIntegration::claude_code_with_edits(environment, &scope)?
     } else {
         SelectedIntegration::new(
             arguments.client,
@@ -1206,6 +1220,26 @@ impl SelectedIntegration {
 }
 
 impl SelectedIntegration {
+    /// The Claude Code MCP adapter writing an entry that starts
+    /// `mcp serve --edits` (E17-32, D97).
+    fn claude_code_with_edits(
+        environment: &IntegrationEnvironment,
+        scope: &Scope,
+    ) -> Result<Self, IntegrationCliError> {
+        let adapter = ClaudeCodeIntegration::new(
+            environment.home_dir.clone(),
+            ClaudeCodeDiscovery::new(environment.path_entries.clone(), None),
+        )
+        .with_edits(true);
+        let config_path = adapter.config_path(scope)?;
+        Ok(Self {
+            adapter: Box::new(adapter),
+            config_path,
+        })
+    }
+}
+
+impl SelectedIntegration {
     /// Selects the post-compaction routing-reminder hook adapter.
     fn compaction_hook(
         client: IntegrationClientArg,
@@ -1232,6 +1266,7 @@ impl SelectedIntegration {
         client: IntegrationClientArg,
         environment: &IntegrationEnvironment,
         scope: &Scope,
+        edits: bool,
     ) -> Result<Self, IntegrationCliError> {
         if client != IntegrationClientArg::ClaudeCode {
             return Err(IntegrationCliError::new(
@@ -1239,8 +1274,11 @@ impl SelectedIntegration {
                 "the exploration agent definition is a Claude Code subagent; use claude-code",
             ));
         }
-        let adapter =
-            ExploreAgentIntegration::new(environment.home_dir.clone(), explore_agent_tools());
+        let adapter = ExploreAgentIntegration::new(
+            environment.home_dir.clone(),
+            explore_agent_tools_with(edits),
+        )
+        .with_edits(edits);
         let config_path = adapter.config_path(scope)?;
         Ok(Self {
             adapter: Box::new(adapter),
@@ -1250,11 +1288,13 @@ impl SelectedIntegration {
 }
 
 /// Compresso tools the exploration agent may call: the lean allowlist without
-/// `compresso_recall`, which a server serves only with `--recall-source`.
-pub(crate) fn explore_agent_tools() -> Vec<String> {
+/// `compresso_recall`, which a server serves only with `--recall-source`, and
+/// without `compresso_edit` unless the operator opted into edits.
+pub(crate) fn explore_agent_tools_with(edits: bool) -> Vec<String> {
     compresso_mcp::lean_tool_allowlist()
         .into_iter()
         .filter(|name| *name != "compresso_recall")
+        .filter(|name| edits || *name != compresso_mcp::edit::TOOL_NAME)
         .map(str::to_owned)
         .collect()
 }
@@ -1271,7 +1311,8 @@ fn select_for_read(
 ) -> Result<(Scope, SelectedIntegration), IntegrationCliError> {
     if arguments.explore_agent {
         let scope = explore_agent_scope(arguments.project.as_deref(), &environment.cwd)?;
-        let selected = SelectedIntegration::explore_agent(arguments.client, environment, &scope)?;
+        let selected =
+            SelectedIntegration::explore_agent(arguments.client, environment, &scope, false)?;
         return Ok((scope, selected));
     }
     let scope = resolve_scope(arguments.project.as_deref(), &environment.cwd)?;

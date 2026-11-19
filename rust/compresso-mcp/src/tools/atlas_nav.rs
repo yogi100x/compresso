@@ -8,12 +8,14 @@ use rmcp::model::JsonObject;
 use serde_json::{Value, json};
 use std::path::Path;
 
+use super::Form;
 use super::common::{
-    PathState, ToolFailure, ToolResult, cap_values, checked_arguments, language_name,
-    map_atlas_error, navigation_counter, optional_bool, optional_string, optional_u32,
-    required_string, resolve_repository, symbol_kind_name, symbol_value, token_budget,
-    validate_repo_path,
+    PathState, ToolFailure, ToolResult, checked_arguments, language_name, map_atlas_error,
+    navigation_counter, optional_bool, optional_string, optional_u32, required_string,
+    resolve_repository, symbol_kind_name, symbol_value, token_budget, validate_repo_path,
+    with_budget,
 };
+use super::text;
 
 const MAP_DEFAULT_TOKENS: usize = 2_000;
 const OUTLINE_DEFAULT_TOKENS: usize = 1_500;
@@ -32,11 +34,12 @@ pub(crate) fn dispatch(
     repository_root: Option<&Path>,
     name: &str,
     arguments: Option<JsonObject>,
+    form: Form,
 ) -> ToolResult {
     match name {
-        "compresso_repo_map" => repo_map_tool(store, repository_root, arguments),
-        "compresso_outline" => outline_tool(store, repository_root, arguments),
-        "compresso_unfold" => unfold_tool(store, repository_root, arguments),
+        "compresso_repo_map" => repo_map_tool(store, repository_root, arguments, form),
+        "compresso_outline" => outline_tool(store, repository_root, arguments, form),
+        "compresso_unfold" => unfold_tool(store, repository_root, arguments, form),
         _ => Err(ToolFailure::internal()),
     }
 }
@@ -45,6 +48,7 @@ fn repo_map_tool(
     store: &Store,
     repository_root: Option<&Path>,
     arguments: Option<JsonObject>,
+    form: Form,
 ) -> ToolResult {
     let mut arguments =
         checked_arguments(arguments, &["root", "focus", "max_tokens", "cards", "path"])?;
@@ -63,6 +67,7 @@ fn repo_map_tool(
         (requested, has_path) => requested.unwrap_or(false) || has_path,
     };
     let repository = resolve_repository(store, repository_root, root.as_deref())?;
+    let content_budget = form.content_budget(max_tokens);
 
     // Cards take up to three quarters of the budget; the map keeps the rest.
     let cards = with_cards
@@ -74,13 +79,14 @@ fn repo_map_tool(
                 CardOptions {
                     path: cards_path.as_deref(),
                     max_cards: DEFAULT_MAX_CARDS,
-                    budget_tokens: max_tokens.saturating_mul(3) / 4,
+                    budget_tokens: content_budget.saturating_mul(3) / 4,
                 },
             )
         })
         .transpose()
         .map_err(map_atlas_error)?;
-    let map_budget = max_tokens.saturating_sub(cards.as_ref().map_or(0, |cards| cards.tokens_used));
+    let map_budget =
+        content_budget.saturating_sub(cards.as_ref().map_or(0, |cards| cards.tokens_used));
     let map = repo_map_focused(store, repository.id, focus.as_deref(), map_budget)
         .map_err(map_atlas_error)?;
     let stale = repository_stale(store, repository.id).map_err(map_atlas_error)?;
@@ -115,13 +121,14 @@ fn repo_map_tool(
         object.insert("cards_tokens_used".to_owned(), json!(cards.tokens_used));
         object.insert("cards_truncated".to_owned(), json!(cards.truncated));
     }
-    Ok(payload)
+    Ok(with_budget(payload, max_tokens))
 }
 
 fn outline_tool(
     store: &Store,
     repository_root: Option<&Path>,
     arguments: Option<JsonObject>,
+    form: Form,
 ) -> ToolResult {
     let mut arguments = checked_arguments(arguments, &["root", "path", "max_tokens"])?;
     let root = optional_string(&mut arguments, "root", false)?;
@@ -159,7 +166,8 @@ fn outline_tool(
         .iter()
         .map(symbol_value)
         .collect::<Vec<_>>();
-    let (symbols, tokens_used, truncated) = cap_values(all_symbols, max_tokens, counter);
+    let (symbols, tokens_used, truncated) =
+        form.cap(all_symbols, max_tokens, counter, text::outline_row);
     let elision = truncated.then(|| {
         format!(
             "[{} symbols elided: token budget exceeded]",
@@ -167,7 +175,7 @@ fn outline_tool(
         )
     });
     let operation_id = operation_identity().id;
-    Ok(json!({
+    let payload = json!({
         "schema_version": 1,
         "operation_id": operation_id,
         "path": current.outline.path,
@@ -179,13 +187,15 @@ fn outline_tool(
         "tokens_used": tokens_used,
         "token_provider": counter.provider(),
         "truncated": truncated
-    }))
+    });
+    Ok(with_budget(payload, max_tokens))
 }
 
 fn unfold_tool(
     store: &Store,
     repository_root: Option<&Path>,
     arguments: Option<JsonObject>,
+    form: Form,
 ) -> ToolResult {
     let mut arguments = checked_arguments(
         arguments,
@@ -231,7 +241,7 @@ fn unfold_tool(
     let counter = navigation_counter();
     let operation_id = operation_identity().id;
 
-    Ok(match result {
+    let payload = match result {
         UnfoldResult::Found {
             path,
             symbol,
@@ -239,7 +249,8 @@ fn unfold_tool(
             stale,
             reindex_hint,
         } => {
-            let (content, tokens_used, truncated) = bound_text(&content, max_tokens, counter);
+            let (content, tokens_used, truncated) =
+                bound_text(&content, form.content_budget(max_tokens), counter);
             json!({
                 "schema_version": 1,
                 "operation_id": operation_id,
@@ -276,7 +287,7 @@ fn unfold_tool(
                 })
                 .collect::<Vec<_>>();
             let (candidates, tokens_used, budget_truncated) =
-                cap_values(all_candidates, max_tokens, counter);
+                form.cap(all_candidates, max_tokens, counter, text::candidate_row);
             let truncated = atlas_capped || budget_truncated;
             json!({
                 "schema_version": 1,
@@ -318,7 +329,8 @@ fn unfold_tool(
                 "truncated": false
             })
         }
-    })
+    };
+    Ok(with_budget(payload, max_tokens))
 }
 
 fn parse_symbol_kind(kind: &str) -> Result<SymbolKind, ToolFailure> {
@@ -384,6 +396,7 @@ fn bound_text(
 
 #[cfg(test)]
 mod tests {
+    use super::super::common::cap_values;
     use super::*;
 
     #[test]

@@ -281,6 +281,16 @@ impl Store {
         })
     }
 
+    /// The database file this store opened, when it is file-backed. The
+    /// edit tool refuses to write anywhere under its directory.
+    pub fn database_path(&self) -> Option<PathBuf> {
+        self.connection()
+            .ok()?
+            .path()
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+    }
+
     #[allow(dead_code)] // Shared by the DAO methods introduced in E3-02.
     fn connection(&self) -> Result<MutexGuard<'_, Connection>, StoreError> {
         self.connection

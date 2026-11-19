@@ -69,6 +69,7 @@ impl Harness {
                 sources: vec![RecallSource::ClaudeCode],
             }),
             tools,
+            ..McpServeOptions::default()
         };
         let (client, server) = tokio::io::duplex(256 * 1024);
         let (server_read, server_write) = tokio::io::split(server);
@@ -315,8 +316,14 @@ fn test_lean_instructions_keep_the_mandatory_disclosures_and_name_only_served_to
     }
 }
 
+/// The fixed per-session cost of a profile's default surface: recall and the
+/// edit tool are separate operator opt-ins and are measured separately.
 fn surface_tokens(profile: McpToolProfile, provider: TokenProvider) -> usize {
-    let (tools, instructions) = advertised_surface(profile, false);
+    surface_tokens_with(profile, provider, false)
+}
+
+fn surface_tokens_with(profile: McpToolProfile, provider: TokenProvider, edits: bool) -> usize {
+    let (tools, instructions) = compresso_mcp::advertised_surface_with(profile, false, edits);
     let listed = serde_json::to_string(&json!({ "tools": tools })).expect("tools serialize");
     let counter = counter_for(provider);
     counter.count(&listed) + counter.count(&instructions)
@@ -332,6 +339,27 @@ fn test_lean_schema_and_instructions_cost_less_than_half_of_default() {
         let lean = surface_tokens(McpToolProfile::Lean, provider);
         println!("{provider:?}: full={full} lean={lean}");
         assert!(lean * 2 < full, "{provider:?}: lean {lean} vs full {full}");
+    }
+}
+
+/// The edit tool is an opt-in beyond either profile (E17-32), so the
+/// half-cost rule above compares the profiles without it. With it, each
+/// profile pays the edit schema once; lean must still cost less than full.
+#[test]
+fn test_edit_tool_cost_is_reported_and_lean_stays_cheaper_with_it() {
+    for provider in [
+        TokenProvider::OpenAiO200k,
+        TokenProvider::AnthropicCalibrated,
+    ] {
+        let full = surface_tokens(McpToolProfile::Full, provider);
+        let lean = surface_tokens(McpToolProfile::Lean, provider);
+        let full_edits = surface_tokens_with(McpToolProfile::Full, provider, true);
+        let lean_edits = surface_tokens_with(McpToolProfile::Lean, provider, true);
+        println!(
+            "{provider:?}: full={full} full+edits={full_edits} lean={lean} lean+edits={lean_edits}"
+        );
+        assert!(full_edits > full && lean_edits > lean);
+        assert!(lean_edits < full_edits, "{provider:?}");
     }
 }
 

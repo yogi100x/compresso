@@ -61,6 +61,18 @@ fn collect(command: &Command, path: Vec<String>, parent_hidden: bool, output: &m
             flags.push(format!("-{short}"));
         }
     }
+    // `mcp serve` parses its own flags behind a trailing argument list.
+    if path
+        .iter()
+        .map(String::as_str)
+        .eq(["compresso", "mcp", "serve"])
+    {
+        flags.extend(
+            crate::commands::mcp::SERVE_FLAGS
+                .iter()
+                .map(|flag| (*flag).to_owned()),
+        );
+    }
     flags.sort();
     flags.dedup();
 
@@ -108,6 +120,21 @@ mod tests {
             .expect("flags array")
             .iter()
             .any(|value| value == flag)
+    }
+
+    #[test]
+    fn test_mcp_serve_lists_its_hand_parsed_flags() {
+        let inventory = surface_inventory();
+        let serve = command(&inventory, &["compresso", "mcp", "serve"]);
+        for flag in [
+            "--edits",
+            "--recall-source",
+            "--results",
+            "--root",
+            "--tools",
+        ] {
+            assert!(has_flag(serve, flag), "{flag}");
+        }
     }
 
     #[test]

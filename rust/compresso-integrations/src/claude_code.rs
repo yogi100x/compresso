@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 use serde_json::{Map, Value, json};
 
 use crate::plan::MutationRequest;
-use crate::server_entry::{is_adapter_args, with_recall_source};
+use crate::server_entry::{is_adapter_args, with_edits, with_recall_source};
 use crate::text_fidelity::strip_bom;
 use crate::{
     ConfigFormat, Detection, InstallCtx, InstallReceipt, Integration, IntegrationError,
@@ -74,6 +74,8 @@ pub struct ClaudeCodeIntegration {
     user_home: PathBuf,
     discovery: ClaudeCodeDiscovery,
     compresso_version: String,
+    /// Install an entry that starts `mcp serve --edits` (E17-32, D97).
+    edits: bool,
 }
 
 impl ClaudeCodeIntegration {
@@ -83,7 +85,15 @@ impl ClaudeCodeIntegration {
             user_home,
             discovery,
             compresso_version: env!("CARGO_PKG_VERSION").to_owned(),
+            edits: false,
         }
+    }
+
+    /// Makes install write an entry that also serves the opt-in edit tool.
+    /// Verify, status, and uninstall accept the entry either way.
+    pub fn with_edits(mut self, edits: bool) -> Self {
+        self.edits = edits;
+        self
     }
 
     /// Overrides the receipt version, primarily for deterministic embedders.
@@ -173,6 +183,9 @@ impl Integration for ClaudeCodeIntegration {
         let config_path = self.mutation_config_path(&context.scope)?;
         let command = resolved_compresso_command(&context.compresso_bin)?;
         let mut args = expected_server_args(&context.scope)?;
+        if self.edits {
+            args = with_edits(args);
+        }
         if context.session_recall {
             args = with_recall_source(args, CLIENT_ID);
         }

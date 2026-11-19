@@ -12,6 +12,7 @@ use compresso_store::{
 use crate::AtlasError;
 use crate::parsers::{ParseError, ParserRegistry};
 use crate::scanner::is_secret_path;
+use crate::task_facets::{task_clauses, task_focus};
 use crate::task_identifiers::{
     NamedRank, TaskIdentifier, line_has_number, named_symbols, task_identifiers, task_numbers,
 };
@@ -58,6 +59,9 @@ const PLAN_CONTEXT_RERANK_POOL: usize = 40;
 /// Compounds kept per window size (three-word, then two-word).
 const PLAN_CONTEXT_COMPOUND_LIMIT: usize = 12;
 const PLAN_CONTEXT_UNCOVERED_LIMIT: usize = 8;
+/// Uncovered clauses one plan reports, each cut to `PLAN_CONTEXT_FACET_LABEL_CHARS`.
+const PLAN_CONTEXT_UNCOVERED_FACET_LIMIT: usize = 4;
+const PLAN_CONTEXT_FACET_LABEL_CHARS: usize = 80;
 /// A hit scoring at least this much matched a compound concept by name or body.
 const PLAN_CONTEXT_STRONG_SCORE: f64 = 4.0;
 /// Generic-word hits scoring below this share of the best hit are dropped as noise.
@@ -252,6 +256,12 @@ pub struct ContextPlan {
     pub task_concepts_covered: usize,
     /// Salient task words no included evidence mentions, in task order.
     pub uncovered_concepts: Vec<String>,
+    /// Clauses of the task that name a concept, and how many of them the
+    /// included evidence covers (D95).
+    pub task_facets_total: usize,
+    pub task_facets_covered: usize,
+    /// Clauses the included evidence does not cover, in task order.
+    pub uncovered_facets: Vec<String>,
     /// Modeled raw matched-evidence token baseline before excerpt packing.
     pub estimated_raw_source_tokens: usize,
     pub tokens_used: usize,
@@ -264,12 +274,25 @@ pub struct ContextPlan {
 
 impl ContextPlan {
     /// Whether the included evidence mentions at least half of the task's
-    /// salient words. A pack that matched only generic words fails this even
-    /// when every candidate file fitted the budget.
+    /// salient words and covers every clause of the task that names a
+    /// concept. A pack that matched only generic words fails this even when
+    /// every candidate file fitted the budget, and so does a pack that
+    /// answers one part of a several-part task (D95).
     #[must_use]
     pub const fn concept_coverage_sufficient(&self) -> bool {
-        self.task_concepts_total == 0
-            || self.task_concepts_covered.saturating_mul(2) >= self.task_concepts_total
+        (self.task_concepts_total == 0
+            || self.task_concepts_covered.saturating_mul(2) >= self.task_concepts_total)
+            && self.task_facets_covered >= self.task_facets_total
+    }
+
+    /// The readiness rule every surface reports (04 §`compresso_context`):
+    /// some evidence matched, every candidate file fitted, and the concepts
+    /// and clauses of the task are covered.
+    #[must_use]
+    pub const fn evidence_ready(&self) -> bool {
+        self.evidence_files_total > 0
+            && self.evidence_files_included >= self.evidence_files_total
+            && self.concept_coverage_sufficient()
     }
 }
 
@@ -971,15 +994,18 @@ pub fn plan_context(
     task: &str,
     budget_tokens: usize,
 ) -> Result<ContextPlan, AtlasError> {
-    let counter = counter_for(TokenProvider::OpenAiO200k);
-    let mut concepts = TaskConcepts::parse(task);
+    // Instructions to the answerer name nothing to retrieve, and an idiom
+    // no identifier can spell is read as the word code uses (D95). Names and
+    // numbers written as code are still read from the task as given (D88).
+    let focus = task_focus(task);
+    let mut concepts = TaskConcepts::parse(&focus, task);
     let ConceptSearch {
         search_queries,
         pool,
         matches_total,
         truncated: search_truncated,
         content_scan_truncated,
-    } = search_task_concepts(store, repo, task, &mut concepts)?;
+    } = search_task_concepts(store, repo, &focus, task, &mut concepts)?;
 
     // Read each pooled symbol once: the body both ranks the hit by what the
     // code contains and becomes its evidence excerpt.
@@ -1006,6 +1032,9 @@ pub fn plan_context(
             evidence: body,
             anchored,
             specific,
+            facet: false,
+            focus_line: None,
+            facet_index: None,
         });
     }
     // What the task names verbatim leads, whatever prose words score.
@@ -1022,10 +1051,65 @@ pub fn plan_context(
         .map(|candidate| candidate.score)
         .reduce(f64::max)
         .map_or(0.0, |best| best * PLAN_CONTEXT_SCORE_FLOOR_RATIO);
+    let search = PackSearch {
+        search_queries,
+        matches_total,
+        search_truncated,
+        content_scan_truncated,
+    };
+    // A task asking several things gets each part's best evidence, looked
+    // for among the candidates and their neighbours in the leading files,
+    // ahead of the floor and the per-file share (D95). Ranked words cannot
+    // tell whether a part is covered before the pack is cut: a larger budget
+    // lets unrelated excerpts spell a part's words, so the choice is made
+    // for every several-part task.
+    if concepts.facets.len() > 1 {
+        add_facet_evidence(store, repo, &concepts, &mut scored)?;
+    }
+    assemble_context_plan(
+        store,
+        repo,
+        &concepts,
+        scored,
+        score_floor,
+        budget_tokens,
+        &search,
+    )
+}
+
+/// What the concept search reported, carried into every assembly of a pack.
+struct PackSearch {
+    search_queries: Vec<String>,
+    matches_total: usize,
+    search_truncated: bool,
+    content_scan_truncated: bool,
+}
+
+/// Fits the scored candidates, sorted best first, into one pack under
+/// `budget_tokens`.
+fn assemble_context_plan(
+    store: &Store,
+    repo: RepoId,
+    concepts: &TaskConcepts,
+    mut scored: Vec<ContextCandidate>,
+    score_floor: f64,
+    budget_tokens: usize,
+    search: &PackSearch,
+) -> Result<ContextPlan, AtlasError> {
+    let counter = counter_for(TokenProvider::OpenAiO200k);
     scored.retain(|candidate| {
-        candidate.score >= score_floor || candidate.score >= PLAN_CONTEXT_SPECIFIC_MATCH_SCORE
+        candidate.facet
+            || candidate.score >= score_floor
+            || candidate.score >= PLAN_CONTEXT_SPECIFIC_MATCH_SCORE
     });
-    scored.truncate(PLAN_CONTEXT_SEARCH_LIMIT);
+    let mut kept = 0;
+    scored.retain(|candidate| {
+        if candidate.facet {
+            return true;
+        }
+        kept += 1;
+        kept <= PLAN_CONTEXT_SEARCH_LIMIT
+    });
 
     // Excerpt every candidate once. The best strong items get the largest
     // allowance; the same excerpts decide below whether the tail is needed.
@@ -1034,7 +1118,7 @@ pub fn plan_context(
         PLAN_CONTEXT_TOP_EVIDENCE_TOKENS,
     );
     for (rank, candidate) in scored.iter_mut().enumerate() {
-        let strong = candidate.score >= PLAN_CONTEXT_STRONG_SCORE;
+        let strong = candidate.facet || candidate.score >= PLAN_CONTEXT_STRONG_SCORE;
         candidate.top = strong && rank < PLAN_CONTEXT_TOP_EVIDENCE_ITEMS;
         let content_budget = if candidate.top {
             top_allowance
@@ -1043,10 +1127,14 @@ pub fn plan_context(
         } else {
             PLAN_CONTEXT_EVIDENCE_CONTENT_TOKENS
         };
-        candidate.evidence = candidate
-            .evidence
-            .take()
-            .map(|body| compact_context_evidence(&body, content_budget, counter, &concepts));
+        let focus_line = candidate.focus_line;
+        candidate.evidence = candidate.evidence.take().map(|body| match focus_line {
+            // A clause's evidence starts just above its decision line.
+            Some(line) if counter.count(&body.content) > content_budget => {
+                excerpt_context_evidence(&body, line.saturating_sub(1), content_budget, counter)
+            }
+            _ => compact_context_evidence(&body, content_budget, counter, concepts),
+        });
     }
 
     // A candidate below the relative floor stayed only because its absolute
@@ -1055,7 +1143,10 @@ pub fn plan_context(
     // specific task word, covers the task, the rest matched nothing but
     // broad words and is dropped.
     let is_core = |candidate: &ContextCandidate| {
-        candidate.score >= score_floor || candidate.anchored || candidate.specific
+        candidate.facet
+            || candidate.score >= score_floor
+            || candidate.anchored
+            || candidate.specific
     };
     if scored.iter().any(|candidate| !is_core(candidate)) {
         let core_uncovered = concepts.uncovered(
@@ -1076,18 +1167,32 @@ pub fn plan_context(
     let candidate_outlines = matching_context_outlines(store, repo, &hits)?;
     let mut bodies_by_path = Vec::<(String, Vec<PackItem>)>::new();
     let mut estimated_raw_source_tokens = 0_usize;
-    for candidate in scored {
-        let path_index = bodies_by_path
+    // Files keep the order of their best candidate. A clause's chosen
+    // evidence leads its file's items and is outside the per-file share; the
+    // file's other candidates fill what remains of that share (D95).
+    for candidate in &scored {
+        if !bodies_by_path
+            .iter()
+            .any(|(path, _)| path == &candidate.hit.path)
+        {
+            bodies_by_path.push((candidate.hit.path.clone(), Vec::new()));
+        }
+    }
+    let (chosen, ranked): (Vec<_>, Vec<_>) =
+        scored.into_iter().partition(|candidate| candidate.facet);
+    for candidate in chosen.into_iter().chain(ranked) {
+        let Some(path_index) = bodies_by_path
             .iter()
             .position(|(path, _)| path == &candidate.hit.path)
-            .unwrap_or_else(|| {
-                bodies_by_path.push((candidate.hit.path.clone(), Vec::new()));
-                bodies_by_path.len() - 1
-            });
+        else {
+            continue;
+        };
         let path_bodies = &mut bodies_by_path[path_index].1;
         // A file already holding its share still admits what defines or uses
         // a named task concept: the raise site next to the definition.
-        let file_limit = if candidate.anchored {
+        let file_limit = if candidate.facet {
+            usize::MAX
+        } else if candidate.anchored {
             PLAN_CONTEXT_USE_SITE_BODIES_PER_FILE
         } else {
             PLAN_CONTEXT_BODIES_PER_FILE
@@ -1101,22 +1206,29 @@ pub fn plan_context(
             path_bodies.push(PackItem {
                 evidence,
                 top: candidate.top,
-                anchored: candidate.anchored,
+                // A file whose chosen excerpt did not fit is not complete.
+                anchored: candidate.anchored || candidate.facet,
             });
         }
     }
+    let deepest = bodies_by_path
+        .iter()
+        .map(|(_, bodies)| bodies.len())
+        .max()
+        .unwrap_or(0);
     let mut candidate_bodies = Vec::new();
-    for rank in 0..PLAN_CONTEXT_USE_SITE_BODIES_PER_FILE {
+    for rank in 0..deepest {
         for (_, bodies) in &bodies_by_path {
             if let Some(body) = bodies.get(rank) {
                 candidate_bodies.push(body.clone());
             }
         }
     }
-    let evidence_files_total = bodies_by_path
+    let evidence_files_total = candidate_bodies
         .iter()
-        .filter(|(_, bodies)| !bodies.is_empty())
-        .count();
+        .map(|item| item.evidence.path.as_str())
+        .collect::<BTreeSet<_>>()
+        .len();
 
     let mut rendered = String::new();
     let mut included_map = None;
@@ -1159,7 +1271,7 @@ pub fn plan_context(
                 repo,
                 item,
                 &candidate_bodies,
-                &concepts,
+                concepts,
                 budget_tokens,
                 counter,
                 &mut rendered,
@@ -1190,11 +1302,26 @@ pub fn plan_context(
         .collect::<Vec<_>>();
 
     let uncovered_concepts = concepts.uncovered(&symbol_bodies);
+    // A test that spells a clause's words shows the behaviour is tested, not
+    // how it works, so it covers a clause only when the task asks for tests.
+    let evidence_texts = symbol_bodies
+        .iter()
+        .filter(|body| concepts.wants_tests || !is_test_symbol(&body.path, &body.symbol))
+        .map(evidence_text)
+        .collect::<Vec<_>>();
+    let uncovered_facets = concepts
+        .facets
+        .iter()
+        .filter(|facet| !facet.covered_by(&evidence_texts))
+        .map(|facet| facet.label())
+        .collect::<Vec<_>>();
+    let task_facets_total = concepts.facets.len();
+    let task_facets_covered = task_facets_total - uncovered_facets.len();
     let task_concepts_total = concepts.salient.len();
     let task_concepts_covered = task_concepts_total - uncovered_concepts.len();
     let tokens_used = counter.count(&rendered);
-    let truncated = search_truncated
-        || content_scan_truncated
+    let truncated = search.search_truncated
+        || search.content_scan_truncated
         || map.truncated
         || included_map.is_none()
         || symbol_bodies.len() < candidate_bodies.len();
@@ -1204,8 +1331,8 @@ pub fn plan_context(
         outlines,
         symbol_bodies,
         referenced_constants,
-        search_queries,
-        matches_total,
+        search_queries: search.search_queries.clone(),
+        matches_total: search.matches_total,
         evidence_files_total,
         evidence_files_included,
         task_concepts_total,
@@ -1214,15 +1341,22 @@ pub fn plan_context(
             .into_iter()
             .take(PLAN_CONTEXT_UNCOVERED_LIMIT)
             .collect(),
+        task_facets_total,
+        task_facets_covered,
+        uncovered_facets: uncovered_facets
+            .into_iter()
+            .take(PLAN_CONTEXT_UNCOVERED_FACET_LIMIT)
+            .collect(),
         estimated_raw_source_tokens,
         tokens_used,
         token_provider: counter.provider(),
         truncated,
-        content_scan_truncated,
+        content_scan_truncated: search.content_scan_truncated,
     })
 }
 
 /// One ranked symbol on its way into the pack.
+#[derive(Clone)]
 struct ContextCandidate {
     /// Excerpted with the largest allowance.
     top: bool,
@@ -1237,6 +1371,310 @@ struct ContextCandidate {
     anchored: bool,
     /// Matched a specific task concept, not only broad words.
     specific: bool,
+    /// The best evidence found for one of the task's clauses (D95).
+    facet: bool,
+    /// Body line a clause's excerpt is centred on.
+    focus_line: Option<usize>,
+    /// The first clause that chose this candidate.
+    facet_index: Option<usize>,
+}
+
+/// Leading files whose other symbols are searched for a clause's evidence.
+const PLAN_CONTEXT_FACET_FILES: usize = 3;
+/// Same-file symbols related by a call to a clause's best evidence that may
+/// join it.
+const PLAN_CONTEXT_FACET_RELATED: usize = 2;
+
+/// Marks, for each clause of a multi-clause task, the one candidate that
+/// mentions most of its words, so it reaches the pack. Candidates are the
+/// scored pool plus every other leaf symbol of the leading files: the
+/// function next to a matched constant or name is often the one that does
+/// what the clause asks. Ties go to code over tests, then the higher score,
+/// then the shorter body. A clause no excerpt mentions enough of is left
+/// for readiness to report.
+fn add_facet_evidence(
+    store: &Store,
+    repo: RepoId,
+    concepts: &TaskConcepts,
+    scored: &mut Vec<ContextCandidate>,
+) -> Result<(), AtlasError> {
+    let mut anchor_files = Vec::<String>::new();
+    for candidate in scored.iter() {
+        if anchor_files.len() == PLAN_CONTEXT_FACET_FILES {
+            break;
+        }
+        if (concepts.wants_tests || !is_test_hit(&candidate.hit))
+            && !anchor_files.contains(&candidate.hit.path)
+        {
+            anchor_files.push(candidate.hit.path.clone());
+        }
+    }
+    // Every other leaf symbol of the leading files joins the candidates the
+    // clauses choose from; only the chosen ones are kept.
+    for path in &anchor_files {
+        append_file_neighbours(store, repo, path, concepts, scored)?;
+    }
+    let mut loaded_files = anchor_files;
+
+    for (facet_index, facet) in concepts.facets.iter().enumerate() {
+        let needed = facet.words_needed_in_one_excerpt();
+        let Some((best, mentioned)) = best_facet_candidate(facet, scored, |_| true) else {
+            continue;
+        };
+        if mentioned < needed {
+            continue;
+        }
+        scored[best].facet = true;
+        // What the clause asks is often answered by a helper together with
+        // the functions around it: a file-level and a whole-repository check
+        // that share one comparison. Same-file symbols that call the chosen
+        // one, that it calls, or that call what it calls join it when they
+        // name enough of the clause.
+        let path = scored[best].hit.path.clone();
+        if !loaded_files.contains(&path) {
+            append_file_neighbours(store, repo, &path, concepts, scored)?;
+            loaded_files.push(path.clone());
+        }
+        let name = scored[best].hit.symbol.name.clone();
+        let chosen_body = scored[best]
+            .evidence
+            .as_ref()
+            .map(|body| body.content.clone())
+            .unwrap_or_default();
+        let callees = scored
+            .iter()
+            .filter(|candidate| candidate.hit.path == path && candidate.hit.symbol.name != name)
+            .map(|candidate| candidate.hit.symbol.name.clone())
+            .filter(|callee| body_calls(&chosen_body, callee))
+            .collect::<BTreeSet<_>>();
+        let mut group = vec![best];
+        for _ in 0..PLAN_CONTEXT_FACET_RELATED {
+            let related = best_facet_candidate(facet, scored, |candidate| {
+                let Some(body) = candidate.evidence.as_ref() else {
+                    return false;
+                };
+                !candidate.facet
+                    && candidate.hit.path == path
+                    && (callees.contains(&candidate.hit.symbol.name)
+                        || body_calls(&body.content, &name)
+                        || callees
+                            .iter()
+                            .any(|callee| body_calls(&body.content, callee)))
+            });
+            match related {
+                Some((index, mentioned)) if mentioned >= needed => {
+                    scored[index].facet = true;
+                    group.push(index);
+                }
+                _ => break,
+            }
+        }
+        for &member in &group {
+            scored[member].facet_index.get_or_insert(facet_index);
+        }
+    }
+    // Each chosen excerpt centres on its decision: the first line that calls
+    // another chosen symbol of its file, or else the line naming most of its
+    // clause.
+    for member in 0..scored.len() {
+        let Some(facet_index) = scored[member].facet_index else {
+            continue;
+        };
+        let others = scored
+            .iter()
+            .enumerate()
+            .filter(|(other, candidate)| {
+                *other != member && candidate.facet && candidate.hit.path == scored[member].hit.path
+            })
+            .map(|(_, candidate)| candidate.hit.symbol.name.clone())
+            .collect::<Vec<_>>();
+        scored[member].focus_line = scored[member].evidence.as_ref().and_then(|body| {
+            facet_focus_line(&body.content, &concepts.facets[facet_index], &others)
+        });
+    }
+    // Neighbours no clause chose were never ranked candidates.
+    scored.retain(|candidate| candidate.facet || candidate.order != usize::MAX);
+    Ok(())
+}
+
+/// Leaf symbols a clause may choose from, added to `scored` with no rank of
+/// their own (`order == usize::MAX`) until a clause chooses one.
+fn append_file_neighbours(
+    store: &Store,
+    repo: RepoId,
+    path: &str,
+    concepts: &TaskConcepts,
+    scored: &mut Vec<ContextCandidate>,
+) -> Result<(), AtlasError> {
+    for (hit, body) in file_leaf_bodies(store, repo, path)? {
+        if (!concepts.wants_tests && is_test_hit(&hit))
+            || scored
+                .iter()
+                .any(|candidate| hit_identity(&candidate.hit) == hit_identity(&hit))
+        {
+            continue;
+        }
+        scored.push(ContextCandidate {
+            top: false,
+            score: concepts.body_score(&body.content),
+            named: None,
+            order: usize::MAX,
+            raw_tokens: body.symbol.token_estimate,
+            hit,
+            evidence: Some(body),
+            anchored: false,
+            specific: true,
+            facet: false,
+            focus_line: None,
+            facet_index: None,
+        });
+    }
+    Ok(())
+}
+
+/// The eligible candidate mentioning most of `facet`'s words, with that
+/// count. Ties go to code over tests, then the higher score, then the
+/// shorter body, then the earlier candidate.
+fn best_facet_candidate(
+    facet: &TaskFacet,
+    scored: &[ContextCandidate],
+    eligible: impl Fn(&ContextCandidate) -> bool,
+) -> Option<(usize, usize)> {
+    let mut best: Option<(usize, usize)> = None;
+    for (index, candidate) in scored.iter().enumerate() {
+        let Some(body) = candidate.evidence.as_ref() else {
+            continue;
+        };
+        if !eligible(candidate) {
+            continue;
+        }
+        let mentioned = facet.mentioned_in(&evidence_text(body));
+        let better = best.is_none_or(|(known, known_mentioned)| {
+            let known = &scored[known];
+            mentioned
+                .cmp(&known_mentioned)
+                .then_with(|| is_test_hit(&known.hit).cmp(&is_test_hit(&candidate.hit)))
+                .then_with(|| candidate.score.total_cmp(&known.score))
+                .then_with(|| symbol_lines(&known.hit).cmp(&symbol_lines(&candidate.hit)))
+                .is_gt()
+        });
+        if better {
+            best = Some((index, mentioned));
+        }
+    }
+    best
+}
+
+/// Index of the first line of `content` that calls one of `related`, or
+/// else of the earliest line mentioning most of `facet`'s words.
+fn facet_focus_line(content: &str, facet: &TaskFacet, related: &[String]) -> Option<usize> {
+    let lines = content.split_inclusive('\n').collect::<Vec<_>>();
+    if let Some(line) = lines
+        .iter()
+        .position(|line| related.iter().any(|name| body_calls(line, name)))
+    {
+        return Some(line);
+    }
+    let mut best: Option<(usize, usize)> = None;
+    for (index, line) in lines.iter().enumerate() {
+        let mentioned = facet.mentioned_in(&line.to_lowercase());
+        if mentioned > 0 && best.is_none_or(|(_, known)| mentioned > known) {
+            best = Some((index, mentioned));
+        }
+    }
+    best.map(|(index, _)| index)
+}
+
+fn symbol_lines(hit: &SearchHit) -> u32 {
+    hit.symbol.end_line.saturating_sub(hit.symbol.start_line)
+}
+
+/// Whether `content` calls `name`: spells `name(` not preceded by an
+/// identifier character.
+fn body_calls(content: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let pattern = format!("{name}(");
+    content.match_indices(&pattern).any(|(start, _)| {
+        content[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|previous| !(previous.is_alphanumeric() || previous == '_'))
+    })
+}
+
+/// Every symbol of one indexed file that contains no other symbol, with its
+/// current body. A file that changed since indexing, is too large for the
+/// content scan, or is a secret yields nothing.
+fn file_leaf_bodies(
+    store: &Store,
+    repo: RepoId,
+    path: &str,
+) -> Result<Vec<(SearchHit, ContextSymbolBody)>, AtlasError> {
+    let Some(record) = store.indexed_file(repo, path)? else {
+        return Ok(Vec::new());
+    };
+    if record.size_bytes > PLAN_CONTEXT_CONTENT_MAX_FILE_BYTES || is_secret_path(Path::new(path)) {
+        return Ok(Vec::new());
+    }
+    let repository = store.repository(repo)?;
+    let Ok(root) = canonical_query_root(&repository.root) else {
+        return Ok(Vec::new());
+    };
+    let Ok(ResolvedEntry::File(resolved)) = resolve_under_root(&root, path) else {
+        return Ok(Vec::new());
+    };
+    let Ok(source) = read_utf8_capped(&resolved, PLAN_CONTEXT_CONTENT_MAX_FILE_BYTES) else {
+        return Ok(Vec::new());
+    };
+    // Stored line ranges describe the bytes that were indexed.
+    if blake3::hash(source.as_bytes()).to_hex().as_str() != record.hash {
+        return Ok(Vec::new());
+    }
+    let symbols = store.symbols_in_file(repo, path)?;
+    let starts = line_starts(&source);
+    let mut bodies = Vec::new();
+    for symbol in &symbols {
+        let contains_other = symbols.iter().any(|other| {
+            !same_symbol(other, symbol)
+                && other.start_line >= symbol.start_line
+                && other.end_line <= symbol.end_line
+        });
+        let (Some(&start), true) = (
+            starts.get(symbol.start_line.saturating_sub(1) as usize),
+            symbol.start_line >= 1 && symbol.end_line >= symbol.start_line,
+        ) else {
+            continue;
+        };
+        if contains_other {
+            continue;
+        }
+        let end = starts
+            .get(symbol.end_line as usize)
+            .copied()
+            .unwrap_or(source.len());
+        let Some(content) = source.get(start..end) else {
+            continue;
+        };
+        bodies.push((
+            SearchHit {
+                path: record.path.clone(),
+                language: record.language,
+                symbol: symbol.clone(),
+                score: 0.0,
+            },
+            ContextSymbolBody {
+                path: record.path.clone(),
+                symbol: symbol.clone(),
+                content: content.to_owned(),
+                excerpt_start_line: symbol.start_line,
+                excerpt_end_line: symbol.end_line,
+                truncated: false,
+            },
+        ));
+    }
+    Ok(bodies)
 }
 
 /// One excerpt queued for the pack, in rendering order.
@@ -1453,6 +1891,7 @@ fn search_task_concepts(
     store: &Store,
     repo: RepoId,
     task: &str,
+    raw_task: &str,
     concepts: &mut TaskConcepts,
 ) -> Result<ConceptSearch, AtlasError> {
     let search_queries = task_search_queries(task);
@@ -1531,7 +1970,7 @@ fn search_task_concepts(
     // A name copied from the code outranks any number of prose words.
     let mut named_ranks = BTreeMap::<HitIdentity, NamedRank>::new();
     let mut named_hits = Vec::new();
-    for (hit, rank) in named_symbols(store, repo, task, exclude_text)? {
+    for (hit, rank) in named_symbols(store, repo, raw_task, exclude_text)? {
         let identity = hit_identity(&hit);
         let known = named_ranks.entry(identity.clone()).or_insert(rank);
         if *known < rank {
@@ -2042,6 +2481,8 @@ fn context_scoring_hits(
 struct TaskConcepts {
     compounds: Vec<TaskCompound>,
     salient: Vec<String>,
+    /// The task's clauses that name at least one salient word (D95).
+    facets: Vec<TaskFacet>,
     /// Salient words no symbol is named after that the content scan found in
     /// a symbol body.
     content_words: Vec<String>,
@@ -2070,6 +2511,89 @@ struct TaskCompound {
     use_site: bool,
 }
 
+/// One clause of the task and the concepts it names (D95).
+struct TaskFacet {
+    clause: String,
+    /// The clause's distinct salient words and numeric literals, lowercase,
+    /// in clause order.
+    words: Vec<String>,
+}
+
+impl TaskFacet {
+    /// The clause as reported when uncovered, cut at a character boundary.
+    fn label(&self) -> String {
+        let mut label = self
+            .clause
+            .chars()
+            .take(PLAN_CONTEXT_FACET_LABEL_CHARS)
+            .collect::<String>();
+        if self.clause.chars().count() > PLAN_CONTEXT_FACET_LABEL_CHARS {
+            label.push('…');
+        }
+        label
+    }
+
+    /// How many of the facet's words lowercase evidence `text` mentions. A
+    /// numeric literal counts only as a whole number.
+    fn mentioned_in(&self, text: &str) -> usize {
+        self.words
+            .iter()
+            .filter(|word| facet_word_mentioned(text, word))
+            .count()
+    }
+
+    /// Words one excerpt must mention for the facet to count as covered:
+    /// all of a one-word facet, one of a two-word facet, else a third of
+    /// the words and never fewer than two. Words scattered over unrelated
+    /// excerpts do not answer a clause; an excerpt naming several of them
+    /// does.
+    fn words_needed_in_one_excerpt(&self) -> usize {
+        match self.words.len() {
+            0..=2 => 1,
+            words => words.div_ceil(3).max(2),
+        }
+    }
+
+    /// Whether `texts`, the lowercase evidence of a pack, cover the facet:
+    /// together they mention at least half of its words, and one of them
+    /// mentions `words_needed_in_one_excerpt`.
+    fn covered_by(&self, texts: &[String]) -> bool {
+        let mentioned = self
+            .words
+            .iter()
+            .filter(|word| texts.iter().any(|text| facet_word_mentioned(text, word)))
+            .count();
+        let best = texts
+            .iter()
+            .map(|text| self.mentioned_in(text))
+            .max()
+            .unwrap_or(0);
+        mentioned.saturating_mul(2) >= self.words.len()
+            && best >= self.words_needed_in_one_excerpt()
+    }
+}
+
+fn facet_word_mentioned(text: &str, word: &str) -> bool {
+    if word.bytes().all(|byte| byte.is_ascii_digit()) {
+        line_has_number(text, word)
+    } else {
+        text_mentions(text, word)
+    }
+}
+
+/// A word long enough, and specific enough, that evidence should mention it.
+fn is_salient_word(word: &str) -> bool {
+    word.chars().count() >= 3 && !is_context_stop_word(word) && !is_generic_task_word(word)
+}
+
+/// Whether two lowercase task words name one concept: equal, or one is the
+/// other's singular.
+fn same_concept_word(left: &str, right: &str) -> bool {
+    left == right
+        || singular_context_term(left).as_deref() == Some(right)
+        || singular_context_term(right).as_deref() == Some(left)
+}
+
 impl TaskCompound {
     fn weight(&self) -> f64 {
         let base = if self.words >= 3 { 6.0 } else { 4.0 };
@@ -2078,7 +2602,7 @@ impl TaskCompound {
 }
 
 impl TaskConcepts {
-    fn parse(task: &str) -> Self {
+    fn parse(task: &str, raw_task: &str) -> Self {
         let words = task
             .split(|character: char| !character.is_alphanumeric() && character != '_')
             .filter(|word| !word.is_empty())
@@ -2088,20 +2612,37 @@ impl TaskConcepts {
             .iter()
             .any(|word| matches!(word.as_str(), "test" | "tests" | "tested" | "testing"));
 
-        let mut salient = Vec::new();
+        let mut salient = Vec::<String>::new();
         for word in &words {
-            if word.chars().count() < 3 || is_context_stop_word(word) || is_generic_task_word(word)
-            {
+            if !is_salient_word(word) {
                 continue;
             }
-            let singular = singular_context_term(word);
-            let duplicate = salient.iter().any(|term: &String| {
-                term == word
-                    || singular.as_ref() == Some(term)
-                    || singular_context_term(term).as_ref() == Some(word)
-            });
-            if !duplicate {
+            if !salient.iter().any(|term| same_concept_word(term, word)) {
                 salient.push(word.clone());
+            }
+        }
+        let mut facets = Vec::<TaskFacet>::new();
+        for clause in task_clauses(task) {
+            let numbers = task_numbers(&clause);
+            let mut facet_words = Vec::<String>::new();
+            for word in clause
+                .split(|character: char| !character.is_alphanumeric() && character != '_')
+                .map(str::to_ascii_lowercase)
+            {
+                let number = numbers.contains(&word);
+                if (number || is_salient_word(&word))
+                    && !facet_words
+                        .iter()
+                        .any(|known| same_concept_word(known, &word))
+                {
+                    facet_words.push(word);
+                }
+            }
+            if !facet_words.is_empty() && !facets.iter().any(|facet| facet.words == facet_words) {
+                facets.push(TaskFacet {
+                    clause,
+                    words: facet_words,
+                });
             }
         }
 
@@ -2141,9 +2682,10 @@ impl TaskConcepts {
         Self {
             compounds,
             salient,
+            facets,
             content_words: Vec::new(),
-            numbers: task_numbers(task),
-            identifiers: task_identifiers(task)
+            numbers: task_numbers(raw_task),
+            identifiers: task_identifiers(raw_task)
                 .into_iter()
                 .filter_map(|identifier| match identifier {
                     TaskIdentifier::Symbol(name) => Some(name),
@@ -2324,7 +2866,11 @@ fn is_generic_task_word(word: &str) -> bool {
 }
 
 fn is_test_hit(hit: &SearchHit) -> bool {
-    let path = hit.path.to_ascii_lowercase();
+    is_test_symbol(&hit.path, &hit.symbol)
+}
+
+fn is_test_symbol(path: &str, symbol: &SymbolRecord) -> bool {
+    let path = path.to_ascii_lowercase();
     let in_test_directory = path
         .split('/')
         .any(|part| matches!(part, "test" | "tests" | "__tests__" | "testdata"));
@@ -2337,10 +2883,10 @@ fn is_test_hit(hit: &SearchHit) -> bool {
         || file_stem.ends_with("_test")
         || path.contains(".test.")
         || path.contains(".spec.");
-    let name = hit.symbol.qualified_name.to_ascii_lowercase();
+    let name = symbol.qualified_name.to_ascii_lowercase();
     in_test_directory
         || test_file
-        || hit.symbol.name.to_ascii_lowercase().starts_with("test_")
+        || symbol.name.to_ascii_lowercase().starts_with("test_")
         || name.starts_with("tests::")
         || name.contains("::tests::")
 }
@@ -2464,10 +3010,9 @@ fn task_search_queries(task: &str) -> Vec<String> {
     if words.len() <= 5 {
         push_context_query(&mut queries, &mut seen, task.trim().to_owned());
     }
-    for word in words {
-        if word.chars().count() < 3 || is_context_stop_word(&word) {
-            continue;
-        }
+    // Words are taken from each clause in turn, so the query limit cannot
+    // starve the task's last clause (D95). Question scaffolding comes last.
+    for word in clause_interleaved_words(task) {
         if security_context && matches!(word.as_str(), "token" | "tokens") {
             for compound in [
                 "access_token",
@@ -2496,6 +3041,39 @@ fn task_search_queries(task: &str) -> Vec<String> {
         push_context_query(&mut queries, &mut seen, task.trim().to_owned());
     }
     queries
+}
+
+/// The task's searchable lowercase words: its salient words one from each
+/// clause in turn (the first of every clause, then the second, and so on),
+/// then its question scaffolding in task order. A one-clause task keeps the
+/// order of its salient words.
+fn clause_interleaved_words(task: &str) -> Vec<String> {
+    let words_of = |clause: &str| {
+        clause
+            .split(|character: char| !character.is_alphanumeric() && character != '_')
+            .map(str::to_ascii_lowercase)
+            .filter(|word| word.chars().count() >= 3 && !is_context_stop_word(word))
+            .collect::<Vec<_>>()
+    };
+    let clauses = task_clauses(task)
+        .iter()
+        .map(|clause| {
+            words_of(clause)
+                .into_iter()
+                .filter(|word| !is_generic_task_word(word))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let longest = clauses.iter().map(Vec::len).max().unwrap_or(0);
+    (0..longest)
+        .flat_map(|rank| clauses.iter().filter_map(move |words| words.get(rank)))
+        .cloned()
+        .chain(
+            words_of(task)
+                .into_iter()
+                .filter(|word| is_generic_task_word(word)),
+        )
+        .collect()
 }
 
 fn is_security_context_term(word: &str) -> bool {
@@ -2870,6 +3448,19 @@ pub(crate) struct ResolvedFile {
 impl ResolvedFile {
     pub(crate) fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The device and inode the gate inspected; `None` where the platform
+    /// has no such identity.
+    pub(crate) fn identity(&self) -> Option<(u64, u64)> {
+        #[cfg(unix)]
+        {
+            Some(self.identity)
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
     }
 
     /// Opens the approved file, failing as not found if what the path now

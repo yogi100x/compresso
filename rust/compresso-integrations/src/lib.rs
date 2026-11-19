@@ -57,7 +57,7 @@ pub use receipt::{
 };
 pub use server_entry::{
     ConfiguredServer, read_configured_server, recall_source_for_client,
-    receipt_authenticates_server, server_recall_source,
+    receipt_authenticates_server, server_enables_edits, server_recall_source,
 };
 
 /// Adapter contract shared by Claude Code, Codex, and Cursor.

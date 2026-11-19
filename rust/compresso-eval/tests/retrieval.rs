@@ -35,7 +35,7 @@ fn test_committed_retrieval_manifest_shape() {
     let corpus = committed_corpus();
 
     assert_eq!(corpus.budget_tokens, 1600);
-    assert_eq!(corpus.tasks.len(), 28);
+    assert_eq!(corpus.tasks.len(), 31);
     let gaps = corpus
         .tasks
         .iter()
@@ -62,6 +62,19 @@ fn test_committed_retrieval_manifest_shape() {
             "{body_only} must be a gated body-only task"
         );
     }
+    for several_parts in [
+        "cache-staleness-prose",
+        "cache-staleness-terse",
+        "cache-staleness-paraphrase",
+    ] {
+        assert!(
+            corpus
+                .tasks
+                .iter()
+                .any(|task| task.id == several_parts && task.gold_symbols.len() == 3),
+            "{several_parts} must list the helper and both callers (D95)"
+        );
+    }
     assert!(absent >= 2);
 }
 
@@ -76,9 +89,9 @@ fn test_committed_retrieval_corpus_passes_committed_gates() {
     let gates = Gates::load(&gates_path()).expect("committed gates should load");
 
     assert_eq!(retrieval.failure, None);
-    assert_eq!(retrieval.tasks.len(), 28);
-    assert_eq!(retrieval.aggregate.tasks, 28);
-    assert_eq!(retrieval.aggregate.gold_tasks, 25);
+    assert_eq!(retrieval.tasks.len(), 31);
+    assert_eq!(retrieval.aggregate.tasks, 31);
+    assert_eq!(retrieval.aggregate.gold_tasks, 28);
     assert_eq!(retrieval.known_gaps.tasks, 0);
     assert!(retrieval.aggregate.mean_recall >= gates.retrieval.mean_recall_min);
     assert!(retrieval.aggregate.mean_precision >= gates.retrieval.mean_precision_min);
