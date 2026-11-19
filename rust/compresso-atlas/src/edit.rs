@@ -1125,24 +1125,14 @@ fn apply_rename(
     let mut new_name_preexisting = 0_usize;
     let mut scanned = 0_u64;
     for path in scope {
-        if !working.contains_key(&path) {
+        let loaded = if working.contains_key(&path) {
+            None
+        } else {
             match load(gate, &path) {
                 Ok(file) => {
                     scanned = scanned.saturating_add(file.original.len() as u64);
                     bound(EditBound::ScanBytes, EDIT_MAX_SCAN_BYTES, scanned)?;
-                    let (whole, substring) = identifier_occurrences(&file.text, old);
-                    new_name_preexisting += identifier_occurrences(&file.text, new).0.len();
-                    searched.insert(path.clone());
-                    if whole.is_empty() {
-                        untouched_substring_total += substring.len();
-                        if untouched_substring.len() < EDIT_MAX_LISTED_LOCATIONS {
-                            untouched_substring.extend(locations(&path, &file.text, &substring));
-                        }
-                    } else {
-                        matched.push((path.clone(), whole));
-                        working.insert(path, file);
-                    }
-                    continue;
+                    Some(file)
                 }
                 Err(EditError::Refused { reason, .. }) if skippable(reason) => {
                     skipped.push(SkippedFile { path, reason });
@@ -1150,18 +1140,23 @@ fn apply_rename(
                 }
                 Err(error) => return Err(error),
             }
-        }
-        let file = &working[&path];
-        let (whole, substring) = identifier_occurrences(&file.text, old);
-        new_name_preexisting += identifier_occurrences(&file.text, new).0.len();
+        };
+        let text = loaded
+            .as_ref()
+            .map_or_else(|| working[&path].text.as_str(), |file| file.text.as_str());
+        let (whole, substring) = identifier_occurrences(text, old);
+        new_name_preexisting += identifier_occurrences(text, new).0.len();
         searched.insert(path.clone());
         if whole.is_empty() {
             untouched_substring_total += substring.len();
             if untouched_substring.len() < EDIT_MAX_LISTED_LOCATIONS {
-                untouched_substring.extend(locations(&path, &file.text, &substring));
+                untouched_substring.extend(locations(&path, text, &substring));
             }
         } else {
-            matched.push((path, whole));
+            matched.push((path.clone(), whole));
+            if let Some(file) = loaded {
+                working.insert(path, file);
+            }
         }
     }
     let total = matched
