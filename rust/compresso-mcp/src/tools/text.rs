@@ -80,6 +80,14 @@ impl Out {
         self.notes.push(note.into());
     }
 
+    /// Ends a section: its notes print now, before the next section's
+    /// content (E17-36, D101).
+    fn flush_notes(&mut self) {
+        for note in std::mem::take(&mut self.notes) {
+            self.line(format!("[{note}]"));
+        }
+    }
+
     /// The stale-index hint is common to every repository tool and closes
     /// the result.
     fn finish(mut self, payload: &Value) -> String {
@@ -348,7 +356,12 @@ fn grep(payload: &Value, out: &mut Out) {
     let mut unlisted = 0;
     let (mut named_tests, mut named_above) = (false, false);
     for result in array(payload, "results") {
-        let pattern = string(result, "pattern").unwrap_or_default();
+        let mut pattern = string(result, "pattern").unwrap_or_default().to_owned();
+        // A pattern's own scope (E17-36, D101), as the caller wrote it.
+        if let Some(scope) = string(result, "path") {
+            pattern.push_str(" in ");
+            pattern.push_str(scope);
+        }
         let matches = number(result, "matches_total");
         if matches == 0 {
             out.line(format!("# {pattern} — no matches"));
@@ -391,6 +404,25 @@ fn grep(payload: &Value, out: &mut Out) {
             }
         }
     }
+    let clamped = array(payload, "clamped")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    if !clamped.is_empty() {
+        out.note(format!("limits clamped: {}", clamped.join(", ")));
+    }
+    // A pattern whose own scope was rejected (E17-36, D101): its section
+    // is the error; the caller wrote the pattern and the scope.
+    for failed in array(payload, "patterns_failed") {
+        let error = failed.get("error").unwrap_or(&Value::Null);
+        out.line(format!(
+            "# {} in {} — [{}] {}",
+            string(failed, "pattern").unwrap_or_default(),
+            string(failed, "path").unwrap_or_default(),
+            string(error, "code").unwrap_or_default(),
+            string(error, "message").unwrap_or_default()
+        ));
+    }
     if named_tests {
         out.note(
             "tests: test-code lines, unlisted while code matches; read them or grep a test path",
@@ -415,16 +447,29 @@ fn grep(payload: &Value, out: &mut Out) {
             "{unlisted} matching lines counted but not listed; narrow with path or a more specific pattern rather than raising limits"
         ));
     }
+    // A packed call's reads (E17-36, D101) follow every grep section and
+    // its notes, so raw file content never precedes a grep header.
+    if let Some(ranges) = payload.get("ranges").and_then(Value::as_array) {
+        out.flush_notes();
+        for range in ranges {
+            read_range(range, out);
+        }
+    }
 }
 
 /// A grep file header's path with the characters that could imitate the
 /// header's own syntax replaced by `?` (E17-34, D99): control characters,
-/// `;`, and a `(` after a space. Ordinary paths print unchanged.
+/// `;`, and a `(` after a space. A path starting with `# ` or `@@ ` would
+/// imitate a pattern or read section header, so that first character is
+/// replaced too (E17-36, D101). Ordinary paths print unchanged.
 fn header_path(path: &str) -> String {
     let mut previous = '\0';
+    let section = path.starts_with("# ") || path.starts_with("@@ ");
     path.chars()
-        .map(|character| {
+        .enumerate()
+        .map(|(index, character)| {
             let safe = match character {
+                _ if index == 0 && section => '?',
                 ';' => '?',
                 '(' if previous == ' ' => '?',
                 character if character.is_control() => '?',
@@ -678,6 +723,12 @@ fn edit(payload: &Value, out: &mut Out) {
         if payload.get("index_refreshed") == Some(&Value::Bool(false)) {
             header.push_str(", the index could not be refreshed, so new files may be missed");
         }
+        let outside = number(payload, "outside_scope_whole_total");
+        if outside > 0 {
+            header.push_str(&format!(
+                ", {outside} whole match(es) of an old name remain outside a rename's path scope"
+            ));
+        }
     }
     for (key, label) in [
         (
@@ -746,20 +797,45 @@ fn edit(payload: &Value, out: &mut Out) {
         if let Some(scope) = string(operation, "scope") {
             row.push_str(&format!(" under {scope}"));
         }
+        let scoped = operation.get("outside_scope_whole_total").is_some();
         row.push_str(&format!(
-            "; remaining: {} whole, {} substring, {} adjacent",
+            "; remaining{}: {} whole, {} substring, {} adjacent",
+            if scoped { " in scope" } else { "" },
             number(operation, "remaining_whole_total"),
             number(operation, "remaining_substring_total"),
             number(operation, "remaining_adjacent_total")
         ));
+        // A scoped rename (E17-36, D101) also states what it left outside.
+        let outside = number(operation, "outside_scope_whole_total");
+        if scoped {
+            row.push_str(&format!(
+                "; {}{outside} whole outside scope, not renamed",
+                if flag(operation, "outside_scope_searched") {
+                    ""
+                } else {
+                    "at least "
+                }
+            ));
+        }
         if operation.get("complete") == Some(&Value::Bool(false)) {
-            row.push_str("; INCOMPLETE: skipped files hold the old name");
+            let skipped = number(operation, "files_skipped_total") > 0;
+            row.push_str(match (skipped, outside > 0) {
+                (true, true) => "; INCOMPLETE: skipped files hold the old name, and it remains outside the scope",
+                (false, true) => "; INCOMPLETE: the old name remains outside the scope",
+                _ => "; INCOMPLETE: skipped files hold the old name",
+            });
         }
         out.line(row);
         edit_locations(
             "whole",
             array(operation, "remaining_whole"),
             number(operation, "remaining_whole_total"),
+            out,
+        );
+        edit_locations(
+            "outside scope",
+            array(operation, "outside_scope_whole"),
+            outside,
             out,
         );
         edit_locations(

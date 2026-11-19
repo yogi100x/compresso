@@ -374,6 +374,7 @@ fn execute_grep(
         max_files: arguments.max_files,
         max_matches_per_file: arguments.max_matches_per_file,
         context_lines: arguments.context_lines,
+        scopes: &[],
     };
     compresso_atlas::validate_grep(&options)
         .map_err(|error| RetrievalError::invalid(&error.to_string()))?;

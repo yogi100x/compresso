@@ -44,8 +44,15 @@ pub const GREP_REGEX_MAX_BYTES_PER_PATTERN: u64 = 64 * 1024 * 1024;
 /// Upper bound for [`GrepOptions::context_lines`].
 pub const GREP_MAX_CONTEXT_LINES: usize = 10;
 
-/// Compiled program ceiling: rejects patterns whose automaton would be large.
-const REGEX_SIZE_LIMIT: usize = 256 * 1024;
+/// Compiled program ceiling for a search pattern: rejects patterns whose
+/// automaton would be large. Matching is linear-time whatever the pattern,
+/// so this bounds memory only: at most 8 patterns per call, 32 MiB in all.
+/// Raised from 256 KiB (E17-36, D101), which refused ordinary patterns
+/// such as `\D{0,30}` (a counted repetition of a Unicode class compiles to
+/// about 1 MiB).
+const REGEX_SIZE_LIMIT: usize = 4 << 20;
+/// Compiled program ceiling for a path glob (unchanged).
+const GLOB_SIZE_LIMIT: usize = 256 * 1024;
 const REGEX_DFA_SIZE_LIMIT: usize = 2 << 20;
 const REGEX_NEST_LIMIT: u32 = 32;
 /// Bytes of context kept before the match when a long line is cut.
@@ -76,6 +83,8 @@ pub enum GrepError {
     InvalidLimit { name: &'static str, max: usize },
     #[error("context_lines must be from 0 through {max}")]
     InvalidContext { max: usize },
+    #[error("give one scope per pattern ({patterns} patterns, {scopes} scopes)")]
+    ScopeCount { patterns: usize, scopes: usize },
 }
 
 /// One content search: patterns, matching mode, scope, and output caps.
@@ -95,6 +104,10 @@ pub struct GrepOptions<'a> {
     /// Lines shown before and after each listed match (0 through
     /// [`GREP_MAX_CONTEXT_LINES`]); overlapping context is merged.
     pub context_lines: usize,
+    /// Per-pattern scopes (E17-36, D101), parsed like `path`: empty when no
+    /// pattern has one, else one entry per pattern. A pattern with a scope
+    /// searches only the files in scope of both `path` and its own scope.
+    pub scopes: &'a [Option<String>],
 }
 
 /// One line shown around a match, cut like a snippet.
@@ -365,7 +378,7 @@ fn compile_patterns(options: &GrepOptions<'_>) -> Result<Vec<Regex>, GrepError> 
 /// The regex crate's multi-line diagnostics, flattened to one line.
 fn compact_regex_error(error: &regex::Error) -> String {
     match error {
-        regex::Error::CompiledTooBig(_) => "the compiled pattern is too large".to_owned(),
+        regex::Error::CompiledTooBig(_) => "the compiled pattern is too large; shorten counted repetitions such as \\w{0,100}, or use ASCII classes such as [^0-9] or [A-Za-z0-9_]".to_owned(),
         other => other
             .to_string()
             .lines()
@@ -432,7 +445,7 @@ impl PathFilter {
         }
         source.push('$');
         let matcher = RegexBuilder::new(&source)
-            .size_limit(REGEX_SIZE_LIMIT)
+            .size_limit(GLOB_SIZE_LIMIT)
             .build()
             .map_err(|_| invalid("is not a valid glob"))?;
         Ok(Some(Self::Glob { matcher, basename }))
@@ -474,7 +487,29 @@ pub fn validate_grep(options: &GrepOptions<'_>) -> Result<(), GrepError> {
         options.max_matches_per_file,
         GREP_MAX_MATCHES_PER_FILE_LIMIT,
     )?;
-    validate_context(options.context_lines)
+    validate_context(options.context_lines)?;
+    scope_filters(options).map(|_| ())
+}
+
+/// The parsed per-pattern scopes, one per pattern (`None` = unscoped).
+fn scope_filters(options: &GrepOptions<'_>) -> Result<Vec<Option<PathFilter>>, GrepError> {
+    if options.scopes.is_empty() {
+        return Ok(options.patterns.iter().map(|_| None).collect());
+    }
+    if options.scopes.len() != options.patterns.len() {
+        return Err(GrepError::ScopeCount {
+            patterns: options.patterns.len(),
+            scopes: options.scopes.len(),
+        });
+    }
+    options
+        .scopes
+        .iter()
+        .map(|scope| match scope {
+            Some(scope) => PathFilter::parse(scope),
+            None => Ok(None),
+        })
+        .collect()
 }
 
 fn validate_context(context_lines: usize) -> Result<(), GrepError> {
@@ -600,6 +635,10 @@ fn grep_with_regex_budget(
         GREP_MAX_MATCHES_PER_FILE_LIMIT,
     )?;
     validate_context(options.context_lines)?;
+    let scopes = scope_filters(options)?;
+    // A file is in scope when the call's filter admits it and at least one
+    // pattern may search it.
+    let scoped_only = scopes.iter().all(Option::is_some);
 
     let repository = store.repository(repo)?;
     let root = canonical_query_root(&repository.root)?;
@@ -627,6 +666,11 @@ fn grep_with_regex_budget(
             || filter
                 .as_ref()
                 .is_some_and(|filter| !filter.matches(&record.path))
+            || (scoped_only
+                && !scopes
+                    .iter()
+                    .flatten()
+                    .any(|scope| scope.matches(&record.path)))
         {
             continue;
         }
@@ -664,7 +708,13 @@ fn grep_with_regex_budget(
         // Snippets and symbols are built while the source is at hand, so a
         // search never holds more than one file's content.
         let mut symbols = None;
-        for (matcher, scan) in matchers.iter().zip(&mut scans) {
+        for ((matcher, scan), scope) in matchers.iter().zip(&mut scans).zip(&scopes) {
+            if scope
+                .as_ref()
+                .is_some_and(|scope| !scope.matches(&record.path))
+            {
+                continue;
+            }
             if options.regex {
                 if scan.exhausted || scan.regex_bytes_left < source_bytes {
                     scan.exhausted = true;
@@ -996,6 +1046,7 @@ mod tests {
             max_files: 10,
             max_matches_per_file: 5,
             context_lines: 0,
+            scopes: &[],
         };
         let budget = 2 * source.len() as u64;
         let cut = grep_with_regex_budget(&store, repo, &options(true), budget).expect("grep");

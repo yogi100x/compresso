@@ -1224,3 +1224,47 @@ fn test_an_escaped_dollar_is_literal_text_and_kept() {
         1
     );
 }
+
+/// E17-36 (D101): a rename scoped by path also counts the whole matches of
+/// the old name left outside its scope, and is not complete while any
+/// remain; an unscoped rename has nothing outside.
+#[test]
+fn test_a_scoped_rename_counts_whole_matches_outside_its_scope() {
+    let fixture = Fixture::new(&[
+        (
+            "consensus/vote.rs",
+            b"pub fn tally_votes() {}\nfn run() { tally_votes(); }\n",
+        ),
+        (
+            "net/peer.rs",
+            b"// see tally_votes in consensus\nfn unrelated() {}\n",
+        ),
+        ("net/other.rs", b"fn tally_votes_v2() {}\n"),
+    ]);
+    let report = fixture
+        .apply(vec![rename(
+            "tally_votes",
+            "count_votes",
+            Some("consensus"),
+            None,
+        )])
+        .expect("rename applies");
+    let outcome = report.operations[0].rename.as_ref().expect("outcome");
+    assert_eq!(outcome.remaining_whole_total, 0);
+    assert_eq!(outcome.outside_whole_total, 1);
+    assert_eq!(outcome.outside_whole[0].path, "net/peer.rs");
+    assert_eq!(outcome.outside_whole[0].line, 1);
+    assert!(!outcome.complete, "a match outside the scope remains");
+    assert_eq!(
+        fixture.text("net/peer.rs"),
+        "// see tally_votes in consensus\nfn unrelated() {}\n"
+    );
+
+    let fixture = Fixture::new(&[("lib.rs", b"fn tally_votes() {}\n")]);
+    let report = fixture
+        .apply(vec![rename("tally_votes", "count_votes", None, None)])
+        .expect("rename applies");
+    let outcome = report.operations[0].rename.as_ref().expect("outcome");
+    assert_eq!(outcome.outside_whole_total, 0);
+    assert!(outcome.complete);
+}

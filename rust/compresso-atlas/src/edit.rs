@@ -98,6 +98,9 @@ pub const EDIT_MAX_FILE_BYTES: u64 = DEFAULT_MAX_FILE_BYTES;
 pub const EDIT_MAX_SCAN_BYTES: u64 = 256 * 1024 * 1024;
 /// Most locations listed per list in a report or error; totals are exact.
 pub const EDIT_MAX_LISTED_LOCATIONS: usize = 20;
+/// Most bytes a scoped rename reads outside its scope to count the whole
+/// matches it left there (E17-36, D101).
+pub const EDIT_MAX_OUTSIDE_SCAN_BYTES: u64 = 64 * 1024 * 1024;
 /// Largest dry-run diff, in bytes.
 pub const EDIT_MAX_DIFF_BYTES: usize = 64 * 1024;
 const DIFF_CONTEXT_LINES: usize = 2;
@@ -306,9 +309,19 @@ pub struct RenameOutcome {
     pub remaining_adjacent: Vec<EditLocation>,
     /// Whole-identifier occurrences of `new` that existed before the edit.
     pub new_name_preexisting: usize,
-    /// Every file in scope was searched. `false` when a file holding the old
-    /// name could not be searched or edited (see `files_skipped`), so 0
-    /// remaining matches does not prove the rename is complete.
+    /// For a scoped rename (E17-36, D101), whole-identifier occurrences of
+    /// `old` in indexed files outside the scope, which the rename did not
+    /// touch; always 0 for an unscoped rename.
+    pub outside_whole_total: usize,
+    pub outside_whole: Vec<EditLocation>,
+    /// Every indexed file outside the scope was searched for `outside_whole`
+    /// (`false` when [`EDIT_MAX_OUTSIDE_SCAN_BYTES`] stopped the search, so
+    /// `outside_whole_total` is a lower bound).
+    pub outside_searched: bool,
+    /// The rename left nothing behind that it could have missed: every file
+    /// in scope was searched (`false` when a file holding the old name could
+    /// not be searched or edited, see `files_skipped`), the index was
+    /// refreshed, and no whole match remains outside a scope.
     pub complete: bool,
 }
 
@@ -1719,6 +1732,10 @@ fn apply_rename(
     remaining_whole.truncate(EDIT_MAX_LISTED_LOCATIONS);
     remaining_substring.truncate(EDIT_MAX_LISTED_LOCATIONS);
     remaining_adjacent.truncate(EDIT_MAX_LISTED_LOCATIONS);
+    let outside = path_filter
+        .as_ref()
+        .map(|filter| outside_matches(gate, working, filter, old))
+        .unwrap_or_default();
     Ok(OperationOutcome {
         kind: "rename",
         sites: total,
@@ -1726,7 +1743,10 @@ fn apply_rename(
         rename: Some(RenameOutcome {
             scope: spec.filter.map(str::to_owned),
             files_searched: searched.len(),
-            complete: skipped.is_empty() && gate.index_refreshed,
+            complete: skipped.is_empty()
+                && gate.index_refreshed
+                && outside.total == 0
+                && outside.searched,
             files_skipped: skipped,
             remaining_whole_total,
             remaining_whole,
@@ -1735,8 +1755,72 @@ fn apply_rename(
             remaining_adjacent_total,
             remaining_adjacent,
             new_name_preexisting,
+            outside_whole_total: outside.total,
+            outside_whole: outside.locations,
+            outside_searched: outside.searched,
         }),
     })
+}
+
+/// Whole matches of `old` a scoped rename left outside its scope.
+struct Outside {
+    total: usize,
+    locations: Vec<EditLocation>,
+    searched: bool,
+}
+
+impl Default for Outside {
+    fn default() -> Self {
+        Self {
+            total: 0,
+            locations: Vec::new(),
+            searched: true,
+        }
+    }
+}
+
+/// Counts the whole matches of `old` in the indexed files outside `filter`,
+/// through the same gates as the scope (a file the edit may not read is
+/// skipped), reading at most [`EDIT_MAX_OUTSIDE_SCAN_BYTES`]. Nothing here
+/// is written.
+fn outside_matches(
+    gate: &Gate<'_>,
+    working: &BTreeMap<String, WorkingFile>,
+    filter: &PathFilter,
+    old: &str,
+) -> Outside {
+    let mut outside = Outside::default();
+    let mut read = 0_u64;
+    for path in gate.indexed.keys().filter(|path| !filter.matches(path)) {
+        let loaded;
+        let file = match working.get(path) {
+            Some(file) => file,
+            None => match load(gate, path) {
+                Ok(file) => {
+                    read = read.saturating_add(file.original.len() as u64);
+                    if read > EDIT_MAX_OUTSIDE_SCAN_BYTES {
+                        outside.searched = false;
+                        break;
+                    }
+                    loaded = file;
+                    &loaded
+                }
+                Err(_) => continue,
+            },
+        };
+        if !file.text.contains(old) {
+            continue;
+        }
+        let whole = identifier_occurrences(&file.text, old, file.language).whole;
+        outside.total += whole.len();
+        if outside.locations.len() < EDIT_MAX_LISTED_LOCATIONS {
+            outside
+                .locations
+                .extend(locations(path, &file.text, &whole));
+        }
+    }
+    outside.locations.truncate(EDIT_MAX_LISTED_LOCATIONS);
+    outside
 }
 
 /// Resolves `path` through the read gate again and confirms it is still the

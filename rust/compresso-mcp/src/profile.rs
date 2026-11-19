@@ -117,7 +117,7 @@ pub(crate) const LEAN_TOOLS: &[LeanTool] = &[
     },
     LeanTool {
         name: "compresso_grep",
-        description: "Text or regex search of indexed files, up to 8 patterns: use sites, enclosing symbol, exact totals; test hits named by line. A hit plus a few context_lines usually replaces a read.",
+        description: "Text or regex search: use sites, enclosing symbol, exact totals; test hits named by line. A hit plus context_lines usually replaces a read. One call carries every lookup you have: patterns and ranges.",
         hint: "compresso_grep for text and use sites",
     },
     LeanTool {
@@ -137,7 +137,7 @@ pub(crate) const LEAN_TOOLS: &[LeanTool] = &[
     },
     LeanTool {
         name: "compresso_read",
-        description: "Narrow line read: 80 lines per range, 200 per call; names symbols past that; end_line past EOF clamps.",
+        description: "Narrow line read: 80 lines per range, 200 per call; names symbols past that; end_line past EOF clamps. Searching too? send the ranges in compresso_grep.",
         hint: "compresso_read for line ranges",
     },
     LeanTool {
@@ -155,6 +155,33 @@ pub(crate) const LEAN_TOOLS: &[LeanTool] = &[
 /// The lean grep `context_lines` description (E17-34, D99).
 const LEAN_GREP_CONTEXT_LINES: &str =
     "Lines before and after each listed match, merged; within max_tokens.";
+
+/// The lean grep `patterns` (E17-36, D101): a string, or an object giving
+/// one pattern its own path scope.
+fn lean_grep_patterns() -> Value {
+    serde_json::json!({
+        "type": "array", "minItems": 1, "maxItems": 8,
+        "items": { "anyOf": [
+            { "type": "string" },
+            { "type": "object", "required": ["pattern"], "properties": {
+                "pattern": { "type": "string" }, "path": { "type": "string" } } }
+        ] },
+        "description": "e.g. ['Foo', {pattern:'Bar', path:'src/**'}]"
+    })
+}
+
+/// The lean grep `ranges` (E17-36, D101): reads in the same call.
+fn lean_grep_ranges() -> Value {
+    serde_json::json!({
+        "type": "array", "maxItems": 8,
+        "items": { "type": "object", "required": ["path"], "properties": {
+            "path": { "type": "string" }, "start_line": { "type": "integer" }, "end_line": { "type": "integer" } } },
+        "description": "Lines to read in this call, e.g. from an earlier result; they add 2000 to the default max_tokens."
+    })
+}
+
+/// The lean read `ranges` description (E17-36, D101).
+const LEAN_READ_RANGES: &str = "Up to 8 ranges of any files, sharing max_tokens.";
 
 /// Sentence the lean instructions add only when the edit tool is served.
 const EDIT_RULE: &str = "Make multi-site edits and renames with compresso_edit, not shell text substitution; a rename is done only when its report shows 0 remaining whole matches and is not marked incomplete; check the substring and adjacent matches it lists.";
@@ -186,6 +213,24 @@ pub(crate) fn lean_tools(tools: Vec<Tool>) -> Vec<Tool> {
                     // The text form names some rows by line (E17-34, D99).
                     if let Some(Value::Object(property)) = properties.get_mut("context_lines") {
                         property.insert("description".to_owned(), LEAN_GREP_CONTEXT_LINES.into());
+                    }
+                    // Packed lookups (E17-36, D101): scoped patterns and
+                    // read ranges in one call. The single `pattern` stays
+                    // accepted but is not advertised, so one call is shaped
+                    // to carry several lookups.
+                    properties.remove("pattern");
+                    properties.insert("patterns".to_owned(), lean_grep_patterns());
+                    properties.insert("ranges".to_owned(), lean_grep_ranges());
+                }
+                if lean.name == "compresso_read" {
+                    // Only `ranges` is advertised (E17-36, D101): one call
+                    // reads several files. A single `path` (and `gate`, which
+                    // reads one file) stays accepted.
+                    for single in ["path", "start_line", "end_line", "gate"] {
+                        properties.remove(single);
+                    }
+                    if let Some(Value::Object(property)) = properties.get_mut("ranges") {
+                        property.insert("description".to_owned(), LEAN_READ_RANGES.into());
                     }
                 }
             }

@@ -334,6 +334,8 @@ fn test_lean_descriptions_steer_toward_grep_hits_unfold_and_narrow_reads() {
     let read = description("compresso_read");
     assert!(read.contains("Narrow"), "{read}");
     assert!(read.contains("80 lines per range"), "{read}");
+    // E17-36 (D101): reads ride along with searches.
+    assert!(read.contains("send the ranges in compresso_grep"), "{read}");
 }
 
 /// E17-34 (D99): the lean grep wording matches the text form, which names
@@ -433,4 +435,45 @@ fn test_profile_names_round_trip() {
         assert_eq!(McpToolProfile::parse(profile.name()), Some(profile));
     }
     assert_eq!(McpToolProfile::parse("LEAN"), None);
+}
+
+/// E17-36 (D101): the lean grep schema advertises packed lookups: a pattern
+/// may carry its own path scope, and `ranges` reads lines in the same call.
+/// The full schema keeps strings only and no ranges.
+#[test]
+fn test_lean_grep_schema_advertises_packed_lookups() {
+    let grep_properties = |profile| {
+        let (tools, _) = advertised_surface(profile, false);
+        let grep = tools
+            .into_iter()
+            .find(|tool| tool.name == "compresso_grep")
+            .expect("grep served");
+        grep.input_schema["properties"].clone()
+    };
+    let lean = grep_properties(McpToolProfile::Lean);
+    let shapes = lean["patterns"]["items"]["anyOf"]
+        .as_array()
+        .expect("a pattern is a string or a scoped object");
+    assert!(
+        shapes.iter().any(|shape| shape["type"] == "string"),
+        "{lean}"
+    );
+    assert!(
+        shapes.iter().any(|shape| shape["type"] == "object"
+            && shape["properties"]["pattern"].is_object()
+            && shape["properties"]["path"].is_object()),
+        "{lean}"
+    );
+    assert_eq!(lean["ranges"]["maxItems"], json!(8), "{lean}");
+    assert!(
+        lean["ranges"]["description"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("from an earlier result"),
+        "{lean}"
+    );
+    assert!(lean["ranges"]["items"]["properties"]["start_line"].is_object());
+    let full = grep_properties(McpToolProfile::Full);
+    assert_eq!(full["patterns"]["items"]["type"], json!("string"));
+    assert!(full.get("ranges").is_none(), "{full}");
 }

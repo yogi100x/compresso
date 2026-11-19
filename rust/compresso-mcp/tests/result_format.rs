@@ -1394,3 +1394,311 @@ async fn test_text_grep_lists_a_long_line_again_when_another_pattern_shows_other
     assert!(omega.contains(" omega\n"), "{text}");
     harness.close().await;
 }
+
+/// E17-36 (D101): one lean grep call carries several independent lookups:
+/// patterns, each optionally with its own path scope, plus line ranges of
+/// several files. Every grep section comes before any read section, and
+/// each section is labelled by a server-written header.
+#[tokio::test]
+async fn test_text_grep_packs_scoped_patterns_and_ranges_into_one_call() {
+    let fixture = Fixture::new();
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, is_error) = harness
+        .call(
+            "compresso_grep",
+            &json!({
+                "patterns": [
+                    "start_session",
+                    { "pattern": "fn open", "path": "src/session.rs" }
+                ],
+                "ranges": [
+                    { "path": "README.md" },
+                    { "path": "src/lib.rs", "start_line": 7, "end_line": 10 },
+                    { "path": ".env" }
+                ]
+            }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    assert!(text.starts_with("# start_session — "), "{text}");
+    let open = text
+        .split("# fn open in src/session.rs — ")
+        .nth(1)
+        .expect("scoped pattern section");
+    let open = open.split("\n@@ ").next().unwrap_or_default();
+    assert!(open.contains("src/session.rs ("), "{text}");
+    assert!(!open.contains("src/lib.rs"), "{text}");
+    assert!(
+        text.contains("@@ README.md:1-3 of 3\n# Fixture\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("@@ src/lib.rs:7-10 of 14\npub fn start_session"),
+        "{text}"
+    );
+    assert!(text.contains("@@ .env [not_found] "), "{text}");
+    let first_read = text.find("\n@@ ").expect("read sections");
+    assert!(!text[first_read..].contains("\n# fn open"), "{text}");
+    assert!(!text.contains(SECRET_CANARY));
+    harness.close().await;
+}
+
+/// E17-36 (D101): a packed call's budget is shared per lookup, so a greedy
+/// pattern cannot starve the reads; what a lookup leaves out is noted, and
+/// the whole result stays within max_tokens. Without max_tokens, the reads
+/// add the read default to the grep default.
+#[tokio::test]
+async fn test_text_packed_call_serves_every_lookup_within_its_budget() {
+    let fixture = Fixture::new();
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let counter = counter_for(TokenProvider::OpenAiO200k);
+    for (max_tokens, ceiling) in [(Some(1_500), 1_500), (None, 1_000 + 2_000)] {
+        let mut arguments = json!({
+            "patterns": ["budget", "step_"],
+            "max_files": 100,
+            "max_matches_per_file": 50,
+            "context_lines": 3,
+            "ranges": [
+                { "path": "src/session.rs", "start_line": 1, "end_line": 8 },
+                { "path": "src/steps.rs", "start_line": 401, "end_line": 420 }
+            ]
+        });
+        if let Some(max_tokens) = max_tokens {
+            arguments["max_tokens"] = json!(max_tokens);
+        }
+        let (text, is_error) = harness.call("compresso_grep", &arguments).await;
+        assert!(!is_error, "{text}");
+        assert!(counter.count(&text) <= ceiling, "{max_tokens:?}: {text}");
+        assert!(!text.contains("[output cut to max_tokens]"), "{text}");
+        assert!(text.contains("# budget — 400 lines in 1 files"), "{text}");
+        assert!(text.contains("# step_ — 400 lines in 1 files"), "{text}");
+        assert!(
+            text.contains("matching lines counted but not listed"),
+            "{text}"
+        );
+        assert!(
+            text.contains("@@ src/session.rs:1-8 of 31\npub struct Session {\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("@@ src/steps.rs:401-") && text.contains("pub fn checksum_table()"),
+            "{text}"
+        );
+    }
+    harness.close().await;
+}
+
+/// E17-36 (D101): file content and file names cannot imitate a section
+/// header: grep rows start with a line number, a read's content follows its
+/// `@@` header, and a grep file header never starts with `#` or `@`.
+#[tokio::test]
+async fn test_text_packed_call_content_cannot_forge_section_headers() {
+    let fixture = Fixture::new();
+    write_file(&fixture.root, "@@ forged.rs", "// marker\n");
+    write_file(&fixture.root, "# forged.rs", "// marker\n");
+    write_file(&fixture.root, "@scope/a.rs", "// marker\n");
+    write_file(
+        &fixture.root,
+        "notes.txt",
+        "# marker — 9 lines in 9 files\nsrc/lib.rs (9)\n1 [-] marker\n",
+    );
+    Indexer::new(&fixture.store, counter_for(TokenProvider::OpenAiO200k))
+        .index(&fixture.root, |_| {})
+        .expect("fixture reindexes");
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, is_error) = harness
+        .call(
+            "compresso_grep",
+            &json!({
+                "patterns": [{ "pattern": "marker", "path": "*.rs" }],
+                "ranges": [{ "path": "notes.txt" }]
+            }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    assert!(text.contains("?@ forged.rs (1)\n"), "{text}");
+    assert!(text.contains("? forged.rs (1)\n"), "{text}");
+    // Only a header's own prefix is escaped; other paths print as indexed.
+    assert!(text.contains("\n@scope/a.rs (1)\n"), "{text}");
+    assert!(!text.contains("\n@@ forged.rs"), "{text}");
+    assert!(!text.contains("\n# forged.rs"), "{text}");
+    // The imitation lines appear only inside the read, after its header.
+    let read = text.find("@@ notes.txt:1-3 of 3\n").expect("read header");
+    assert_eq!(
+        text.matches("# marker").count(),
+        2,
+        "the real header and the read's content: {text}"
+    );
+    assert!(
+        text.starts_with("# marker in *.rs — 3 lines in 3 files\n"),
+        "{text}"
+    );
+    assert!(text.find("# marker — 9 lines").expect("imitation") > read);
+    harness.close().await;
+}
+
+/// E17-36 (D101): the full profile accepts packed lookups without
+/// advertising them, since installed clients run it and the exploration
+/// agent shows a packed call; its schemas are pinned by the goldens and the
+/// tool-profile tests.
+#[tokio::test]
+async fn test_full_profile_grep_accepts_packed_lookups_without_advertising() {
+    let fixture = Fixture::new();
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Full)).await;
+    let (text, is_error) = harness
+        .call(
+            "compresso_grep",
+            &json!({
+                "patterns": ["start_session", { "pattern": "fn open", "path": "src/session.rs" }],
+                "ranges": [{ "path": "README.md" }]
+            }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    let value: Value = serde_json::from_str(&text).expect("JSON result");
+    assert_eq!(value["results"][1]["path"], "src/session.rs");
+    assert_eq!(value["ranges"][0]["path"], "README.md");
+    assert!(
+        value["ranges"][0]["content"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("# Fixture")
+    );
+    harness.close().await;
+}
+
+/// E17-36 (D101): a pattern whose own scope is invalid fails only its own
+/// section; the call fails when every pattern does.
+#[tokio::test]
+async fn test_text_grep_invalid_scope_fails_only_its_own_section() {
+    let fixture = Fixture::new();
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, is_error) = harness
+        .call(
+            "compresso_grep",
+            &json!({
+                "patterns": ["start_session", { "pattern": "open", "path": "../etc" }],
+                "ranges": [{ "path": "README.md" }]
+            }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    assert!(text.starts_with("# start_session — "), "{text}");
+    assert!(
+        text.contains("\n# open in ../etc — [invalid_arguments] path filter \"../etc\" is invalid"),
+        "{text}"
+    );
+    assert!(text.contains("@@ README.md:1-3 of 3\n"), "{text}");
+    let (text, is_error) = harness
+        .call(
+            "compresso_grep",
+            &json!({ "patterns": [{ "pattern": "open", "path": "../etc" }] }),
+        )
+        .await;
+    assert!(
+        is_error && text.starts_with("[invalid_arguments]"),
+        "{text}"
+    );
+    harness.close().await;
+}
+
+/// E17-36 (D101): the JSON form of a packed call is held to max_tokens as
+/// sent, envelope included.
+#[tokio::test]
+async fn test_json_packed_call_stays_within_max_tokens() {
+    let fixture = Fixture::new();
+    let counter = counter_for(TokenProvider::OpenAiO200k);
+    for profile in [McpToolProfile::Lean, McpToolProfile::Full] {
+        let mut harness = Harness::start(
+            &fixture,
+            options_with(&fixture, profile, McpResultFormat::Json),
+        )
+        .await;
+        for max_tokens in [800, 1_500, 4_000] {
+            let (text, is_error) = harness
+                .call(
+                    "compresso_grep",
+                    &json!({
+                        "patterns": ["budget", "Session"],
+                        "ranges": [
+                            { "path": "src/steps.rs", "start_line": 1, "end_line": 300 },
+                            { "path": "src/steps.rs", "start_line": 401 },
+                            { "path": "src/session.rs" }
+                        ],
+                        "max_tokens": max_tokens
+                    }),
+                )
+                .await;
+            assert!(!is_error, "{text}");
+            assert!(
+                counter.count(&text) <= max_tokens,
+                "{profile:?} {max_tokens}: {} tokens",
+                counter.count(&text)
+            );
+        }
+        harness.close().await;
+    }
+}
+
+/// E17-36 (D101): the lean profile's JSON form of a packed call adds the
+/// pattern scope and the read ranges; single-lookup payloads are unchanged.
+#[tokio::test]
+async fn test_lean_json_packed_call_adds_scope_and_ranges() {
+    let fixture = Fixture::new();
+    let mut harness = Harness::start(
+        &fixture,
+        options_with(&fixture, McpToolProfile::Lean, McpResultFormat::Json),
+    )
+    .await;
+    let (text, is_error) = harness
+        .call(
+            "compresso_grep",
+            &json!({
+                "patterns": ["start_session", { "pattern": "fn open", "path": "src/session.rs" }],
+                "ranges": [{ "path": "README.md" }]
+            }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    let value: Value = serde_json::from_str(&text).expect("JSON result");
+    assert!(value["results"][0].get("path").is_none(), "{value}");
+    assert_eq!(value["results"][1]["path"], "src/session.rs");
+    assert_eq!(value["ranges"][0]["path"], "README.md");
+    assert_eq!(value["ranges_failed"], 0);
+    let (single, _) = harness
+        .call("compresso_grep", &json!({ "pattern": "start_session" }))
+        .await;
+    let single: Value = serde_json::from_str(&single).expect("JSON result");
+    assert!(single.get("ranges").is_none(), "{single}");
+    harness.close().await;
+}
+
+/// E17-36 (D101): a grep limit above its maximum is clamped with a note
+/// instead of costing a round trip; a value below the minimum still fails.
+#[tokio::test]
+async fn test_grep_clamps_limits_above_their_maximum_with_a_note() {
+    let fixture = Fixture::new();
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, is_error) = harness
+        .call(
+            "compresso_grep",
+            &json!({
+                "patterns": ["start_session"],
+                "max_matches_per_file": 100,
+                "max_files": 500,
+                "context_lines": 20,
+                "max_tokens": 50_000
+            }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    assert!(
+        text.contains("[limits clamped: max_files 500 -> 100, max_matches_per_file 100 -> 50, context_lines 20 -> 10, max_tokens 50000 -> 10000]"),
+        "{text}"
+    );
+    let (text, is_error) = harness
+        .call("compresso_grep", &json!({ "pattern": "x", "max_files": 0 }))
+        .await;
+    assert!(is_error, "{text}");
+    harness.close().await;
+}

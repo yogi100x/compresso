@@ -17,7 +17,7 @@ use super::common::{
     REINDEX_HINT, ToolFailure, ToolResult, checked_arguments, map_atlas_error, navigation_counter,
     optional_bool, optional_string, optional_usize, resolve_repository, with_budget,
 };
-use super::text;
+use super::{atlas_read, text};
 
 pub(crate) const TOOL_NAME: &str = "compresso_grep";
 const DEFAULT_MAX_FILES: usize = 20;
@@ -54,22 +54,33 @@ pub(crate) fn dispatch(
             "max_matches_per_file",
             "context_lines",
             "max_tokens",
+            // Packed lookups (E17-36, D101): accepted in every profile,
+            // advertised only by the lean schema.
+            "ranges",
         ],
     )?;
     let root = optional_string(&mut arguments, "root", false)?;
-    let patterns = patterns_argument(&mut arguments)?;
+    let (patterns, scopes, failed) = patterns_argument(&mut arguments)?;
+    let ranges = arguments
+        .remove("ranges")
+        .map(atlas_read::parse_ranges)
+        .transpose()?;
+    let range_count = ranges.as_ref().map_or(0, Vec::len);
     let regex = optional_bool(&mut arguments, "regex")?.unwrap_or(false);
     let case_insensitive = optional_bool(&mut arguments, "case_insensitive")?.unwrap_or(false);
     let path = optional_string(&mut arguments, "path", false)?;
-    let max_files = optional_usize(
+    let mut clamped = Vec::new();
+    let max_files = clamped_usize(
         &mut arguments,
+        form.is_lean().then_some(&mut clamped),
         "max_files",
         1,
         compresso_atlas::GREP_MAX_FILES_LIMIT,
     )?
     .unwrap_or(DEFAULT_MAX_FILES);
-    let max_matches_per_file = optional_usize(
+    let max_matches_per_file = clamped_usize(
         &mut arguments,
+        form.is_lean().then_some(&mut clamped),
         "max_matches_per_file",
         1,
         compresso_atlas::GREP_MAX_MATCHES_PER_FILE_LIMIT,
@@ -79,19 +90,32 @@ pub(crate) fn dispatch(
     } else {
         DEFAULT_MAX_MATCHES_PER_FILE
     });
-    let context_lines = optional_usize(
+    let context_lines = clamped_usize(
         &mut arguments,
+        form.is_lean().then_some(&mut clamped),
         "context_lines",
         0,
         compresso_atlas::GREP_MAX_CONTEXT_LINES,
     )?
     .unwrap_or(0);
-    let max_tokens = optional_usize(&mut arguments, "max_tokens", MIN_TOKENS, MAX_TOKENS)?
-        .unwrap_or(if form.is_lean() {
-            LEAN_DEFAULT_TOKENS
-        } else {
-            DEFAULT_TOKENS
-        });
+    let grep_default = if form.is_lean() {
+        LEAN_DEFAULT_TOKENS
+    } else {
+        DEFAULT_TOKENS
+    };
+    let ranges_default = if range_count > 0 {
+        RANGES_DEFAULT_TOKENS
+    } else {
+        0
+    };
+    let max_tokens = clamped_usize(
+        &mut arguments,
+        form.is_lean().then_some(&mut clamped),
+        "max_tokens",
+        MIN_TOKENS,
+        MAX_TOKENS,
+    )?
+    .unwrap_or(grep_default + ranges_default);
     let options = GrepOptions {
         patterns: &patterns,
         regex,
@@ -100,6 +124,7 @@ pub(crate) fn dispatch(
         max_files,
         max_matches_per_file,
         context_lines,
+        scopes: &scopes,
     };
     // Reject a bad pattern before the repository is even resolved.
     validate_grep(&options).map_err(|error| map_grep_error(error.into()))?;
@@ -114,10 +139,26 @@ pub(crate) fn dispatch(
         TestCode::default()
     };
 
-    let mut budget = max_tokens.saturating_mul(4) / 5;
-    loop {
+    // A packed call shares max_tokens in the proportion of the two
+    // defaults, so a greedy pattern cannot starve the reads (the reads share
+    // theirs evenly by range); the reads also get whatever the grep left.
+    let grep_tokens = if range_count == 0 {
+        max_tokens
+    } else {
+        (max_tokens * grep_default / (grep_default + ranges_default))
+            .max(MIN_TOKENS.min(max_tokens))
+    };
+    let mut budget = grep_tokens.saturating_mul(4) / 5;
+    let (mut payload, tokens) = loop {
         let fitted = report.fit_to_budget(budget, counter);
         let mut payload = payload(&fitted, &options, &operation_id, stale, counter);
+        label_scopes(&mut payload, &scopes);
+        if !failed.is_empty() {
+            payload["patterns_failed"] = json!(failed);
+        }
+        if !clamped.is_empty() {
+            payload["clamped"] = json!(clamped);
+        }
         // Each form is held to max_tokens as it is sent.
         let tokens = if form.is_text() {
             compact_rows_of(&mut payload, &fitted, &tests, context_lines);
@@ -125,8 +166,8 @@ pub(crate) fn dispatch(
         } else {
             stabilize_tokens(&mut payload, counter)?
         };
-        if tokens <= max_tokens {
-            return Ok(with_budget(payload, max_tokens));
+        if tokens <= grep_tokens {
+            break (payload, tokens);
         }
         if budget == 0 {
             // Even with no line listed, the per-pattern totals do not fit.
@@ -135,35 +176,177 @@ pub(crate) fn dispatch(
                 patterns.len()
             )));
         }
-        budget = budget.saturating_sub(tokens - max_tokens + 16);
+        budget = budget.saturating_sub(tokens - grep_tokens + 16);
+    };
+    if let Some(ranges) = ranges {
+        let mut left = max_tokens
+            .saturating_sub(tokens)
+            .saturating_sub(RANGE_HEADER_TOKENS * range_count);
+        let truncated = payload["truncated"].as_bool().unwrap_or(false);
+        // The text form is re-fitted as sent by the caller; the JSON form
+        // is held to max_tokens here, envelope included, by withholding the
+        // overshoot from the reads' content budget.
+        for attempt in 1..=JSON_FIT_ATTEMPTS {
+            let reads = atlas_read::read_ranges(store, &repository, &ranges, left, form)?;
+            payload["ranges"] = json!(reads.values);
+            payload["ranges_failed"] = json!(reads.failed);
+            payload["truncated"] = Value::Bool(truncated || reads.truncated);
+            if form.is_text() {
+                break;
+            }
+            let sent = stabilize_tokens(&mut payload, counter)?;
+            if sent <= max_tokens || left == 0 || attempt == JSON_FIT_ATTEMPTS {
+                break;
+            }
+            left = left.saturating_sub(sent - max_tokens + 16);
+        }
+    }
+    Ok(with_budget(payload, max_tokens))
+}
+
+/// The tokens the read ranges of a packed lean call add to the default
+/// `max_tokens` (E17-36, D101): the `compresso_read` default, so packing a
+/// read never serves less than the separate read call would.
+pub(crate) const RANGES_DEFAULT_TOKENS: usize = atlas_read::READ_DEFAULT_TOKENS;
+/// Tokens withheld per range for its `@@` header and notes.
+const RANGE_HEADER_TOKENS: usize = 24;
+/// Read passes a JSON-form packed call makes to fit its envelope.
+const JSON_FIT_ATTEMPTS: usize = 4;
+
+/// A limit argument. In the lean profile a value above `maximum` is clamped
+/// to it and named in `clamped` (E17-36, D101), since a larger limit is a
+/// request the server can still answer; any other out-of-range value, and
+/// every out-of-range value in the full profile, is rejected as before.
+fn clamped_usize(
+    arguments: &mut Map<String, Value>,
+    clamped: Option<&mut Vec<String>>,
+    name: &'static str,
+    minimum: usize,
+    maximum: usize,
+) -> Result<Option<usize>, ToolFailure> {
+    if let Some(clamped) = clamped
+        && let Some(value) = arguments
+            .get(name)
+            .and_then(Value::as_u64)
+            .filter(|value| *value > maximum as u64)
+    {
+        arguments.remove(name);
+        clamped.push(format!("{name} {value} -> {maximum}"));
+        return Ok(Some(maximum));
+    }
+    optional_usize(arguments, name, minimum, maximum)
+}
+
+/// Names each scoped pattern's own path on its result (E17-36, D101).
+fn label_scopes(payload: &mut Value, scopes: &[Option<String>]) {
+    let Some(results) = payload["results"].as_array_mut() else {
+        return;
+    };
+    for (result, scope) in results.iter_mut().zip(scopes) {
+        if let Some(scope) = scope {
+            result["path"] = json!(scope);
+        }
     }
 }
 
-/// `patterns` (an array) or `pattern` (one string), exactly one of them.
-fn patterns_argument(arguments: &mut Map<String, Value>) -> Result<Vec<String>, ToolFailure> {
+/// The parsed `patterns`: the patterns searched, their scopes (empty when
+/// no pattern has one), and the scoped patterns whose scope was invalid.
+type Patterns = (Vec<String>, Vec<Option<String>>, Vec<Value>);
+
+/// `patterns` (an array) or `pattern` (one string), exactly one of them. A
+/// `patterns` entry may be `{pattern, path}`, giving that pattern its own
+/// scope (E17-36, D101). A pattern whose scope is invalid fails alone and is
+/// reported in its own section; when every pattern fails, the call fails.
+fn patterns_argument(arguments: &mut Map<String, Value>) -> Result<Patterns, ToolFailure> {
     let single = optional_string(arguments, "pattern", true)?;
     let many = arguments.remove("patterns");
-    match (single, many) {
-        (Some(pattern), None) => Ok(vec![pattern]),
+    let invalid = || {
+        ToolFailure::invalid(
+            "argument 'patterns' must be an array of strings or {pattern, path} objects.",
+        )
+    };
+    let entries = match (single, many) {
+        (Some(pattern), None) => return Ok((vec![pattern], Vec::new(), Vec::new())),
         (None, Some(Value::Array(values))) => values
             .into_iter()
             .map(|value| match value {
-                Value::String(pattern) => Ok(pattern),
-                _ => Err(ToolFailure::invalid(
-                    "argument 'patterns' must be an array of strings.",
-                )),
+                Value::String(pattern) => Ok((pattern, None)),
+                Value::Object(entry) => {
+                    let mut entry = checked_arguments(Some(entry), &["pattern", "path"])?;
+                    let pattern =
+                        optional_string(&mut entry, "pattern", true)?.ok_or_else(invalid)?;
+                    let path = optional_string(&mut entry, "path", false)?;
+                    Ok((pattern, path))
+                }
+                _ => Err(invalid()),
             })
-            .collect(),
-        (None, Some(_)) => Err(ToolFailure::invalid(
-            "argument 'patterns' must be an array of strings.",
-        )),
-        (Some(_), Some(_)) => Err(ToolFailure::invalid(
-            "pass either 'pattern' or 'patterns', not both.",
-        )),
-        (None, None) => Err(ToolFailure::invalid(
-            "missing required argument 'patterns' (or a single 'pattern').",
-        )),
+            .collect::<Result<Vec<_>, _>>()?,
+        (None, Some(_)) => return Err(invalid()),
+        (Some(_), Some(_)) => {
+            return Err(ToolFailure::invalid(
+                "pass either 'pattern' or 'patterns', not both.",
+            ));
+        }
+        (None, None) => {
+            return Err(ToolFailure::invalid(
+                "missing required argument 'patterns' (or a single 'pattern').",
+            ));
+        }
+    };
+    let scoped = entries.iter().any(|(_, scope)| scope.is_some());
+    if !scoped || entries.len() > compresso_atlas::GREP_MAX_PATTERNS {
+        // Unscoped, or a call error whatever the scopes: validated whole.
+        let (patterns, scopes): (Vec<_>, Vec<_>) = entries.into_iter().unzip();
+        return Ok((
+            patterns,
+            if scoped { scopes } else { Vec::new() },
+            Vec::new(),
+        ));
     }
+    let (mut kept, mut failed, mut first_failure) = (Vec::new(), Vec::new(), None);
+    for (pattern, scope) in entries {
+        match scope.as_deref().and_then(scope_failure) {
+            Some(failure) => {
+                failed.push(json!({
+                    "pattern": pattern,
+                    "path": scope,
+                    "error": { "code": failure.code(), "message": failure.message() },
+                }));
+                first_failure.get_or_insert(failure);
+            }
+            None => kept.push((pattern, scope)),
+        }
+    }
+    if kept.is_empty()
+        && let Some(failure) = first_failure
+    {
+        return Err(failure);
+    }
+    let any_scope = kept.iter().any(|(_, scope)| scope.is_some());
+    let (patterns, scopes): (Vec<_>, Vec<_>) = kept.into_iter().unzip();
+    Ok((
+        patterns,
+        if any_scope { scopes } else { Vec::new() },
+        failed,
+    ))
+}
+
+/// Why one pattern's own scope is rejected, if it is.
+fn scope_failure(scope: &str) -> Option<ToolFailure> {
+    let probe = [String::from("x")];
+    let scopes = [Some(scope.to_owned())];
+    validate_grep(&GrepOptions {
+        patterns: &probe,
+        regex: false,
+        case_insensitive: false,
+        path: None,
+        max_files: 1,
+        max_matches_per_file: 1,
+        context_lines: 0,
+        scopes: &scopes,
+    })
+    .err()
+    .map(|error| map_grep_error(error.into()))
 }
 
 fn map_grep_error(error: AtlasError) -> ToolFailure {

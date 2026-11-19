@@ -23,7 +23,7 @@ const SEARCH_DEFAULT_LIMIT: usize = 8;
 const SEARCH_DEFAULT_TOKENS: usize = 500;
 /// Most dropped hits that are still reported by location.
 const SEARCH_MAX_TRUNCATED_LOCATIONS: usize = 50;
-const READ_DEFAULT_TOKENS: usize = 2_000;
+pub(crate) const READ_DEFAULT_TOKENS: usize = 2_000;
 const CONTEXT_INITIAL_TOKENS: usize = 800;
 const CONTEXT_DEFAULT_CEILING: usize = 4_000;
 const CONTEXT_MAX_TOKENS: usize = 4_000;
@@ -520,22 +520,66 @@ fn read_ranges_tool(
     }
     let root = optional_string(&mut arguments, "root", false)?;
     let max_tokens = token_budget(&mut arguments, READ_DEFAULT_TOKENS)?;
+    let ranges = parse_ranges(ranges)?;
+    let repository = resolve_repository(store, repository_root, root.as_deref())?;
+    let reads = read_ranges(store, &repository, &ranges, max_tokens, form)?;
+    let payload = json!({
+        "schema_version": 1,
+        "operation_id": operation_identity().id,
+        "ranges": reads.values,
+        "ranges_failed": reads.failed,
+        "tokens_used": reads.tokens_used,
+        "token_provider": navigation_counter().provider(),
+        "truncated": reads.truncated
+    });
+    Ok(with_budget(payload, max_tokens))
+}
+
+/// The reads of one `ranges` argument: one value per range, in request
+/// order, each a read or that range's own error.
+pub(crate) struct RangeReads {
+    pub(crate) values: Vec<Value>,
+    pub(crate) failed: usize,
+    pub(crate) tokens_used: usize,
+    pub(crate) truncated: bool,
+}
+
+/// A `ranges` argument parsed and validated as a whole before any file is
+/// opened. `compresso_grep` takes the same argument in the lean profile
+/// (E17-36, D101).
+pub(crate) fn parse_ranges(ranges: Value) -> Result<Vec<RangeArgument>, ToolFailure> {
     let ranges = ranges_argument(ranges)?;
-    let requests = ranges
+    validate_read_requests(&requests_of(&ranges)).map_err(map_atlas_error)?;
+    Ok(ranges)
+}
+
+fn requests_of(ranges: &[RangeArgument]) -> Vec<ReadRequest<'_>> {
+    ranges
         .iter()
         .map(|(path, start_line, end_line)| ReadRequest {
             path,
             start_line: *start_line,
             end_line: *end_line,
         })
-        .collect::<Vec<_>>();
-    validate_read_requests(&requests).map_err(map_atlas_error)?;
-    let repository = resolve_repository(store, repository_root, root.as_deref())?;
+        .collect()
+}
 
+/// Reads parsed `ranges` under one shared `max_tokens` content budget. Each
+/// range passes every read gate on its own and fails on its own with the
+/// same code a single read would return; the text form holds each range to
+/// its line window and the call to its line total.
+pub(crate) fn read_ranges(
+    store: &Store,
+    repository: &compresso_store::RepoRecord,
+    ranges: &[RangeArgument],
+    max_tokens: usize,
+    form: Form,
+) -> Result<RangeReads, ToolFailure> {
+    let requests = requests_of(ranges);
     let mut outcomes = Vec::with_capacity(requests.len());
     let mut admitted = Vec::new();
     for request in &requests {
-        match read_gate_path(store, &repository, request.path) {
+        match read_gate_path(store, repository, request.path) {
             Ok(()) => {
                 outcomes.push(None);
                 admitted.push(*request);
@@ -612,19 +656,15 @@ fn read_ranges_tool(
             }
         }
     }
-    let payload = json!({
-        "schema_version": 1,
-        "operation_id": operation_identity().id,
-        "ranges": values,
-        "ranges_failed": failed,
-        "tokens_used": tokens_used,
-        "token_provider": counter.provider(),
-        "truncated": truncated
-    });
-    Ok(with_budget(payload, max_tokens))
+    Ok(RangeReads {
+        values,
+        failed,
+        tokens_used,
+        truncated,
+    })
 }
 
-type RangeArgument = (String, Option<u32>, Option<u32>);
+pub(crate) type RangeArgument = (String, Option<u32>, Option<u32>);
 
 fn ranges_argument(ranges: Value) -> Result<Vec<RangeArgument>, ToolFailure> {
     let invalid = || {
