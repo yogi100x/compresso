@@ -1,0 +1,45 @@
+rust/compresso-mcp/src/tools/edit.rs
+  s_89a704cfae63f5::t_2912322e730225 413
+rust/compresso-integrations/src/explore_agent.rs
+  s_89a704cfae63f5::t_c9d1408e5e2615 58
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_aec281d6697321 542,544,546
+rust/compresso-mcp/src/tools/text.rs
+  s_89a704cfae63f5::t_c9d1408e5e2615 602-609,616-618
+  s_89a704cfae63f5::t_f7414693cd105a 989-1003
+  s_89a704cfae63f5::t_7f3d9ce764f191 619
+rust/compresso-atlas/src/edit.rs
+  s_89a704cfae63f5::t_aec281d6697321 33-37
+  s_89a704cfae63f5::t_f7ef52acf08747 346-347,468-469,471-473,476-477,491-494,565-566,726,738,758,1043-1046,1173-1195,1200-1201
+  s_89a704cfae63f5::t_2912322e730225 1196-1199,2227-2234
+  s_89a704cfae63f5::t_f7414693cd105a 2222-2226,2235-2238
+  s_89a704cfae63f5::t_c98361f426d154 1202,2221
+rust/compresso-atlas/tests/edit.rs
+  s_89a704cfae63f5::t_f7414693cd105a 1055-1077
+rust/compresso-atlas/Cargo.toml
+  s_89a704cfae63f5::t_f7ef52acf08747 23-25
+rust/compresso-mcp/src/profile.rs
+  s_89a704cfae63f5::t_c9d1408e5e2615 156
+docs/adr/0035-opt-in-verified-edit-tool.md
+  s_89a704cfae63f5::t_aec281d6697321 60-65,89-94,182-188
+Cargo.toml
+  s_89a704cfae63f5::t_f7ef52acf08747 29
+Cargo.lock
+  s_89a704cfae63f5::t_2fcb47df7346a7 343
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "92fa04f0441682f0fb9e08d6c5950005ff8bf5ed",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
