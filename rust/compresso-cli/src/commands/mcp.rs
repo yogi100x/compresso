@@ -13,7 +13,7 @@ use compresso_store::Store;
 use super::recall::system_home_dir;
 use super::{CliExitCode, McpCommand, write_error};
 
-const USAGE: &str = "mcp serve accepts only optional --root PATH, --recall-source SOURCE, --tools full|lean, and --results json|text arguments";
+const USAGE: &str = "mcp serve accepts only optional --root PATH, --recall-source SOURCE, --tools full|lean, --results json|text, and --edits arguments";
 
 /// Operator-supplied `mcp serve` options.
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -26,6 +26,8 @@ struct ServeOptions {
     /// Result form; `None` takes the profile's default (JSON for `full`,
     /// text for `lean`).
     results: Option<McpResultFormat>,
+    /// Serve the opt-in write tool `compresso_edit` (E17-32, D97).
+    edits: bool,
 }
 
 pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCode {
@@ -106,6 +108,7 @@ pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCo
         recall_sources,
         tools,
         results,
+        edits,
     } = options;
     let recall = if recall_sources.is_empty() {
         None
@@ -131,6 +134,7 @@ pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCo
             recall,
             tools,
             results,
+            edits,
         },
     ));
     match result {
@@ -213,6 +217,11 @@ fn parse_serve_arguments(arguments: &[OsString]) -> Result<ServeOptions, &'stati
                     .and_then(McpResultFormat::parse)
                     .ok_or("--results requires json or text")?,
             );
+        } else if flag == OsStr::new("--edits") && inline.is_none() {
+            if options.edits {
+                return Err("--edits may be given only once");
+            }
+            options.edits = true;
         } else {
             return Err(USAGE);
         }
@@ -272,6 +281,7 @@ mod tests {
                 recall_sources: vec![RecallSource::Codex, RecallSource::ClaudeCode],
                 tools: McpToolProfile::Full,
                 results: None,
+                edits: false,
             }
         );
         assert!(parse(&["--recall-source"]).is_err());
@@ -318,6 +328,22 @@ mod tests {
         assert!(parse(&["--results"]).is_err());
         assert!(parse(&["--results", "yaml"]).is_err());
         assert!(parse(&["--results", "json", "--results", "json"]).is_err());
+    }
+
+    #[test]
+    fn test_edit_tool_is_off_by_default_and_enabled_only_explicitly() {
+        assert!(!parse(&[]).unwrap().edits);
+        assert!(
+            !parse(&["--tools", "lean", "--root", "/repo"])
+                .unwrap()
+                .edits
+        );
+        assert!(parse(&["--edits"]).unwrap().edits);
+        let lean = parse(&["--tools=lean", "--edits"]).unwrap();
+        assert!(lean.edits);
+        assert_eq!(lean.tools, McpToolProfile::Lean);
+        assert!(parse(&["--edits", "--edits"]).is_err());
+        assert!(parse(&["--edits=true"]).is_err());
     }
 
     #[test]

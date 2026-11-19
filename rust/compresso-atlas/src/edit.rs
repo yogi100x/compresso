@@ -155,7 +155,8 @@ pub struct EditRequest {
     pub operations: Vec<EditOperation>,
     /// Report and diff only; write nothing and leave the index as it is.
     pub dry_run: bool,
-    /// Directories never written (canonical paths), such as the store's.
+    /// Canonical files or directories never written, such as the store's
+    /// database files.
     pub protected: Vec<PathBuf>,
 }
 

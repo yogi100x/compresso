@@ -1250,11 +1250,18 @@ impl SelectedIntegration {
 }
 
 /// Compresso tools the exploration agent may call: the lean allowlist without
-/// `compresso_recall`, which a server serves only with `--recall-source`.
+/// `compresso_recall`, which a server serves only with `--recall-source`, and
+/// without `compresso_edit` unless the operator opted into edits.
 pub(crate) fn explore_agent_tools() -> Vec<String> {
+    explore_agent_tools_with(false)
+}
+
+/// [`explore_agent_tools`], with `compresso_edit` when `edits` is set.
+pub(crate) fn explore_agent_tools_with(edits: bool) -> Vec<String> {
     compresso_mcp::lean_tool_allowlist()
         .into_iter()
         .filter(|name| *name != "compresso_recall")
+        .filter(|name| edits || *name != compresso_mcp::edit::TOOL_NAME)
         .map(str::to_owned)
         .collect()
 }

@@ -30,6 +30,7 @@ pub(crate) fn supports(tool: &str) -> bool {
             | "compresso_context"
             | "compresso_trace"
             | "compresso_recall"
+            | "compresso_edit"
     )
 }
 
@@ -47,6 +48,7 @@ pub(crate) fn render(tool: &str, payload: &Value) -> Option<String> {
         "compresso_context" => context(payload, &mut out),
         "compresso_trace" => trace(payload, &mut out),
         "compresso_recall" => recall(payload, &mut out),
+        "compresso_edit" => edit(payload, &mut out),
         _ => return None,
     }
     Some(out.finish(payload))
@@ -566,6 +568,127 @@ fn context(payload: &Value, out: &mut Out) {
             "max_tokens clamped to {}",
             number(payload, "budget_ceiling")
         ));
+    }
+}
+
+fn edit_locations(kind: &str, locations: &[Value], total: u64, out: &mut Out) {
+    for location in locations {
+        out.line(format!(
+            "  {kind} {}:{}: {}",
+            string(location, "path").unwrap_or_default(),
+            number(location, "line"),
+            string(location, "text").unwrap_or_default()
+        ));
+    }
+    let listed = locations.len() as u64;
+    if total > listed {
+        out.line(format!("  +{} more {kind}", total - listed));
+    }
+}
+
+/// `edited 8 sites in 1 file`, one `@@ path` row per file, one summary row
+/// per rename with its leftovers, then the dry-run diff.
+fn edit(payload: &Value, out: &mut Out) {
+    let dry_run = flag(payload, "dry_run");
+    let files = number(payload, "files_total");
+    out.line(format!(
+        "{} {} site(s) in {files} file(s)",
+        if dry_run { "would edit" } else { "edited" },
+        number(payload, "sites_total")
+    ));
+    for file in array(payload, "files") {
+        let lines = array(file, "lines")
+            .iter()
+            .filter_map(Value::as_u64)
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>();
+        let mut row = format!(
+            "@@ {}: {} site(s)",
+            string(file, "path").unwrap_or_default(),
+            number(file, "sites")
+        );
+        if !lines.is_empty() {
+            row.push_str(" at line ");
+            row.push_str(&lines.join(", "));
+            if (lines.len() as u64) < number(file, "sites") {
+                row.push_str(", ...");
+            }
+        }
+        if flag(file, "stale") {
+            row.push_str("; index was stale, matched current content");
+        }
+        if string(file, "line_ending") == Some("crlf") {
+            row.push_str("; crlf kept");
+        }
+        if flag(file, "bom") {
+            row.push_str("; bom kept");
+        }
+        if !dry_run && !flag(file, "verified") {
+            row.push_str("; NOT verified on disk");
+        }
+        out.line(row);
+    }
+    for operation in array(payload, "operations") {
+        if string(operation, "op") != Some("rename") {
+            continue;
+        }
+        let mut row = format!(
+            "rename {} -> {}: {} site(s); searched {} file(s)",
+            string(operation, "old").unwrap_or_default(),
+            string(operation, "new").unwrap_or_default(),
+            number(operation, "sites"),
+            number(operation, "files_searched")
+        );
+        if let Some(scope) = string(operation, "scope") {
+            row.push_str(&format!(" under {scope}"));
+        }
+        row.push_str(&format!(
+            "; remaining: {} whole, {} substring",
+            number(operation, "remaining_whole_total"),
+            number(operation, "remaining_substring_total")
+        ));
+        out.line(row);
+        edit_locations(
+            "whole",
+            array(operation, "remaining_whole"),
+            number(operation, "remaining_whole_total"),
+            out,
+        );
+        edit_locations(
+            "substring",
+            array(operation, "remaining_substring"),
+            number(operation, "remaining_substring_total"),
+            out,
+        );
+        for skipped in array(operation, "files_skipped") {
+            out.line(format!(
+                "  skipped {} ({})",
+                string(skipped, "path").unwrap_or_default(),
+                string(skipped, "reason").unwrap_or_default()
+            ));
+        }
+        let preexisting = number(operation, "new_name_preexisting");
+        if preexisting > 0 {
+            out.note(format!(
+                "'{}' already occurred {preexisting} time(s) before the rename",
+                string(operation, "new").unwrap_or_default()
+            ));
+        }
+    }
+    if let Some(diff) = string(payload, "diff").filter(|diff| !diff.is_empty()) {
+        out.raw(diff);
+    }
+    if dry_run {
+        out.note("dry run: nothing written");
+    }
+    if string(payload, "index") == Some("stale") {
+        out.note("edit written but the index is stale; run `compresso index`");
+    }
+    if flag(payload, "diff_truncated") {
+        out.note("diff cut");
+    }
+    if flag(payload, "truncated") {
+        out.note("report cut to max_tokens; totals are exact");
     }
 }
 

@@ -3,6 +3,7 @@ pub(crate) mod atlas_nav;
 pub(crate) mod atlas_read;
 pub(crate) mod atlas_trace;
 pub(crate) mod common;
+pub(crate) mod edit;
 pub(crate) mod engine_tools;
 pub(crate) mod recall;
 pub(crate) mod text;
@@ -76,6 +77,7 @@ pub(crate) fn handles(name: &str) -> bool {
         || atlas_trace::handles(name)
         || engine_tools::handles(name)
         || recall::handles(name)
+        || edit::handles(name)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -86,6 +88,7 @@ pub(crate) fn dispatch(
     session: &SessionRuntime,
     repository_root: Option<&Path>,
     recall_options: Option<&recall::McpRecallOptions>,
+    edits_enabled: bool,
     name: &str,
     arguments: Option<JsonObject>,
     format: McpResultFormat,
@@ -96,6 +99,21 @@ pub(crate) fn dispatch(
     let repository_id = repository_root
         .and_then(|root| store.repo_by_root(root).ok().flatten())
         .map(|repository| repository.id);
+    let counter = counter_for(TokenProvider::OpenAiO200k);
+    if edit::handles(name) {
+        // An edit runs exactly once; only its report is fitted to the budget.
+        return match edit::run(
+            store,
+            repository_root,
+            edits_enabled,
+            engine.mode(),
+            arguments,
+            format == McpResultFormat::Text,
+        ) {
+            Ok((success, sent)) => send(success, sent, session, session_id, repository_id, counter),
+            Err(error) => error.into_result(),
+        };
+    }
     let run = |form: Form, arguments: Option<JsonObject>| {
         if atlas_nav::handles(name) {
             atlas_nav::dispatch(store, repository_root, name, arguments, form)
@@ -119,9 +137,8 @@ pub(crate) fn dispatch(
         text: format == McpResultFormat::Text && text::supports(name),
         reserve: 0,
     };
-    let counter = counter_for(TokenProvider::OpenAiO200k);
     let mut attempt = 1;
-    let (mut success, sent) = loop {
+    let (success, sent) = loop {
         let mut success = match run(form, arguments.clone()) {
             Ok(success) => success,
             Err(error) => return error.into_result(),
@@ -156,6 +173,18 @@ pub(crate) fn dispatch(
         form.reserve += tokens - max_tokens + 8;
         attempt += 1;
     };
+    send(success, sent, session, session_id, repository_id, counter)
+}
+
+/// Records the operation with what the client receives, then sends it.
+fn send(
+    mut success: ToolSuccess,
+    sent: String,
+    session: &SessionRuntime,
+    session_id: compresso_store::SessionId,
+    repository_id: Option<i64>,
+    counter: &dyn TokenCounter,
+) -> CallToolResult {
     success.operation.session_id = Some(session_id.clone());
     if success.compression_trace.is_none() {
         // The ledger records what the client received, in either form.

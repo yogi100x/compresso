@@ -187,9 +187,10 @@ fn test_agent_install_status_verify_and_uninstall_round_trip() {
         .expect("tools line")
         .split(", ")
         .collect::<Vec<_>>();
+    // Without --edits the agent gets neither operator-enabled tool.
     let expected = compresso_mcp::lean_tool_allowlist()
         .into_iter()
-        .filter(|name| *name != "compresso_recall")
+        .filter(|name| !matches!(*name, "compresso_recall" | "compresso_edit"))
         .map(|name| format!("mcp__compresso__{name}"))
         .chain(["Read", "Edit", "Write"].map(str::to_owned))
         .collect::<Vec<_>>();

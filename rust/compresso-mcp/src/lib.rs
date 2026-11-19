@@ -1,4 +1,5 @@
-//! Read-only MCP server and tool-handler boundaries.
+//! MCP server and tool-handler boundaries. Every tool is read-only except
+//! the operator-enabled `compresso_edit` (E17-32, D97, ADR-0035).
 
 mod framing;
 mod profile;
@@ -12,9 +13,24 @@ pub use profile::{McpResultFormat, McpToolProfile, lean_tool_allowlist};
 pub use reminder::{ROUTING_REMINDER_MAX_BYTES, routing_reminder};
 pub use server::{
     McpDeps, McpInputError, McpLedgerHooks, McpRootError, McpServeOptions, advertised_surface,
-    serve_io, serve_io_for_root, serve_io_with_hooks, serve_io_with_hooks_for_root,
-    serve_io_with_options, serve_io_with_recall, serve_io_with_tokenizer_startup, serve_stdio,
-    serve_stdio_for_root, serve_stdio_with_options, serve_stdio_with_recall, server_instructions,
-    tool_names,
+    advertised_surface_with, serve_io, serve_io_for_root, serve_io_with_hooks,
+    serve_io_with_hooks_for_root, serve_io_with_options, serve_io_with_recall,
+    serve_io_with_tokenizer_startup, serve_stdio, serve_stdio_for_root, serve_stdio_with_options,
+    serve_stdio_with_recall, server_instructions, tool_names,
 };
 pub use tools::recall::McpRecallOptions;
+
+/// The edit report forms and gates shared with `compresso edit`.
+pub mod edit {
+    pub use crate::tools::edit::{
+        edit_failure_message, fit, parse_operations_value, protected_paths, report_payload,
+    };
+
+    /// Name of the opt-in write tool.
+    pub const TOOL_NAME: &str = crate::tools::edit::TOOL_NAME;
+
+    /// The compact text form of an edit report payload.
+    pub fn render_text(payload: &serde_json::Value) -> String {
+        crate::tools::text::render(TOOL_NAME, payload).unwrap_or_default()
+    }
+}
