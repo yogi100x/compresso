@@ -117,7 +117,7 @@ pub(crate) const LEAN_TOOLS: &[LeanTool] = &[
     },
     LeanTool {
         name: "compresso_grep",
-        description: "Text or regex search of indexed files, up to 8 patterns; use sites with path, line, enclosing symbol, exact totals. context_lines adds nearby lines, sparing a read.",
+        description: "Text or regex search of indexed files, up to 8 patterns: use sites, enclosing symbol, exact totals. A hit plus a few context_lines usually replaces a read.",
         hint: "compresso_grep for text and use sites",
     },
     LeanTool {
@@ -137,7 +137,7 @@ pub(crate) const LEAN_TOOLS: &[LeanTool] = &[
     },
     LeanTool {
         name: "compresso_read",
-        description: "Bounded read of a file or line range; end_line past EOF clamps. ranges reads up to 8 ranges in one call.",
+        description: "Narrow line read: 80 lines per range, 200 per call; names symbols past that. ranges takes up to 8; end_line past EOF clamps.",
         hint: "compresso_read for line ranges",
     },
     LeanTool {
@@ -166,6 +166,20 @@ pub(crate) fn lean_tools(tools: Vec<Tool>) -> Vec<Tool> {
             let mut schema = (*tool.input_schema).clone();
             if let Some(Value::Object(properties)) = schema.get_mut("properties") {
                 properties.remove("root");
+                if lean.name == "compresso_grep" {
+                    // The lean profile's grep defaults (E17-33, D98).
+                    for (key, default) in [
+                        (
+                            "max_matches_per_file",
+                            crate::tools::atlas_grep::LEAN_DEFAULT_MAX_MATCHES_PER_FILE,
+                        ),
+                        ("max_tokens", crate::tools::atlas_grep::LEAN_DEFAULT_TOKENS),
+                    ] {
+                        if let Some(Value::Object(property)) = properties.get_mut(key) {
+                            property.insert("default".to_owned(), default.into());
+                        }
+                    }
+                }
             }
             tool.input_schema = std::sync::Arc::new(schema);
             Some(tool)

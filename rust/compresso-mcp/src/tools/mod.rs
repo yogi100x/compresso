@@ -16,7 +16,7 @@ use compresso_store::{OperationRecord, RetrievalMetrics, Store};
 use rmcp::model::{CallToolResult, JsonObject};
 use serde_json::Value;
 
-use crate::profile::McpResultFormat;
+use crate::profile::{McpResultFormat, McpToolProfile};
 use crate::session::SessionRuntime;
 
 /// Internal payload key carrying the call's effective `max_tokens`; removed
@@ -37,6 +37,8 @@ pub(crate) struct ToolSuccess {
 #[derive(Clone, Copy)]
 pub(crate) struct Form {
     text: bool,
+    /// The lean profile's defaults apply (its schema states them).
+    lean: bool,
     /// Tokens withheld from a tool's content budget so its text header and
     /// trailing notes still fit under `max_tokens`.
     reserve: usize,
@@ -46,6 +48,11 @@ impl Form {
     /// Whether the result is fitted and sent as compact text.
     pub(crate) const fn is_text(self) -> bool {
         self.text
+    }
+
+    /// Whether the call is served by the lean profile.
+    pub(crate) const fn is_lean(self) -> bool {
+        self.lean
     }
 
     /// The budget a tool spends on content whose size it measures alone.
@@ -92,6 +99,7 @@ pub(crate) fn dispatch(
     name: &str,
     arguments: Option<JsonObject>,
     format: McpResultFormat,
+    profile: McpToolProfile,
 ) -> CallToolResult {
     let Some(session_id) = session.current() else {
         return common::ToolFailure::internal().into_result();
@@ -135,6 +143,7 @@ pub(crate) fn dispatch(
     };
     let mut form = Form {
         text: format == McpResultFormat::Text && text::supports(name),
+        lean: profile == McpToolProfile::Lean,
         reserve: 0,
     };
     let mut attempt = 1;

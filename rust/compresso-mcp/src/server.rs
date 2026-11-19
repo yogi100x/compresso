@@ -331,6 +331,7 @@ impl ServerHandler for CompressoServer {
                         &name,
                         arguments,
                         results,
+                        profile,
                     )
                 })
                 .await
