@@ -10,6 +10,7 @@
 //! COMPRESSO_REPLAY_CALLS=<file> [COMPRESSO_REPLAY_TOOLS=lean|full] \
 //! [COMPRESSO_REPLAY_RESULTS=text|json] \
 //! [COMPRESSO_REPLAY_ONLY=compresso_read,compresso_grep] [COMPRESSO_REPLAY_DUMP=<dir>] \
+//! [COMPRESSO_REPLAY_BASELINE=<dir> COMPRESSO_REPLAY_NEEDLES=<file>] \
 //! cargo test -p compresso-cli --test replay_results -- --ignored --nocapture
 //! ```
 //!
@@ -18,8 +19,16 @@
 //! name Compresso tools (any `mcp__<server>__` prefix is dropped). Running two
 //! binaries on the same calls and repository state gives the before and after
 //! of a result-size change. The summary is one JSON document on stdout.
+//!
+//! E17-34 (D99): with `COMPRESSO_REPLAY_BASELINE=<dump dir of an earlier
+//! replay of the same calls>` and `COMPRESSO_REPLAY_NEEDLES=<file>`, the
+//! summary also reports which needle lines the baseline results showed and
+//! the new results show, only name by line (`tests:`/`above:` in a grep file
+//! header), or lost. The needles file is
+//! `{"facts": ["text", ...], "sites": [{"file": "path", "line": 12}, ...]}`:
+//! a shown line is a needle when it contains a fact or is a site.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -136,6 +145,141 @@ fn summary(totals: &BTreeMap<String, ToolTotals>) -> Value {
         "tools": tools,
         "calls": totals.values().map(|totals| totals.calls).sum::<usize>(),
         "chars": totals.values().map(|totals| totals.chars).sum::<usize>(),
+    })
+}
+
+/// The repository lines a grep or read result shows, as
+/// `(path, line) -> text`, and the lines a grep file header names without
+/// listing them (E17-34).
+#[derive(Debug, Default, PartialEq)]
+struct Shown {
+    lines: BTreeMap<(String, u32), String>,
+    named: BTreeSet<(String, u32)>,
+}
+
+fn leading_number(line: &str) -> Option<(u32, &str)> {
+    let digits = line.len() - line.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let number = line.get(..digits)?.parse().ok()?;
+    Some((number, &line[digits..]))
+}
+
+fn shown(tool: &str, text: &str) -> Shown {
+    let mut shown = Shown::default();
+    let mut lines = text.lines().peekable();
+    let mut file: Option<String> = None;
+    while let Some(line) = lines.next() {
+        if tool == "compresso_read" {
+            // `@@ path:START-END of TOTAL` and then exactly those lines.
+            let Some(header) = line.strip_prefix("@@ ") else {
+                continue;
+            };
+            let Some((path, span)) = header.rsplit_once(':') else {
+                continue;
+            };
+            let span = span.split(' ').next().unwrap_or_default();
+            let Some((start, end)) = span.split_once('-') else {
+                continue;
+            };
+            let (Ok(start), Ok(end)) = (start.parse::<u32>(), end.parse::<u32>()) else {
+                continue;
+            };
+            for number in start..=end {
+                let Some(content) = lines.next() else { break };
+                shown
+                    .lines
+                    .insert((path.to_owned(), number), content.to_owned());
+            }
+            continue;
+        }
+        if line.starts_with("# ") || line.starts_with('[') {
+            file = None;
+            continue;
+        }
+        if let Some((number, rest)) = leading_number(line) {
+            if let (Some(path), Some(content)) = (&file, rest.get(1..)) {
+                shown
+                    .lines
+                    .insert((path.clone(), number), content.to_owned());
+            }
+            continue;
+        }
+        // A file header: `path (N[, stale][; tests: 1, 2][; above: 3])`.
+        let Some((path, counts)) = line.rsplit_once(" (") else {
+            continue;
+        };
+        file = Some(path.to_owned());
+        for part in counts.trim_end_matches(')').split("; ").skip(1) {
+            let Some((_, numbers)) = part.split_once(": ") else {
+                continue;
+            };
+            for number in numbers.split(", ").filter_map(|n| n.parse().ok()) {
+                shown.named.insert((path.to_owned(), number));
+            }
+        }
+    }
+    shown
+}
+
+/// Needle lines the baseline showed, per call, against the new results.
+fn compare_needles(
+    calls: &[Call],
+    baseline: &[String],
+    current: &[String],
+    facts: &[String],
+    sites: &BTreeSet<(String, u32)>,
+) -> Value {
+    let (mut base_rows, mut kept, mut named) = (0, 0, 0);
+    let mut lost = Vec::new();
+    let mut base_facts = BTreeSet::new();
+    let mut current_facts = BTreeSet::new();
+    let mut not_shown_in_call = Vec::new();
+    for (index, call) in calls.iter().enumerate() {
+        let (Some(before), Some(after)) = (baseline.get(index), current.get(index)) else {
+            continue;
+        };
+        let (before, after_shown) = (shown(&call.tool, before), shown(&call.tool, after));
+        for fact in facts {
+            let was = before
+                .lines
+                .values()
+                .any(|text| text.contains(fact.as_str()));
+            let is = after_shown
+                .lines
+                .values()
+                .any(|text| text.contains(fact.as_str()));
+            if was {
+                base_facts.insert(fact.clone());
+            }
+            if is {
+                current_facts.insert(fact.clone());
+            }
+            if was && !is {
+                not_shown_in_call.push(json!({ "call": index, "fact": fact }));
+            }
+        }
+        for (key, text) in &before.lines {
+            if !(sites.contains(key) || facts.iter().any(|fact| text.contains(fact.as_str()))) {
+                continue;
+            }
+            base_rows += 1;
+            if after_shown.lines.contains_key(key) {
+                kept += 1;
+            } else if after_shown.named.contains(key) {
+                named += 1;
+            } else {
+                lost.push(
+                    json!({ "call": index, "tool": call.tool, "file": key.0, "line": key.1 }),
+                );
+            }
+        }
+    }
+    json!({
+        "needle_lines_in_baseline": base_rows,
+        "kept": kept,
+        "named_not_listed": named,
+        "lost": lost,
+        "facts_shown_by_baseline_only": base_facts.difference(&current_facts).collect::<Vec<_>>(),
+        "facts_not_shown_in_call": not_shown_in_call,
     })
 }
 
@@ -284,6 +428,42 @@ fn test_summary_counts_characters_per_tool() {
     assert_eq!(summary["chars"], 28);
 }
 
+#[test]
+fn test_needles_are_kept_named_or_lost_against_a_baseline() {
+    let calls = parse_calls(
+        r#"[{"tool":"compresso_grep","arguments":{}},{"tool":"compresso_read","arguments":{}}]"#,
+    )
+    .expect("calls");
+    let baseline = vec![
+        "# tick — 3 lines in 1 files\nsrc/a.rs (3)\n1 [def tick] fn tick() {}\n7 [tests] use super::tick;\n9- context TICK_MAX\n[note]\n".to_owned(),
+        "@@ src/b.rs:4-5 of 9\nconst TICK_MAX: u32 = 3;\nfn other() {}\n".to_owned(),
+    ];
+    let current = vec![
+        "# tick — 3 lines in 1 files\nsrc/a.rs (3; tests: 7; above: 9)\n1 [def tick] fn tick() {}\n".to_owned(),
+        "@@ src/b.rs:5-5 of 9\nfn other() {}\n".to_owned(),
+    ];
+    let shown_now = shown("compresso_grep", &current[0]);
+    assert_eq!(
+        shown_now.named,
+        BTreeSet::from([("src/a.rs".to_owned(), 7), ("src/a.rs".to_owned(), 9)])
+    );
+    let facts = vec!["TICK_MAX".to_owned(), "fn tick".to_owned()];
+    let sites = BTreeSet::from([("src/a.rs".to_owned(), 7)]);
+    let report = compare_needles(&calls, &baseline, &current, &facts, &sites);
+    assert_eq!(report["needle_lines_in_baseline"], 4);
+    assert_eq!(report["kept"], 1);
+    assert_eq!(report["named_not_listed"], 2);
+    assert_eq!(
+        report["lost"],
+        json!([{ "call": 1, "tool": "compresso_read", "file": "src/b.rs", "line": 4 }])
+    );
+    assert_eq!(report["facts_shown_by_baseline_only"], json!(["TICK_MAX"]));
+    assert_eq!(
+        report["facts_not_shown_in_call"],
+        json!([{ "call": 0, "fact": "TICK_MAX" }, { "call": 1, "fact": "TICK_MAX" }])
+    );
+}
+
 /// A synthetic repository with one 300-line file, indexed by the built
 /// binary into a temporary home: the text form windows the long read and
 /// costs fewer characters than the JSON form of the same calls.
@@ -373,7 +553,7 @@ fn replay_recorded_calls_from_the_environment() {
                 .is_none_or(|only| only.split(',').any(|tool| tool == call.tool))
         })
         .collect::<Vec<_>>();
-    let (_, summary) = replay(
+    let (texts, mut summary) = replay(
         &Replay {
             bin: &bin,
             root: &root,
@@ -385,5 +565,44 @@ fn replay_recorded_calls_from_the_environment() {
         &calls,
     )
     .expect("replay runs");
+    if let (Some(baseline), Some(needles)) = (
+        variable("COMPRESSO_REPLAY_BASELINE"),
+        variable("COMPRESSO_REPLAY_NEEDLES"),
+    ) {
+        // The dump an earlier replay of the same calls wrote, in call order.
+        let baseline = (0..calls.len())
+            .map(|index| {
+                fs::read_to_string(baseline.join(format!("{index:03}-{}.txt", calls[index].tool)))
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        let needles: Value =
+            serde_json::from_str(&fs::read_to_string(&needles).expect("needles file readable"))
+                .expect("needles file is JSON");
+        let facts = needles["facts"]
+            .as_array()
+            .map(|facts| {
+                facts
+                    .iter()
+                    .filter_map(|fact| fact.as_str().map(str::to_owned))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let sites = needles["sites"]
+            .as_array()
+            .map(|sites| {
+                sites
+                    .iter()
+                    .filter_map(|site| {
+                        Some((
+                            site["file"].as_str()?.to_owned(),
+                            u32::try_from(site["line"].as_u64()?).ok()?,
+                        ))
+                    })
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        summary["needles"] = compare_needles(&calls, &baseline, &texts, &facts, &sites);
+    }
     println!("{summary:#}");
 }

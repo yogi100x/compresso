@@ -44,12 +44,12 @@ src/steps.rs:4 pub fn step_003(budget: &mut usize)
 [No indexed symbols matched. Broaden the query.]
 
 === grep
-# Session::open — 2 matching lines in 2 files
+# Session::open — 2 lines in 2 files
 src/lib.rs (1)
 8 [start_session] let session = session::Session::open(name);
 src/session.rs (1)
 18 [open] Session::open(name)
-# describe — 3 matching lines in 3 files
+# describe — 3 lines in 3 files
 src/session.rs (1)
 10 [def Session::describe] pub fn describe(&self) -> String {
 README.md (1)
@@ -58,14 +58,14 @@ src/lib.rs (1)
 9 [start_session] session.describe()
 
 === grep_context
-# GREETING — 1 matching lines in 1 files
+# GREETING — 1 lines in 1 files
 src/lib.rs (1)
 4- /// A constant whose source holds quotes, a tab, and backslashes.
 5 [def GREETING] pub const GREETING: &str = "say \"hi\"\t\\ok";
 6- 
 
 === grep_truncated
-# budget — 400 matching lines in 1 files
+# budget — 400 lines in 1 files
 src/steps.rs (400)
 1 [def step_000] pub fn step_000(budget: &mut usize) { *budget += 0; }
 2 [def step_001] pub fn step_001(budget: &mut usize) { *budget += 1; }

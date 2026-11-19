@@ -336,6 +336,30 @@ fn test_lean_descriptions_steer_toward_grep_hits_unfold_and_narrow_reads() {
     assert!(read.contains("80 lines per range"), "{read}");
 }
 
+/// E17-34 (D99): the lean grep wording matches the text form, which names
+/// test-code hits by line while a pattern matches code.
+#[test]
+fn test_lean_grep_wording_says_test_hits_are_named_by_line() {
+    let (tools, _) = advertised_surface(McpToolProfile::Lean, false);
+    let grep = tools
+        .into_iter()
+        .find(|tool| tool.name == "compresso_grep")
+        .expect("grep served");
+    let description = grep.description.as_deref().unwrap_or_default().to_owned();
+    assert!(
+        description.contains("test hits named by line"),
+        "{description}"
+    );
+    let context = grep.input_schema["properties"]["context_lines"]["description"].clone();
+    assert!(
+        context
+            .as_str()
+            .unwrap_or_default()
+            .contains("each listed match"),
+        "{context}"
+    );
+}
+
 /// E17-33 (D98): the lean grep schema states the defaults the lean profile
 /// applies; the full schema keeps its own.
 #[test]

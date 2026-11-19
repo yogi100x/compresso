@@ -1,13 +1,14 @@
 //! `compresso_grep`: bounded text search over the bound repository's indexed
 //! files (D87).
 
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use compresso_atlas::{
-    AtlasError, GrepFile, GrepOptions, GrepReport, grep, repository_stale, validate_grep,
+    AtlasError, GrepFile, GrepLine, GrepOptions, GrepReport, grep, repository_stale, validate_grep,
 };
 use compresso_core::{TokenCounter, operation_identity};
-use compresso_store::Store;
+use compresso_store::{RepoId, Store, SymbolKind};
 use rmcp::model::JsonObject;
 use serde_json::{Map, Value, json};
 
@@ -107,6 +108,11 @@ pub(crate) fn dispatch(
     let stale = repository_stale(store, repository.id).map_err(map_atlas_error)?;
     let operation_id = operation_identity().id;
     let counter = navigation_counter();
+    let tests = if form.is_text() {
+        TestCode::of(store, repository.id, &report)
+    } else {
+        TestCode::default()
+    };
 
     let mut budget = max_tokens.saturating_mul(4) / 5;
     loop {
@@ -114,7 +120,7 @@ pub(crate) fn dispatch(
         let mut payload = payload(&fitted, &options, &operation_id, stale, counter);
         // Each form is held to max_tokens as it is sent.
         let tokens = if form.is_text() {
-            compact_rows_of(&mut payload, &fitted);
+            compact_rows_of(&mut payload, &fitted, &tests, context_lines);
             text::render(TOOL_NAME, &payload).map_or(0, |text| counter.count(&text))
         } else {
             stabilize_tokens(&mut payload, counter)?
@@ -257,36 +263,195 @@ fn file_value(file: &GrepFile) -> Value {
     value
 }
 
-/// Text form only (E17-33): rows that do not repeat the enclosing symbol.
-/// The JSON payload keeps one `line [symbol] snippet` row per match.
-fn compact_rows_of(payload: &mut Value, report: &GrepReport) {
+/// Where test code sits in the files a grep report lists (E17-34, D99): a
+/// file under a test directory (`test`, `tests`, `__tests__`, `testdata`
+/// path components), or a line inside an indexed module named `tests`.
+/// File names and function names alone never make a row test code, so
+/// production code such as `src/test_utils.rs` or `fn test_connection` is
+/// listed; an out-of-line `mod tests;` file is listed too.
+#[derive(Default)]
+struct TestCode {
+    modules: HashMap<String, Vec<(u32, u32)>>,
+}
+
+/// Whether a directory of `path` (not its file name) is a test directory.
+fn in_test_directory(path: &str) -> bool {
+    let mut parts = path.split('/').collect::<Vec<_>>();
+    parts.pop();
+    parts.into_iter().any(|part| {
+        matches!(
+            part.to_ascii_lowercase().as_str(),
+            "test" | "tests" | "__tests__" | "testdata"
+        )
+    })
+}
+
+impl TestCode {
+    /// The `tests` module ranges of the listed files outside test
+    /// directories. A file whose symbols cannot be read, or that changed
+    /// since it was indexed, has none, so its rows are listed.
+    fn of(store: &Store, repo: RepoId, report: &GrepReport) -> Self {
+        let mut modules = HashMap::new();
+        for file in report.results.iter().flat_map(|result| &result.files) {
+            if file.stale || in_test_directory(&file.path) || modules.contains_key(&file.path) {
+                continue;
+            }
+            let ranges = store
+                .symbols_in_file(repo, &file.path)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|symbol| symbol.kind == SymbolKind::Module && symbol.name == "tests")
+                .map(|symbol| (symbol.start_line, symbol.end_line))
+                .collect::<Vec<_>>();
+            modules.insert(file.path.clone(), ranges);
+        }
+        Self { modules }
+    }
+
+    fn contains(&self, path: &str, line: &GrepLine) -> bool {
+        in_test_directory(path)
+            || self.modules.get(path).is_some_and(|ranges| {
+                ranges
+                    .iter()
+                    .any(|&(start, end)| start <= line.line && line.line <= end)
+            })
+    }
+}
+
+/// How the text form shows one matching line.
+#[derive(Clone, Copy, PartialEq)]
+enum Shown {
+    Listed,
+    /// Named in the file header: test code while the pattern lists code.
+    Test,
+    /// Named in the file header: an earlier pattern listed the same row.
+    Above,
+}
+
+/// Text form only: the rows of each listed file (E17-33, D98), plus the
+/// lines named instead of listed (E17-34, D99). A line an earlier pattern
+/// of the call listed with the same snippet is named under `above` (a long
+/// line cut around another match is listed again). While a pattern lists a
+/// new row outside test code and does not itself mention `test`, its rows
+/// in test code are named under `tests`; otherwise they are listed. Every
+/// listed row keeps the requested context that its block has not already
+/// printed. Every match the JSON form lists is listed or named; the JSON
+/// payload is left unchanged.
+fn compact_rows_of(
+    payload: &mut Value,
+    report: &GrepReport,
+    tests: &TestCode,
+    context_lines: usize,
+) {
+    let mut listed = HashSet::<(&str, u32, &str)>::new();
     for (result, value) in report.results.iter().zip(
         payload["results"]
             .as_array_mut()
             .map_or(&mut [][..], Vec::as_mut_slice),
     ) {
+        let repeat = |path: &str, line: &GrepLine, listed: &HashSet<(&str, u32, &str)>| {
+            listed.contains(&(path, line.line, line.snippet.as_str()))
+        };
+        let lists_code = result.files.iter().any(|file| {
+            file.lines
+                .iter()
+                .any(|line| !repeat(&file.path, line, &listed) && !tests.contains(&file.path, line))
+        });
+        let names_tests = lists_code && !result.pattern.to_ascii_lowercase().contains("test");
         for (file, file_value) in result.files.iter().zip(
             value["files"]
                 .as_array_mut()
                 .map_or(&mut [][..], Vec::as_mut_slice),
         ) {
-            file_value["lines"] = json!(compact_rows(file));
+            let shown = file
+                .lines
+                .iter()
+                .map(|line| {
+                    if repeat(&file.path, line, &listed) {
+                        Shown::Above
+                    } else if names_tests && tests.contains(&file.path, line) {
+                        Shown::Test
+                    } else {
+                        Shown::Listed
+                    }
+                })
+                .collect::<Vec<_>>();
+            let named = |kind: Shown| {
+                file.lines
+                    .iter()
+                    .zip(&shown)
+                    .filter(|&(_, &shown)| shown == kind)
+                    .map(|(line, _)| line.line)
+                    .collect::<Vec<_>>()
+            };
+            let (test_lines, above) = (named(Shown::Test), named(Shown::Above));
+            for (line, _) in file
+                .lines
+                .iter()
+                .zip(&shown)
+                .filter(|&(_, &shown)| shown == Shown::Listed)
+            {
+                listed.insert((file.path.as_str(), line.line, line.snippet.as_str()));
+            }
+            file_value["lines"] = json!(compact_rows(file, &shown, context_lines));
+            if !test_lines.is_empty() {
+                file_value["tests"] = json!(test_lines);
+            }
+            if !above.is_empty() {
+                file_value["above"] = json!(above);
+            }
         }
     }
 }
 
-/// One file's rows for the text form. A file block's first match row is
-/// always tagged (`[-]` for no symbol); a later row is untagged exactly when
-/// it is in the same symbol as the match row above it, is not a definition,
-/// and its snippet does not start with `[`.
-fn compact_rows(file: &GrepFile) -> Vec<String> {
-    let context = |line: &compresso_atlas::GrepContextLine| format!("{}- {}", line.line, line.text);
-    let mut rows = Vec::new();
-    // The previous match row's symbol in this file block; `None` before
-    // the first row, so a block's first row is always tagged.
-    let mut previous: Option<Option<&str>> = None;
+/// One file's listed rows for the text form. A file block's first match row
+/// is always tagged (`[-]` for no symbol); a later row is untagged exactly
+/// when it is in the same symbol as the match row above it, is not a
+/// definition, and its snippet does not start with `[`.
+///
+/// Context is re-merged over the listed rows only: atlas split it over every
+/// kept match, so a row named instead of listed would otherwise take its
+/// neighbours' context with it. Each listed row gets up to `context_lines`
+/// lines on each side that its block has not printed, stopping before the
+/// next listed row; a named line inside that span is shown as context.
+fn compact_rows(file: &GrepFile, shown: &[Shown], context_lines: usize) -> Vec<String> {
+    // Every line atlas returned for this file: context lines in full and
+    // match lines as their snippets. Together they cover every line within
+    // `context_lines` of a kept match.
+    let mut text = BTreeMap::<u32, &str>::new();
     for line in &file.lines {
-        rows.extend(line.before.iter().map(context));
+        for context in line.before.iter().chain(&line.after) {
+            text.insert(context.line, context.text.as_str());
+        }
+    }
+    for line in &file.lines {
+        text.entry(line.line).or_insert(line.snippet.as_str());
+    }
+    let span = u32::try_from(context_lines).unwrap_or(u32::MAX);
+    let visible = file
+        .lines
+        .iter()
+        .zip(shown)
+        .filter(|&(_, &shown)| shown == Shown::Listed)
+        .map(|(line, _)| line)
+        .collect::<Vec<_>>();
+    let mut rows = Vec::new();
+    let context_rows = |rows: &mut Vec<String>, from: u32, to: u32| {
+        for (number, line) in text.range(from..=to) {
+            rows.push(format!("{number}- {line}"));
+        }
+    };
+    // The previous listed match row's symbol in this file block; `None`
+    // before the first row, so a block's first row is always tagged.
+    let mut previous: Option<Option<&str>> = None;
+    let mut printed = 0_u32;
+    for (index, line) in visible.iter().enumerate() {
+        if span > 0 && line.line > 1 {
+            let from = line.line.saturating_sub(span).max(printed + 1).max(1);
+            if from < line.line {
+                context_rows(&mut rows, from, line.line - 1);
+            }
+        }
         let symbol = line.symbol.as_deref();
         // A snippet starting with `[` keeps its tag, so it is never read
         // as one.
@@ -300,7 +465,15 @@ fn compact_rows(file: &GrepFile) -> Vec<String> {
         };
         rows.push(format!("{} {tag}{}", line.line, line.snippet));
         previous = Some(symbol);
-        rows.extend(line.after.iter().map(context));
+        printed = line.line;
+        if span > 0 {
+            let next = visible.get(index + 1).map_or(u32::MAX, |next| next.line);
+            let to = line.line.saturating_add(span).min(next.saturating_sub(1));
+            if to > line.line {
+                context_rows(&mut rows, line.line + 1, to);
+                printed = to;
+            }
+        }
     }
     rows
 }

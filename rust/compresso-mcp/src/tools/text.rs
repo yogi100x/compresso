@@ -346,6 +346,7 @@ fn search(payload: &Value, out: &mut Out) {
 
 fn grep(payload: &Value, out: &mut Out) {
     let mut unlisted = 0;
+    let (mut named_tests, mut named_above) = (false, false);
     for result in array(payload, "results") {
         let pattern = string(result, "pattern").unwrap_or_default();
         let matches = number(result, "matches_total");
@@ -354,14 +355,28 @@ fn grep(payload: &Value, out: &mut Out) {
             continue;
         }
         out.line(format!(
-            "# {pattern} — {matches} matching lines in {} files",
+            "# {pattern} — {matches} lines in {} files",
             number(result, "files_total")
         ));
         unlisted += number(result, "matches_total").saturating_sub(number(result, "lines_listed"));
         for file in array(result, "files") {
+            // Lines named instead of listed (E17-34, D99) are numbers the
+            // server wrote, never repository text.
+            let named = [("tests", &mut named_tests), ("above", &mut named_above)]
+                .into_iter()
+                .filter_map(|(key, seen)| {
+                    let lines = array(file, key)
+                        .iter()
+                        .filter_map(Value::as_u64)
+                        .map(|line| line.to_string())
+                        .collect::<Vec<_>>();
+                    *seen |= !lines.is_empty();
+                    (!lines.is_empty()).then(|| format!("; {key}: {}", lines.join(", ")))
+                })
+                .collect::<String>();
             out.line(format!(
-                "{} ({}{})",
-                string(file, "path").unwrap_or_default(),
+                "{} ({}{}{named})",
+                header_path(string(file, "path").unwrap_or_default()),
                 number(file, "matches"),
                 if flag(file, "stale") {
                     ", changed since indexed: no symbols"
@@ -375,6 +390,14 @@ fn grep(payload: &Value, out: &mut Out) {
                 out.line(row.as_str().unwrap_or_default());
             }
         }
+    }
+    if named_tests {
+        out.note(
+            "tests: test-code lines, unlisted while code matches; read them or grep a test path",
+        );
+    }
+    if named_above {
+        out.note("above: listed under an earlier pattern");
     }
     let scan = payload.get("scan").unwrap_or(&Value::Null);
     let skipped = number(scan, "files_skipped_oversize") + number(scan, "files_skipped_unreadable");
@@ -392,6 +415,25 @@ fn grep(payload: &Value, out: &mut Out) {
             "{unlisted} matching lines counted but not listed; narrow with path or a more specific pattern rather than raising limits"
         ));
     }
+}
+
+/// A grep file header's path with the characters that could imitate the
+/// header's own syntax replaced by `?` (E17-34, D99): control characters,
+/// `;`, and a `(` after a space. Ordinary paths print unchanged.
+fn header_path(path: &str) -> String {
+    let mut previous = '\0';
+    path.chars()
+        .map(|character| {
+            let safe = match character {
+                ';' => '?',
+                '(' if previous == ' ' => '?',
+                character if character.is_control() => '?',
+                character => character,
+            };
+            previous = character;
+            safe
+        })
+        .collect()
 }
 
 /// One bounded read: `@@ path:START-END of TOTAL`, the raw content, and a
