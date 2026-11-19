@@ -77,7 +77,7 @@ use crate::AtlasError;
 use crate::grep::PathFilter;
 use crate::indexer::Indexer;
 use crate::queries::{QueryError, ResolvedEntry, canonical_query_root, resolve_under_root};
-use crate::scanner::{DEFAULT_MAX_FILE_BYTES, is_scanner_excluded, is_secret_path};
+use crate::scanner::{DEFAULT_MAX_FILE_BYTES, ScannerExclusions, is_secret_path};
 
 /// Most operations one call applies.
 pub const EDIT_MAX_OPERATIONS: usize = 16;
@@ -638,8 +638,10 @@ pub(crate) fn apply_edits_with_hook(
         .into_iter()
         .map(|record| (record.path.clone(), record))
         .collect::<BTreeMap<_, _>>();
+    let exclusions = ScannerExclusions::load(&root);
     let gate = Gate {
         root: &root,
+        exclusions: &exclusions,
         indexed: &indexed,
         protected: &request.protected,
         index_refreshed,
@@ -954,6 +956,8 @@ fn validate_path(path: &str) -> Result<(), EditError> {
 /// The checks every target passes before it is read.
 struct Gate<'a> {
     root: &'a Path,
+    /// The scanner's exclusion rules, loaded once for the whole call.
+    exclusions: &'a ScannerExclusions,
     indexed: &'a BTreeMap<String, FileRecord>,
     protected: &'a [PathBuf],
     /// The index was refreshed before a rename read its scope from it.
@@ -1057,7 +1061,7 @@ fn load(gate: &Gate<'_>, path: &str) -> Result<WorkingFile, EditError> {
     if is_control_path(relative) {
         return Err(refused(path, Refusal::ControlFile));
     }
-    if is_scanner_excluded(gate.root, relative) {
+    if gate.exclusions.excludes(gate.root, relative) {
         return Err(refused(path, Refusal::Excluded));
     }
     let Some(record) = gate.indexed.get(path) else {
@@ -1795,9 +1799,9 @@ struct Outside {
 /// Counts the whole matches of `old` in the indexed files outside `filter`
 /// as the call leaves them: a file an operation edited is read from the
 /// working set, any other through the read gate only (nothing is written).
-/// Reads share the call's `scanned` budget; a file that would cross it, or
-/// that cannot be read as text, is counted as not searched rather than
-/// failing the call. Secret paths are never searched.
+/// Reads share the call's `scanned` budget; a file that would cross it, that
+/// cannot be read as text, or that the scanner excludes is counted as not
+/// searched rather than failing the call. Secret paths are never searched.
 fn outside_matches(
     gate: &Gate<'_>,
     working: &BTreeMap<String, WorkingFile>,
@@ -1817,7 +1821,18 @@ fn outside_matches(
         .iter()
         .filter(|(path, _)| !filter.matches(path))
     {
-        if is_secret_path(Path::new(path)) {
+        let relative = Path::new(path);
+        if is_secret_path(relative) {
+            continue;
+        }
+        // What the scanner excludes (E17-35: `info/exclude`, nested
+        // worktrees) or `.git` is never read, even from a stale index row.
+        if relative
+            .components()
+            .any(|component| component.as_os_str() == ".git")
+            || gate.exclusions.excludes(gate.root, relative)
+        {
+            unsearched(&mut outside, path);
             continue;
         }
         let peeked;
@@ -2305,6 +2320,40 @@ mod tests {
     }
 
     #[test]
+    fn test_a_rename_loads_the_exclude_rules_independently_of_its_file_count() {
+        let loads_for = |files: usize| {
+            let mut sources = vec![(".git/info/exclude".to_owned(), "*.log\n".to_owned())];
+            for number in 0..files {
+                sources.push((
+                    format!("src/f{number}.rs"),
+                    "fn shared_name() {}\n".to_owned(),
+                ));
+            }
+            let borrowed = sources
+                .iter()
+                .map(|(path, text)| (path.as_str(), text.as_str()))
+                .collect::<Vec<_>>();
+            let fixture = Fixture::new(&borrowed);
+            let before = crate::scanner::exclude_loads_on_this_thread();
+            let report = fixture
+                .apply(
+                    vec![EditOperation::Rename {
+                        old: "shared_name".to_owned(),
+                        new: "renamed".to_owned(),
+                        path: None,
+                        expected_count: None,
+                        allow_existing: false,
+                    }],
+                    &mut |_, _| Ok(()),
+                )
+                .expect("rename applies");
+            assert_eq!(report.operations[0].files.len(), files);
+            crate::scanner::exclude_loads_on_this_thread() - before
+        };
+        assert_eq!(loads_for(2), loads_for(12));
+    }
+
+    #[test]
     fn test_identifier_boundaries_are_explicit() {
         let text = "format_utc(); format_utc_now(); reformat_utc(); x.format_utc2; café_format_utc; $format_utc";
         let found = identifier_occurrences(text, "format_utc", SourceLanguage::Other);
@@ -2444,8 +2493,10 @@ mod tests {
             .into_iter()
             .map(|record| (record.path.clone(), record))
             .collect::<BTreeMap<_, _>>();
+        let exclusions = ScannerExclusions::load(&root);
         let gate = Gate {
             root: &root,
+            exclusions: &exclusions,
             indexed: &indexed,
             protected: &[],
             index_refreshed: true,
@@ -2489,8 +2540,10 @@ mod tests {
             .into_iter()
             .map(|record| (record.path.clone(), record))
             .collect::<BTreeMap<_, _>>();
+        let exclusions = ScannerExclusions::load(&root);
         let gate = Gate {
             root: &root,
+            exclusions: &exclusions,
             indexed: &indexed,
             protected: &[],
             index_refreshed: true,
@@ -2505,6 +2558,47 @@ mod tests {
         assert_eq!(outside.total, 0);
         assert_eq!(outside.unsearched_total, 1);
         assert_eq!(outside.unsearched, ["b/c.rs"]);
+    }
+
+    /// E17-36 with E17-35: even from a stale index row (a refresh that
+    /// failed), the outside-scope count never reads a file the scanner
+    /// excludes; it is reported as not searched.
+    #[test]
+    fn test_the_outside_scope_count_never_reads_an_excluded_stale_row() {
+        let fixture = Fixture::new(&[
+            (".git/HEAD", "ref: refs/heads/main\n"),
+            ("a.rs", "fn alpha() {}\n"),
+            ("copy/c.rs", "// alpha\n"),
+        ]);
+        let root = fixture.root.clone();
+        let indexed = fixture
+            .store
+            .indexed_files(fixture.store.repo_by_root(&root).unwrap().expect("repo").id)
+            .unwrap()
+            .into_iter()
+            .map(|record| (record.path.clone(), record))
+            .collect::<BTreeMap<_, _>>();
+        assert!(indexed.contains_key("copy/c.rs"));
+        fs::write(root.join(".git/info/exclude"), "copy/\n")
+            .or_else(|_| {
+                fs::create_dir_all(root.join(".git/info"))?;
+                fs::write(root.join(".git/info/exclude"), "copy/\n")
+            })
+            .expect("exclude rule");
+        let exclusions = ScannerExclusions::load(&root);
+        let gate = Gate {
+            root: &root,
+            exclusions: &exclusions,
+            indexed: &indexed,
+            protected: &[],
+            index_refreshed: false,
+        };
+        let filter = PathFilter::parse("a.rs").unwrap().expect("filter");
+        let mut scanned = 0;
+        let outside = outside_matches(&gate, &BTreeMap::new(), &filter, "alpha", &mut scanned);
+        assert_eq!(outside.total, 0);
+        assert_eq!(outside.unsearched, ["copy/c.rs"]);
+        assert_eq!(scanned, 0, "nothing excluded was read");
     }
 
     #[test]

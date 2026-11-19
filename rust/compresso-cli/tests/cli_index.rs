@@ -191,6 +191,7 @@ fn test_index_json_shape_is_versioned_and_stable() {
             "files_indexed",
             "files_removed",
             "files_skipped",
+            "git_exclude_unusable",
             "imports_resolved",
             "imports_unresolved",
             "stale",

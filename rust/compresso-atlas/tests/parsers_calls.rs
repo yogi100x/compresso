@@ -244,6 +244,33 @@ fn test_very_deep_member_chain_does_not_overflow_and_is_a_receiver_call() {
 }
 
 #[test]
+fn test_deeply_nested_go_receiver_calls_extract_quickly() {
+    let depth = 3_000;
+    let source = format!(
+        "package p\n\nfunc (s *S) f(v int) int {{\n\treturn {}0{}\n}}\n",
+        "s.f(".repeat(depth),
+        ")".repeat(depth)
+    );
+    let started = Instant::now();
+    let extraction = std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(move || ParserRegistry::extract(Language::Go, &source))
+        .expect("thread should start")
+        .join()
+        .expect("extraction must not overflow the stack")
+        .expect("nested calls should extract");
+    let elapsed = started.elapsed();
+    assert_eq!(
+        rows(&extraction),
+        [("S::f", "f", Some("s"), CallForm::SelfRef, 4)]
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "extraction took {elapsed:?}"
+    );
+}
+
+#[test]
 fn test_huge_number_of_calls_and_functions_is_bounded_and_reports_truncation() {
     // 4,000 functions, each with 40 calls of which most repeat: far more call
     // nodes than the examination budget, few unique records per function.

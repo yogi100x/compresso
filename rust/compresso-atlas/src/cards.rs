@@ -27,6 +27,7 @@ use compresso_store::{
 };
 
 use crate::AtlasError;
+use crate::parsers::languages::{self, ModuleDoc, Visibility};
 use crate::queries::{
     ResolvedEntry, canonical_query_root, file_matches_index, map_path_matches_focus,
     resolve_under_root, validate_map_focus,
@@ -45,22 +46,6 @@ const PURPOSE_HEAD_BYTES: u64 = 4 * 1024;
 const PURPOSE_MAX_CHARS: usize = 160;
 /// Files per card whose head may be read for a purpose line.
 const PURPOSE_CANDIDATES: usize = 3;
-
-/// File names treated as a directory's entry points.
-const ENTRY_FILE_NAMES: &[&str] = &[
-    "lib.rs",
-    "main.rs",
-    "mod.rs",
-    "__init__.py",
-    "__main__.py",
-    "main.py",
-    "index.ts",
-    "index.tsx",
-    "index.js",
-    "index.mjs",
-    "main.ts",
-    "main.js",
-];
 
 /// Caller bounds for [`module_cards`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -155,7 +140,7 @@ pub fn module_cards(
         let entry = directories.entry(directory).or_default();
         let file_name = file_name_of(&file.path).to_owned();
         let symbols = store.symbols_in_file(repo, &file.path)?;
-        if ENTRY_FILE_NAMES.contains(&file_name.as_str())
+        if languages::is_entry_file(&file_name)
             || symbols.iter().any(|symbol| {
                 symbol.kind == SymbolKind::Function
                     && symbol.name == "main"
@@ -385,14 +370,13 @@ fn purpose_of(root: &Path, file: &FileRecord) -> Option<String> {
         .read_to_end(&mut head)
         .ok()?;
     let text = String::from_utf8_lossy(&head);
-    let doc = match file.language? {
-        FileLanguage::Rust => rust_module_doc(&text),
-        FileLanguage::Python => python_module_doc(&text),
-        FileLanguage::TypeScript | FileLanguage::Tsx | FileLanguage::JavaScript => {
-            script_module_doc(&text)
-        }
-        FileLanguage::Shell => shell_module_doc(&text),
-        FileLanguage::Text => None,
+    let doc = match languages::spec(file.language?).module_doc {
+        ModuleDoc::Rust => rust_module_doc(&text),
+        ModuleDoc::Python => python_module_doc(&text),
+        ModuleDoc::Script => script_module_doc(&text),
+        ModuleDoc::Shell => shell_module_doc(&text),
+        ModuleDoc::Go => go_package_doc(&text),
+        ModuleDoc::None => None,
     }?;
     first_sentence(&doc)
 }
@@ -475,6 +459,51 @@ fn shell_module_doc(text: &str) -> Option<String> {
         .then_some(doc)
 }
 
+/// The comment directly above the `package` clause: `//` lines or one
+/// `/* */` block with no blank line between it and `package`. Build
+/// constraints (`//go:build`, `// +build`) and license headers are not
+/// purposes.
+fn go_package_doc(text: &str) -> Option<String> {
+    let mut comment = Vec::new();
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        let line = line.trim();
+        if line
+            .strip_prefix("package")
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        {
+            break;
+        }
+        if line.is_empty() {
+            comment.clear();
+        } else if let Some(rest) = line.strip_prefix("//") {
+            if rest.starts_with("go:") || rest.trim_start().starts_with("+build") {
+                comment.clear();
+            } else {
+                comment.push(rest.trim().to_owned());
+            }
+        } else if let Some(rest) = line.strip_prefix("/*") {
+            comment.clear();
+            let mut block = rest.to_owned();
+            while !block.contains("*/") {
+                block.push('\n');
+                block.push_str(lines.next()?);
+            }
+            let (body, after) = block.split_once("*/")?;
+            if !after.trim().is_empty() {
+                return None;
+            }
+            comment.push(block_comment_text(body));
+        } else {
+            return None;
+        }
+    }
+    let doc = comment.join(" ");
+    let lowered = doc.to_ascii_lowercase();
+    (!doc.trim().is_empty() && !lowered.contains("copyright") && !lowered.contains("license"))
+        .then_some(doc)
+}
+
 fn block_comment_text(body: &str) -> String {
     body.lines()
         .map(|line| line.trim().trim_start_matches('*').trim())
@@ -520,21 +549,26 @@ fn first_sentence(doc: &str) -> Option<String> {
 ///
 /// Rust: a top-level item whose signature starts with `pub`. TypeScript and
 /// JavaScript: a top-level `export`. Python: a top-level name without a
-/// leading underscore. Shell: every top-level function. Text headings are
-/// never public symbols.
+/// leading underscore. Shell: every top-level function. Go: a top-level name
+/// that starts with an uppercase letter. Text headings are never public
+/// symbols.
 fn is_public(symbol: &SymbolRecord, language: Option<FileLanguage>) -> bool {
     let top_level = symbol.qualified_name == symbol.name;
     let signature = symbol.signature.as_deref().unwrap_or_default();
-    match language {
-        Some(FileLanguage::Rust) => {
+    let Some(language) = language else {
+        return false;
+    };
+    match languages::spec(language).visibility {
+        Visibility::PubKeyword => {
             top_level && (signature.starts_with("pub ") || signature.starts_with("pub("))
         }
-        Some(FileLanguage::TypeScript | FileLanguage::Tsx | FileLanguage::JavaScript) => {
-            top_level && signature.starts_with("export")
+        Visibility::Export => top_level && signature.starts_with("export"),
+        Visibility::NoLeadingUnderscore => top_level && !symbol.name.starts_with('_'),
+        Visibility::TopLevel => top_level,
+        Visibility::Capitalized => {
+            top_level && symbol.name.chars().next().is_some_and(char::is_uppercase)
         }
-        Some(FileLanguage::Python) => top_level && !symbol.name.starts_with('_'),
-        Some(FileLanguage::Shell) => top_level,
-        Some(FileLanguage::Text) | None => false,
+        Visibility::Never => false,
     }
 }
 
@@ -751,5 +785,51 @@ mod tests {
             &symbol("h", "h", "# h"),
             Some(FileLanguage::Text)
         ));
+    }
+
+    #[test]
+    fn test_go_exported_names_are_capitalized_top_level_symbols() {
+        let symbol = |name: &str, qualified: &str| SymbolRecord {
+            name: name.to_owned(),
+            qualified_name: qualified.to_owned(),
+            kind: SymbolKind::Function,
+            signature: Some(format!("func {name}()")),
+            start_line: 1,
+            end_line: 1,
+            token_estimate: 1,
+        };
+        let go = Some(FileLanguage::Go);
+        assert!(is_public(&symbol("Open", "Open"), go));
+        assert!(!is_public(&symbol("open", "open"), go));
+        assert!(!is_public(&symbol("_Open", "_Open"), go));
+        assert!(!is_public(&symbol("Close", "Store::Close"), go));
+    }
+
+    #[test]
+    fn test_go_package_doc_is_the_comment_above_the_package_clause() {
+        assert_eq!(
+            go_package_doc("// Package store keeps jobs.\n// More.\npackage store\n").as_deref(),
+            Some("Package store keeps jobs. More.")
+        );
+        assert_eq!(
+            go_package_doc("//go:build linux\n\n// Package p does x.\npackage p\n").as_deref(),
+            Some("Package p does x.")
+        );
+        assert_eq!(
+            go_package_doc("/*\nPackage p reads input.\n*/\npackage p\n").as_deref(),
+            Some("Package p reads input.")
+        );
+        assert_eq!(
+            go_package_doc(
+                "// Copyright 2026 Example.\n// Use of this source is governed by a license.\npackage p\n"
+            ),
+            None
+        );
+        assert_eq!(
+            go_package_doc("// Package p tabs.\npackage\tp\n").as_deref(),
+            Some("Package p tabs.")
+        );
+        assert_eq!(go_package_doc("// Detached.\n\npackage p\n"), None);
+        assert_eq!(go_package_doc("package p\n// Late.\n"), None);
     }
 }

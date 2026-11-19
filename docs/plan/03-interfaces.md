@@ -179,7 +179,7 @@ pub type RepoId = i64;
 pub type FileId = i64;
 pub struct RepoRecord { pub id: RepoId, pub root: PathBuf, pub approved_at: i64, pub parser_version: String, pub schema_version: u32, pub last_indexed_at: Option<i64> }
 pub struct IndexVersionRecord { pub parser_version: String, pub schema_version: u32, pub created_at: i64 }
-pub enum FileLanguage { Rust, TypeScript, Tsx, JavaScript, Python, Shell, Text }
+pub enum FileLanguage { Rust, TypeScript, Tsx, JavaScript, Python, Go, Shell, Text } // `as_str()`: the stored lowercase name; per-language rules live in `compresso_atlas::parsers::LANGUAGES` (D102)
 pub struct FileRecord { pub path: String, pub hash: String, pub language: Option<FileLanguage>, pub size_bytes: u64, pub token_estimate: usize, pub indexed_at: i64 }
 pub enum SymbolKind { Function, Method, Struct, Class, Enum, Trait, Interface, Const, Type, Module }
 pub struct SymbolRecord { pub name: String, pub qualified_name: String, pub kind: SymbolKind, pub signature: Option<String>, pub start_line: u32, pub end_line: u32, pub token_estimate: usize }
@@ -248,13 +248,13 @@ Boundary rule: only `compresso-store` contains SQL. Atlas/MCP/CLI call these met
 
 ```rust
 // scanner.rs
-pub struct ScanResult { pub added: Vec<PathBuf>, pub changed: Vec<PathBuf>, pub removed: Vec<String>, pub skipped: Vec<(PathBuf, SkipReason)> }
+pub struct ScanResult { pub added: Vec<PathBuf>, pub changed: Vec<PathBuf>, pub removed: Vec<String>, pub skipped: Vec<(PathBuf, SkipReason)>, pub git_exclude_unusable: bool /* E17-35: the repository's info/exclude exists or is pointed at but was not applied in full; a flag only */ }
 pub struct ScanOptions { pub max_file_bytes: u64 }
 pub fn scan(store: &Store, repo: RepoId, root: &Path) -> Result<ScanResult, AtlasError>; // safe default: max_file_bytes = 1_000_000
 pub fn scan_with_options(store: &Store, repo: RepoId, root: &Path, options: ScanOptions) -> Result<ScanResult, AtlasError>;
 pub struct Concurrency { /* jobs clamped to 1..=available CPUs; memory_budget_bytes (default 64 MiB) */ } // Concurrency::default(), ::serial(), ::bounded(jobs, memory_budget_bytes)
 pub fn scan_with_concurrency(store: &Store, repo: RepoId, root: &Path, options: ScanOptions, concurrency: Concurrency) -> Result<ScanResult, AtlasError>; // identical ScanResult at every concurrency; scan/scan_with_options use Concurrency::default()
-// respects .gitignore + built-in exclusions (binaries, >max_file_bytes, node_modules/target/dist/.git, secret-file patterns: .env*, *.pem, id_rsa*)
+// respects .gitignore + the repository's own info/exclude (below .gitignore; for a .git file found via gitdir:/commondir, D100) + built-in exclusions (binaries, >max_file_bytes, node_modules/target/dist/.git, any `.git` entry, nested linked worktrees, secret-file patterns: .env*, *.pem, id_rsa*); no global or user excludes
 // ignored and built-in excluded directories are reported once in skipped and pruned before descent; descendants are intentionally not enumerated
 
 // parsers.rs
@@ -278,7 +278,7 @@ impl Indexer<'_> {
     // pipeline: canonicalize+approve root -> scan -> parse ONLY added/changed -> replace_indexed_file per file transaction -> delete removed -> stamp index_versions
 }
 pub enum IndexProgress { Parsing { path: PathBuf }, Removed { path: String } }
-pub struct IndexReport { pub files_indexed: usize, pub files_removed: usize, pub files_skipped: usize, pub symbols: usize, pub imports_resolved: usize, pub imports_unresolved: usize, pub call_sites: usize, pub call_site_files_truncated: usize, pub call_site_files_rejected: usize /* E17-29: call sites the store would refuse; the file is written without them */, pub duration_ms: u64, pub stale: bool }
+pub struct IndexReport { pub files_indexed: usize, pub files_removed: usize, pub files_skipped: usize, pub symbols: usize, pub imports_resolved: usize, pub imports_unresolved: usize, pub call_sites: usize, pub call_site_files_truncated: usize, pub call_site_files_rejected: usize /* E17-29: call sites the store would refuse; the file is written without them */, pub duration_ms: u64, pub stale: bool, pub git_exclude_unusable: bool /* E17-35, from the scan; `compresso index --json` reports it and the human output adds a note */ }
 
 // queries.rs — all read-only, all bounded by token budget (the one write path is edit.rs, §14)
 pub struct RepoMap { pub rendered: String, pub files_total: usize, pub files_shown: usize, pub truncated: bool, pub tokens_used: usize, pub token_provider: TokenProvider }
@@ -494,7 +494,7 @@ Several independent lookups in one `compresso_grep` call. No network or process 
 - **`compresso-mcp::tools::text`**: a scoped pattern's header is `# PATTERN in SCOPE — ...`; `patterns_failed` entries render as `# PATTERN in SCOPE — [code] message`; with `ranges`, the grep notes print first and each range follows as a `compresso_read` range; a grep file header path starting with `# ` or `@@ ` has its first character replaced by `?`.
 - **`compresso-mcp::profile`**: lean-only schema changes (04 §1.2.1). **`compresso-integrations::explore_agent`**: the packing rule and worked example (04 §2.6).
 - **`compresso-atlas::grep`**: the pattern compiled-size limit is 2 MiB per compiled program (was 256 KiB; the lazy-DFA cache limit stays 2 MiB, set explicitly); path globs keep 256 KiB; a too-large pattern's reason names how to shorten it.
-- **`compresso-atlas::edit`**: `RenameOutcome` gains `outside_whole_total`, `outside_whole`, `outside_unsearched_total`, and `outside_unsearched` (lists at most `EDIT_MAX_LISTED_LOCATIONS`), filled for a rename scoped by `path` after every operation of the call ran, from the call's final working set or, for files no operation touched, through the read gate (`peek_bytes`), sharing the call's `EDIT_MAX_SCAN_BYTES` budget; a file the budget no longer covers or that cannot be read as text is counted as not searched, and secret paths are skipped. `complete` is also false while `outside_whole_total` is non-zero (not for unsearched files). The MCP edit payload carries them as `outside_scope_whole_total`, `outside_scope_whole`, `outside_scope_unsearched_total`, and `outside_scope_unsearched` on scoped renames, plus a call-level `outside_scope_whole_total` when non-zero.
+- **`compresso-atlas::edit`**: `RenameOutcome` gains `outside_whole_total`, `outside_whole`, `outside_unsearched_total`, and `outside_unsearched` (lists at most `EDIT_MAX_LISTED_LOCATIONS`), filled for a rename scoped by `path` after every operation of the call ran, from the call's final working set or, for files no operation touched, through the read gate (`peek_bytes`), sharing the call's `EDIT_MAX_SCAN_BYTES` budget; a file the budget no longer covers, that cannot be read as text, or that `ScannerExclusions` excludes (or under `.git`) is counted as not searched without being read, and secret paths are skipped. `complete` is also false while `outside_whole_total` is non-zero (not for unsearched files). The MCP edit payload carries them as `outside_scope_whole_total`, `outside_scope_whole`, `outside_scope_unsearched_total`, and `outside_scope_unsearched` on scoped renames, plus a call-level `outside_scope_whole_total` when non-zero.
 - **`compresso-mcp` grep limits**: in the lean profile `clamped_usize` clamps a limit above its maximum and records `NAME VALUE -> MAX` under `clamped` (text: `[limits clamped: ...]`).
 
 ## 16. E17-34 interfaces (D99)

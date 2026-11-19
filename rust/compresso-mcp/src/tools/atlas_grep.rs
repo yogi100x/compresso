@@ -493,17 +493,25 @@ fn file_value(file: &GrepFile) -> Value {
 
 /// Where test code sits in the files a grep report lists (E17-34, D99): a
 /// file under a test directory (`test`, `tests`, `__tests__`, `testdata`
-/// path components), or a line inside an indexed module named `tests`.
-/// File names and function names alone never make a row test code, so
-/// production code such as `src/test_utils.rs` or `fn test_connection` is
-/// listed; an out-of-line `mod tests;` file is listed too.
+/// path components), a file whose language reserves its name for tests
+/// (`_test.go`, E17-37, D102), or a line inside an indexed module named
+/// `tests`. Other file names and function names never make a row test code,
+/// so production code such as `src/test_utils.rs`, `test_utils.go`, or
+/// `fn test_connection` is listed; an out-of-line `mod tests;` file is
+/// listed too.
 #[derive(Default)]
 struct TestCode {
     modules: HashMap<String, Vec<(u32, u32)>>,
 }
 
+/// Whether `path` is test code as a whole file: under a test directory, or
+/// named as a test file by its language (`db_test.go`).
+fn whole_file_is_test(path: &str) -> bool {
+    in_test_named_directory(path) || compresso_atlas::parsers::languages::is_test_file(path)
+}
+
 /// Whether a directory of `path` (not its file name) is a test directory.
-fn in_test_directory(path: &str) -> bool {
+fn in_test_named_directory(path: &str) -> bool {
     let mut parts = path.split('/').collect::<Vec<_>>();
     parts.pop();
     parts.into_iter().any(|part| {
@@ -521,7 +529,7 @@ impl TestCode {
     fn of(store: &Store, repo: RepoId, report: &GrepReport) -> Self {
         let mut modules = HashMap::new();
         for file in report.results.iter().flat_map(|result| &result.files) {
-            if file.stale || in_test_directory(&file.path) || modules.contains_key(&file.path) {
+            if file.stale || whole_file_is_test(&file.path) || modules.contains_key(&file.path) {
                 continue;
             }
             let ranges = store
@@ -537,7 +545,7 @@ impl TestCode {
     }
 
     fn contains(&self, path: &str, line: &GrepLine) -> bool {
-        in_test_directory(path)
+        whole_file_is_test(path)
             || self.modules.get(path).is_some_and(|ranges| {
                 ranges
                     .iter()

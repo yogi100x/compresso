@@ -1,8 +1,8 @@
 use compresso_atlas::{
-    BoundedRead, EXACT_TOKEN_COUNT_MAX_BYTES, READ_MAX_RANGES, ReadRequest, SearchHit,
-    SearchOptions, file_line_count, is_scanner_excluded, outline_current, plan_context,
-    read_bounded, read_bounded_ranges, repository_stale, search_with_diagnostics,
-    validate_read_requests, validate_search_query,
+    BoundedRead, EXACT_TOKEN_COUNT_MAX_BYTES, READ_MAX_RANGES, ReadRequest, ScannerExclusions,
+    SearchHit, SearchOptions, file_line_count, outline_current, plan_context, read_bounded,
+    read_bounded_ranges, repository_stale, search_with_diagnostics, validate_read_requests,
+    validate_search_query,
 };
 use compresso_core::{TokenCounter, operation_identity};
 use compresso_store::{Store, SymbolRecord};
@@ -161,7 +161,12 @@ fn read_tool(
     }
 
     let repository = resolve_repository(store, repository_root, root.as_deref())?;
-    read_gate_path(store, &repository, &path)?;
+    read_gate_path(
+        store,
+        &repository,
+        &ScannerExclusions::load(&repository.root),
+        &path,
+    )?;
     let counter = navigation_counter();
     let mut range = read_range(&repository.root, &path, start_line, end_line)?;
     let window = if form.is_text() && !gate {
@@ -479,10 +484,11 @@ fn read_value(result: &BoundedRead) -> Value {
 fn read_gate_path(
     store: &Store,
     repository: &compresso_store::RepoRecord,
+    exclusions: &ScannerExclusions,
     path: &str,
 ) -> Result<(), ToolFailure> {
     validate_repo_path(&repository.root, path)?;
-    if is_scanner_excluded(&repository.root, Path::new(path))
+    if exclusions.excludes(&repository.root, Path::new(path))
         && store
             .indexed_file(repository.id, path)
             .map_err(|_| ToolFailure::internal())?
@@ -578,8 +584,9 @@ pub(crate) fn read_ranges(
     let requests = requests_of(ranges);
     let mut outcomes = Vec::with_capacity(requests.len());
     let mut admitted = Vec::new();
+    let exclusions = ScannerExclusions::load(&repository.root);
     for request in &requests {
-        match read_gate_path(store, repository, request.path) {
+        match read_gate_path(store, repository, &exclusions, request.path) {
             Ok(()) => {
                 outcomes.push(None);
                 admitted.push(*request);

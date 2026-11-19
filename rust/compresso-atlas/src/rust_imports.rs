@@ -55,12 +55,13 @@ impl RustWorkspace {
     /// manifest falls back to the directory name and no dependencies.
     pub(crate) fn discover(root: &Path, known_paths: &BTreeSet<String>) -> Self {
         let mut workspace = Self::default();
+        let exclusions = crate::scanner::ScannerExclusions::load(root);
         let mut manifests = BTreeMap::<String, Manifest>::new();
         let mut manifest_at = |directory: &str| -> Manifest {
             manifests
                 .entry(directory.to_owned())
                 .or_insert_with(|| {
-                    read_manifest(root, directory)
+                    read_manifest(root, &exclusions, directory)
                         .map(|text| Manifest::parse(&text))
                         .unwrap_or_default()
                 })
@@ -175,11 +176,15 @@ impl RustWorkspace {
 /// Reads `<crate_dir>/Cargo.toml` under the rules the scanner applies to any
 /// file: a regular file (never a symbolic link) that the scanner's exclusions
 /// allow, read through a size cap. Anything else counts as no manifest.
-fn read_manifest(root: &Path, crate_dir: &str) -> Option<String> {
+fn read_manifest(
+    root: &Path,
+    exclusions: &crate::scanner::ScannerExclusions,
+    crate_dir: &str,
+) -> Option<String> {
     use std::io::Read as _;
 
     let relative = Path::new(crate_dir).join("Cargo.toml");
-    if crate::scanner::is_scanner_excluded(root, &relative) {
+    if exclusions.excludes(root, &relative) {
         return None;
     }
     let path = root.join(&relative);

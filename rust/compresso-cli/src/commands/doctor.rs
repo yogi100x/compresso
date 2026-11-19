@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::{Args, ValueEnum};
-use compresso_atlas::parsers::{Language, ParserRegistry};
+use compresso_atlas::parsers::{LANGUAGES, ParserRegistry};
 use compresso_core::{
     Config, ConfigOverrides, ConfigSource, Mode, RuntimePaths, TokenProvider, counter_for,
 };
@@ -541,15 +541,12 @@ fn check_tokenizers() -> DiagnosticCheck {
 }
 
 fn check_grammars() -> DiagnosticCheck {
-    let fixtures = [
-        (Language::Rust, "fn check() {}"),
-        (Language::TypeScript, "export function check(): void {}"),
-        (Language::Tsx, "export const Check = () => <div />;"),
-        (Language::JavaScript, "export function check() {}"),
-        (Language::Python, "def check():\n    pass\n"),
-    ];
-    for (language, source) in fixtures {
-        if let Err(error) = ParserRegistry::extract(language, source) {
+    let parsed = LANGUAGES
+        .iter()
+        .filter(|spec| spec.has_grammar())
+        .collect::<Vec<_>>();
+    for spec in &parsed {
+        if let Err(error) = ParserRegistry::extract(spec.language, spec.smoke_sample) {
             return DiagnosticCheck::failed(
                 "tree_sitter_grammars_load",
                 error.to_string(),
@@ -557,9 +554,14 @@ fn check_grammars() -> DiagnosticCheck {
             );
         }
     }
+    let names = parsed.iter().map(|spec| spec.name).collect::<Vec<_>>();
+    let listed = match names.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{}, and {last}", rest.join(", ")),
+        _ => names.join(""),
+    };
     DiagnosticCheck::passed(
         "tree_sitter_grammars_load",
-        "Rust, TypeScript, TSX, JavaScript, and Python grammars loaded",
+        format!("{listed} grammars loaded"),
     )
 }
 

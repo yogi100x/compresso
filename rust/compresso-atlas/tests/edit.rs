@@ -483,6 +483,95 @@ fn test_secret_gitignored_and_unindexed_paths_are_refused() {
 }
 
 #[test]
+fn test_unscoped_rename_never_reaches_a_worktree_copy_excluded_by_info_exclude() {
+    let fixture = Fixture::new(&[
+        (".git/HEAD", b"ref: refs/heads/main\n"),
+        (".git/info/exclude", b"**/.claude/worktrees/\n/trees/\n"),
+        ("src/lib.rs", b"fn shared_name() {}\n"),
+        // Under `.claude` the control-file denylist already refused a write;
+        // elsewhere only the exclude rule keeps the copy out of reach.
+        (
+            ".claude/worktrees/other/src/lib.rs",
+            b"fn shared_name() {}\n",
+        ),
+        ("trees/other/src/lib.rs", b"fn shared_name() {}\n"),
+    ]);
+    assert_eq!(
+        refusal(
+            fixture
+                .apply(vec![replace(
+                    ".claude/worktrees/other/src/lib.rs",
+                    "shared",
+                    "x",
+                    1
+                )])
+                .unwrap_err()
+        ),
+        Refusal::ControlFile
+    );
+    let report = fixture
+        .apply(vec![rename("shared_name", "renamed", None, None)])
+        .expect("rename applies");
+    assert_eq!(report.operations[0].files, ["src/lib.rs"]);
+    for copy in [
+        ".claude/worktrees/other/src/lib.rs",
+        "trees/other/src/lib.rs",
+    ] {
+        assert_eq!(
+            fixture.text(copy),
+            "fn shared_name() {}\n",
+            "another session's working tree was rewritten: {copy}"
+        );
+    }
+}
+
+#[test]
+fn test_unscoped_rename_never_reaches_a_nested_linked_worktree() {
+    let fixture = Fixture::new(&[
+        (".git/HEAD", b"ref: refs/heads/main\n"),
+        ("src/lib.rs", b"fn shared_name() {}\n"),
+        ("copies/other/.git", b"gitdir: ../../.git/worktrees/other\n"),
+        ("copies/other/src/lib.rs", b"fn shared_name() {}\n"),
+    ]);
+    let report = fixture
+        .apply(vec![rename("shared_name", "renamed", None, None)])
+        .expect("rename applies");
+    assert_eq!(report.operations[0].files, ["src/lib.rs"]);
+    assert_eq!(
+        fixture.text("copies/other/src/lib.rs"),
+        "fn shared_name() {}\n"
+    );
+    assert_eq!(
+        refusal(
+            fixture
+                .apply(vec![replace("copies/other/src/lib.rs", "shared", "x", 1)])
+                .unwrap_err()
+        ),
+        Refusal::Excluded
+    );
+}
+
+#[test]
+fn test_a_stale_row_for_a_newly_excluded_file_is_refused() {
+    let fixture = Fixture::new(&[
+        (".git/HEAD", b"ref: refs/heads/main\n"),
+        ("src/lib.rs", b"fn a() {}\n"),
+        ("copy/lib.rs", b"fn a() {}\n"),
+    ]);
+    // The rule arrives after indexing; the row for copy/lib.rs is stale.
+    write(&fixture.root, ".git/info/exclude", b"copy/\n");
+    assert_eq!(
+        refusal(
+            fixture
+                .apply(vec![replace("copy/lib.rs", "a", "b", 1)])
+                .unwrap_err()
+        ),
+        Refusal::Excluded
+    );
+    assert_eq!(fixture.text("copy/lib.rs"), "fn a() {}\n");
+}
+
+#[test]
 fn test_protected_directories_are_refused() {
     let fixture = Fixture::new(&[("store/notes.txt", b"x\n")]);
     let request = EditRequest {
@@ -1290,4 +1379,30 @@ fn test_scoped_renames_count_outside_matches_after_every_operation() {
         assert!(outcome.outside_unsearched.is_empty(), "{outcome:?}");
         assert!(outcome.complete, "{outcome:?}");
     }
+}
+
+/// E17-36 with E17-35: the outside-scope count of a scoped rename never
+/// reads files the scanner excludes (`info/exclude`, nested worktrees).
+#[test]
+fn test_the_outside_scope_count_never_reads_excluded_files() {
+    let fixture = Fixture::new(&[
+        (".git/HEAD", b"ref: refs/heads/main\n"),
+        ("src/lib.rs", b"fn tally_votes() {}\n"),
+        (".git/info/exclude", b"/trees/\n"),
+        ("trees/other/lib.rs", b"fn run() { tally_votes(); }\n"),
+        ("copy/lib.rs", b"fn run() { tally_votes(); }\n"),
+    ]);
+    // A rule that arrives after indexing leaves a stale row for copy/.
+    write(&fixture.root, ".git/info/exclude", b"/trees/\ncopy/\n");
+    let report = fixture
+        .apply(vec![rename(
+            "tally_votes",
+            "count_votes",
+            Some("src"),
+            None,
+        )])
+        .expect("rename applies");
+    let outcome = report.operations[0].rename.as_ref().expect("outcome");
+    assert_eq!(outcome.outside_whole_total, 0, "{outcome:?}");
+    assert!(outcome.complete, "{outcome:?}");
 }
