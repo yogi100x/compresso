@@ -55,11 +55,29 @@ pub(crate) fn with_recall_source(mut args: Vec<String>, client: &str) -> Vec<Str
     args
 }
 
-/// Whether `args` is `base`, or `base` followed by `client`'s own recall
-/// source. Another client's source, a repeated flag, or any other argument
-/// never matches.
+/// Flag that enables the opt-in `compresso_edit` tool (E17-32, D97).
+pub(crate) const EDITS_FLAG: &str = "--edits";
+
+/// Appends the edit-tool flag to adapter-written base arguments. It precedes
+/// any recall source, so the recall pair stays last.
+pub(crate) fn with_edits(mut args: Vec<String>) -> Vec<String> {
+    args.push(EDITS_FLAG.to_owned());
+    args
+}
+
+/// Whether `args` is `base`, optionally followed by `--edits`, optionally
+/// followed by `client`'s own recall source, in that canonical order.
+/// Another client's source, a repeated flag, or any other argument never
+/// matches.
 pub(crate) fn is_adapter_args(args: &[String], base: &[String], client: &str) -> bool {
-    args == base || args == with_recall_source(base.to_vec(), client).as_slice()
+    [base.to_vec(), with_edits(base.to_vec())]
+        .into_iter()
+        .any(|base| args == base || args == with_recall_source(base, client).as_slice())
+}
+
+/// Whether adapter-shaped server arguments enable the edit tool.
+pub fn server_enables_edits(args: &[String]) -> bool {
+    args.iter().any(|argument| argument == EDITS_FLAG)
 }
 
 /// The only client whose recall source an entry in a `format` configuration
@@ -481,6 +499,21 @@ mod tests {
             &serve_args(),
             "codex"
         ));
+        let edits = with_edits(serve_args());
+        assert!(is_adapter_args(&edits, &serve_args(), "codex"));
+        assert!(is_adapter_args(
+            &with_recall_source(edits.clone(), "codex"),
+            &serve_args(),
+            "codex"
+        ));
+        assert!(server_enables_edits(&edits));
+        assert!(!server_enables_edits(&serve_args()));
+        // Canonical order only: --edits after the recall pair, or twice, is
+        // not an adapter-written entry.
+        let mut misplaced = with_recall_source(serve_args(), "codex");
+        misplaced.push(EDITS_FLAG.to_owned());
+        assert!(!is_adapter_args(&misplaced, &serve_args(), "codex"));
+        assert!(!is_adapter_args(&with_edits(edits), &serve_args(), "codex"));
         assert!(!is_adapter_args(
             &with_recall_source(serve_args(), "codex"),
             &serve_args(),

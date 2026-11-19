@@ -187,6 +187,11 @@ pub struct IntegrationMutationArgs {
     /// entry. Project scope: `--project`, or else the working directory.
     #[arg(long, conflicts_with_all = ["compaction_hook", "no_recall"])]
     pub explore_agent: bool,
+    /// Opt into the one write tool, `compresso_edit` (Claude Code only;
+    /// `install` only). The MCP server entry starts `mcp serve --edits`; with
+    /// `--explore-agent`, the agent may call `compresso_edit` instead.
+    #[arg(long, conflicts_with = "compaction_hook")]
+    pub edits: bool,
 }
 
 #[derive(Args, Debug)]

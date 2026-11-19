@@ -270,3 +270,112 @@ fn test_agent_install_refuses_a_user_agent_of_the_same_name() {
         "---\nname: compresso-explorer\n---\nmine\n"
     );
 }
+
+#[test]
+fn test_edits_opt_in_grants_the_edit_tool_and_round_trips() {
+    let fixture = Fixture::new();
+    let before = files_under(&fixture.root);
+    let (exit, preview, errors) = fixture.integrations(&[
+        "install",
+        "claude-code",
+        "--explore-agent",
+        "--edits",
+        "--dry-run",
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert!(preview.to_string().contains("compresso_edit"));
+    assert_eq!(files_under(&fixture.root), before, "dry run writes nothing");
+
+    let (exit, _, errors) = fixture.integrations(&[
+        "install",
+        "claude-code",
+        "--explore-agent",
+        "--edits",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    let agent = fs::read_to_string(fixture.agent_path()).expect("agent written");
+    assert!(agent.contains("mcp__compresso__compresso_edit"));
+    assert!(agent.contains("not shell text substitution"));
+    let (exit, _, errors) =
+        fixture.integrations(&["verify", "claude-code", "--explore-agent", "--json"]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    let (exit, _, errors) = fixture.integrations(&[
+        "uninstall",
+        "claude-code",
+        "--explore-agent",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert!(!fixture.agent_path().exists());
+
+    // The server entry: --edits precedes the recall pair, and the entry
+    // verifies and uninstalls like the default one.
+    let (exit, _, errors) =
+        fixture.integrations(&["install", "claude-code", "--edits", "--yes", "--json"]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    let config: Value = serde_json::from_str(
+        &fs::read_to_string(fixture.home.join(".claude.json")).expect("user config"),
+    )
+    .expect("JSON config");
+    let args = config["mcpServers"]["compresso"]["args"]
+        .as_array()
+        .expect("args")
+        .iter()
+        .map(|argument| argument.as_str().expect("string"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        &args[args.len() - 3..],
+        ["--edits", "--recall-source", "claude-code"]
+    );
+    // Live client evidence is unavailable here; the entry shape is what an
+    // --edits entry could break.
+    let (_, verify, _) = fixture.integrations(&["verify", "claude-code", "--json"]);
+    let server_entry = verify["data"]["checks"]
+        .as_array()
+        .expect("checks")
+        .iter()
+        .find(|check| check["name"] == "server_entry")
+        .expect("server_entry check");
+    assert_eq!(server_entry["passed"], true, "{verify}");
+    let (exit, _, errors) = fixture.integrations(&["uninstall", "claude-code", "--yes", "--json"]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    let config: Value = serde_json::from_str(
+        &fs::read_to_string(fixture.home.join(".claude.json")).expect("user config"),
+    )
+    .expect("JSON config");
+    assert!(config["mcpServers"].get("compresso").is_none());
+
+    // Without --edits nothing about the entry changes.
+    let (exit, _, errors) = fixture.integrations(&["install", "claude-code", "--yes", "--json"]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    let config = fs::read_to_string(fixture.home.join(".claude.json")).expect("user config");
+    assert!(!config.contains("--edits"));
+}
+
+#[test]
+fn test_edits_is_install_only_and_claude_code_only() {
+    let fixture = Fixture::new();
+    let (exit, _, errors) =
+        fixture.integrations(&["install", "codex", "--edits", "--yes", "--json"]);
+    assert_eq!(exit, CliExitCode::Failure);
+    assert!(errors.contains("unsupported"), "{errors}");
+    let (exit, _, errors) =
+        fixture.integrations(&["uninstall", "claude-code", "--edits", "--yes", "--json"]);
+    assert_eq!(exit, CliExitCode::Failure);
+    assert!(errors.contains("invalid_arguments"), "{errors}");
+    assert!(
+        Cli::try_parse_from([
+            "compresso",
+            "integrations",
+            "install",
+            "claude-code",
+            "--edits",
+            "--compaction-hook",
+        ])
+        .is_err()
+    );
+}
