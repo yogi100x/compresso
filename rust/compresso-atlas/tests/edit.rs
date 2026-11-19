@@ -1052,3 +1052,26 @@ fn test_a_file_the_user_cannot_write_is_refused_whatever_its_other_bits() {
     .expect("chmod back");
     assert_eq!(fixture.text("group.txt"), "x\n");
 }
+
+// ---- Third review round (E17-32).
+
+#[test]
+fn test_kotlin_string_templates_are_renamed_with_the_variable() {
+    let fixture = Fixture::new(&[("a.kt", b"val name = 1\nprintln(\"x=$name ${name}\")\n")]);
+    renamed(&fixture, "name", "title", 3);
+    assert_eq!(
+        fixture.text("a.kt"),
+        "val title = 1\nprintln(\"x=$title ${title}\")\n"
+    );
+}
+
+#[test]
+fn test_scala_and_dart_dollar_names_are_listed_for_a_hand_check() {
+    for path in ["a.scala", "a.dart"] {
+        let fixture = Fixture::new(&[(path, b"val name = 1\nprintln(s\"$name\")\n")]);
+        let report = renamed(&fixture, "name", "title", 1);
+        let outcome = report.operations[0].rename.as_ref().expect("outcome");
+        assert_eq!(outcome.remaining_adjacent_total, 1, "{path}");
+        assert!(fixture.text(path).contains("$name"), "{path}");
+    }
+}

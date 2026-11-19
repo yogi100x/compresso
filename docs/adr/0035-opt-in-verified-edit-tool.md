@@ -57,10 +57,12 @@ adds a narrower tool now, ahead of E15.
    `b`, `u`, `rb`, `br`, `fr`, `rf`, `c`, `cr`, `L`, `U`, `u8`, `R`, any case),
    so `f"` is kept but `foo"` is renamed; `%` precedes a one-character name
    (`%d`); or, in Rust, `'` precedes it (`'a`). The file's language comes from
-   its extension: in JavaScript, TypeScript, Java, Kotlin, Scala, and Dart
-   `$name` is a different identifier and counts as a substring; in shell, PHP,
-   Perl, and anything else `$name` and `${name}` are the variable `name` and
-   are renamed. Otherwise matching is textual, so comments and strings are
+   its extension: in JavaScript, TypeScript, and Java `$name` is a different
+   identifier and counts as a substring; in Scala and Dart `$name` may be an
+   identifier or string interpolation, so it is adjacent (kept, listed for a
+   hand check); in shell, PHP, Perl, Kotlin (whose string templates `"$name"`
+   and `"${name}"` name the variable), and anything else `$name` and
+   `${name}` are the variable `name` and are renamed. Otherwise matching is textual, so comments and strings are
    renamed too. A rename into a name that already
    occurs as an identifier in scope (by the same matcher) is refused
    (`name_exists`) unless the call passes `allow_existing`.
@@ -84,10 +86,12 @@ adds a narrower tool now, ahead of E15.
    repository-relative without `.`, `..`, backslash, or NUL; not a secret path;
    not under `.git`; not a control file, meaning a path any of whose components, compared case-insensitively after trimming trailing dots and spaces, is: a name starting with `.git` (`.gitignore`, `.gitattributes`, `.gitmodules`, `.gitlab-ci.yml`, ...) or `.aider`, or ending in `.code-workspace`; an ignore file `.ignore`, `.rgignore`, `.cursorignore`, `.aiexclude`, `.codeiumignore`, `.geminiignore`; an agent instruction or configuration name `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `GEMINI.md`, `.cursorrules`, `.windsurfrules`, `.clinerules`, `.claude.json`, `.mcp.json`; a hook, CI, environment, or package-manager name `.pre-commit-config.yaml`, `.travis.yml`, `azure-pipelines.yml`, `Jenkinsfile`, `.envrc`, `lefthook.yml`, `.lefthook.yml` (and `.yaml`/`.yml` forms), `.devcontainer.json`, `CODEOWNERS`, `.npmrc`, `.yarnrc.yml`; `.cargo/config` or `.cargo/config.toml`; or `.claude`, `.codex`, `.cursor`, `.windsurf`, `.gemini`, `.continue`, `.zed`, `.vscode`, `.idea`, `.github`, `.gitlab`, `.husky`, `.circleci`, `.devcontainer`, `.buildkite`, `.woodpecker`. Every list is matched at every component, so a directory named like a control file is refused too. This is a denylist of known control files, not a guarantee: build scripts and other code a tool may later run (`build.rs`, `package.json` scripts, `Makefile`) stay editable because editing code is the tool's purpose, and the client's permission prompt is the control for them (an edit to an ignore file would widen what the gates allow, and an
    edit to agent, CI, or hook configuration could turn text into command
-   execution); writable by this user (probed by opening it for writing
-   without truncation, since mode bits alone do not say who may write); owned
-   by this user on Unix (a replacement would otherwise change the owner,
-   `foreign_owner`); not excluded by the scanner (for example gitignored);
+   execution); owned by this user on Unix (a replacement would otherwise
+   change the owner, `foreign_owner`) with the owner write bit set (`read_only`;
+   for the owner only the owner bits count, and root may write its own files),
+   decided from the open handle's metadata so nothing is opened for writing,
+   also during a rename sweep or a dry run (non-Unix: the read-only
+   attribute); not excluded by the scanner (for example gitignored);
    listed in the index; resolved by the shared read gate (`resolve_under_root`:
    inside the root, no symbolic-link component, device and inode bound to the
    open on Unix); not the Compresso store's database files, nor anything in the
@@ -175,8 +179,13 @@ adds a narrower tool now, ahead of E15.
   removes them automatically, but the scanner never indexes them.
 - The language for `$` and lifetimes is chosen by file extension only; a file
   without a known extension is treated like shell (`$name` renamed).
-- The owner check could not be exercised by a test (it needs a file owned by
-  another user); the writability probe is tested.
+- The owner and write-bit decision is tested as a function; a file owned by
+  another user could not be created in a test.
+- A multi-character name after an odd backslash run whose first letter forms
+  an escape (`"\name"`, renaming `name`) is renamed as a whole identifier,
+  because only one-character and hexadecimal names count as escape forms.
+- If the index refresh before a rename fails, the report says
+  `index_refreshed: false` and every rename in the call is incomplete.
 
 ## Out of scope
 

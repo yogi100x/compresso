@@ -410,6 +410,7 @@ pub fn report_payload(
         "remaining_substring_total": renames.clone().map(|rename| rename.remaining_substring_total).sum::<usize>(),
         "remaining_adjacent_total": renames.clone().map(|rename| rename.remaining_adjacent_total).sum::<usize>(),
         "files_skipped_total": renames.clone().map(|rename| rename.files_skipped.len()).sum::<usize>(),
+        "index_refreshed": report.index_refreshed,
         "unverified_files": if report.dry_run { 0 } else { report.files.iter().filter(|file| !file.verified).count() },
         "files": files,
         "operations": operations,

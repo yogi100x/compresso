@@ -30,9 +30,11 @@
 //! adjacent, when it is an escape (`\n` after an odd run of backslashes, for a
 //! one-character or `x`/`u` hexadecimal name), a string literal prefix before
 //! a quote or `#` (`f"`, `b'`, `r#`), a printf conversion (`%d`), or, in Rust,
-//! a lifetime (`'a`). In JavaScript, TypeScript, Java, Kotlin, Scala, and Dart
-//! `$name` is a different identifier and is not renamed; elsewhere `$name` and
-//! `${name}` are the variable `name` and are. Otherwise matching is textual:
+//! a lifetime (`'a`). In JavaScript, TypeScript, and Java `$name` is a
+//! different identifier and is not renamed; in Scala and Dart `$name` may be
+//! an identifier or string interpolation, so it is adjacent; elsewhere
+//! (shell, PHP, Perl, Kotlin templates, ...) `$name` and `${name}` are the
+//! variable `name` and are renamed. Otherwise matching is textual:
 //! occurrences inside comments and strings are renamed too, and the report
 //! lists every remaining substring and adjacent occurrence.
 //!
@@ -341,6 +343,8 @@ pub struct EditReport {
     pub diff_truncated: bool,
     pub bytes_written: u64,
     pub index: IndexState,
+    /// The pre-rename index refresh succeeded (always true without a rename).
+    pub index_refreshed: bool,
 }
 
 /// A bound one call may not exceed.
@@ -461,13 +465,16 @@ pub fn is_identifier(name: &str) -> bool {
 /// a Rust lifetime. Chosen from the file extension.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SourceLanguage {
-    /// `$` is an identifier character (JavaScript, TypeScript, Java, Kotlin,
-    /// Scala, Dart): `$name` is a different identifier.
+    /// `$` is an identifier character (JavaScript, TypeScript, Java):
+    /// `$name` is a different identifier.
     DollarIdentifier,
+    /// `$` is both an identifier character and string interpolation (Scala,
+    /// Dart): `$name` may be either, so it is listed for a hand check.
+    DollarAmbiguous,
     /// Rust: `'name` is a lifetime or a character literal.
     Rust,
-    /// Shell, PHP, Perl, and everything else: `$name` and `${name}` are the
-    /// variable `name`.
+    /// Shell, PHP, Perl, Kotlin (string templates), and everything else:
+    /// `$name` and `${name}` are the variable `name`.
     Other,
 }
 
@@ -481,8 +488,10 @@ impl SourceLanguage {
             .map(|(_, extension)| extension.to_ascii_lowercase())
             .unwrap_or_default();
         match extension.as_str() {
-            "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts" | "java" | "kt" | "kts"
-            | "scala" | "sc" | "dart" => Self::DollarIdentifier,
+            "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts" | "java" => {
+                Self::DollarIdentifier
+            }
+            "scala" | "sc" | "dart" => Self::DollarAmbiguous,
             "rs" => Self::Rust,
             _ => Self::Other,
         }
@@ -553,7 +562,8 @@ pub fn identifier_occurrences(text: &str, name: &str, language: SourceLanguage) 
         let prefix = matches!(after, Some('"' | '\'' | '#')) && is_literal_prefix(name);
         let conversion = before == Some('%') && single;
         let lifetime = language == SourceLanguage::Rust && before == Some('\'');
-        if escape || prefix || conversion || lifetime {
+        let interpolation = language == SourceLanguage::DollarAmbiguous && before == Some('$');
+        if escape || prefix || conversion || lifetime || interpolation {
             found.adjacent.push(start);
         } else {
             found.whole.push(start);
@@ -713,6 +723,7 @@ pub(crate) fn apply_edits_with_hook(
             diff_truncated,
             bytes_written: 0,
             index: IndexState::NotRun,
+            index_refreshed,
         });
     }
     if changed.is_empty() {
@@ -724,6 +735,7 @@ pub(crate) fn apply_edits_with_hook(
             diff_truncated: false,
             bytes_written: 0,
             index: IndexState::NotRun,
+            index_refreshed,
         });
     }
 
@@ -743,6 +755,7 @@ pub(crate) fn apply_edits_with_hook(
         diff_truncated: false,
         bytes_written,
         index,
+        index_refreshed,
     })
 }
 
@@ -1027,16 +1040,10 @@ fn load(gate: &Gate<'_>, path: &str) -> Result<WorkingFile, EditError> {
     if metadata.len() > EDIT_MAX_FILE_BYTES {
         return Err(refused(path, Refusal::TooLarge));
     }
-    // Probe for write permission as this user (the mode bits alone say
-    // nothing about who may write). Opening without truncation changes
-    // nothing.
-    if metadata.permissions().readonly()
-        || fs::OpenOptions::new()
-            .write(true)
-            .open(resolved.path())
-            .is_err()
-    {
-        return Err(refused(path, Refusal::ReadOnly));
+    // Decided from the open handle's metadata alone: nothing is opened for
+    // writing, so a rename scope or a dry run never touches a file.
+    if let Some(reason) = write_refusal(&metadata) {
+        return Err(refused(path, reason));
     }
     let mut original = Vec::new();
     file.take(EDIT_MAX_FILE_BYTES + 1)
@@ -1161,6 +1168,36 @@ pub fn is_control_path(relative: &Path) -> bool {
                     .get(index + 1)
                     .is_some_and(|next| next == "config" || next == "config.toml"))
     })
+}
+
+/// Why this process may not replace a file with `owner` and `mode`, as
+/// effective user `euid`: another user's file would change owner, and for
+/// the owner only the owner write bit counts (POSIX); root writes its own.
+fn ownership_refusal(owner: u32, mode: u32, euid: u32) -> Option<Refusal> {
+    if owner != euid {
+        Some(Refusal::ForeignOwner)
+    } else if euid != 0 && mode & 0o200 == 0 {
+        Some(Refusal::ReadOnly)
+    } else {
+        None
+    }
+}
+
+fn write_refusal(metadata: &fs::Metadata) -> Option<Refusal> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let euid = unsafe { libc::geteuid() };
+        ownership_refusal(metadata.uid(), metadata.mode(), euid)
+    }
+    #[cfg(not(unix))]
+    {
+        metadata
+            .permissions()
+            .readonly()
+            .then_some(Refusal::ReadOnly)
+    }
 }
 
 fn file_owner(metadata: &fs::Metadata) -> Option<u32> {
@@ -2179,6 +2216,24 @@ mod tests {
         );
         assert_eq!(SourceLanguage::for_path("lib.rs"), SourceLanguage::Rust);
         assert_eq!(SourceLanguage::for_path("run.sh"), SourceLanguage::Other);
+    }
+
+    #[test]
+    fn test_ownership_and_write_bits_decide_without_opening_the_file() {
+        // Owner bits alone decide for the owner (POSIX).
+        assert_eq!(ownership_refusal(501, 0o464, 501), Some(Refusal::ReadOnly));
+        assert_eq!(ownership_refusal(501, 0o644, 501), None);
+        // Another user's file: a replacement would change its owner.
+        assert_eq!(
+            ownership_refusal(0, 0o666, 501),
+            Some(Refusal::ForeignOwner)
+        );
+        assert_eq!(
+            ownership_refusal(501, 0o644, 0),
+            Some(Refusal::ForeignOwner)
+        );
+        // Root may write its own file whatever the bits.
+        assert_eq!(ownership_refusal(0, 0o444, 0), None);
     }
 
     #[test]

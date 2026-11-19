@@ -599,15 +599,23 @@ fn edit(payload: &Value, out: &mut Out) {
     );
     let incomplete = number(payload, "incomplete_operations");
     if incomplete > 0 {
-        header.push_str(&format!(
-            "; INCOMPLETE: {incomplete} rename(s), {} skipped file(s) hold the old name",
-            number(payload, "files_skipped_total")
-        ));
+        header.push_str(&format!("; INCOMPLETE: {incomplete} rename(s)"));
+        let skipped = number(payload, "files_skipped_total");
+        if skipped > 0 {
+            header.push_str(&format!(", {skipped} skipped file(s) hold the old name"));
+        }
+        if payload.get("index_refreshed") == Some(&Value::Bool(false)) {
+            header.push_str(", the index could not be refreshed, so new files may be missed");
+        }
     }
     for (key, label) in [
         (
             "remaining_whole_total",
             "whole match(es) of an old name remain",
+        ),
+        (
+            "remaining_substring_total",
+            "substring match(es) inside longer names",
         ),
         (
             "remaining_adjacent_total",
@@ -977,5 +985,20 @@ mod tests {
         payload["task_coverage"]["uncovered"] = json!(["retry"]);
         let text = render("compresso_context", &payload).expect("text form");
         assert!(!text.contains("task parts"), "{text}");
+    }
+
+    #[test]
+    fn test_edit_header_names_the_real_reason_a_rename_is_incomplete() {
+        let payload = json!({
+            "dry_run": false, "files_total": 1, "sites_total": 2,
+            "incomplete_operations": 1, "files_skipped_total": 0,
+            "index_refreshed": false, "remaining_substring_total": 3,
+            "files": [], "operations": []
+        });
+        let text = render("compresso_edit", &payload).expect("text form");
+        let header = text.lines().next().expect("header");
+        assert!(header.contains("index could not be refreshed"), "{header}");
+        assert!(!header.contains("skipped file(s) hold"), "{header}");
+        assert!(header.contains("3 substring match(es)"), "{header}");
     }
 }
