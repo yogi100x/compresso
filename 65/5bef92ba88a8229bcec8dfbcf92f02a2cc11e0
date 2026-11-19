@@ -1,0 +1,29 @@
+docs/plan/08-ip-and-secure-deployment.md
+  s_89a704cfae63f5::t_9abe3fa982e00b 138
+docs/adr/0035-opt-in-verified-edit-tool.md
+  s_89a704cfae63f5::t_9abe3fa982e00b 70
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_9abe3fa982e00b 546
+rust/compresso-atlas/tests/edit.rs
+  s_89a704cfae63f5::t_9927f6584b140a 867-880,882-907
+  s_89a704cfae63f5::t_42456716bdc06d 881
+rust/compresso-atlas/src/edit.rs
+  s_89a704cfae63f5::t_ce42693b76a8ba 952-953,955-970,972-1017,1021,1023,1026,1029,1864-1916
+  s_89a704cfae63f5::t_52c08f3d877406 1917-1918
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "655bef92ba88a8229bcec8dfbcf92f02a2cc11e0",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
