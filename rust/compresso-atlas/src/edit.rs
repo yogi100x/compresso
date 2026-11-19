@@ -563,7 +563,16 @@ pub fn identifier_occurrences(text: &str, name: &str, language: SourceLanguage) 
         let conversion = before == Some('%') && single;
         let lifetime = language == SourceLanguage::Rust && before == Some('\'');
         let interpolation = language == SourceLanguage::DollarAmbiguous && before == Some('$');
-        if escape || prefix || conversion || lifetime || interpolation {
+        // `\$name` is an escaped dollar: literal text, not the variable.
+        let escaped_dollar = before == Some('$')
+            && text[..start - 1]
+                .bytes()
+                .rev()
+                .take_while(|byte| *byte == b'\\')
+                .count()
+                % 2
+                == 1;
+        if escape || prefix || conversion || lifetime || interpolation || escaped_dollar {
             found.adjacent.push(start);
         } else {
             found.whole.push(start);
@@ -1177,6 +1186,7 @@ pub fn is_control_path(relative: &Path) -> bool {
     })
 }
 
+#[cfg(unix)]
 /// Why this process may not replace a file with `owner` and `mode`, as
 /// effective user `euid`: another user's file would change owner, and a file
 /// without the owner write bit is read-only for everyone, root included.
@@ -1192,20 +1202,35 @@ fn ownership_refusal(owner: u32, mode: u32, euid: u32) -> Option<Refusal> {
     }
 }
 
-/// Asks the OS whether this process may write `path`, opening nothing
-/// (`faccessat` with `W_OK` and `AT_EACCESS`), so access-control lists,
-/// read-only mounts, and immutable flags refuse the edit up front.
+/// Asks the OS whether this process may replace `path`, opening nothing:
+/// `faccessat` with `AT_EACCESS` for `W_OK` on the file and `W_OK | X_OK` on
+/// its directory (the replacement is created and renamed there), so
+/// access-control lists, read-only mounts, immutable flags, and unwritable
+/// directories refuse the edit up front. A path that vanished or became a
+/// link reads as not found.
 #[cfg(unix)]
 fn os_write_refusal(path: &Path) -> Option<Refusal> {
     use std::os::unix::ffi::OsStrExt as _;
-    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
-        return Some(Refusal::ReadOnly);
+    let check = |path: &Path, mode: libc::c_int| -> Option<Refusal> {
+        let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+            return Some(Refusal::ReadOnly);
+        };
+        // SAFETY: `path` is a valid NUL-terminated string for the whole call
+        // and faccessat only reads it.
+        let status =
+            unsafe { libc::faccessat(libc::AT_FDCWD, path.as_ptr(), mode, libc::AT_EACCESS) };
+        if status == 0 {
+            return None;
+        }
+        Some(match io::Error::last_os_error().raw_os_error() {
+            Some(libc::ENOENT | libc::ELOOP | libc::ENOTDIR) => Refusal::NotFound,
+            _ => Refusal::ReadOnly,
+        })
     };
-    // SAFETY: `path` is a valid NUL-terminated string for the whole call and
-    // faccessat only reads it.
-    let status =
-        unsafe { libc::faccessat(libc::AT_FDCWD, path.as_ptr(), libc::W_OK, libc::AT_EACCESS) };
-    (status != 0).then_some(Refusal::ReadOnly)
+    check(path, libc::W_OK).or_else(|| {
+        path.parent()
+            .and_then(|directory| check(directory, libc::W_OK | libc::X_OK))
+    })
 }
 
 #[cfg(not(unix))]
@@ -1586,6 +1611,16 @@ fn apply_rename(
             .map_or_else(|| working[&path].text.clone(), |file| file.text.clone());
         let whole = scan.search(&path, &text, &spec);
         if !whole.is_empty() {
+            // A file the OS will not let this process replace (immutable,
+            // read-only mount, access-control list, unwritable directory) is
+            // skipped and listed, like any other file the sweep may not edit.
+            if loaded.is_some()
+                && let Some(reason) = os_write_refusal(&gate.root.join(&path))
+            {
+                scan.searched.remove(&path);
+                scan.skipped.push(SkippedFile { path, reason });
+                continue;
+            }
             scan.matched.push((path.clone(), whole));
             // Fail as soon as the bound is crossed, not after reading the rest.
             bound(
@@ -2249,6 +2284,7 @@ mod tests {
         assert_eq!(SourceLanguage::for_path("run.sh"), SourceLanguage::Other);
     }
 
+    #[cfg(unix)]
     #[test]
     fn test_ownership_and_write_bits_decide_without_opening_the_file() {
         // Owner bits alone decide for the owner (POSIX).
@@ -2407,11 +2443,25 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_a_staging_failure_changes_no_file() {
-        use std::os::unix::fs::PermissionsExt as _;
         let fixture = Fixture::new(&[("a.rs", "fn a() {}\n"), ("sub/b.rs", "fn b() {}\n")]);
         let sub = fixture.root.join("sub");
-        // No temporary file can be created beside b.rs, as on a full disk.
-        fs::set_permissions(&sub, fs::Permissions::from_mode(0o555)).unwrap();
+        // Occupy every temporary name the next calls could choose beside
+        // b.rs, so creating its staged copy fails, as on a full disk. (A
+        // read-only directory is now refused before staging.)
+        let first = TEMP_COUNTER.load(Ordering::Relaxed);
+        let occupied = (first..first + 2_000)
+            .flat_map(|counter| {
+                ["new", "old"].map(|role| {
+                    sub.join(format!(
+                        ".b.rs.compresso-edit-{role}-{}-{counter}.tmp",
+                        std::process::id()
+                    ))
+                })
+            })
+            .collect::<Vec<_>>();
+        for path in &occupied {
+            fs::write(path, "").unwrap();
+        }
         let error = fixture
             .apply(
                 vec![
@@ -2421,7 +2471,9 @@ mod tests {
                 &mut |_, _| Ok(()),
             )
             .expect_err("staging fails");
-        fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
+        for path in &occupied {
+            let _ = fs::remove_file(path);
+        }
         match error {
             EditError::WriteFailed {
                 path,

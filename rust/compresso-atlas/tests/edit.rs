@@ -1148,3 +1148,79 @@ fn test_write_checks_agree_across_dry_and_real_runs_and_touch_nothing_in_scope()
         "a file in scope without a match is not touched"
     );
 }
+
+// ---- Final review round (E17-32).
+
+#[cfg(target_os = "macos")]
+fn set_immutable(path: &Path, on: bool) {
+    use std::os::unix::ffi::OsStrExt as _;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).expect("path");
+    let flags = if on { libc::UF_IMMUTABLE } else { 0 };
+    // SAFETY: `path` is a valid NUL-terminated string for the whole call.
+    assert_eq!(unsafe { libc::chflags(path.as_ptr(), flags) }, 0);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn test_a_rename_skips_an_immutable_file_and_renames_the_rest() {
+    let fixture = Fixture::new(&[
+        ("a.rs", b"fn shared() {}\n"),
+        ("b.rs", b"fn main() { shared(); }\n"),
+    ]);
+    set_immutable(&fixture.root.join("b.rs"), true);
+    let result = fixture.apply(vec![rename("shared", "common", None, None)]);
+    set_immutable(&fixture.root.join("b.rs"), false);
+    let report = result.expect("the writable file is renamed");
+    let outcome = report.operations[0].rename.as_ref().expect("outcome");
+    assert_eq!(report.operations[0].files, ["a.rs"]);
+    assert!(!outcome.complete);
+    assert_eq!(outcome.files_skipped[0].path, "b.rs");
+    assert_eq!(outcome.files_skipped[0].reason, Refusal::ReadOnly);
+    assert_eq!(fixture.text("b.rs"), "fn main() { shared(); }\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_a_file_in_an_unwritable_directory_is_refused_or_skipped_up_front() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let fixture = Fixture::new(&[
+        ("open/a.rs", b"fn shared() {}\n"),
+        ("sealed/b.rs", b"fn main() { shared(); }\n"),
+    ]);
+    let sealed = fixture.root.join("sealed");
+    fs::set_permissions(&sealed, fs::Permissions::from_mode(0o555)).expect("chmod");
+    let direct = [true, false].map(|dry_run| {
+        fixture.apply_request(
+            &fixture.request(vec![replace("sealed/b.rs", "shared", "common", 1)], dry_run),
+        )
+    });
+    let sweep = fixture.apply(vec![rename("shared", "common", None, None)]);
+    fs::set_permissions(&sealed, fs::Permissions::from_mode(0o755)).expect("chmod back");
+    for result in direct {
+        assert_eq!(refusal(result.expect_err("refused")), Refusal::ReadOnly);
+    }
+    let report = sweep.expect("the open directory's file is renamed");
+    let outcome = report.operations[0].rename.as_ref().expect("outcome");
+    assert_eq!(report.operations[0].files, ["open/a.rs"]);
+    assert!(!outcome.complete);
+    assert_eq!(outcome.files_skipped[0].path, "sealed/b.rs");
+    assert_eq!(fixture.text("sealed/b.rs"), "fn main() { shared(); }\n");
+}
+
+#[test]
+fn test_an_escaped_dollar_is_literal_text_and_kept() {
+    let fixture = Fixture::new(&[("a.kt", b"val name = 1\nprintln(\"\\$name $name\")\n")]);
+    let report = renamed(&fixture, "name", "title", 2);
+    assert_eq!(
+        fixture.text("a.kt"),
+        "val title = 1\nprintln(\"\\$name $title\")\n"
+    );
+    assert_eq!(
+        report.operations[0]
+            .rename
+            .as_ref()
+            .expect("outcome")
+            .remaining_adjacent_total,
+        1
+    );
+}

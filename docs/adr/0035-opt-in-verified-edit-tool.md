@@ -62,7 +62,8 @@ adds a narrower tool now, ahead of E15.
    identifier or string interpolation, so it is adjacent (kept, listed for a
    hand check); in shell, PHP, Perl, Kotlin (whose string templates `"$name"`
    and `"${name}"` name the variable), and anything else `$name` and
-   `${name}` are the variable `name` and are renamed. Otherwise matching is textual, so comments and strings are
+   `${name}` are the variable `name` and are renamed. An escaped dollar
+   (`\$name` after an odd run of backslashes) is literal text and adjacent. Otherwise matching is textual, so comments and strings are
    renamed too. A rename into a name that already
    occurs as an identifier in scope (by the same matcher) is refused
    (`name_exists`) unless the call passes `allow_existing`.
@@ -90,10 +91,13 @@ adds a narrower tool now, ahead of E15.
    change the owner, `foreign_owner`) with the owner write bit set
    (`read_only`, root included), decided at load from the open handle's
    metadata; and, for every file the call will change, writable according
-   to the OS (`faccessat` with `W_OK` and `AT_EACCESS`, which honours
-   access-control lists, read-only mounts, and immutable flags; the
+   to the OS (`faccessat` with `AT_EACCESS`: `W_OK` on the file and
+   `W_OK | X_OK` on its directory, which honours access-control lists,
+   read-only mounts, immutable flags, and unwritable directories; the
    read-only attribute on non-Unix), asked in dry runs and real runs alike.
-   Nothing is ever opened for writing to decide this; not excluded by the scanner (for example gitignored);
+   A rename sweep skips and lists such a file (`complete: false`); a direct
+   replace or insert target refuses the whole call. Nothing is ever opened
+   for writing to decide this; not excluded by the scanner (for example gitignored);
    listed in the index; resolved by the shared read gate (`resolve_under_root`:
    inside the root, no symbolic-link component, device and inode bound to the
    open on Unix); not the Compresso store's database files, nor anything in the
