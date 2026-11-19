@@ -399,7 +399,12 @@ fn mask(tool: &str, text: &str, root: &Path) -> String {
         && !id.is_empty()
     {
         masked = masked.replace(id, "<operation_id>");
-        if matches!(tool, "compresso_grep" | "compresso_context") {
+        // A search result's token count follows the exact digits of its
+        // scores, which differ between CPU architectures.
+        if matches!(
+            tool,
+            "compresso_grep" | "compresso_context" | "compresso_search"
+        ) {
             masked = mask_number(&masked, "\"tokens_used\":");
         }
     }
