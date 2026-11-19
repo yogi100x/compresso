@@ -58,6 +58,9 @@ pub struct IndexReport {
     pub call_site_files_rejected: usize,
     pub duration_ms: u64,
     pub stale: bool,
+    /// The repository's own `info/exclude` was not applied in full (see
+    /// [`crate::ScanResult::git_exclude_unusable`]).
+    pub git_exclude_unusable: bool,
 }
 
 /// Typed indexing failures that leave the current file at its previous complete state.
@@ -191,6 +194,7 @@ impl<'a> Indexer<'a> {
             self.concurrency,
         )?;
         let removed_set = scan.removed.iter().cloned().collect::<HashSet<_>>();
+        let git_exclude_unusable = scan.git_exclude_unusable;
         let known_paths = known_repository_paths(&previous_hashes, &scan, &removed_set)?;
         let rust_workspace = RustWorkspace::discover(&canonical_root, &known_paths);
         let paths_expanded = !scan.added.is_empty();
@@ -330,6 +334,7 @@ impl<'a> Indexer<'a> {
             call_site_files_rejected,
             duration_ms: elapsed_millis(started),
             stale,
+            git_exclude_unusable,
         })
     }
 }

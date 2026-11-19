@@ -41,8 +41,8 @@ pub use queries::{
     unfold, validate_read_requests,
 };
 pub use scanner::{
-    AtlasError, ScanError, ScanOptions, ScanResult, SkipReason, is_scanner_excluded, scan,
-    scan_with_concurrency, scan_with_options,
+    AtlasError, ScanError, ScanOptions, ScanResult, ScannerExclusions, SkipReason,
+    is_scanner_excluded, scan, scan_with_concurrency, scan_with_options,
 };
 pub use search::{
     SEARCH_MIN_QUERY_CHARS, SearchDiagnostic, SearchDiagnosticCode, SearchOptions, SearchReport,

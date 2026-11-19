@@ -850,6 +850,7 @@ mod tests {
             call_site_files_rejected: 0,
             duration_ms: 1,
             stale: false,
+            git_exclude_unusable: false,
         };
         let edges = vec![ResolvedEdgeRecord {
             from_path: "src/main.rs".to_owned(),

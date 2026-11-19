@@ -248,7 +248,7 @@ Boundary rule: only `compresso-store` contains SQL. Atlas/MCP/CLI call these met
 
 ```rust
 // scanner.rs
-pub struct ScanResult { pub added: Vec<PathBuf>, pub changed: Vec<PathBuf>, pub removed: Vec<String>, pub skipped: Vec<(PathBuf, SkipReason)> }
+pub struct ScanResult { pub added: Vec<PathBuf>, pub changed: Vec<PathBuf>, pub removed: Vec<String>, pub skipped: Vec<(PathBuf, SkipReason)>, pub git_exclude_unusable: bool /* E17-35: the repository's info/exclude exists or is pointed at but was not applied in full; a flag only */ }
 pub struct ScanOptions { pub max_file_bytes: u64 }
 pub fn scan(store: &Store, repo: RepoId, root: &Path) -> Result<ScanResult, AtlasError>; // safe default: max_file_bytes = 1_000_000
 pub fn scan_with_options(store: &Store, repo: RepoId, root: &Path, options: ScanOptions) -> Result<ScanResult, AtlasError>;
@@ -278,7 +278,7 @@ impl Indexer<'_> {
     // pipeline: canonicalize+approve root -> scan -> parse ONLY added/changed -> replace_indexed_file per file transaction -> delete removed -> stamp index_versions
 }
 pub enum IndexProgress { Parsing { path: PathBuf }, Removed { path: String } }
-pub struct IndexReport { pub files_indexed: usize, pub files_removed: usize, pub files_skipped: usize, pub symbols: usize, pub imports_resolved: usize, pub imports_unresolved: usize, pub call_sites: usize, pub call_site_files_truncated: usize, pub call_site_files_rejected: usize /* E17-29: call sites the store would refuse; the file is written without them */, pub duration_ms: u64, pub stale: bool }
+pub struct IndexReport { pub files_indexed: usize, pub files_removed: usize, pub files_skipped: usize, pub symbols: usize, pub imports_resolved: usize, pub imports_unresolved: usize, pub call_sites: usize, pub call_site_files_truncated: usize, pub call_site_files_rejected: usize /* E17-29: call sites the store would refuse; the file is written without them */, pub duration_ms: u64, pub stale: bool, pub git_exclude_unusable: bool /* E17-35, from the scan; `compresso index --json` reports it and the human output adds a note */ }
 
 // queries.rs — all read-only, all bounded by token budget (the one write path is edit.rs, §14)
 pub struct RepoMap { pub rendered: String, pub files_total: usize, pub files_shown: usize, pub truncated: bool, pub tokens_used: usize, pub token_provider: TokenProvider }

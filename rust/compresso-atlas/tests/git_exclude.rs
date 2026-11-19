@@ -163,22 +163,180 @@ fn test_linked_worktree_root_reads_exclude_from_the_common_dir() {
     workspace.write("main/.git/info/exclude", "*.log\n");
     workspace.write("main/.git/worktrees/abs/commondir", "../..\n");
     workspace.write("main/.git/worktrees/rel/commondir", "../..\r\n");
-    // One pointer is absolute, the other relative to the worktree, as git
-    // writes them with `worktree.useRelativePaths`.
+    // The worktrees sit inside the main checkout (as under
+    // `.claude/worktrees/`). One pointer is absolute, written the way git
+    // writes it (forward slashes, no verbatim prefix), the other relative,
+    // as with `worktree.useRelativePaths`.
+    let absolute = common.join("worktrees").join("abs");
+    let absolute = absolute.to_str().expect("utf-8");
+    let absolute = absolute
+        .strip_prefix(r"\\?\")
+        .unwrap_or(absolute)
+        .replace('\\', "/");
+    workspace.write("main/trees/abs/.git", &format!("gitdir: {absolute}\n"));
     workspace.write(
-        "abs/.git",
-        &format!("gitdir: {}\n", common.join("worktrees/abs").display()),
+        "main/trees/rel/.git",
+        "gitdir: ../../.git/worktrees/rel\r\n",
     );
-    workspace.write("rel/.git", "gitdir: ../main/.git/worktrees/rel\r\n");
-    for root in ["abs", "rel"] {
+    for root in ["main/trees/abs", "main/trees/rel"] {
         workspace.write(&format!("{root}/src/lib.rs"), "pub fn kept() {}\n");
         workspace.write(&format!("{root}/out.log"), "noise\n");
-        workspace.index(root);
+        let report = workspace.index(root);
+        assert!(!report.git_exclude_unusable, "{root}");
         assert_eq!(
             workspace.indexed(root),
             BTreeSet::from(["src/lib.rs".to_owned()]),
             "{root}"
         );
+        workspace.assert_parity(root);
+    }
+}
+
+#[test]
+fn test_a_common_dir_outside_the_roots_ancestors_is_never_read() {
+    let workspace = Workspace::new();
+    workspace.write("main/.git/HEAD", "ref: refs/heads/main\n");
+    workspace.write("main/.git/info/exclude", "*.log\n");
+    workspace.write("main/.git/worktrees/wt/commondir", "../..\n");
+    // A sibling worktree: its common directory is not below any ancestor of
+    // the root, so no exclude rules apply (fail open) and the scan says so.
+    workspace.write("wt/.git", "gitdir: ../main/.git/worktrees/wt\n");
+    workspace.write("wt/src/lib.rs", "pub fn kept() {}\n");
+    workspace.write("wt/out.log", "noise\n");
+    let report = workspace.index("wt");
+    assert!(report.git_exclude_unusable);
+    assert_eq!(
+        workspace.indexed("wt"),
+        BTreeSet::from(["out.log".to_owned(), "src/lib.rs".to_owned()])
+    );
+    workspace.assert_parity("wt");
+}
+
+#[test]
+fn test_network_and_device_pointers_fail_open_and_are_flagged() {
+    let workspace = Workspace::new();
+    for (index, pointer) in [
+        "gitdir: //host/share/repo/.git/worktrees/x",
+        "gitdir: \\\\host\\share\\repo\\.git\\worktrees\\x",
+        "gitdir: \\\\?\\UNC\\host\\share\\repo\\.git\\worktrees\\x",
+        "gitdir: \\\\.\\pipe\\repo",
+        "gitdir: C:relative\\.git\\worktrees\\x",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let root = format!("r{index}");
+        workspace.write(&format!("{root}/.git"), &format!("{pointer}\n"));
+        workspace.write(&format!("{root}/src/lib.rs"), "pub fn kept() {}\n");
+        let report = workspace.index(&root);
+        assert!(report.git_exclude_unusable, "{pointer}");
+        assert_eq!(
+            workspace.indexed(&root),
+            BTreeSet::from(["src/lib.rs".to_owned()]),
+            "{pointer}"
+        );
+    }
+}
+
+#[test]
+fn test_pointer_whitespace_is_part_of_the_path_as_in_git() {
+    let workspace = Workspace::new();
+    workspace.write("super/.git/HEAD", "ref: refs/heads/main\n");
+    workspace.write("super/.git/modules/sub/info/exclude", "*.log\n");
+    // Git strips only line endings, so this names `sub<TAB>`, which does not
+    // exist: no rules.
+    workspace.write("super/sub/.git", "gitdir: ../.git/modules/sub\t\r\n");
+    workspace.write("super/sub/out.log", "noise\n");
+    workspace.index("super/sub");
+    assert!(workspace.indexed("super/sub").contains("out.log"));
+    workspace.assert_parity("super/sub");
+}
+
+#[test]
+fn test_oversized_and_unparsable_excludes_are_flagged() {
+    let workspace = Workspace::new();
+    workspace.write("big/.git/HEAD", "ref: refs/heads/main\n");
+    workspace.write("big/.git/info/exclude", &"*.log\n".repeat(200_000));
+    workspace.write("big/out.log", "noise\n");
+    let report = workspace.index("big");
+    assert!(report.git_exclude_unusable);
+    assert!(workspace.indexed("big").contains("out.log"));
+
+    workspace.write("bad/.git/HEAD", "ref: refs/heads/main\n");
+    workspace.write("bad/.git/info/exclude", "x[z-a]\n*.log\n");
+    workspace.write("bad/out.log", "noise\n");
+    workspace.write("bad/src/lib.rs", "pub fn kept() {}\n");
+    let report = workspace.index("bad");
+    assert!(report.git_exclude_unusable);
+    // The parsable rules still apply.
+    assert_eq!(
+        workspace.indexed("bad"),
+        BTreeSet::from(["src/lib.rs".to_owned()])
+    );
+
+    workspace.write("clean/.git/HEAD", "ref: refs/heads/main\n");
+    workspace.write("clean/src/lib.rs", "pub fn kept() {}\n");
+    assert!(!workspace.index("clean").git_exclude_unusable);
+}
+
+#[test]
+fn test_git_entries_are_never_indexed_in_any_case() {
+    let workspace = Workspace::new();
+    workspace.write("repo/src/lib.rs", "pub fn kept() {}\n");
+    workspace.write("repo/a/.GIT", "gitdir: ../.git/modules/a\n");
+    workspace.write("repo/a/src/lib.rs", "pub fn kept() {}\n");
+    workspace.write("repo/b/.Git/HEAD", "ref: refs/heads/main\n");
+    workspace.write("repo/b/src/lib.rs", "pub fn kept() {}\n");
+    workspace.index("repo");
+    assert_eq!(
+        workspace.indexed("repo"),
+        BTreeSet::from([
+            "a/src/lib.rs".to_owned(),
+            "b/src/lib.rs".to_owned(),
+            "src/lib.rs".to_owned(),
+        ])
+    );
+    workspace.assert_parity("repo");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_symlinked_or_special_exclude_paths_are_not_followed() {
+    use std::os::unix::fs::symlink;
+
+    let workspace = Workspace::new();
+    // `info` is a link to a directory holding an exclude file.
+    workspace.write("elsewhere/exclude", "*.log\n");
+    workspace.write("linked-dir/.git/HEAD", "ref: refs/heads/main\n");
+    symlink(
+        workspace.base.join("elsewhere"),
+        workspace.base.join("linked-dir/.git/info"),
+    )
+    .expect("symlink");
+    // `exclude` itself is a link.
+    workspace.write("linked-file/.git/info/.keep", "");
+    symlink(
+        workspace.base.join("elsewhere/exclude"),
+        workspace.base.join("linked-file/.git/info/exclude"),
+    )
+    .expect("symlink");
+    // `exclude` is a FIFO: it must be neither opened for a blocking read nor
+    // applied.
+    workspace.write("fifo/.git/info/.keep", "");
+    let fifo = std::ffi::CString::new(
+        workspace
+            .base
+            .join("fifo/.git/info/exclude")
+            .to_str()
+            .expect("utf-8"),
+    )
+    .expect("path");
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    for root in ["linked-dir", "linked-file", "fifo"] {
+        workspace.write(&format!("{root}/out.log"), "noise\n");
+        let report = workspace.index(root);
+        assert!(report.git_exclude_unusable, "{root}");
+        assert!(workspace.indexed(root).contains("out.log"), "{root}");
         workspace.assert_parity(root);
     }
 }
