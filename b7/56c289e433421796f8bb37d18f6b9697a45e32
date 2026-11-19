@@ -1,0 +1,33 @@
+docs/adr/0035-opt-in-verified-edit-tool.md
+  s_89a704cfae63f5::t_8d4638260276e0 1-149
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_e248a317cfc0d4 3,37-38,49-50,532-533,535-555,739-740,812-813,817
+  s_89a704cfae63f5::t_93aaaf407aace8 534
+docs/plan/03-interfaces.md
+  s_89a704cfae63f5::t_d18972dd9a45ba 283,487-495
+  s_89a704cfae63f5::t_c572700903eec8 496
+docs/plan/08-ip-and-secure-deployment.md
+  s_89a704cfae63f5::t_d18972dd9a45ba 138
+docs/plan/00-overview.md
+  s_89a704cfae63f5::t_d18972dd9a45ba 50
+docs/adr/0007-mcp-primary-integration-rmcp.md
+  s_89a704cfae63f5::t_d18972dd9a45ba 17
+docs/runbooks/mcp-manual-verification.md
+  s_89a704cfae63f5::t_1a727a2ba9d758 90-100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b756c289e433421796f8bb37d18f6b9697a45e32",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
