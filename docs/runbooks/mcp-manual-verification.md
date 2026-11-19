@@ -87,3 +87,14 @@ The traversal rejection was an expected MCP tool error, not a protocol error.
 Raw client logs and repository content are intentionally not committed; this
 runbook retains only arguments, bounded metadata, latency observations, and the
 required rejection excerpt.
+
+## Opt-in edit tool (E17-32)
+
+The record above covers the read-only tools of a server started without
+`--edits`; that server still lists no write tool. `compresso_edit` (served only
+by `compresso mcp serve --edits`, ADR-0035) has not been verified in a live
+client session. To verify it, register a second entry with
+`claude mcp add compresso -- ~/.local/bin/compresso mcp serve --edits`, call
+`compresso_edit` with `dry_run: true` on a scratch repository, confirm the
+diff and that nothing was written, then apply it and confirm the report shows
+every file `verified` and, for a rename, 0 remaining whole matches.
