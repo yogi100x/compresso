@@ -1,0 +1,19 @@
+rust/compresso-mcp/tests/result_format.rs
+  s_89a704cfae63f5::t_18074b746a6e4f 1355-1356,1360,1368
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9baa6c9e83d031d68861ae4933f63bf1fd22d582",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
