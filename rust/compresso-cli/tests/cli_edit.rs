@@ -185,3 +185,64 @@ fn test_cli_edit_requires_exactly_one_operation_form() {
         "{errors}"
     );
 }
+
+#[test]
+fn test_a_store_inside_the_repository_is_never_edited() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let root = temp.path().join("home");
+    let data = root.join(".local/share/compresso");
+    fs::create_dir_all(&data).expect("data dir");
+    fs::write(data.join("receipts.json"), "{\"receipt\": 1}\n").expect("receipt");
+    fs::write(root.join("notes.txt"), "receipt\n").expect("notes");
+    let store = Store::open(&data.join("compresso.db")).expect("store");
+    Indexer::new(&store, counter_for(TokenProvider::OpenAiO200k))
+        .index(&root, |_| {})
+        .expect("index");
+    let fixture = Fixture {
+        root: fs::canonicalize(&root).expect("canonical"),
+        store,
+        _temp: temp,
+    };
+    assert!(
+        fixture
+            .store
+            .indexed_file(
+                fixture
+                    .store
+                    .repo_by_root(&fixture.root)
+                    .expect("store")
+                    .expect("repo")
+                    .id,
+                ".local/share/compresso/receipts.json"
+            )
+            .expect("store")
+            .is_some(),
+        "the receipt is indexed, so only the edit gate protects it"
+    );
+    let (exit, _, errors) = fixture.run(
+        &[
+            "edit",
+            "--replace",
+            ".local/share/compresso/receipts.json",
+            "--old",
+            "1",
+            "--new",
+            "2",
+        ],
+        "",
+    );
+    assert_eq!(exit, CliExitCode::Failure);
+    assert!(errors.contains("Compresso store"), "{errors}");
+    // A rename skips the store and still edits the rest.
+    let (exit, output, errors) = fixture.run(&["edit", "--rename", "receipt", "voucher"], "");
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert!(
+        output.contains("skipped .local/share/compresso/receipts.json (protected)"),
+        "{output}"
+    );
+    assert_eq!(fixture.text("notes.txt"), "voucher\n");
+    assert_eq!(
+        fixture.text(".local/share/compresso/receipts.json"),
+        "{\"receipt\": 1}\n"
+    );
+}

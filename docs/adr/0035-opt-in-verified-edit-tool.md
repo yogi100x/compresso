@@ -63,7 +63,9 @@ adds a narrower tool now, ahead of E15.
    not under `.git`; not excluded by the scanner (for example gitignored);
    listed in the index; resolved by the shared read gate (`resolve_under_root`:
    inside the root, no symbolic-link component, device and inode bound to the
-   open on Unix); not the Compresso store's database files; valid UTF-8; and at
+   open on Unix); not the Compresso store's database files, nor anything in the
+   store directory (which also holds install receipts) when it lies inside the
+   repository; valid UTF-8; and at
    most 1 MB (the scanner's limit) before and after the edit, so an edited file
    never falls out of the index. A rename skips files it may not edit and lists
    them. `new` and inserted text may not contain NUL.

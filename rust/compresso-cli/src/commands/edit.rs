@@ -164,7 +164,7 @@ pub(crate) fn execute(
     let request = EditRequest {
         operations,
         dry_run: arguments.dry_run,
-        protected: compresso_mcp::edit::protected_paths(store),
+        protected: compresso_mcp::edit::protected_paths(store, &repository.root),
     };
     let counter = counter_for(TokenProvider::OpenAiO200k);
     let report = apply_edits(store, &repository.root, &request, counter).map_err(|error| {

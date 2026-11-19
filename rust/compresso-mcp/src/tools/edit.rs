@@ -64,7 +64,7 @@ pub(crate) fn run(
     let request = EditRequest {
         operations,
         dry_run,
-        protected: protected_paths(store),
+        protected: protected_paths(store, &repository.root),
     };
     let counter = counter_for(TokenProvider::OpenAiO200k);
     let report = apply_edits(store, &repository.root, &request, counter).map_err(map_edit_error)?;
@@ -94,9 +94,11 @@ pub(crate) fn run(
     ))
 }
 
-/// The Compresso store's database files, which an edit never writes even
-/// when the store lives inside the repository.
-pub fn protected_paths(store: &Store) -> Vec<PathBuf> {
+/// Paths an edit never writes: the Compresso store's database files, and the
+/// whole store directory (which also holds install receipts) when it lies
+/// inside the repository being edited, for example when `root` is a home
+/// directory.
+pub fn protected_paths(store: &Store, root: &Path) -> Vec<PathBuf> {
     let Some(database) = store.database_path() else {
         return Vec::new();
     };
@@ -107,10 +109,14 @@ pub fn protected_paths(store: &Store) -> Vec<PathBuf> {
         return Vec::new();
     };
     let name = name.to_string_lossy();
-    ["", "-wal", "-shm", "-journal"]
+    let mut protected = ["", "-wal", "-shm", "-journal"]
         .iter()
         .map(|suffix| directory.join(format!("{name}{suffix}")))
-        .collect()
+        .collect::<Vec<_>>();
+    if directory.starts_with(root) && directory != root {
+        protected.push(directory);
+    }
+    protected
 }
 
 fn invalid(message: impl Into<String>) -> ToolFailure {
