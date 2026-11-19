@@ -435,11 +435,11 @@ fn test_needles_are_kept_named_or_lost_against_a_baseline() {
     )
     .expect("calls");
     let baseline = vec![
-        "# tick — 3 matching lines in 1 files\nsrc/a.rs (3)\n1 [def tick] fn tick() {}\n7 [tests] use super::tick;\n9- context TICK_MAX\n[note]\n".to_owned(),
+        "# tick — 3 lines in 1 files\nsrc/a.rs (3)\n1 [def tick] fn tick() {}\n7 [tests] use super::tick;\n9- context TICK_MAX\n[note]\n".to_owned(),
         "@@ src/b.rs:4-5 of 9\nconst TICK_MAX: u32 = 3;\nfn other() {}\n".to_owned(),
     ];
     let current = vec![
-        "# tick — 3 matching lines in 1 files\nsrc/a.rs (3; tests: 7; above: 9)\n1 [def tick] fn tick() {}\n".to_owned(),
+        "# tick — 3 lines in 1 files\nsrc/a.rs (3; tests: 7; above: 9)\n1 [def tick] fn tick() {}\n".to_owned(),
         "@@ src/b.rs:5-5 of 9\nfn other() {}\n".to_owned(),
     ];
     let shown_now = shown("compresso_grep", &current[0]);

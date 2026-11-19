@@ -376,7 +376,7 @@ fn grep(payload: &Value, out: &mut Out) {
                 .collect::<String>();
             out.line(format!(
                 "{} ({}{}{named})",
-                string(file, "path").unwrap_or_default(),
+                header_path(string(file, "path").unwrap_or_default()),
                 number(file, "matches"),
                 if flag(file, "stale") {
                     ", changed since indexed: no symbols"
@@ -399,12 +399,6 @@ fn grep(payload: &Value, out: &mut Out) {
     if named_above {
         out.note("above: listed under an earlier pattern");
     }
-    let context_rows = number(payload, "context_cut_after");
-    if context_rows > 0 {
-        out.note(format!(
-            "context only on the first {context_rows} match rows; narrow path for more"
-        ));
-    }
     let scan = payload.get("scan").unwrap_or(&Value::Null);
     let skipped = number(scan, "files_skipped_oversize") + number(scan, "files_skipped_unreadable");
     if flag(scan, "scan_truncated") {
@@ -421,6 +415,25 @@ fn grep(payload: &Value, out: &mut Out) {
             "{unlisted} matching lines counted but not listed; narrow with path or a more specific pattern rather than raising limits"
         ));
     }
+}
+
+/// A grep file header's path with the characters that could imitate the
+/// header's own syntax replaced by `?` (E17-34, D99): control characters,
+/// `;`, and a `(` after a space. Ordinary paths print unchanged.
+fn header_path(path: &str) -> String {
+    let mut previous = '\0';
+    path.chars()
+        .map(|character| {
+            let safe = match character {
+                ';' => '?',
+                '(' if previous == ' ' => '?',
+                character if character.is_control() => '?',
+                character => character,
+            };
+            previous = character;
+            safe
+        })
+        .collect()
 }
 
 /// One bounded read: `@@ path:START-END of TOTAL`, the raw content, and a

@@ -934,10 +934,8 @@ fn snippet(source: &str, start: usize, end: usize, match_start: usize) -> String
     )
 }
 
-/// A path in a test directory or named like a test file; grep ranks such
-/// files after the others.
-#[must_use]
-pub fn is_test_path(path: &str) -> bool {
+/// A path in a test directory or named like a test file.
+fn is_test_path(path: &str) -> bool {
     let lowercase = path.to_ascii_lowercase();
     let in_test_directory = lowercase
         .split('/')

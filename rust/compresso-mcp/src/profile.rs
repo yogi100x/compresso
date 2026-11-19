@@ -107,22 +107,22 @@ pub(crate) const LEAN_TOOLS: &[LeanTool] = &[
     },
     LeanTool {
         name: "compresso_repo_map",
-        description: "Ranked directory map of the indexed repository. cards:true adds per-directory cards (purpose, public symbols, entry points, dependencies); path zooms into a subtree.",
+        description: "Ranked directory map. cards:true adds per-directory cards (purpose, public symbols, entry points, dependencies); path zooms into a subtree.",
         hint: "compresso_repo_map with cards:true to orient",
     },
     LeanTool {
         name: "compresso_search",
-        description: "Exact symbol lookup by name or signature; returns file, line range, and signature.",
+        description: "Exact symbol lookup by name or signature; returns file, line range, signature.",
         hint: "compresso_search for exact symbols",
     },
     LeanTool {
         name: "compresso_grep",
-        description: "Text or regex search of indexed files, up to 8 patterns: use sites, enclosing symbol, exact totals. A hit plus a few context_lines usually replaces a read.",
+        description: "Text or regex search of indexed files, up to 8 patterns: use sites, enclosing symbol, exact totals; test hits named by line. A hit plus a few context_lines usually replaces a read.",
         hint: "compresso_grep for text and use sites",
     },
     LeanTool {
         name: "compresso_trace",
-        description: "Who calls X, what X calls, or the call path from A to B, with call-site path and line per hop.",
+        description: "Callers or callees of X, or the call path from A to B, with call-site path and line per hop.",
         hint: "compresso_trace for callers, callees, call paths",
     },
     LeanTool {
@@ -137,7 +137,7 @@ pub(crate) const LEAN_TOOLS: &[LeanTool] = &[
     },
     LeanTool {
         name: "compresso_read",
-        description: "Narrow line read: 80 lines per range, 200 per call; names symbols past that. ranges takes up to 8; end_line past EOF clamps.",
+        description: "Narrow line read: 80 lines per range, 200 per call; names symbols past that; end_line past EOF clamps.",
         hint: "compresso_read for line ranges",
     },
     LeanTool {
@@ -151,6 +151,10 @@ pub(crate) const LEAN_TOOLS: &[LeanTool] = &[
         hint: "compresso_edit for multi-site edits and renames",
     },
 ];
+
+/// The lean grep `context_lines` description (E17-34, D99).
+const LEAN_GREP_CONTEXT_LINES: &str =
+    "Lines before and after each listed match, merged; within max_tokens.";
 
 /// Sentence the lean instructions add only when the edit tool is served.
 const EDIT_RULE: &str = "Make multi-site edits and renames with compresso_edit, not shell text substitution; a rename is done only when its report shows 0 remaining whole matches and is not marked incomplete; check the substring and adjacent matches it lists.";
@@ -178,6 +182,10 @@ pub(crate) fn lean_tools(tools: Vec<Tool>) -> Vec<Tool> {
                         if let Some(Value::Object(property)) = properties.get_mut(key) {
                             property.insert("default".to_owned(), default.into());
                         }
+                    }
+                    // The text form names some rows by line (E17-34, D99).
+                    if let Some(Value::Object(property)) = properties.get_mut("context_lines") {
+                        property.insert("description".to_owned(), LEAN_GREP_CONTEXT_LINES.into());
                     }
                 }
             }
