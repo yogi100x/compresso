@@ -382,7 +382,18 @@ fn golden_calls() -> Vec<(&'static str, &'static str, Value)> {
 /// operation id included, into `tokens_used`, so that one number varies with
 /// the random id and is masked for those two tools only.
 fn mask(tool: &str, text: &str, root: &Path) -> String {
-    let mut masked = text.replace(&root.display().to_string(), "<root>");
+    // The root reaches a result raw or JSON-escaped, and on Windows with the
+    // verbatim `\\?\` prefix that canonicalization adds.
+    let raw = root.display().to_string();
+    let bare = raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_owned();
+    let verbatim = format!(r"\\?\{bare}");
+    let mut masked = text.to_owned();
+    for form in [verbatim, bare] {
+        masked = masked.replace(&form.replace('\\', "\\\\"), "<root>");
+        masked = masked.replace(&form, "<root>");
+    }
+    // Ranking scores differ in their last digits between CPU architectures.
+    masked = round_scores(&masked);
     if let Ok(value) = serde_json::from_str::<Value>(text)
         && let Some(id) = value["operation_id"].as_str()
         && !id.is_empty()
@@ -393,6 +404,30 @@ fn mask(tool: &str, text: &str, root: &Path) -> String {
         }
     }
     masked
+}
+
+/// Rewrites every `"score":<float>` to six decimal places.
+fn round_scores(text: &str) -> String {
+    const KEY: &str = "\"score\":";
+    let mut rounded = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(index) = rest.find(KEY) {
+        let start = index + KEY.len();
+        let length = rest[start..]
+            .bytes()
+            .take_while(|byte| {
+                byte.is_ascii_digit() || matches!(byte, b'-' | b'+' | b'.' | b'e' | b'E')
+            })
+            .count();
+        rounded.push_str(&rest[..start]);
+        match rest[start..start + length].parse::<f64>() {
+            Ok(score) => rounded.push_str(&format!("{score:.6}")),
+            Err(_) => rounded.push_str(&rest[start..start + length]),
+        }
+        rest = &rest[start + length..];
+    }
+    rounded.push_str(rest);
+    rounded
 }
 
 fn mask_number(text: &str, key: &str) -> String {
