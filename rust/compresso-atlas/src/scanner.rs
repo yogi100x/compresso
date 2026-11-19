@@ -731,7 +731,8 @@ fn repository_exclude(root: &Path) -> Gitignore {
     }) else {
         return Gitignore::empty();
     };
-    for line in String::from_utf8_lossy(&bytes).lines() {
+    let text = String::from_utf8_lossy(&bytes);
+    for line in text.trim_start_matches('\u{feff}').lines() {
         // Git skips a pattern it cannot parse; so does the scanner.
         let _ = builder.add_line(None, line);
     }

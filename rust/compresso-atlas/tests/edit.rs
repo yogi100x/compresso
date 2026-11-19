@@ -496,6 +496,19 @@ fn test_unscoped_rename_never_reaches_a_worktree_copy_excluded_by_info_exclude()
         ),
         ("trees/other/src/lib.rs", b"fn shared_name() {}\n"),
     ]);
+    assert_eq!(
+        refusal(
+            fixture
+                .apply(vec![replace(
+                    ".claude/worktrees/other/src/lib.rs",
+                    "shared",
+                    "x",
+                    1
+                )])
+                .unwrap_err()
+        ),
+        Refusal::ControlFile
+    );
     let report = fixture
         .apply(vec![rename("shared_name", "renamed", None, None)])
         .expect("rename applies");

@@ -104,7 +104,7 @@ fn test_info_exclude_is_honoured_by_scan_and_single_path_check() {
     let workspace = Workspace::new();
     workspace.write(
         "repo/.git/info/exclude",
-        "# local rules\r\n*.log\r\n**/.claude/worktrees/\r\n",
+        "\u{feff}*.log\r\n# local rules\r\n**/.claude/worktrees/\r\n",
     );
     workspace.write("repo/.git/HEAD", "ref: refs/heads/main\n");
     workspace.write("repo/src/lib.rs", "pub fn kept() {}\n");
