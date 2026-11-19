@@ -340,6 +340,14 @@ async fn test_errors_write_nothing_and_name_the_gate() {
             "[invalid_arguments]",
         ),
         (
+            json!({ "operations": [{ "op": "rename", "old": "format_utc", "new": "format_utc_now" }] }),
+            "[name_exists]",
+        ),
+        (
+            json!({ "operations": [{ "op": "replace", "path": ".gitignore", "old": "x", "new": "y" }] }),
+            "[edit_refused]",
+        ),
+        (
             json!({ "operations": [{ "op": "delete", "path": "src/lib.rs" }] }),
             "[invalid_arguments]",
         ),

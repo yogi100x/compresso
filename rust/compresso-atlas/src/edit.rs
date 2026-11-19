@@ -59,7 +59,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, Read as _, Write as _};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use compresso_core::TokenCounter;
@@ -127,6 +127,8 @@ pub enum EditOperation {
         new: String,
         path: Option<String>,
         expected_count: Option<usize>,
+        /// Rename even though `new` already occurs as an identifier in scope.
+        allow_existing: bool,
     },
     /// Inserts `text` before or after `anchor`, which must occur exactly once.
     Insert {
@@ -196,8 +198,7 @@ impl LineEnding {
 pub struct FileChange {
     pub path: String,
     pub sites: usize,
-    /// Lines of the sites, each in the file as it is after the operation
-    /// that made it.
+    /// Lines of the sites in the edited file, ascending.
     pub lines: Vec<u32>,
     /// The file differed from the index before the edit; matches were
     /// computed against its current content.
@@ -217,15 +218,19 @@ pub struct FileChange {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Refusal {
     InvalidPath,
+    /// Missing, a secret path, or reached through a symbolic link: reported
+    /// alike, as every read tool reports them.
     NotFound,
-    SymbolicLink,
-    Secret,
     Excluded,
     NotIndexed,
     NotAFile,
     TooLarge,
     NotUtf8,
     Protected,
+    /// An ignore file, or agent, editor, CI, or git-hook configuration.
+    ControlFile,
+    /// The file has no write permission.
+    ReadOnly,
 }
 
 impl Refusal {
@@ -233,29 +238,31 @@ impl Refusal {
         match self {
             Self::InvalidPath => "invalid_path",
             Self::NotFound => "not_found",
-            Self::SymbolicLink => "symbolic_link",
-            Self::Secret => "secret_path",
             Self::Excluded => "excluded",
             Self::NotIndexed => "not_indexed",
             Self::NotAFile => "not_a_file",
             Self::TooLarge => "too_large",
             Self::NotUtf8 => "not_utf8",
             Self::Protected => "protected",
+            Self::ControlFile => "control_file",
+            Self::ReadOnly => "read_only",
         }
     }
 
     const fn describe(self) -> &'static str {
         match self {
             Self::InvalidPath => "the path must be repository-relative with forward slashes",
-            Self::NotFound => "the file does not exist",
-            Self::SymbolicLink => "the path goes through a symbolic link",
-            Self::Secret => "the path is a secret path",
+            Self::NotFound => "the file was not found",
             Self::Excluded => "the scanner excludes the path (for example it is gitignored)",
             Self::NotIndexed => "the file is not in the repository index",
             Self::NotAFile => "the path is not a regular file",
             Self::TooLarge => "the file is over the 1 MB edit limit",
             Self::NotUtf8 => "the file is not valid UTF-8",
             Self::Protected => "the path is inside .git or the Compresso store",
+            Self::ControlFile => {
+                "the path is an ignore file or agent, editor, CI, or git-hook configuration"
+            }
+            Self::ReadOnly => "the file is not writable",
         }
     }
 }
@@ -282,6 +289,10 @@ pub struct RenameOutcome {
     pub remaining_substring: Vec<EditLocation>,
     /// Whole-identifier occurrences of `new` that existed before the edit.
     pub new_name_preexisting: usize,
+    /// Every file in scope was searched. `false` when a file holding the old
+    /// name could not be searched or edited (see `files_skipped`), so 0
+    /// remaining matches does not prove the rename is complete.
+    pub complete: bool,
 }
 
 /// What one operation did.
@@ -368,6 +379,15 @@ pub enum EditError {
         substring_total: usize,
         substring: Vec<EditLocation>,
     },
+    #[error(
+        "operation {operation}: '{name}' already occurs {count} time(s) as an identifier in scope; pass allow_existing to rename into it; nothing was written"
+    )]
+    NameExists {
+        operation: usize,
+        name: String,
+        count: usize,
+        locations: Vec<EditLocation>,
+    },
     #[error("{path:?} does not have the expected content hash; nothing was written")]
     HashMismatch { path: String, actual: String },
     #[error("the edit exceeds the {} bound ({actual} > {limit}); nothing was written", bound.as_str())]
@@ -431,7 +451,13 @@ pub fn identifier_occurrences(text: &str, name: &str) -> (Vec<usize>, Vec<usize>
         let end = start + name.len();
         let before = text[..start].chars().next_back();
         let after = text[end..].chars().next();
-        if before.is_some_and(is_identifier_char) || after.is_some_and(is_identifier_char) {
+        // `\n` is an escape and `f"`, `r#`, `b'` are literal prefixes, not
+        // identifiers: never rewrite them.
+        let escape_or_prefix = before == Some('\\') || matches!(after, Some('"' | '\'' | '#'));
+        if before.is_some_and(is_identifier_char)
+            || after.is_some_and(is_identifier_char)
+            || escape_or_prefix
+        {
             substring.push(start);
         } else {
             whole.push(start);
@@ -481,6 +507,8 @@ pub(crate) fn apply_edits_with_hook(
     };
 
     let mut working = BTreeMap::<String, WorkingFile>::new();
+    // One read budget for every rename in the call.
+    let mut scanned = 0_u64;
     let mut outcomes = Vec::with_capacity(request.operations.len());
     let mut total_sites = 0_usize;
     for (index, operation) in request.operations.iter().enumerate() {
@@ -513,13 +541,18 @@ pub(crate) fn apply_edits_with_hook(
                 new,
                 path,
                 expected_count,
+                allow_existing,
             } => apply_rename(
                 &gate,
                 &mut working,
-                old,
-                new,
-                path.as_deref(),
-                *expected_count,
+                &mut scanned,
+                RenameSpec {
+                    old,
+                    new,
+                    filter: path.as_deref(),
+                    expected: *expected_count,
+                    allow_existing: *allow_existing,
+                },
                 number,
             )?,
         };
@@ -688,6 +721,7 @@ fn validate_request(request: &EditRequest) -> Result<(), EditError> {
                 new,
                 path,
                 expected_count,
+                ..
             } => {
                 for (name, value) in [("old", old), ("new", new)] {
                     if !is_identifier(value) {
@@ -763,7 +797,8 @@ struct WorkingFile {
     /// Edited text without the byte order mark.
     text: String,
     sites: usize,
-    lines: Vec<u32>,
+    /// Byte offsets of every site in `text`, kept current across splices.
+    site_offsets: Vec<usize>,
 }
 
 impl WorkingFile {
@@ -781,7 +816,12 @@ impl WorkingFile {
         FileChange {
             path: path.to_owned(),
             sites: self.sites,
-            lines: self.lines.clone(),
+            lines: {
+                let lines = Lines::new(&self.text);
+                let mut offsets = self.site_offsets.clone();
+                offsets.sort_unstable();
+                offsets.iter().map(|offset| lines.line(*offset)).collect()
+            },
             stale: self.stale,
             line_ending: self.line_ending,
             bom: self.bom,
@@ -825,14 +865,18 @@ fn refused(path: &str, reason: Refusal) -> EditError {
 fn load(gate: &Gate<'_>, path: &str) -> Result<WorkingFile, EditError> {
     validate_path(path)?;
     let relative = Path::new(path);
+    // A secret path reads as missing, exactly as every read tool reports it.
     if is_secret_path(relative) {
-        return Err(refused(path, Refusal::Secret));
+        return Err(refused(path, Refusal::NotFound));
     }
     if relative
         .components()
         .any(|component| component.as_os_str() == ".git")
     {
         return Err(refused(path, Refusal::Protected));
+    }
+    if is_control_path(relative) {
+        return Err(refused(path, Refusal::ControlFile));
     }
     if is_scanner_excluded(gate.root, relative) {
         return Err(refused(path, Refusal::Excluded));
@@ -842,14 +886,8 @@ fn load(gate: &Gate<'_>, path: &str) -> Result<WorkingFile, EditError> {
     };
     let resolved = match resolve_under_root(gate.root, path) {
         Ok(ResolvedEntry::File(resolved)) => resolved,
-        Ok(ResolvedEntry::Missing) => {
-            let reason = if traverses_symlink(gate.root, relative) {
-                Refusal::SymbolicLink
-            } else {
-                Refusal::NotFound
-            };
-            return Err(refused(path, reason));
-        }
+        // Like the read gate, a path through a symbolic link reads as missing.
+        Ok(ResolvedEntry::Missing) => return Err(refused(path, Refusal::NotFound)),
         Err(AtlasError::OutsideRoot { .. }) => {
             return Err(EditError::OutsideRoot {
                 path: path.to_owned(),
@@ -878,6 +916,9 @@ fn load(gate: &Gate<'_>, path: &str) -> Result<WorkingFile, EditError> {
     if metadata.len() > EDIT_MAX_FILE_BYTES {
         return Err(refused(path, Refusal::TooLarge));
     }
+    if metadata.permissions().readonly() {
+        return Err(refused(path, Refusal::ReadOnly));
+    }
     let mut original = Vec::new();
     file.take(EDIT_MAX_FILE_BYTES + 1)
         .read_to_end(&mut original)
@@ -904,20 +945,36 @@ fn load(gate: &Gate<'_>, path: &str) -> Result<WorkingFile, EditError> {
         stale,
         text,
         sites: 0,
-        lines: Vec::new(),
+        site_offsets: Vec::new(),
     })
 }
 
-fn traverses_symlink(root: &Path, relative: &Path) -> bool {
-    let mut current = root.to_path_buf();
-    for component in relative.components() {
-        if let Component::Normal(part) = component {
-            current.push(part);
-            if fs::symlink_metadata(&current)
-                .is_ok_and(|metadata| metadata.file_type().is_symlink())
-            {
-                return true;
-            }
+/// Directories whose files configure agents, editors, CI, or git hooks.
+const CONTROL_DIRECTORIES: &[&str] = &[
+    ".claude", ".codex", ".cursor", ".vscode", ".idea", ".github", ".gitlab", ".husky",
+];
+/// File names the scanner honours as ignore files, or that configure an
+/// agent or CI, outside the directories above.
+const CONTROL_FILES: &[&str] = &[".ignore", ".rgignore", ".mcp.json"];
+
+/// Whether `relative` is a file that controls the edit gates themselves
+/// (ignore files decide what is indexed and editable) or how an agent,
+/// editor, CI system, or git hook runs, at any depth. Every name starting
+/// with `.git` is included (`.gitignore`, `.gitattributes`, `.gitmodules`,
+/// `.gitlab-ci.yml`, ...).
+pub fn is_control_path(relative: &Path) -> bool {
+    let mut components = relative.components().peekable();
+    while let Some(component) = components.next() {
+        let name = component.as_os_str().to_string_lossy();
+        let is_file = components.peek().is_none();
+        if name.starts_with(".git") {
+            return true;
+        }
+        if !is_file && CONTROL_DIRECTORIES.contains(&name.as_ref()) {
+            return true;
+        }
+        if is_file && CONTROL_FILES.contains(&name.as_ref()) {
+            return true;
         }
     }
     false
@@ -1009,11 +1066,29 @@ fn splice(text: &str, offsets: &[usize], length: usize, replacement: &str) -> (S
     (result, placed)
 }
 
-fn record_sites(file: &mut WorkingFile, placed: &[usize]) {
-    let lines = Lines::new(&file.text);
+/// Splices `replacement` over `length` bytes at each of `offsets` in the
+/// file's text, moves the sites earlier operations recorded so they still
+/// point at the same text, and records the new sites.
+fn splice_sites(
+    file: &mut WorkingFile,
+    offsets: &[usize],
+    length: usize,
+    replacement: &str,
+) -> usize {
+    let (text, placed) = splice(&file.text, offsets, length, replacement);
+    for site in &mut file.site_offsets {
+        let before = offsets.partition_point(|offset| *offset <= *site);
+        *site = match before.checked_sub(1) {
+            // Inside a replaced span: the site now starts the replacement.
+            Some(last) if *site < offsets[last] + length => placed[last],
+            Some(last) => placed[last] + replacement.len() + (*site - offsets[last] - length),
+            None => *site,
+        };
+    }
+    file.text = text;
     file.sites += placed.len();
-    file.lines
-        .extend(placed.iter().map(|offset| lines.line(*offset)));
+    file.site_offsets.extend_from_slice(&placed);
+    placed.len()
 }
 
 fn apply_replace(
@@ -1039,12 +1114,10 @@ fn apply_replace(
             locations: locations(path, &file.text, &offsets),
         });
     }
-    let (text, placed) = splice(&file.text, &offsets, old.len(), &new);
-    file.text = text;
-    record_sites(file, &placed);
+    let sites = splice_sites(file, &offsets, old.len(), &new);
     Ok(OperationOutcome {
         kind: "replace",
-        sites: placed.len(),
+        sites,
         files: vec![path.to_owned()],
         rename: None,
     })
@@ -1077,9 +1150,7 @@ fn apply_insert(
         InsertPosition::Before => offsets[0],
         InsertPosition::After => offsets[0] + anchor.len(),
     };
-    let (text, placed) = splice(&file.text, &[at], 0, &inserted);
-    file.text = text;
-    record_sites(file, &placed);
+    splice_sites(file, &[at], 0, &inserted);
     Ok(OperationOutcome {
         kind: "insert",
         sites: 1,
@@ -1093,17 +1164,86 @@ const fn skippable(reason: Refusal) -> bool {
     !matches!(reason, Refusal::InvalidPath | Refusal::NotIndexed)
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Refusals for files that may still be read (only writing them is refused),
+/// so a rename can confirm they hold no match instead of skipping them.
+const fn readable_refusal(reason: Refusal) -> bool {
+    matches!(
+        reason,
+        Refusal::ControlFile | Refusal::Protected | Refusal::ReadOnly
+    )
+}
+
+/// The text of an in-root file for searching only, through the read gate.
+fn peek_text(root: &Path, path: &str) -> Option<String> {
+    let Ok(ResolvedEntry::File(resolved)) = resolve_under_root(root, path) else {
+        return None;
+    };
+    let mut bytes = Vec::new();
+    resolved
+        .open()
+        .ok()?
+        .take(EDIT_MAX_FILE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > EDIT_MAX_FILE_BYTES {
+        return None;
+    }
+    let text = String::from_utf8(bytes).ok()?;
+    Some(text.strip_prefix('\u{feff}').unwrap_or(&text).to_owned())
+}
+
+/// One rename's arguments.
+struct RenameSpec<'a> {
+    old: &'a str,
+    new: &'a str,
+    filter: Option<&'a str>,
+    expected: Option<usize>,
+    allow_existing: bool,
+}
+
+/// Running totals of a rename's scan.
+#[derive(Default)]
+struct RenameScan {
+    skipped: Vec<SkippedFile>,
+    searched: BTreeSet<String>,
+    matched: Vec<(String, Vec<usize>)>,
+    untouched_substring: Vec<EditLocation>,
+    untouched_substring_total: usize,
+    new_name_preexisting: usize,
+    new_name_locations: Vec<EditLocation>,
+}
+
+impl RenameScan {
+    /// Records one searched text; returns its whole-identifier matches.
+    fn search(&mut self, path: &str, text: &str, spec: &RenameSpec<'_>) -> Vec<usize> {
+        let (whole, substring) = identifier_occurrences(text, spec.old);
+        let existing = identifier_occurrences(text, spec.new).0;
+        self.new_name_preexisting += existing.len();
+        if self.new_name_locations.len() < EDIT_MAX_LISTED_LOCATIONS {
+            self.new_name_locations
+                .extend(locations(path, text, &existing));
+        }
+        self.searched.insert(path.to_owned());
+        if whole.is_empty() {
+            self.untouched_substring_total += substring.len();
+            if self.untouched_substring.len() < EDIT_MAX_LISTED_LOCATIONS {
+                self.untouched_substring
+                    .extend(locations(path, text, &substring));
+            }
+        }
+        whole
+    }
+}
+
 fn apply_rename(
     gate: &Gate<'_>,
     working: &mut BTreeMap<String, WorkingFile>,
-    old: &str,
-    new: &str,
-    filter: Option<&str>,
-    expected: Option<usize>,
+    scanned: &mut u64,
+    spec: RenameSpec<'_>,
     operation: usize,
 ) -> Result<OperationOutcome, EditError> {
-    let path_filter = match filter {
+    let (old, new) = (spec.old, spec.new);
+    let path_filter = match spec.filter {
         Some(filter) => PathFilter::parse(filter).map_err(|error| invalid(error.to_string()))?,
         None => None,
     };
@@ -1117,25 +1257,34 @@ fn apply_rename(
         })
         .cloned()
         .collect::<Vec<_>>();
-    let mut skipped = Vec::new();
-    let mut searched = BTreeSet::new();
-    let mut matched = Vec::<(String, Vec<usize>)>::new();
-    let mut untouched_substring = Vec::<EditLocation>::new();
-    let mut untouched_substring_total = 0_usize;
-    let mut new_name_preexisting = 0_usize;
-    let mut scanned = 0_u64;
+    let mut scan = RenameScan::default();
     for path in scope {
         let loaded = if working.contains_key(&path) {
             None
         } else {
             match load(gate, &path) {
                 Ok(file) => {
-                    scanned = scanned.saturating_add(file.original.len() as u64);
-                    bound(EditBound::ScanBytes, EDIT_MAX_SCAN_BYTES, scanned)?;
+                    *scanned = scanned.saturating_add(file.original.len() as u64);
+                    bound(EditBound::ScanBytes, EDIT_MAX_SCAN_BYTES, *scanned)?;
                     Some(file)
                 }
                 Err(EditError::Refused { reason, .. }) if skippable(reason) => {
-                    skipped.push(SkippedFile { path, reason });
+                    // A file the edit may not write but may read is skipped
+                    // only when it actually holds the old name.
+                    let peeked = readable_refusal(reason)
+                        .then(|| peek_text(gate.root, &path))
+                        .flatten();
+                    match peeked {
+                        Some(text) => {
+                            *scanned = scanned.saturating_add(text.len() as u64);
+                            bound(EditBound::ScanBytes, EDIT_MAX_SCAN_BYTES, *scanned)?;
+                            if !scan.search(&path, &text, &spec).is_empty() {
+                                scan.searched.remove(&path);
+                                scan.skipped.push(SkippedFile { path, reason });
+                            }
+                        }
+                        None => scan.skipped.push(SkippedFile { path, reason }),
+                    }
                     continue;
                 }
                 Err(error) => return Err(error),
@@ -1143,22 +1292,30 @@ fn apply_rename(
         };
         let text = loaded
             .as_ref()
-            .map_or_else(|| working[&path].text.as_str(), |file| file.text.as_str());
-        let (whole, substring) = identifier_occurrences(text, old);
-        new_name_preexisting += identifier_occurrences(text, new).0.len();
-        searched.insert(path.clone());
-        if whole.is_empty() {
-            untouched_substring_total += substring.len();
-            if untouched_substring.len() < EDIT_MAX_LISTED_LOCATIONS {
-                untouched_substring.extend(locations(&path, text, &substring));
-            }
-        } else {
-            matched.push((path.clone(), whole));
+            .map_or_else(|| working[&path].text.clone(), |file| file.text.clone());
+        let whole = scan.search(&path, &text, &spec);
+        if !whole.is_empty() {
+            scan.matched.push((path.clone(), whole));
+            // Fail as soon as the bound is crossed, not after reading the rest.
+            bound(
+                EditBound::Files,
+                EDIT_MAX_FILES as u64,
+                scan.matched.len() as u64,
+            )?;
             if let Some(file) = loaded {
                 working.insert(path, file);
             }
         }
     }
+    let RenameScan {
+        skipped,
+        searched,
+        matched,
+        mut untouched_substring,
+        untouched_substring_total,
+        new_name_preexisting,
+        mut new_name_locations,
+    } = scan;
     let total = matched
         .iter()
         .map(|(_, offsets)| offsets.len())
@@ -1171,7 +1328,7 @@ fn apply_rename(
             substring: untouched_substring,
         });
     }
-    if let Some(expected) = expected
+    if let Some(expected) = spec.expected
         && expected != total
     {
         let mut listed = Vec::new();
@@ -1189,11 +1346,15 @@ fn apply_rename(
             locations: listed,
         });
     }
-    bound(
-        EditBound::Files,
-        EDIT_MAX_FILES as u64,
-        matched.len() as u64,
-    )?;
+    if new_name_preexisting > 0 && !spec.allow_existing {
+        new_name_locations.truncate(EDIT_MAX_LISTED_LOCATIONS);
+        return Err(EditError::NameExists {
+            operation,
+            name: new.to_owned(),
+            count: new_name_preexisting,
+            locations: new_name_locations,
+        });
+    }
     bound(EditBound::Sites, EDIT_MAX_SITES as u64, total as u64)?;
 
     let mut remaining_whole = Vec::new();
@@ -1203,9 +1364,7 @@ fn apply_rename(
     let mut files = Vec::with_capacity(matched.len());
     for (path, offsets) in &matched {
         let file = working.get_mut(path).expect("matched files are loaded");
-        let (text, placed) = splice(&file.text, offsets, old.len(), new);
-        file.text = text;
-        record_sites(file, &placed);
+        splice_sites(file, offsets, old.len(), new);
         // Verify against the edited text rather than assume: a new name that
         // contains the old one, or adjacent sites, would show up here.
         let (whole, substring) = identifier_occurrences(&file.text, old);
@@ -1226,8 +1385,9 @@ fn apply_rename(
         sites: total,
         files,
         rename: Some(RenameOutcome {
-            scope: filter.map(str::to_owned),
+            scope: spec.filter.map(str::to_owned),
             files_searched: searched.len(),
+            complete: skipped.is_empty(),
             files_skipped: skipped,
             remaining_whole_total,
             remaining_whole,
@@ -1280,17 +1440,8 @@ fn file_identity(path: &Path) -> Option<(u64, u64)> {
     }
 }
 
-/// Writes `bytes` over `path` atomically after re-verifying the target, and
-/// returns the new file's identity.
-fn write_atomic(
-    root: &Path,
-    path: &str,
-    bytes: &[u8],
-    identity: Option<(u64, u64)>,
-    hash: &str,
-    permissions: &fs::Permissions,
-) -> io::Result<Option<(u64, u64)>> {
-    let target = reverify(root, path, identity, hash)?;
+/// A temporary file next to `target`, unique to this process and call.
+fn temp_beside(target: &Path, role: &str) -> io::Result<PathBuf> {
     let directory = target
         .parent()
         .ok_or_else(|| io::Error::other("the file has no parent directory"))?;
@@ -1298,11 +1449,16 @@ fn write_atomic(
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let temp = directory.join(format!(
-        ".{name}.compresso-edit-{}-{}.tmp",
+    Ok(directory.join(format!(
+        ".{name}.compresso-edit-{role}-{}-{}.tmp",
         std::process::id(),
         TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
+    )))
+}
+
+/// Creates `temp` (never over an existing file) holding `bytes` with
+/// `permissions`, synced to disk.
+fn write_temp(temp: &Path, bytes: &[u8], permissions: &fs::Permissions) -> io::Result<()> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -1310,32 +1466,51 @@ fn write_atomic(
         use std::os::unix::fs::OpenOptionsExt as _;
         options.mode(0o600);
     }
-    let mut file = options.open(&temp)?;
+    let mut file = options.open(temp)?;
     let written = (|| {
         file.write_all(bytes)?;
         file.set_permissions(permissions.clone())?;
-        file.sync_all()?;
-        drop(file);
-        // The last check before the rename: same gate, same file, same bytes.
-        let again = reverify(root, path, identity, hash)?;
-        if again != target {
-            return Err(io::Error::other("the file changed after it was validated"));
-        }
-        fs::rename(&temp, &target)
+        file.sync_all()
     })();
-    if let Err(error) = written {
-        let _ = fs::remove_file(&temp);
-        return Err(error);
+    if written.is_err() {
+        drop(file);
+        let _ = fs::remove_file(temp);
     }
-    #[cfg(unix)]
-    if let Ok(directory) = fs::File::open(directory) {
-        let _ = directory.sync_all();
-    }
-    Ok(file_identity(&target))
+    written
 }
 
-/// Re-verifies every file, then writes them in path order, restoring the
-/// files already written if a later write fails.
+fn sync_directory(path: &Path) {
+    #[cfg(unix)]
+    if let Some(directory) = path.parent()
+        && let Ok(directory) = fs::File::open(directory)
+    {
+        let _ = directory.sync_all();
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// One file ready to commit: the edited bytes and the original bytes, both
+/// already written and synced beside the target.
+struct Staged<'a> {
+    path: &'a str,
+    file: &'a WorkingFile,
+    target: PathBuf,
+    edited: PathBuf,
+    original: PathBuf,
+    hash_after: String,
+}
+
+/// Commits the changed files all or nothing.
+///
+/// 1. Every file is re-verified (same gate, identity, and content hash).
+/// 2. For every file, the edited bytes and a copy of the original bytes are
+///    written to temporary files beside it and synced, so no later step
+///    needs new disk space. A failure here changes no repository file.
+/// 3. Each target is re-verified once more and the edited file renamed over
+///    it. If one rename fails, every file already renamed is restored by
+///    renaming its original copy back (no allocation), after checking it
+///    still holds exactly the edited bytes.
 fn commit(
     root: &Path,
     changed: &[(String, WorkingFile)],
@@ -1346,46 +1521,86 @@ fn commit(
             return Err(EditError::Changed { path: path.clone() });
         }
     }
-    let mut written = Vec::<(&str, &WorkingFile, Option<(u64, u64)>, String)>::new();
-    for (index, (path, file)) in changed.iter().enumerate() {
-        let edited = file.edited_bytes();
-        let outcome = before_write(index, &root.join(path)).and_then(|()| {
-            write_atomic(
-                root,
-                path,
-                &edited,
-                file.identity,
-                &file.hash_before,
-                &file.permissions,
-            )
-        });
-        match outcome {
-            Ok(identity) => written.push((
+    let mut staged = Vec::<Staged<'_>>::with_capacity(changed.len());
+    let cleanup = |staged: &[Staged<'_>]| {
+        for entry in staged {
+            let _ = fs::remove_file(&entry.edited);
+            let _ = fs::remove_file(&entry.original);
+        }
+    };
+    for (path, file) in changed {
+        let prepared = (|| {
+            let target = reverify(root, path, file.identity, &file.hash_before)?;
+            let edited_bytes = file.edited_bytes();
+            let edited = temp_beside(&target, "new")?;
+            write_temp(&edited, &edited_bytes, &file.permissions)?;
+            let original = temp_beside(&target, "old")?;
+            if let Err(error) = write_temp(&original, &file.original, &file.permissions) {
+                let _ = fs::remove_file(&edited);
+                return Err(error);
+            }
+            Ok(Staged {
                 path,
                 file,
-                identity,
-                blake3::hash(&edited).to_hex().to_string(),
-            )),
+                target,
+                edited,
+                original,
+                hash_after: blake3::hash(&edited_bytes).to_hex().to_string(),
+            })
+        })();
+        match prepared {
+            Ok(entry) => staged.push(entry),
+            Err(source) => {
+                cleanup(&staged);
+                return Err(EditError::WriteFailed {
+                    path: path.clone(),
+                    restored: Vec::new(),
+                    unrestored: Vec::new(),
+                    source,
+                });
+            }
+        }
+    }
+    let mut renamed = Vec::<(usize, Option<(u64, u64)>)>::new();
+    for (index, entry) in staged.iter().enumerate() {
+        let outcome = before_write(index, &entry.target).and_then(|()| {
+            // The last check before the rename: same gate, file, and bytes.
+            let again = reverify(
+                root,
+                entry.path,
+                entry.file.identity,
+                &entry.file.hash_before,
+            )?;
+            if again != entry.target {
+                return Err(io::Error::other("the file changed after it was validated"));
+            }
+            fs::rename(&entry.edited, &entry.target)
+        });
+        match outcome {
+            Ok(()) => {
+                sync_directory(&entry.target);
+                renamed.push((index, file_identity(&entry.target)));
+            }
             Err(source) => {
                 let mut restored = Vec::new();
                 let mut unrestored = Vec::new();
-                for (path, file, identity, hash) in written.into_iter().rev() {
-                    match write_atomic(
-                        root,
-                        path,
-                        &file.original,
-                        identity,
-                        &hash,
-                        &file.permissions,
-                    ) {
-                        Ok(_) => restored.push(path.to_owned()),
-                        Err(_) => unrestored.push(path.to_owned()),
+                for (done, identity) in renamed.into_iter().rev() {
+                    let entry = &staged[done];
+                    let back = reverify(root, entry.path, identity, &entry.hash_after)
+                        .and_then(|_| fs::rename(&entry.original, &entry.target));
+                    match back {
+                        Ok(()) => {
+                            sync_directory(&entry.target);
+                            restored.push(entry.path.to_owned());
+                        }
+                        Err(_) => unrestored.push(entry.path.to_owned()),
                     }
                 }
                 restored.reverse();
                 unrestored.reverse();
+                cleanup(&staged);
                 return Err(EditError::WriteFailed {
-                    path: path.clone(),
+                    path: entry.path.to_owned(),
                     restored,
                     unrestored,
                     source,
@@ -1393,6 +1608,7 @@ fn commit(
             }
         }
     }
+    cleanup(&staged);
     Ok(())
 }
 
@@ -1590,6 +1806,155 @@ mod tests {
         assert!(!is_identifier("1abc"));
         assert!(!is_identifier("a-b"));
         assert!(!is_identifier(""));
+    }
+
+    #[test]
+    fn test_escapes_and_literal_prefixes_are_never_whole_identifiers() {
+        let (whole, substring) = identifier_occurrences("let n = 1; print(\"a\\n\", n)", "n");
+        assert_eq!(whole.len(), 2, "the binding and the argument");
+        assert_eq!(substring.len(), 2, "`print` and the `\\n` escape");
+        let (whole, substring) = identifier_occurrences("f = 1\ns = f\"x{f}\"\n", "f");
+        assert_eq!(
+            (whole.len(), substring.len()),
+            (2, 1),
+            "f-string prefix kept"
+        );
+        let (whole, substring) = identifier_occurrences("let r = r#type; b'x'; r", "r");
+        assert_eq!((whole.len(), substring.len()), (2, 1));
+        let (whole, _) = identifier_occurrences("b'x'", "b");
+        assert!(whole.is_empty());
+    }
+
+    #[test]
+    fn test_a_rename_shares_one_scan_budget_across_the_call() {
+        let fixture = Fixture::new(&[("a.rs", "fn alpha() {}\n")]);
+        let root = fixture.root.clone();
+        let indexed = fixture
+            .store
+            .indexed_files(fixture.store.repo_by_root(&root).unwrap().expect("repo").id)
+            .unwrap()
+            .into_iter()
+            .map(|record| (record.path.clone(), record))
+            .collect::<BTreeMap<_, _>>();
+        let gate = Gate {
+            root: &root,
+            indexed: &indexed,
+            protected: &[],
+        };
+        // An earlier rename in the call already read almost the whole budget.
+        let mut scanned = EDIT_MAX_SCAN_BYTES - 4;
+        let error = apply_rename(
+            &gate,
+            &mut BTreeMap::new(),
+            &mut scanned,
+            RenameSpec {
+                old: "alpha",
+                new: "beta",
+                filter: None,
+                expected: None,
+                allow_existing: false,
+            },
+            2,
+        )
+        .expect_err("budget is per call");
+        assert!(matches!(
+            error,
+            EditError::Bound {
+                bound: EditBound::ScanBytes,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_a_restore_is_refused_when_the_written_file_changed_again() {
+        let fixture = Fixture::new(&[("a.rs", "fn a() {}\n"), ("b.rs", "fn b() {}\n")]);
+        let root = fixture.root.clone();
+        let error = fixture
+            .apply(
+                vec![
+                    replace("a.rs", "fn a", "fn aa"),
+                    replace("b.rs", "fn b", "fn bb"),
+                ],
+                &mut |index, _| {
+                    if index == 1 {
+                        // Someone edits a.rs after Compresso wrote it.
+                        fs::write(root.join("a.rs"), "fn theirs() {}\n")?;
+                        Err(io::Error::other("injected"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .expect_err("second write fails");
+        match error {
+            EditError::WriteFailed {
+                restored,
+                unrestored,
+                ..
+            } => {
+                assert!(restored.is_empty());
+                assert_eq!(unrestored, ["a.rs"]);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(
+            fs::read_to_string(root.join("a.rs")).unwrap(),
+            "fn theirs() {}\n",
+            "a concurrent change is never overwritten by the restore"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("b.rs")).unwrap(),
+            "fn b() {}\n"
+        );
+        let leftovers = fs::read_dir(&root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_a_staging_failure_changes_no_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let fixture = Fixture::new(&[("a.rs", "fn a() {}\n"), ("sub/b.rs", "fn b() {}\n")]);
+        let sub = fixture.root.join("sub");
+        // No temporary file can be created beside b.rs, as on a full disk.
+        fs::set_permissions(&sub, fs::Permissions::from_mode(0o555)).unwrap();
+        let error = fixture
+            .apply(
+                vec![
+                    replace("a.rs", "fn a", "fn aa"),
+                    replace("sub/b.rs", "fn b", "fn bb"),
+                ],
+                &mut |_, _| Ok(()),
+            )
+            .expect_err("staging fails");
+        fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
+        match error {
+            EditError::WriteFailed {
+                path,
+                restored,
+                unrestored,
+                ..
+            } => {
+                assert_eq!(path, "sub/b.rs");
+                assert!(restored.is_empty() && unrestored.is_empty());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(
+            fs::read_to_string(fixture.root.join("a.rs")).unwrap(),
+            "fn a() {}\n"
+        );
+        let leftovers = fs::read_dir(&fixture.root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0);
     }
 
     #[test]

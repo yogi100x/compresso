@@ -379,3 +379,107 @@ fn test_edits_is_install_only_and_claude_code_only() {
         .is_err()
     );
 }
+
+fn entry_args(fixture: &Fixture) -> Vec<String> {
+    let config: Value = serde_json::from_str(
+        &fs::read_to_string(fixture.home.join(".claude.json")).expect("user config"),
+    )
+    .expect("JSON config");
+    config["mcpServers"]["compresso"]["args"]
+        .as_array()
+        .map(|args| {
+            args.iter()
+                .map(|argument| argument.as_str().expect("string").to_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn test_edits_can_be_turned_on_and_off_over_an_existing_install() {
+    let fixture = Fixture::new();
+    let install = |extra: &[&str]| {
+        let mut arguments = vec!["install", "claude-code"];
+        arguments.extend_from_slice(extra);
+        arguments.extend(["--yes", "--json"]);
+        let (exit, _, errors) = fixture.integrations(&arguments);
+        assert_eq!(exit, CliExitCode::Success, "{extra:?}: {errors}");
+    };
+    install(&[]);
+    assert!(!entry_args(&fixture).contains(&"--edits".to_owned()));
+    install(&["--edits"]);
+    assert!(
+        entry_args(&fixture).contains(&"--edits".to_owned()),
+        "turned on"
+    );
+    install(&[]);
+    assert!(
+        !entry_args(&fixture).contains(&"--edits".to_owned()),
+        "turned off"
+    );
+    install(&["--edits"]);
+    let (exit, _, errors) = fixture.integrations(&["uninstall", "claude-code", "--yes", "--json"]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert!(entry_args(&fixture).is_empty(), "uninstalled");
+
+    // The agent: plain, then with edits over it, then uninstall.
+    install(&["--explore-agent"]);
+    install(&["--explore-agent", "--edits"]);
+    let agent = fs::read_to_string(fixture.agent_path()).expect("agent");
+    assert!(agent.contains("mcp__compresso__compresso_edit"));
+    install(&["--explore-agent"]);
+    let agent = fs::read_to_string(fixture.agent_path()).expect("agent");
+    assert!(!agent.contains("compresso_edit"));
+    let (exit, _, errors) = fixture.integrations(&[
+        "uninstall",
+        "claude-code",
+        "--explore-agent",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert!(!fixture.agent_path().exists());
+}
+
+#[test]
+fn test_setup_rerun_keeps_an_installed_edits_entry() {
+    let fixture = Fixture::new();
+    let (exit, _, errors) =
+        fixture.integrations(&["install", "claude-code", "--edits", "--yes", "--json"]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    let cli = Cli::try_parse_from([
+        "compresso",
+        "setup",
+        "claude-code",
+        fixture.root.to_str().expect("UTF-8 root"),
+        "--yes",
+        "--json",
+    ])
+    .expect("setup parses");
+    let RootCommand::Setup(arguments) = cli.command else {
+        panic!("expected setup");
+    };
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+    let exit = execute_setup(
+        arguments,
+        Some(&fixture.store),
+        &fixture.environment,
+        &mut Cursor::new(Vec::new()),
+        &mut output,
+        &mut errors,
+    );
+    // setup accepts the existing installer-written --edits entry and leaves
+    // it as it is: re-running setup neither strips nor reports drift. Only an
+    // explicit `integrations install` without --edits turns the tool off.
+    assert_eq!(
+        exit,
+        CliExitCode::Success,
+        "{}",
+        String::from_utf8_lossy(&errors)
+    );
+    assert_eq!(
+        entry_args(&fixture),
+        ["mcp", "serve", "--edits", "--recall-source", "claude-code"]
+    );
+}

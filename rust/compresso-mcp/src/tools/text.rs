@@ -647,6 +647,9 @@ fn edit(payload: &Value, out: &mut Out) {
             number(operation, "remaining_whole_total"),
             number(operation, "remaining_substring_total")
         ));
+        if operation.get("complete") == Some(&Value::Bool(false)) {
+            row.push_str("; INCOMPLETE: skipped files hold the old name");
+        }
         out.line(row);
         edit_locations(
             "whole",

@@ -48,19 +48,28 @@ adds a narrower tool now, ahead of E15.
 3. **Identifier boundaries** are defined explicitly, not by a regex `\b`: an
    identifier character is `_` or any Unicode alphanumeric character
    (`char::is_alphanumeric`); `$` is not one. A rename matches only where the
-   neighbouring characters are not identifier characters. Matching is textual,
-   so comments and strings are renamed too.
+   neighbouring characters are not identifier characters, and never where it
+   is preceded by `\` (an escape such as `\n`) or directly followed by `"`,
+   `'`, or `#` (a literal prefix such as `f"`, `b'`, or `r#`); those count as
+   substring matches and are not rewritten. Otherwise matching is textual, so
+   comments and strings are renamed too. A rename into a name that already
+   occurs as an identifier in scope is refused (`name_exists`) unless the call
+   passes `allow_existing`.
 4. **Verification in the report.** Per file: sites and their lines, whether the
    file was stale against the index, line ending, BOM, byte sizes, hashes
    before and after, and whether the file was re-read after the write and found
    to hold exactly the edited bytes. Per rename: files searched and skipped
    (with reasons), and the remaining whole-identifier and substring matches of
-   the old name in the scope after the edit, with locations. A rename is done
-   only at 0 remaining whole matches. `dry_run` returns the same report plus a
+   the old name in the scope after the edit, with locations, and `complete`,
+   which is false when a file holding the old name could not be searched or
+   edited (it is listed in `files_skipped`). A rename is done only at 0
+   remaining whole matches with `complete: true`. `dry_run` returns the same report plus a
    compact unified diff and writes nothing.
 5. **Gates** (repository content and arguments are untrusted): the path must be
    repository-relative without `.`, `..`, backslash, or NUL; not a secret path;
-   not under `.git`; not excluded by the scanner (for example gitignored);
+   not under `.git`; not a control file, meaning every name starting with `.git` at any depth (`.gitignore`, `.gitattributes`, `.gitmodules`, `.gitlab-ci.yml`, ...), the ignore files `.ignore` and `.rgignore`, `.mcp.json`, and anything under a `.claude`, `.codex`, `.cursor`, `.vscode`, `.idea`, `.github`, `.gitlab`, or `.husky` directory (an edit to an ignore file would widen what the gates allow, and an
+   edit to agent, CI, or hook configuration could turn text into command
+   execution); not read-only (no write permission); not excluded by the scanner (for example gitignored);
    listed in the index; resolved by the shared read gate (`resolve_under_root`:
    inside the root, no symbolic-link component, device and inode bound to the
    open on Unix); not the Compresso store's database files, nor anything in the
@@ -68,23 +77,32 @@ adds a narrower tool now, ahead of E15.
    repository; valid UTF-8; and at
    most 1 MB (the scanner's limit) before and after the edit, so an edited file
    never falls out of the index. A rename skips files it may not edit and lists
-   them. `new` and inserted text may not contain NUL.
+   them; a control, protected, or read-only file that does not hold the old
+   name is searched but not listed, so it does not make the rename incomplete.
+   A secret path and a path through a symbolic link are both reported as
+   `not_found`, exactly as the read tools report them. `new` and inserted text
+   may not contain NUL.
 6. **Atomic, verified writes.** All changed files are re-verified (same gate,
-   same device and inode, same content hash) before the first write. Each file
-   is then written to a temporary file in its own directory, given the original
-   permissions, synced, re-verified once more immediately before the rename, and
-   renamed over the target; the directory is synced on Unix. Line endings (LF or
+   same device and inode, same content hash). Then, for every file, both the
+   edited bytes and a copy of the original bytes are written to temporary files
+   in its own directory, given the original permissions, and synced, so no
+   later step needs new disk space; a failure here (for example a full disk)
+   changes no repository file. Each target is then re-verified once more and
+   the edited file renamed over it; directories are synced on Unix. If a rename
+   fails, every file already renamed is restored by renaming its original copy
+   back, after checking it still holds exactly the edited bytes (a file changed
+   again by someone else is left alone and reported as not restored), and the
+   error names the files restored and any that were not. Line endings (LF or
    CRLF: `\n` in arguments becomes `\r\n` in a CRLF file) and a UTF-8 BOM are
-   preserved. If a write fails, every file already written in the call is
-   restored from its in-memory original through the same verified write, and
-   the error names the files restored and any that could not be.
+   preserved.
 7. **Stale files** are edited against their current content (the model has
    usually just read them) and marked stale in the report. An optional
    `expected_hash` (BLAKE3 of the current bytes) per replace or insert refuses
    the edit on mismatch.
 8. **Bounds.** 16 operations; 64 KiB per `old`, `new`, anchor, or inserted text;
    identifiers up to 256 bytes; 200 changed files; 2,000 sites; 16 MiB written;
-   256 MiB read to search a rename scope; at most 20 listed locations per list
+   256 MiB read per call to search rename scopes (one budget shared by every
+   rename in the call; a rename stops as soon as its matched files pass 200); at most 20 listed locations per list
    with exact totals; a 64 KiB diff; and `max_tokens` (300 to 100,000, default
    2,000) over the report, cut by halving the diff and then the longest list,
    with `truncated: true`. A call runs exactly once; only its report is fitted,
@@ -95,7 +113,8 @@ adds a narrower tool now, ahead of E15.
    If re-indexing fails the edit stands and the report says `index: stale`.
 10. **Recording.** Each successful call is one operations-ledger row with tool
     `compresso_edit`, classified as its own kind: no trace, no retrieval
-    metrics, no savings, and no file content. The `operations` table has no
+    metrics, no savings, and no file content. A dry run is a successful call
+    and is recorded too. The `operations` table has no
     constraint on the tool name, so no migration is needed.
 11. **Instructions.** The default profile's instructions stay policy neutral
     (D92 rule (a)); with `--edits` the full profile's first sentence changes
@@ -126,6 +145,13 @@ adds a narrower tool now, ahead of E15.
 - **Denial of service** is bounded by the limits above; nothing runs unbounded.
 - Ownership and extended attributes are not copied to the replacement file;
   permissions are. Hard links to an edited file are split by the rename.
+- A process killed between staging and the last rename leaves
+  `.<name>.compresso-edit-*.tmp` files beside the edited files; nothing
+  removes them automatically; a later `compresso index` may index them until
+  they are deleted (a successful call removes its own before re-indexing).
+- `$name` is the identifier `name` (as in shell), so in JavaScript, TypeScript,
+  or PHP a rename of `name` also rewrites `$name`; `allow_existing` and the
+  report make this visible but do not prevent it.
 
 ## Out of scope
 

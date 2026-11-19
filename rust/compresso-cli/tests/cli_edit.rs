@@ -192,7 +192,7 @@ fn test_a_store_inside_the_repository_is_never_edited() {
     let root = temp.path().join("home");
     let data = root.join(".local/share/compresso");
     fs::create_dir_all(&data).expect("data dir");
-    fs::write(data.join("receipts.json"), "{\"receipt\": 1}\n").expect("receipt");
+    fs::write(data.join("receipts.json"), "receipt = 1\n").expect("receipt");
     fs::write(root.join("notes.txt"), "receipt\n").expect("notes");
     let store = Store::open(&data.join("compresso.db")).expect("store");
     Indexer::new(&store, counter_for(TokenProvider::OpenAiO200k))
@@ -225,9 +225,9 @@ fn test_a_store_inside_the_repository_is_never_edited() {
             "--replace",
             ".local/share/compresso/receipts.json",
             "--old",
-            "1",
+            "= 1",
             "--new",
-            "2",
+            "= 2",
         ],
         "",
     );
@@ -240,9 +240,10 @@ fn test_a_store_inside_the_repository_is_never_edited() {
         output.contains("skipped .local/share/compresso/receipts.json (protected)"),
         "{output}"
     );
+    assert!(output.contains("INCOMPLETE"), "{output}");
     assert_eq!(fixture.text("notes.txt"), "voucher\n");
     assert_eq!(
         fixture.text(".local/share/compresso/receipts.json"),
-        "{\"receipt\": 1}\n"
+        "receipt = 1\n"
     );
 }

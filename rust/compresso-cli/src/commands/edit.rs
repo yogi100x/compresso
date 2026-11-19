@@ -57,6 +57,9 @@ pub struct EditArgs {
     /// Rename scope: a repository-relative prefix or glob.
     #[arg(long, value_name = "FILTER", requires = "rename")]
     pub path: Option<String>,
+    /// Rename even though NEW already occurs as an identifier in scope.
+    #[arg(long, requires = "rename")]
+    pub allow_existing: bool,
     /// Matches required; nothing is written when the count differs.
     #[arg(long, value_name = "N")]
     pub expected_count: Option<usize>,
@@ -89,6 +92,7 @@ fn operations(
             new: new.clone(),
             path: arguments.path.clone(),
             expected_count: arguments.expected_count,
+            allow_existing: arguments.allow_existing,
         }]);
     }
     if let Some(path) = &arguments.replace {

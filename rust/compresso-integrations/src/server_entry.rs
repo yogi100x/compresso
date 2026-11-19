@@ -445,6 +445,26 @@ mod tests {
         assert_eq!(server_recall_source(&serve_args()), None);
     }
 
+    /// The health readers (`doctor`, `integrations status`) see an
+    /// installer-written `--edits` entry as exact, not modified.
+    #[test]
+    fn test_an_edits_entry_is_exact_and_keeps_its_recall_source() {
+        let directory = tempdir().expect("temp directory");
+        let json = directory.path().join("config.json");
+        fs::write(
+            &json,
+            "{\"mcpServers\":{\"compresso\":{\"type\":\"stdio\",\"command\":\"/opt/compresso\",\"args\":[\"mcp\",\"serve\",\"--edits\",\"--recall-source\",\"claude-code\"]}}}",
+        )
+        .expect("json written");
+        let ConfiguredServer::Exact { args, .. } =
+            read_configured_server(ConfigFormat::Json, &json, &serve_args())
+        else {
+            panic!("an --edits entry should be exact");
+        };
+        assert!(server_enables_edits(&args));
+        assert_eq!(server_recall_source(&args), Some("claude-code"));
+    }
+
     #[test]
     fn test_foreign_repeated_or_trailing_recall_arguments_are_modified() {
         let directory = tempdir().expect("temp directory");

@@ -161,7 +161,7 @@ fn parse_operation(mut object: Map<String, Value>) -> Result<EditOperation, Tool
         .ok_or_else(|| invalid("missing 'op' (replace, rename, or insert)."))?;
     let allowed: &[&str] = match op.as_str() {
         "replace" => &["path", "old", "new", "expected_count", "expected_hash"],
-        "rename" => &["old", "new", "path", "expected_count"],
+        "rename" => &["old", "new", "path", "expected_count", "allow_existing"],
         "insert" => &["path", "anchor", "text", "position", "expected_hash"],
         _ => return Err(invalid("'op' must be replace, rename, or insert.")),
     };
@@ -188,6 +188,7 @@ fn parse_operation(mut object: Map<String, Value>) -> Result<EditOperation, Tool
             new: required(&mut object, "new", false)?,
             path: optional_string(&mut object, "path", false)?,
             expected_count: count(&mut object)?,
+            allow_existing: optional_bool(&mut object, "allow_existing")?.unwrap_or(false),
         },
         _ => EditOperation::Insert {
             path: required(&mut object, "path", false)?,
@@ -245,6 +246,10 @@ pub fn edit_failure_message(error: &EditError) -> (&'static str, String) {
                     location_rows(substring)
                 )
             },
+        ),
+        EditError::NameExists { locations, .. } => (
+            "name_exists",
+            format!("{error}. Existing:{}", location_rows(locations)),
         ),
         EditError::HashMismatch { actual, .. } => {
             ("hash_mismatch", format!("{error}. Current hash: {actual}."))
@@ -369,6 +374,7 @@ pub fn report_payload(
                     "new_name_preexisting".to_owned(),
                     json!(rename.new_name_preexisting),
                 );
+                object.insert("complete".to_owned(), json!(rename.complete));
             }
             value
         })
@@ -487,6 +493,7 @@ pub fn fit(
                             | "old"
                             | "new"
                             | "path"
+                            | "complete"
                             | "remaining_whole_total"
                             | "remaining_substring_total"
                     )

@@ -153,7 +153,7 @@ pub(crate) const LEAN_TOOLS: &[LeanTool] = &[
 ];
 
 /// Sentence the lean instructions add only when the edit tool is served.
-const EDIT_RULE: &str = "Make multi-site edits and renames with compresso_edit, not shell text substitution; a rename is done only when its report shows 0 remaining whole matches.";
+const EDIT_RULE: &str = "Make multi-site edits and renames with compresso_edit, not shell text substitution; a rename is done only when its report shows 0 remaining whole matches and is not marked incomplete.";
 
 /// Restricts `tools` to the lean allowlist, in allowlist order, with lean
 /// descriptions and without the compatibility-only `root` argument.

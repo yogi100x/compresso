@@ -131,6 +131,7 @@ fn rename(old: &str, new: &str, path: Option<&str>, expected: Option<usize>) -> 
         new: new.to_owned(),
         path: path.map(str::to_owned),
         expected_count: expected,
+        allow_existing: false,
     }
 }
 
@@ -319,6 +320,8 @@ fn test_replace_and_insert_compose_in_order_on_one_file() {
     );
     assert_eq!(report.files.len(), 1);
     assert_eq!(report.files[0].sites, 3);
+    // Lines refer to the edited file: earlier sites move with later splices.
+    assert_eq!(report.files[0].lines, [1, 3, 4]);
 }
 
 #[test]
@@ -432,7 +435,8 @@ fn test_secret_gitignored_and_unindexed_paths_are_refused() {
                 .apply(vec![replace(".env", "value", "other", 1)])
                 .unwrap_err()
         ),
-        Refusal::Secret
+        Refusal::NotFound,
+        "a secret path reads as missing, as in every read tool"
     );
     assert_eq!(
         refusal(
@@ -563,7 +567,8 @@ fn test_symlink_components_and_links_out_of_the_root_are_refused() {
                 .apply(vec![replace("src/a.rs", "a", "b", 1)])
                 .unwrap_err()
         ),
-        Refusal::SymbolicLink
+        Refusal::NotFound,
+        "a path through a symbolic link reads as missing, as in every read tool"
     );
     // An indexed file swapped for a link that leaves the root.
     let outside = fixture.root.parent().expect("parent").join("outside.rs");
@@ -673,4 +678,189 @@ fn test_a_rename_with_no_whole_match_reports_substrings_and_writes_nothing() {
         other => panic!("unexpected {other:?}"),
     }
     assert_eq!(fixture.text("lib.rs"), "fn format_utc_now() {}\n");
+}
+
+#[test]
+fn test_ignore_files_and_agent_ci_configuration_are_refused() {
+    let fixture = Fixture::new(&[
+        (".gitignore", b"private/\n"),
+        ("private/notes.txt", b"hidden\n"),
+        (".claude/settings.json", b"{\"hooks\": {}}\n"),
+        (".github/workflows/ci.yml", b"run: tool_name\n"),
+        ("sub/.gitattributes", b"* text\n"),
+        (".mcp.json", b"{}\n"),
+        ("src/lib.rs", b"fn tool_name() {}\n"),
+    ]);
+    for (path, old) in [
+        (".gitignore", "private/\n"),
+        (".claude/settings.json", "{}"),
+        (".github/workflows/ci.yml", "tool_name"),
+        ("sub/.gitattributes", "text"),
+        (".mcp.json", "{}"),
+    ] {
+        assert_eq!(
+            refusal(fixture.apply(vec![replace(path, old, "x", 1)]).unwrap_err()),
+            Refusal::ControlFile,
+            "{path}"
+        );
+    }
+    assert_eq!(fixture.text(".gitignore"), "private/\n");
+    // A rename edits the source, skips the CI file that names the
+    // identifier, and says the rename is incomplete.
+    let report = fixture
+        .apply(vec![rename("tool_name", "tool_label", None, None)])
+        .expect("rename applies to the source");
+    let outcome = report.operations[0].rename.as_ref().expect("outcome");
+    assert_eq!(report.operations[0].files, ["src/lib.rs"]);
+    assert!(!outcome.complete);
+    assert_eq!(outcome.files_skipped.len(), 1);
+    assert_eq!(outcome.files_skipped[0].path, ".github/workflows/ci.yml");
+    assert_eq!(outcome.files_skipped[0].reason, Refusal::ControlFile);
+    assert_eq!(fixture.text(".github/workflows/ci.yml"), "run: tool_name\n");
+    // Control files without the name do not make a rename incomplete.
+    let report = fixture
+        .apply(vec![rename("tool_label", "tool_tag", Some("src/**"), None)])
+        .expect("scoped rename");
+    assert!(
+        report.operations[0]
+            .rename
+            .as_ref()
+            .expect("outcome")
+            .complete
+    );
+    let report = fixture
+        .apply(vec![rename("tool_tag", "tool_mark", None, None)])
+        .expect("unscoped rename");
+    assert!(
+        report.operations[0]
+            .rename
+            .as_ref()
+            .expect("outcome")
+            .complete
+    );
+}
+
+#[test]
+fn test_renaming_into_an_existing_name_needs_allow_existing() {
+    let source = "fn old_name() {}\nfn new_name() {}\nfn main() { old_name(); }\n";
+    let fixture = Fixture::new(&[("lib.rs", source.as_bytes())]);
+    match fixture.apply(vec![rename("old_name", "new_name", None, None)]) {
+        Err(EditError::NameExists {
+            count, locations, ..
+        }) => {
+            assert_eq!(count, 1);
+            assert_eq!(locations[0].line, 2);
+        }
+        other => panic!("unexpected {other:?}"),
+    }
+    assert_eq!(fixture.text("lib.rs"), source);
+    let report = fixture
+        .apply(vec![EditOperation::Rename {
+            old: "old_name".to_owned(),
+            new: "new_name".to_owned(),
+            path: None,
+            expected_count: None,
+            allow_existing: true,
+        }])
+        .expect("explicitly allowed");
+    assert_eq!(
+        report.operations[0]
+            .rename
+            .as_ref()
+            .expect("outcome")
+            .new_name_preexisting,
+        1
+    );
+}
+
+#[test]
+fn test_a_rename_never_rewrites_escapes_or_string_prefixes() {
+    let source = "def f(n):\n    return f\"{n}\\n\" + r'x'\n";
+    let fixture = Fixture::new(&[("m.py", source.as_bytes())]);
+    fixture
+        .apply(vec![rename("n", "count", None, Some(2))])
+        .expect("two real uses of n");
+    assert_eq!(
+        fixture.text("m.py"),
+        "def f(count):\n    return f\"{count}\\n\" + r'x'\n"
+    );
+    fixture
+        .apply(vec![rename("f", "g", None, Some(1))])
+        .expect("only the definition");
+    assert!(fixture.text("m.py").contains("return f\"{count}"));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_a_file_without_write_permission_is_refused() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let fixture = Fixture::new(&[("locked.txt", b"x\n")]);
+    fs::set_permissions(
+        fixture.root.join("locked.txt"),
+        fs::Permissions::from_mode(0o444),
+    )
+    .expect("chmod");
+    assert_eq!(
+        refusal(
+            fixture
+                .apply(vec![replace("locked.txt", "x", "y", 1)])
+                .unwrap_err()
+        ),
+        Refusal::ReadOnly
+    );
+    assert_eq!(fixture.text("locked.txt"), "x\n");
+}
+
+#[test]
+fn test_a_rename_stops_at_the_file_bound() {
+    let files = (0..=compresso_atlas::EDIT_MAX_FILES)
+        .map(|index| (format!("f{index:03}.txt"), b"shared_name\n".to_vec()))
+        .collect::<Vec<_>>();
+    let borrowed = files
+        .iter()
+        .map(|(path, contents)| (path.as_str(), contents.as_slice()))
+        .collect::<Vec<_>>();
+    let fixture = Fixture::new(&borrowed);
+    let error = fixture
+        .apply(vec![rename("shared_name", "other_name", None, None)])
+        .expect_err("201 files");
+    assert!(
+        matches!(
+            error,
+            EditError::Bound {
+                bound: EditBound::Files,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(fixture.text("f000.txt"), "shared_name\n");
+}
+
+#[test]
+fn test_a_call_stops_at_the_write_byte_bound() {
+    // Seventeen files just under the 1 MB file limit exceed 16 MiB in total.
+    let filler = "x".repeat(990_000);
+    let files = (0..17)
+        .map(|index| (format!("big{index:02}.txt"), format!("token_a\n{filler}\n")))
+        .collect::<Vec<_>>();
+    let borrowed = files
+        .iter()
+        .map(|(path, contents)| (path.as_str(), contents.as_bytes()))
+        .collect::<Vec<_>>();
+    let fixture = Fixture::new(&borrowed);
+    let error = fixture
+        .apply(vec![rename("token_a", "token_b", None, None)])
+        .expect_err("over 16 MiB");
+    assert!(
+        matches!(
+            error,
+            EditError::Bound {
+                bound: EditBound::WriteBytes,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert!(fixture.text("big00.txt").starts_with("token_a\n"));
 }
