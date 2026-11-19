@@ -25,6 +25,10 @@ const DEFAULT_TOKENS: usize = 1_500;
 /// Room for the envelope and every pattern header at the pattern cap.
 const MIN_TOKENS: usize = 300;
 const MAX_TOKENS: usize = 10_000;
+/// Text-form defaults (E17-33, D98): fewer rows per file and a smaller
+/// budget unless the call asks for more.
+const TEXT_DEFAULT_MAX_MATCHES_PER_FILE: usize = 3;
+const TEXT_DEFAULT_TOKENS: usize = 1_000;
 
 pub(crate) fn handles(name: &str) -> bool {
     name == TOOL_NAME
@@ -69,7 +73,11 @@ pub(crate) fn dispatch(
         1,
         compresso_atlas::GREP_MAX_MATCHES_PER_FILE_LIMIT,
     )?
-    .unwrap_or(DEFAULT_MAX_MATCHES_PER_FILE);
+    .unwrap_or(if form.is_text() {
+        TEXT_DEFAULT_MAX_MATCHES_PER_FILE
+    } else {
+        DEFAULT_MAX_MATCHES_PER_FILE
+    });
     let context_lines = optional_usize(
         &mut arguments,
         "context_lines",
@@ -78,7 +86,11 @@ pub(crate) fn dispatch(
     )?
     .unwrap_or(0);
     let max_tokens = optional_usize(&mut arguments, "max_tokens", MIN_TOKENS, MAX_TOKENS)?
-        .unwrap_or(DEFAULT_TOKENS);
+        .unwrap_or(if form.is_text() {
+            TEXT_DEFAULT_TOKENS
+        } else {
+            DEFAULT_TOKENS
+        });
     let options = GrepOptions {
         patterns: &patterns,
         regex,
@@ -102,6 +114,7 @@ pub(crate) fn dispatch(
         let mut payload = payload(&fitted, &options, &operation_id, stale, counter);
         // Each form is held to max_tokens as it is sent.
         let tokens = if form.is_text() {
+            compact_rows_of(&mut payload, &fitted);
             text::render(TOOL_NAME, &payload).map_or(0, |text| counter.count(&text))
         } else {
             stabilize_tokens(&mut payload, counter)?
@@ -242,6 +255,47 @@ fn file_value(file: &GrepFile) -> Value {
         value["stale"] = Value::Bool(true);
     }
     value
+}
+
+/// Text form only (E17-33): rows that do not repeat the enclosing symbol.
+/// The JSON payload keeps one `line [symbol] snippet` row per match.
+fn compact_rows_of(payload: &mut Value, report: &GrepReport) {
+    for (result, value) in report.results.iter().zip(
+        payload["results"]
+            .as_array_mut()
+            .map_or(&mut [][..], Vec::as_mut_slice),
+    ) {
+        for (file, file_value) in result.files.iter().zip(
+            value["files"]
+                .as_array_mut()
+                .map_or(&mut [][..], Vec::as_mut_slice),
+        ) {
+            file_value["lines"] = json!(compact_rows(file));
+        }
+    }
+}
+
+/// One file's rows for the text form. A match row names its enclosing
+/// symbol only when it differs from the previous match row's (`[-]` when a
+/// row has none after one that had); definitions are always named.
+fn compact_rows(file: &GrepFile) -> Vec<String> {
+    let context = |line: &compresso_atlas::GrepContextLine| format!("{}- {}", line.line, line.text);
+    let mut rows = Vec::new();
+    let mut previous: Option<&str> = None;
+    for line in &file.lines {
+        rows.extend(line.before.iter().map(context));
+        let tag = match (line.symbol.as_deref(), line.definition) {
+            (Some(symbol), true) => format!("[def {symbol}] "),
+            (Some(symbol), false) if previous == Some(symbol) => String::new(),
+            (Some(symbol), false) => format!("[{symbol}] "),
+            (None, _) if previous.is_some() => "[-] ".to_owned(),
+            (None, _) => String::new(),
+        };
+        rows.push(format!("{} {tag}{}", line.line, line.snippet));
+        previous = line.symbol.as_deref();
+        rows.extend(line.after.iter().map(context));
+    }
+    rows
 }
 
 fn stabilize_tokens(payload: &mut Value, counter: &dyn TokenCounter) -> Result<usize, ToolFailure> {

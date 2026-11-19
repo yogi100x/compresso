@@ -117,7 +117,7 @@ pub(crate) const LEAN_TOOLS: &[LeanTool] = &[
     },
     LeanTool {
         name: "compresso_grep",
-        description: "Text or regex search of indexed files, up to 8 patterns; use sites with path, line, enclosing symbol, exact totals. context_lines adds nearby lines, sparing a read.",
+        description: "Text or regex search of indexed files, up to 8 patterns: use sites, enclosing symbol, exact totals. A hit plus a few context_lines usually replaces a read.",
         hint: "compresso_grep for text and use sites",
     },
     LeanTool {
@@ -137,7 +137,7 @@ pub(crate) const LEAN_TOOLS: &[LeanTool] = &[
     },
     LeanTool {
         name: "compresso_read",
-        description: "Bounded read of a file or line range; end_line past EOF clamps. ranges reads up to 8 ranges in one call.",
+        description: "Narrow line read: 80 lines per range, 200 per call; names symbols past that. ranges takes up to 8; end_line past EOF clamps.",
         hint: "compresso_read for line ranges",
     },
     LeanTool {

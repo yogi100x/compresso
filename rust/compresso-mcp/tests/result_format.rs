@@ -787,3 +787,260 @@ async fn test_ledger_records_the_tokens_of_the_text_sent() {
         assert_eq!(operation.observed_tokens, counter.count(&text));
     }
 }
+
+// E17-33: the text form bounds how many lines one read serves and trims
+// per-match overhead in grep, without hiding what was left out.
+
+/// The content lines of a text read result between its `@@` header and
+/// any trailing `[...]` note.
+fn body_lines(text: &str) -> Vec<&str> {
+    text.lines()
+        .skip(1)
+        .take_while(|line| !line.starts_with('['))
+        .collect()
+}
+
+#[tokio::test]
+async fn test_text_read_shows_a_window_and_names_the_symbols_past_it() {
+    let fixture = Fixture::new();
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let request =
+        json!({ "path": "src/steps.rs", "start_line": 1, "end_line": 300, "max_tokens": 10000 });
+    let (text, is_error) = harness.call("compresso_read", &request).await;
+    assert!(!is_error, "{text}");
+    assert!(text.starts_with("@@ src/steps.rs:1-80 of 524\n"), "{text}");
+    assert_eq!(body_lines(&text).len(), 80, "{text}");
+    assert!(
+        text.ends_with(
+            "[lines 81-300 not shown: past the 80-line read window; starts there: step_080 81, step_081 82, step_082 83, step_083 84, step_084 85, step_085 86, step_086 87, step_087 88, +212 more; continue with start_line 81]\n"
+        ),
+        "{text}"
+    );
+
+    // A whole-file read is windowed the same way, through the last line.
+    let (text, _) = harness
+        .call(
+            "compresso_read",
+            &json!({ "path": "src/steps.rs", "max_tokens": 10000 }),
+        )
+        .await;
+    assert!(text.starts_with("@@ src/steps.rs:1-80 of 524\n"), "{text}");
+    assert!(
+        text.contains(
+            "[lines 81-524 not shown: past the 80-line read window; starts there: step_080 81,"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(", +313 more; continue with start_line 81]\n"),
+        "{text}"
+    );
+
+    // A range inside the window is served whole, with no note.
+    let (text, _) = harness
+        .call(
+            "compresso_read",
+            &json!({ "path": "src/steps.rs", "start_line": 401, "end_line": 480 }),
+        )
+        .await;
+    assert!(
+        text.starts_with("@@ src/steps.rs:401-480 of 524\n"),
+        "{text}"
+    );
+    assert_eq!(body_lines(&text).len(), 80);
+    assert!(!text.contains("not shown"), "{text}");
+    // A range a few lines over the window is served whole, not left as a
+    // stub; one more line past that is windowed.
+    let (text, _) = harness
+        .call(
+            "compresso_read",
+            &json!({ "path": "src/steps.rs", "start_line": 401, "end_line": 490, "max_tokens": 10000 }),
+        )
+        .await;
+    assert!(
+        text.starts_with("@@ src/steps.rs:401-490 of 524\n"),
+        "{text}"
+    );
+    assert!(!text.contains("not shown"), "{text}");
+    let (text, _) = harness
+        .call(
+            "compresso_read",
+            &json!({ "path": "src/steps.rs", "start_line": 401, "end_line": 491, "max_tokens": 10000 }),
+        )
+        .await;
+    assert!(
+        text.starts_with("@@ src/steps.rs:401-480 of 524\n"),
+        "{text}"
+    );
+    assert!(text.contains("[lines 481-491 not shown: past the 80-line read window; continue with start_line 481]\n"), "{text}");
+
+    // When the token budget cuts inside the window, the budget stopped the
+    // read: the note is the elision of the whole requested range.
+    let (text, _) = harness
+        .call(
+            "compresso_read",
+            &json!({ "path": "src/steps.rs", "start_line": 1, "end_line": 300, "max_tokens": 300 }),
+        )
+        .await;
+    let last = text.lines().last().expect("note");
+    assert!(last.starts_with("[lines "), "{text}");
+    assert!(last.contains("-300 elided: "), "{text}");
+    assert!(
+        last.contains("tokens over budget; continue with start_line "),
+        "{text}"
+    );
+    assert!(!text.contains("read window"), "{text}");
+    harness.close().await;
+
+    // The JSON form is not windowed.
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Full)).await;
+    let (text, _) = harness.call("compresso_read", &request).await;
+    let value: Value = serde_json::from_str(&text).expect("JSON result");
+    assert_eq!(value["range"]["end_line"], 300, "{text}");
+    assert_eq!(
+        value["content"].as_str().expect("content").lines().count(),
+        300
+    );
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_text_read_ranges_share_one_call_window() {
+    let fixture = Fixture::new();
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, is_error) = harness
+        .call(
+            "compresso_read",
+            &json!({ "ranges": [
+                { "path": "src/steps.rs", "start_line": 1, "end_line": 150 },
+                { "path": "src/steps.rs", "start_line": 200, "end_line": 350 },
+                { "path": ".env" },
+                { "path": "src/steps.rs", "start_line": 401 },
+                { "path": "src/session.rs" }
+            ], "max_tokens": 10000 }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    // 80 + 80 + 80 + 31 lines exceed the 200-line call window: the three
+    // long ranges get an equal 56-line share and the short one stays whole.
+    for (header, note) in [
+        (
+            "@@ src/steps.rs:1-56 of 524\n",
+            "[lines 57-150 not shown: past the 56-line read window; starts there: step_056 57,",
+        ),
+        (
+            "@@ src/steps.rs:200-255 of 524\n",
+            "[lines 256-350 not shown: past the 56-line read window; starts there: step_255 256,",
+        ),
+        (
+            "@@ src/steps.rs:401-456 of 524\n",
+            "[lines 457-524 not shown: past the 56-line read window; continue with start_line 457]",
+        ),
+    ] {
+        assert!(text.contains(header), "{header}: {text}");
+        assert!(text.contains(note), "{note}: {text}");
+    }
+    assert!(text.contains("@@ .env [not_found] "), "{text}");
+    assert!(text.contains("@@ src/session.rs:1-31 of 31\n"), "{text}");
+    let shown = text
+        .lines()
+        .filter(|line| !line.starts_with("@@ ") && !line.starts_with('['))
+        .count();
+    assert!(shown <= 200, "{shown} lines served");
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_text_read_window_names_no_symbols_for_a_changed_file() {
+    let fixture = Fixture::new();
+    let mut steps = fs::read_to_string(fixture.root.join("src/steps.rs")).expect("steps");
+    steps.insert_str(0, "// edited after indexing\n");
+    write_file(&fixture.root, "src/steps.rs", &steps);
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, _) = harness
+        .call(
+            "compresso_read",
+            &json!({ "path": "src/steps.rs", "start_line": 1, "end_line": 300, "max_tokens": 10000 }),
+        )
+        .await;
+    assert!(text.starts_with("@@ src/steps.rs:1-80 of 525\n"), "{text}");
+    assert!(
+        text.contains(
+            "[lines 81-300 not shown: past the 80-line read window; continue with start_line 81]\n"
+        ),
+        "{text}"
+    );
+    harness.close().await;
+}
+
+const TABLE_RS: &str = "pub fn table() -> Vec<u32> {\n    let mut rows = Vec::new();\n    rows.push(1);\n    rows.push(2);\n    rows\n}\n\npub fn rows_total() -> usize {\n    3\n}\n// rows end\n";
+
+#[tokio::test]
+async fn test_text_grep_does_not_repeat_the_enclosing_symbol() {
+    let fixture = Fixture::new();
+    write_file(&fixture.root, "src/table.rs", TABLE_RS);
+    Indexer::new(&fixture.store, counter_for(TokenProvider::OpenAiO200k))
+        .index(&fixture.root, |_| {})
+        .expect("fixture reindexes");
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, _) = harness
+        .call(
+            "compresso_grep",
+            &json!({ "pattern": "rows", "path": "src/table.rs", "max_matches_per_file": 20 }),
+        )
+        .await;
+    assert!(
+        text.contains(
+            "src/table.rs (6)\n2 [table] let mut rows = Vec::new();\n3 rows.push(1);\n4 rows.push(2);\n5 rows\n8 [def rows_total] pub fn rows_total() -> usize {\n11 [-] // rows end\n"
+        ),
+        "{text}"
+    );
+    harness.close().await;
+
+    // The JSON form keeps one symbol per row.
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Full)).await;
+    let (text, _) = harness
+        .call(
+            "compresso_grep",
+            &json!({ "pattern": "rows", "path": "src/table.rs", "max_matches_per_file": 20 }),
+        )
+        .await;
+    assert!(text.contains("\"3 [table] rows.push(1);\""), "{text}");
+    harness.close().await;
+}
+
+#[tokio::test]
+async fn test_text_grep_lists_fewer_lines_by_default_and_keeps_requested_context() {
+    let fixture = Fixture::new();
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    // Context the call asks for is served in full: it is often what spares
+    // a read.
+    let (text, _) = harness
+        .call(
+            "compresso_grep",
+            &json!({ "pattern": "fn checksum_table", "context_lines": 10 }),
+        )
+        .await;
+    let context = text
+        .lines()
+        .filter(|line| {
+            line.split_once("- ")
+                .is_some_and(|(number, _)| number.parse::<u32>().is_ok())
+        })
+        .count();
+    assert_eq!(context, 20, "ten lines on each side: {text}");
+    // Three matching lines per file unless the call asks for more.
+    let (text, _) = harness
+        .call("compresso_grep", &json!({ "pattern": "budget" }))
+        .await;
+    assert!(text.contains("src/steps.rs (400)\n"), "{text}");
+    let rows = text
+        .lines()
+        .filter(|line| {
+            line.split_once(' ')
+                .is_some_and(|(number, _)| number.parse::<u32>().is_ok())
+        })
+        .count();
+    assert_eq!(rows, 3, "{text}");
+    harness.close().await;
+}

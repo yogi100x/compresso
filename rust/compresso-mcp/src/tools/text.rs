@@ -414,6 +414,10 @@ fn read_range(range: &Value, out: &mut Out) {
     ));
     let content = string(range, "content").unwrap_or_default();
     out.raw(content);
+    if let Some(window) = range.get("window") {
+        out.line(window_note(window));
+        return;
+    }
     if let Some(elision) = string(range, "elision") {
         // A cut inside a line repeats that line on the next read.
         let next = if content.is_empty() || content.ends_with('\n') {
@@ -424,6 +428,31 @@ fn read_range(range: &Value, out: &mut Out) {
         let elision = elision.trim_start_matches('[').trim_end_matches(']');
         out.line(format!("[{elision}; continue with start_line {next}]"));
     }
+}
+
+/// The one note for a read held to its line window (E17-33): which lines
+/// were not served, the indexed symbols that start there, and where to
+/// continue.
+fn window_note(window: &Value) -> String {
+    let (from, to) = (number(window, "from"), number(window, "to"));
+    let mut note = format!(
+        "[lines {from}-{to} not shown: past the {}-line read window",
+        number(window, "lines")
+    );
+    let symbols = array(window, "symbols")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    if !symbols.is_empty() {
+        note.push_str("; starts there: ");
+        note.push_str(&symbols.join(", "));
+        let more = number(window, "symbols_more");
+        if more > 0 {
+            note.push_str(&format!(", +{more} more"));
+        }
+    }
+    note.push_str(&format!("; continue with start_line {from}]"));
+    note
 }
 
 fn read(payload: &Value, out: &mut Out) {

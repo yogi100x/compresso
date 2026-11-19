@@ -28,3 +28,9 @@ toml.workspace = true
 [[bin]]
 name = "compresso"
 path = "src/main.rs"
+
+# Result-size replay of recorded tool calls (E17-33); its unit tests run
+# with the workspace tests.
+[[example]]
+name = "replay_results"
+test = true

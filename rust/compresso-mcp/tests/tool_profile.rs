@@ -316,6 +316,26 @@ fn test_lean_instructions_keep_the_mandatory_disclosures_and_name_only_served_to
     }
 }
 
+/// E17-33 (D98): the lean descriptions say a grep hit usually replaces a
+/// read, unfold serves one symbol, and reads are narrow windows.
+#[test]
+fn test_lean_descriptions_steer_toward_grep_hits_unfold_and_narrow_reads() {
+    let (tools, _) = advertised_surface(McpToolProfile::Lean, false);
+    let description = |name: &str| {
+        tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .and_then(|tool| tool.description.as_deref())
+            .expect("lean tool")
+            .to_owned()
+    };
+    assert!(description("compresso_grep").contains("usually replaces a read"));
+    assert!(description("compresso_unfold").contains("one symbol"));
+    let read = description("compresso_read");
+    assert!(read.contains("Narrow"), "{read}");
+    assert!(read.contains("80 lines per range"), "{read}");
+}
+
 /// The fixed per-session cost of a profile's default surface: recall and the
 /// edit tool are separate operator opt-ins and are measured separately.
 fn surface_tokens(profile: McpToolProfile, provider: TokenProvider) -> usize {
