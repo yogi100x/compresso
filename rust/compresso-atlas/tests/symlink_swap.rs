@@ -100,6 +100,7 @@ fn test_grep_skips_a_swapped_symlink_and_reports_it_skipped() {
             max_files: 20,
             max_matches_per_file: 5,
             context_lines: 0,
+            scopes: &[],
         },
     )
     .expect("grep");

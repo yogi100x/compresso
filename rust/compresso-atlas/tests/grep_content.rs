@@ -72,6 +72,7 @@ impl Fixture {
             max_files: 20,
             max_matches_per_file: 5,
             context_lines: 0,
+            scopes: Vec::new(),
         };
         configure(&mut options);
         grep(
@@ -85,6 +86,7 @@ impl Fixture {
                 max_files: options.max_files,
                 max_matches_per_file: options.max_matches_per_file,
                 context_lines: options.context_lines,
+                scopes: &options.scopes,
             },
         )
     }
@@ -97,6 +99,8 @@ struct Options {
     max_files: usize,
     max_matches_per_file: usize,
     context_lines: usize,
+    /// Per-pattern scopes (E17-36); empty when no pattern has one.
+    scopes: Vec<Option<String>>,
 }
 
 fn symbol(name: &str, kind: SymbolKind, start_line: u32, end_line: u32) -> SymbolRecord {
@@ -173,6 +177,56 @@ fn test_grep_returns_use_sites_with_enclosing_symbols_grouped_and_ranked() {
     assert_eq!(queries.lines[0].snippet, "if is_secret_path(path) {");
     assert_eq!(paths(&report, 1), ["src/queries.rs"]);
     assert!(report.complete());
+}
+
+/// E17-36 (D101): a pattern's own scope narrows that pattern only; the
+/// other patterns of the call keep the call's scope, and a file no pattern
+/// may search is neither counted in scope nor read.
+#[test]
+fn test_grep_pattern_scope_narrows_only_its_own_pattern() {
+    let fixture = Fixture::new();
+    seed_secret_use_sites(&fixture);
+
+    let report = fixture.grep(&["is_secret_path", "fn scan"], |options| {
+        options.scopes = vec![Some("tests".to_owned()), None];
+    });
+    assert_eq!(paths(&report, 0), ["tests/scanner_test.rs"]);
+    assert_eq!(
+        (
+            report.results[0].matches_total,
+            report.results[0].files_total
+        ),
+        (1, 1)
+    );
+    assert_eq!(paths(&report, 1), ["src/queries.rs"]);
+    assert_eq!(report.files_in_scope, 3);
+
+    let scoped = fixture.grep(&["is_secret_path", "fn scan"], |options| {
+        options.scopes = vec![
+            Some("src/scanner.rs".to_owned()),
+            Some("src/*.rs".to_owned()),
+        ];
+    });
+    assert_eq!(paths(&scoped, 0), ["src/scanner.rs"]);
+    assert_eq!(paths(&scoped, 1), ["src/queries.rs"]);
+    assert_eq!(scoped.files_in_scope, 2, "tests/ is in no pattern's scope");
+
+    // The call's own path still applies to every pattern.
+    let both = fixture.grep(&["is_secret_path"], |options| {
+        options.path = Some("src".to_owned());
+        options.scopes = vec![Some("**/*_test.rs".to_owned())];
+    });
+    assert!(both.results[0].files.is_empty());
+
+    for (scopes, error) in [
+        (vec![Some("../etc".to_owned())], "\"../etc\" is invalid"),
+        (vec![None, None], "one scope per pattern"),
+    ] {
+        let failure = fixture
+            .try_grep(&["is_secret_path"], |options| options.scopes = scopes)
+            .expect_err("rejected");
+        assert!(failure.to_string().contains(error), "{failure}");
+    }
 }
 
 #[test]
@@ -567,4 +621,27 @@ fn test_grep_context_lines_surround_each_match_and_merge_when_overlapping() {
         fixture.try_grep(&["needle"], |options| options.context_lines = 11),
         Err(AtlasError::Grep(GrepError::InvalidContext { max: 10 }))
     ));
+}
+
+/// E17-36 (D101): an ordinary pattern with counted repetitions of a Unicode
+/// class compiles; one that is still too large says how to shorten it.
+#[test]
+fn test_grep_accepts_ordinary_counted_repetitions_and_explains_the_size_bound() {
+    let fixture = Fixture::new();
+    fixture.write_indexed(
+        "src/pool.rs",
+        "// allows up to 256 connections\nconst MAX: u32 = 256; // conns\n",
+        &[],
+    );
+    let report = fixture.grep(
+        &[r"(?i)(<=|up to|at most|max(imum)?|limit|bound)\D{0,30}256\b|256\D{0,20}(connections|conns)"],
+        |options| options.regex = true,
+    );
+    assert_eq!(report.results[0].matches_total, 2);
+    let failure = fixture
+        .try_grep(&[r"\w{0,1000}x"], |options| options.regex = true)
+        .expect_err("still bounded");
+    let message = failure.to_string();
+    assert!(message.contains("too large"), "{message}");
+    assert!(message.contains("shorten counted repetitions"), "{message}");
 }

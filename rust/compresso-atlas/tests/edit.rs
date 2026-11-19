@@ -1313,3 +1313,96 @@ fn test_an_escaped_dollar_is_literal_text_and_kept() {
         1
     );
 }
+
+/// E17-36 (D101): a rename scoped by path also counts the whole matches of
+/// the old name left outside its scope, and is not complete while any
+/// remain; an unscoped rename has nothing outside.
+#[test]
+fn test_a_scoped_rename_counts_whole_matches_outside_its_scope() {
+    let fixture = Fixture::new(&[
+        (
+            "consensus/vote.rs",
+            b"pub fn tally_votes() {}\nfn run() { tally_votes(); }\n",
+        ),
+        (
+            "net/peer.rs",
+            b"// see tally_votes in consensus\nfn unrelated() {}\n",
+        ),
+        ("net/other.rs", b"fn tally_votes_v2() {}\n"),
+    ]);
+    let report = fixture
+        .apply(vec![rename(
+            "tally_votes",
+            "count_votes",
+            Some("consensus"),
+            None,
+        )])
+        .expect("rename applies");
+    let outcome = report.operations[0].rename.as_ref().expect("outcome");
+    assert_eq!(outcome.remaining_whole_total, 0);
+    assert_eq!(outcome.outside_whole_total, 1);
+    assert_eq!(outcome.outside_whole[0].path, "net/peer.rs");
+    assert_eq!(outcome.outside_whole[0].line, 1);
+    assert!(!outcome.complete, "a match outside the scope remains");
+    assert_eq!(
+        fixture.text("net/peer.rs"),
+        "// see tally_votes in consensus\nfn unrelated() {}\n"
+    );
+
+    let fixture = Fixture::new(&[("lib.rs", b"fn tally_votes() {}\n")]);
+    let report = fixture
+        .apply(vec![rename("tally_votes", "count_votes", None, None)])
+        .expect("rename applies");
+    let outcome = report.operations[0].rename.as_ref().expect("outcome");
+    assert_eq!(outcome.outside_whole_total, 0);
+    assert!(outcome.complete);
+}
+
+/// E17-36 (D101, review): the outside-scope count is taken after every
+/// operation of the call, so a match a later scoped rename renames is not
+/// reported as left behind.
+#[test]
+fn test_scoped_renames_count_outside_matches_after_every_operation() {
+    let fixture = Fixture::new(&[
+        ("src/a/one.rs", b"pub fn tally_votes() {}\n"),
+        ("src/b/two.rs", b"fn run() { crate::a::tally_votes(); }\n"),
+    ]);
+    let report = fixture
+        .apply(vec![
+            rename("tally_votes", "count_votes", Some("src/a"), None),
+            rename("tally_votes", "count_votes", Some("src/b"), None),
+        ])
+        .expect("renames apply");
+    for operation in &report.operations {
+        let outcome = operation.rename.as_ref().expect("outcome");
+        assert_eq!(outcome.outside_whole_total, 0, "{outcome:?}");
+        assert!(outcome.outside_unsearched.is_empty(), "{outcome:?}");
+        assert!(outcome.complete, "{outcome:?}");
+    }
+}
+
+/// E17-36 with E17-35: the outside-scope count of a scoped rename never
+/// reads files the scanner excludes (`info/exclude`, nested worktrees).
+#[test]
+fn test_the_outside_scope_count_never_reads_excluded_files() {
+    let fixture = Fixture::new(&[
+        (".git/HEAD", b"ref: refs/heads/main\n"),
+        ("src/lib.rs", b"fn tally_votes() {}\n"),
+        (".git/info/exclude", b"/trees/\n"),
+        ("trees/other/lib.rs", b"fn run() { tally_votes(); }\n"),
+        ("copy/lib.rs", b"fn run() { tally_votes(); }\n"),
+    ]);
+    // A rule that arrives after indexing leaves a stale row for copy/.
+    write(&fixture.root, ".git/info/exclude", b"/trees/\ncopy/\n");
+    let report = fixture
+        .apply(vec![rename(
+            "tally_votes",
+            "count_votes",
+            Some("src"),
+            None,
+        )])
+        .expect("rename applies");
+    let outcome = report.operations[0].rename.as_ref().expect("outcome");
+    assert_eq!(outcome.outside_whole_total, 0, "{outcome:?}");
+    assert!(outcome.complete, "{outcome:?}");
+}

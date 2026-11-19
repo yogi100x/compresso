@@ -602,3 +602,79 @@ fn test_the_store_directory_is_protected_under_a_non_canonical_root() {
     let canonical = fs::canonicalize(&data).expect("canonical");
     assert!(protected.contains(&canonical), "{protected:?}");
 }
+
+/// E17-36 (D101): one call edits several files, all or nothing: a gate that
+/// fails on any file's operation writes no file; when every gate passes,
+/// every file is written.
+#[tokio::test]
+async fn test_one_call_edits_several_files_all_or_nothing() {
+    let fixture = Fixture::new();
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean, true)).await;
+    let main_rs = fixture.text("src/main.rs");
+    let (text, is_error) = harness
+        .call(
+            "compresso_edit",
+            &json!({ "operations": [
+                { "op": "replace", "path": "src/main.rs", "old": "format_utc(5)", "new": "format_utc(6)" },
+                { "op": "replace", "path": "src/lib.rs", "old": "format_utc", "new": "x" }
+            ] }),
+        )
+        .await;
+    assert!(is_error && text.starts_with("[count_mismatch]"), "{text}");
+    assert_eq!(fixture.text("src/main.rs"), main_rs);
+    assert_eq!(fixture.text("src/lib.rs"), LIB_RS);
+    let (text, is_error) = harness
+        .call(
+            "compresso_edit",
+            &json!({ "operations": [
+                { "op": "replace", "path": "src/main.rs", "old": "format_utc(5)", "new": "format_utc(6)" },
+                { "op": "replace", "path": "src/lib.rs", "old": "seconds.to_string()", "new": "seconds.to_string() + \"s\"" }
+            ] }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    harness.close().await;
+    assert!(fixture.text("src/main.rs").contains("format_utc(6)"));
+    assert!(
+        fixture
+            .text("src/lib.rs")
+            .contains("seconds.to_string() + \"s\"")
+    );
+}
+
+/// E17-36 (D101): a rename scoped by path says how many whole matches of
+/// the old name it left outside its scope, and is not done while any remain.
+#[tokio::test]
+async fn test_a_scoped_rename_reports_whole_matches_outside_its_scope() {
+    let fixture = Fixture::new();
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean, true)).await;
+    let (text, is_error) = harness
+        .call(
+            "compresso_edit",
+            &json!({ "operations": [
+                { "op": "rename", "old": "format_utc", "new": "format_seconds", "path": "src/lib.rs" }
+            ] }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    assert!(text.contains("INCOMPLETE: 1 rename(s)"), "{text}");
+    assert!(
+        text.contains("remain outside a rename's path scope"),
+        "{text}"
+    );
+    assert!(
+        text.contains("under src/lib.rs; remaining in scope: 0 whole"),
+        "{text}"
+    );
+    assert!(
+        text.contains("; 1 whole outside scope, not renamed"),
+        "{text}"
+    );
+    assert!(
+        text.contains("INCOMPLETE: the old name remains outside the scope"),
+        "{text}"
+    );
+    assert!(text.contains("  outside scope src/main.rs:2: "), "{text}");
+    harness.close().await;
+    assert!(fixture.text("src/main.rs").contains("lib::format_utc(5)"));
+}

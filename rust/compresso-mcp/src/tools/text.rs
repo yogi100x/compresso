@@ -80,6 +80,14 @@ impl Out {
         self.notes.push(note.into());
     }
 
+    /// Ends a section: its notes print now, before the next section's
+    /// content (E17-36, D101).
+    fn flush_notes(&mut self) {
+        for note in std::mem::take(&mut self.notes) {
+            self.line(format!("[{note}]"));
+        }
+    }
+
     /// The stale-index hint is common to every repository tool and closes
     /// the result.
     fn finish(mut self, payload: &Value) -> String {
@@ -344,11 +352,57 @@ fn search(payload: &Value, out: &mut Out) {
     }
 }
 
+/// A pattern whose own scope was rejected (E17-36, D101): its section is
+/// the error.
+fn failed_pattern(failed: &Value, out: &mut Out) {
+    let error = failed.get("error").unwrap_or(&Value::Null);
+    out.line(format!(
+        "# {} in {} — [{}] {}",
+        caller_text(string(failed, "pattern").unwrap_or_default()),
+        caller_text(string(failed, "path").unwrap_or_default()),
+        string(error, "code").unwrap_or_default(),
+        caller_text(string(error, "message").unwrap_or_default())
+    ));
+}
+
+/// Caller text echoed into a header (a pattern or a scope) with control
+/// characters replaced by `?`, so it stays on its header line (E17-36).
+fn caller_text(text: &str) -> String {
+    text.chars()
+        .map(|character| {
+            if character.is_control() {
+                '?'
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
 fn grep(payload: &Value, out: &mut Out) {
     let mut unlisted = 0;
     let (mut named_tests, mut named_above) = (false, false);
+    // Failed sections print at the caller's position among the patterns.
+    let failed = array(payload, "patterns_failed");
+    let mut caller = 0_u64;
+    let print_failed_at = |caller: &mut u64, out: &mut Out| {
+        while let Some(entry) = failed
+            .iter()
+            .find(|entry| entry.get("index").and_then(Value::as_u64) == Some(*caller))
+        {
+            failed_pattern(entry, out);
+            *caller += 1;
+        }
+    };
     for result in array(payload, "results") {
-        let pattern = string(result, "pattern").unwrap_or_default();
+        print_failed_at(&mut caller, out);
+        caller += 1;
+        let mut pattern = caller_text(string(result, "pattern").unwrap_or_default());
+        // A pattern's own scope (E17-36, D101), as the caller wrote it.
+        if let Some(scope) = string(result, "path") {
+            pattern.push_str(" in ");
+            pattern.push_str(&caller_text(scope));
+        }
         let matches = number(result, "matches_total");
         if matches == 0 {
             out.line(format!("# {pattern} — no matches"));
@@ -391,6 +445,20 @@ fn grep(payload: &Value, out: &mut Out) {
             }
         }
     }
+    let clamped = array(payload, "clamped")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>();
+    if !clamped.is_empty() {
+        out.note(format!("limits clamped: {}", clamped.join(", ")));
+    }
+    // A pattern whose own scope was rejected (E17-36, D101): its section
+    // is the error; the caller wrote the pattern and the scope.
+    print_failed_at(&mut caller, out);
+    // Entries without an index (none are written so) still print.
+    for entry in failed.iter().filter(|entry| entry.get("index").is_none()) {
+        failed_pattern(entry, out);
+    }
     if named_tests {
         out.note(
             "tests: test-code lines, unlisted while code matches; read them or grep a test path",
@@ -415,16 +483,29 @@ fn grep(payload: &Value, out: &mut Out) {
             "{unlisted} matching lines counted but not listed; narrow with path or a more specific pattern rather than raising limits"
         ));
     }
+    // A packed call's reads (E17-36, D101) follow every grep section and
+    // its notes, so raw file content never precedes a grep header.
+    if let Some(ranges) = payload.get("ranges").and_then(Value::as_array) {
+        out.flush_notes();
+        for range in ranges {
+            read_range(range, out);
+        }
+    }
 }
 
 /// A grep file header's path with the characters that could imitate the
 /// header's own syntax replaced by `?` (E17-34, D99): control characters,
-/// `;`, and a `(` after a space. Ordinary paths print unchanged.
+/// `;`, and a `(` after a space. A path starting with `# ` or `@@ ` would
+/// imitate a pattern or read section header, so that first character is
+/// replaced too (E17-36, D101). Ordinary paths print unchanged.
 fn header_path(path: &str) -> String {
     let mut previous = '\0';
+    let section = path.starts_with("# ") || path.starts_with("@@ ");
     path.chars()
-        .map(|character| {
+        .enumerate()
+        .map(|(index, character)| {
             let safe = match character {
+                _ if index == 0 && section => '?',
                 ';' => '?',
                 '(' if previous == ' ' => '?',
                 character if character.is_control() => '?',
@@ -678,6 +759,12 @@ fn edit(payload: &Value, out: &mut Out) {
         if payload.get("index_refreshed") == Some(&Value::Bool(false)) {
             header.push_str(", the index could not be refreshed, so new files may be missed");
         }
+        let outside = number(payload, "outside_scope_whole_total");
+        if outside > 0 {
+            header.push_str(&format!(
+                ", {outside} whole match(es) of an old name remain outside a rename's path scope"
+            ));
+        }
     }
     for (key, label) in [
         (
@@ -746,14 +833,42 @@ fn edit(payload: &Value, out: &mut Out) {
         if let Some(scope) = string(operation, "scope") {
             row.push_str(&format!(" under {scope}"));
         }
+        let scoped = operation.get("outside_scope_whole_total").is_some();
         row.push_str(&format!(
-            "; remaining: {} whole, {} substring, {} adjacent",
+            "; remaining{}: {} whole, {} substring, {} adjacent",
+            if scoped { " in scope" } else { "" },
             number(operation, "remaining_whole_total"),
             number(operation, "remaining_substring_total"),
             number(operation, "remaining_adjacent_total")
         ));
+        // A scoped rename (E17-36, D101) also states what it found outside
+        // its scope, and how many files there it could not search.
+        let outside = number(operation, "outside_scope_whole_total");
+        if scoped {
+            let unsearched = number(operation, "outside_scope_unsearched_total");
+            if unsearched > 0 {
+                row.push_str(&format!(
+                    "; {outside} whole found outside scope; {unsearched} file(s) outside scope not searched"
+                ));
+            } else {
+                row.push_str(&format!("; {outside} whole outside scope, not renamed"));
+            }
+        }
         if operation.get("complete") == Some(&Value::Bool(false)) {
-            row.push_str("; INCOMPLETE: skipped files hold the old name");
+            let mut reasons = Vec::new();
+            if number(operation, "files_skipped_total") > 0 {
+                reasons.push("skipped files hold the old name");
+            }
+            if outside > 0 {
+                reasons.push("the old name remains outside the scope");
+            }
+            if payload.get("index_refreshed") == Some(&Value::Bool(false)) {
+                reasons.push("the index could not be refreshed");
+            }
+            if reasons.is_empty() {
+                reasons.push("see the counts above");
+            }
+            row.push_str(&format!("; INCOMPLETE: {}", reasons.join(", and ")));
         }
         out.line(row);
         edit_locations(
@@ -762,6 +877,21 @@ fn edit(payload: &Value, out: &mut Out) {
             number(operation, "remaining_whole_total"),
             out,
         );
+        edit_locations(
+            "outside scope",
+            array(operation, "outside_scope_whole"),
+            outside,
+            out,
+        );
+        let unsearched = array(operation, "outside_scope_unsearched");
+        for path in unsearched.iter().filter_map(Value::as_str) {
+            out.line(format!("  not searched outside scope {path}"));
+        }
+        let more = number(operation, "outside_scope_unsearched_total")
+            .saturating_sub(unsearched.len() as u64);
+        if more > 0 {
+            out.line(format!("  +{more} more not searched outside scope"));
+        }
         edit_locations(
             "substring",
             array(operation, "remaining_substring"),
@@ -1071,5 +1201,42 @@ mod tests {
         assert!(header.contains("index could not be refreshed"), "{header}");
         assert!(!header.contains("skipped file(s) hold"), "{header}");
         assert!(header.contains("3 substring match(es)"), "{header}");
+    }
+
+    /// E17-36 (D101, review): each rename row names the real reason it is
+    /// incomplete, and an outside-scope count that stopped early is stated
+    /// without claiming a match remains.
+    #[test]
+    fn test_rename_rows_name_the_real_reason_and_an_unfinished_outside_count() {
+        let row = |operation: Value, index_refreshed: bool| {
+            let payload = json!({
+                "dry_run": false, "files_total": 1, "sites_total": 1,
+                "index_refreshed": index_refreshed,
+                "files": [], "operations": [operation]
+            });
+            let text = render("compresso_edit", &payload).expect("text form");
+            text.lines().nth(1).expect("rename row").to_owned()
+        };
+        let base = json!({
+            "op": "rename", "old": "a", "new": "b", "sites": 1, "files_searched": 1,
+            "scope": "src", "outside_scope_whole_total": 0, "outside_scope_searched": false,
+            "outside_scope_unsearched_total": 3, "outside_scope_unsearched": ["x.rs"],
+            "files_skipped_total": 0, "complete": true
+        });
+        let unfinished = row(base.clone(), true);
+        assert!(
+            unfinished
+                .contains("0 whole found outside scope; 3 file(s) outside scope not searched"),
+            "{unfinished}"
+        );
+        assert!(!unfinished.contains("INCOMPLETE"), "{unfinished}");
+        let mut stale = base;
+        stale["complete"] = json!(false);
+        let stale = row(stale, false);
+        assert!(
+            stale.contains("INCOMPLETE: the index could not be refreshed"),
+            "{stale}"
+        );
+        assert!(!stale.contains("skipped files"), "{stale}");
     }
 }

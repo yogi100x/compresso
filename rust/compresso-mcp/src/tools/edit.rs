@@ -389,6 +389,26 @@ pub fn report_payload(
                     "new_name_preexisting".to_owned(),
                     json!(rename.new_name_preexisting),
                 );
+                // A scoped rename also names what it left outside its
+                // scope (E17-36, D101); an unscoped one is unchanged.
+                if rename.scope.is_some() {
+                    object.insert(
+                        "outside_scope_whole_total".to_owned(),
+                        json!(rename.outside_whole_total),
+                    );
+                    object.insert(
+                        "outside_scope_whole".to_owned(),
+                        locations_value(&rename.outside_whole),
+                    );
+                    object.insert(
+                        "outside_scope_unsearched_total".to_owned(),
+                        json!(rename.outside_unsearched_total),
+                    );
+                    object.insert(
+                        "outside_scope_unsearched".to_owned(),
+                        json!(rename.outside_unsearched),
+                    );
+                }
                 object.insert("complete".to_owned(), json!(rename.complete));
             }
             value
@@ -398,7 +418,11 @@ pub fn report_payload(
         .operations
         .iter()
         .filter_map(|operation| operation.rename.as_ref());
-    json!({
+    let outside = renames
+        .clone()
+        .map(|rename| rename.outside_whole_total)
+        .sum::<usize>();
+    let mut payload = json!({
         "schema_version": 1,
         "operation_id": operation_id,
         "dry_run": report.dry_run,
@@ -423,7 +447,11 @@ pub fn report_payload(
             IndexState::Stale => "stale",
         },
         "truncated": false
-    })
+    });
+    if outside > 0 {
+        payload["outside_scope_whole_total"] = json!(outside);
+    }
+    payload
 }
 
 fn render(payload: &Value, text: bool) -> String {
@@ -463,6 +491,8 @@ fn longest_list(payload: &Value) -> Option<String> {
             "remaining_substring",
             "remaining_adjacent",
             "remaining_whole",
+            "outside_scope_whole",
+            "outside_scope_unsearched",
             "files_skipped",
             "files",
         ] {
