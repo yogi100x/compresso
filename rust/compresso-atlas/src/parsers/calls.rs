@@ -25,12 +25,84 @@ pub const MAX_CALL_NODES_PER_FILE: usize = 65_536;
 const MAX_CALL_TEXT_BYTES: usize = compresso_store::MAX_CALL_TEXT_BYTES;
 /// Rust prelude variant constructors: never a repository symbol.
 const RUST_PRELUDE_VARIANTS: [&str; 3] = ["Some", "Ok", "Err"];
+/// Go builtin functions and predeclared types: a plain call to one is a
+/// builtin or a conversion, so it is not recorded. A repository function
+/// that shadows one of these names loses its plain calls.
+const GO_PREDECLARED: [&str; 40] = [
+    "any",
+    "append",
+    "bool",
+    "byte",
+    "cap",
+    "clear",
+    "close",
+    "complex",
+    "complex64",
+    "complex128",
+    "copy",
+    "delete",
+    "error",
+    "float32",
+    "float64",
+    "imag",
+    "int",
+    "int8",
+    "int16",
+    "int32",
+    "int64",
+    "len",
+    "make",
+    "max",
+    "min",
+    "new",
+    "panic",
+    "print",
+    "println",
+    "real",
+    "recover",
+    "rune",
+    "string",
+    "uint",
+    "uint8",
+    "uint16",
+    "uint32",
+    "uint64",
+    "uintptr",
+    "comparable",
+];
+/// The predeclared Go type names: an index of one of these is a type
+/// argument, not a slice index.
+const GO_PREDECLARED_TYPES: [&str; 22] = [
+    "any",
+    "bool",
+    "byte",
+    "comparable",
+    "complex64",
+    "complex128",
+    "error",
+    "float32",
+    "float64",
+    "int",
+    "int8",
+    "int16",
+    "int32",
+    "int64",
+    "rune",
+    "string",
+    "uint",
+    "uint8",
+    "uint16",
+    "uint32",
+    "uint64",
+    "uintptr",
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum CallSyntax {
+pub(crate) enum CallSyntax {
     Rust,
     Python,
     Script,
+    Go,
 }
 
 struct Callee<'tree> {
@@ -59,6 +131,11 @@ pub(super) fn extract(
         };
     };
 
+    let receivers = if syntax == CallSyntax::Go {
+        GoReceivers::new(root, source)
+    } else {
+        GoReceivers::default()
+    };
     let mut calls = Vec::new();
     let mut seen = HashSet::new();
     let mut examined = 0_usize;
@@ -69,7 +146,9 @@ pub(super) fn extract(
     'walk: loop {
         let node = cursor.node();
         let found = if is_call_node(syntax, node.kind()) {
-            callee(syntax, node, source).into_iter().collect()
+            callee(syntax, node, source, &receivers)
+                .into_iter()
+                .collect()
         } else if is_argument_list(syntax, node.kind()) {
             argument_references(node)
         } else if syntax == CallSyntax::Rust && node.kind() == "token_tree" {
@@ -123,13 +202,14 @@ const fn is_call_node(syntax: CallSyntax, kind: &str) -> bool {
         CallSyntax::Rust => const_eq(kind, "call_expression"),
         CallSyntax::Python => const_eq(kind, "call"),
         CallSyntax::Script => const_eq(kind, "call_expression") || const_eq(kind, "new_expression"),
+        CallSyntax::Go => const_eq(kind, "call_expression"),
     }
 }
 
 const fn is_argument_list(syntax: CallSyntax, kind: &str) -> bool {
     match syntax {
         CallSyntax::Rust | CallSyntax::Script => const_eq(kind, "arguments"),
-        CallSyntax::Python => const_eq(kind, "argument_list"),
+        CallSyntax::Python | CallSyntax::Go => const_eq(kind, "argument_list"),
     }
 }
 
@@ -336,7 +416,12 @@ fn valid_name(name: &str) -> bool {
             .all(|character| character == '_' || character == '$' || character.is_alphanumeric())
 }
 
-fn callee<'tree>(syntax: CallSyntax, node: Node<'tree>, source: &str) -> Option<Callee<'tree>> {
+fn callee<'tree>(
+    syntax: CallSyntax,
+    node: Node<'tree>,
+    source: &str,
+    receivers: &GoReceivers<'_>,
+) -> Option<Callee<'tree>> {
     match (syntax, node.kind()) {
         (CallSyntax::Rust, "call_expression") => {
             let callee = rust_callee(node.child_by_field_name("function")?, source)?;
@@ -358,6 +443,19 @@ fn callee<'tree>(syntax: CallSyntax, node: Node<'tree>, source: &str) -> Option<
         }
         (CallSyntax::Script, "new_expression") => {
             script_callee(node.child_by_field_name("constructor")?, source)
+        }
+        (CallSyntax::Go, "call_expression") => {
+            let callee = go_callee(
+                node,
+                node.child_by_field_name("function")?,
+                source,
+                receivers,
+            )?;
+            let name = node_text(callee.name, source)?;
+            if callee.form == CallForm::Plain && GO_PREDECLARED.contains(&name) {
+                return None;
+            }
+            Some(callee)
         }
         _ => None,
     }
@@ -543,6 +641,143 @@ fn script_callee<'tree>(function: Node<'tree>, source: &str) -> Option<Callee<'t
             ))
         }
         _ => None,
+    }
+}
+
+/// `f()`, `pkg.F()`, and `x.M()`. A call on the enclosing method's receiver
+/// name (`s.save()` in `func (s *Store) Close()`) is a self call; a call on
+/// any other plain name keeps that name as its qualifier, because a package
+/// and a variable look alike in syntax; a qualifier that is an import's
+/// alias is replaced by the imported path's last segment. Generic
+/// instantiations (`New[int, string]()`) are unwrapped; other callee
+/// expressions are receiver calls or dropped.
+fn go_callee<'tree>(
+    call: Node<'tree>,
+    function: Node<'tree>,
+    source: &str,
+    receivers: &GoReceivers<'_>,
+) -> Option<Callee<'tree>> {
+    let mut function = function;
+    // `New[int, string]()` is an instantiation. `New[int]()` parses as an
+    // index expression, like `handlers[i]()`: it is unwrapped only when the
+    // index is a predeclared type name, so an indexed function value is
+    // never a call to the slice. `New[T]()` with a type parameter is lost.
+    loop {
+        function = match function.kind() {
+            "generic_type" | "type_instantiation_expression" => {
+                function.child_by_field_name("type")?
+            }
+            "index_expression"
+                if function
+                    .child_by_field_name("index")
+                    .and_then(|index| node_text(index, source))
+                    .is_some_and(|index| GO_PREDECLARED_TYPES.contains(&index)) =>
+            {
+                function.child_by_field_name("operand")?
+            }
+            _ => break,
+        };
+    }
+    match function.kind() {
+        "identifier" => Some(plain(function)),
+        "selector_expression" => {
+            let name = function.child_by_field_name("field")?;
+            if name.kind() != "field_identifier" {
+                return None;
+            }
+            let operand = function.child_by_field_name("operand")?;
+            if operand.kind() != "identifier" {
+                return Some(receiver(name));
+            }
+            let qualifier = node_text(operand, source)?;
+            if receivers.at(call.start_byte()) == Some(qualifier) {
+                return Some(Callee {
+                    name,
+                    qualifier: Some(qualifier.to_owned()),
+                    form: CallForm::SelfRef,
+                });
+            }
+            let qualifier = receivers
+                .aliases
+                .get(qualifier)
+                .cloned()
+                .unwrap_or_else(|| qualifier.to_owned());
+            Some(Callee {
+                name,
+                qualifier: Some(qualifier),
+                form: CallForm::Path,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The receiver name of each method declaration, by byte range, read once
+/// per file: Go methods are declared only at the top level, so a call's
+/// receiver is found by binary search instead of walking its ancestors.
+/// Import aliases are read the same way, so `st.Open()` after
+/// `import st "…/store"` is recorded with the qualifier `store`.
+#[derive(Default)]
+struct GoReceivers<'source> {
+    /// (start byte, end byte, receiver name), in source order.
+    methods: Vec<(usize, usize, Option<&'source str>)>,
+    /// Import alias to the imported package's default local name.
+    aliases: std::collections::HashMap<&'source str, String>,
+}
+
+impl<'source> GoReceivers<'source> {
+    fn new(root: Node<'_>, source: &'source str) -> Self {
+        let mut methods = Vec::new();
+        let mut aliases = std::collections::HashMap::new();
+        let mut cursor = root.walk();
+        for child in root.children(&mut cursor) {
+            match child.kind() {
+                "method_declaration" => methods.push((
+                    child.start_byte(),
+                    child.end_byte(),
+                    super::go::receiver_name(child, source),
+                )),
+                "import_declaration" => {
+                    let mut specs = Vec::new();
+                    let mut inner = child.walk();
+                    for spec in child.named_children(&mut inner) {
+                        if spec.kind() == "import_spec_list" {
+                            let mut list = spec.walk();
+                            specs.extend(
+                                spec.named_children(&mut list)
+                                    .filter(|item| item.kind() == "import_spec"),
+                            );
+                        } else if spec.kind() == "import_spec" {
+                            specs.push(spec);
+                        }
+                    }
+                    for spec in specs {
+                        let alias = spec
+                            .child_by_field_name("name")
+                            .filter(|name| name.kind() == "package_identifier")
+                            .and_then(|name| node_text(name, source));
+                        let path = spec
+                            .child_by_field_name("path")
+                            .and_then(|path| node_text(path, source))
+                            .map(|path| path.trim_matches(['"', '`']));
+                        if let (Some(alias), Some(path)) = (alias, path) {
+                            aliases.insert(alias, super::go::package_local_name(path));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Self { methods, aliases }
+    }
+
+    fn at(&self, byte: usize) -> Option<&'source str> {
+        let index = self
+            .methods
+            .partition_point(|method| method.0 <= byte)
+            .checked_sub(1)?;
+        let (_, end, name) = self.methods[index];
+        if byte < end { name } else { None }
     }
 }
 

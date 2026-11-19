@@ -13,6 +13,7 @@ pub enum FileLanguage {
     Tsx,
     JavaScript,
     Python,
+    Go,
     Shell,
     Text,
 }
@@ -46,6 +47,12 @@ pub enum RelativePathError {
 }
 
 impl FileLanguage {
+    /// The stable lowercase name stored in `files.language` and shown in
+    /// tool results.
+    pub const fn as_str(self) -> &'static str {
+        self.as_db()
+    }
+
     pub(crate) const fn as_db(self) -> &'static str {
         match self {
             Self::Rust => "rust",
@@ -53,6 +60,7 @@ impl FileLanguage {
             Self::Tsx => "tsx",
             Self::JavaScript => "javascript",
             Self::Python => "python",
+            Self::Go => "go",
             Self::Shell => "shell",
             Self::Text => "text",
         }
@@ -65,6 +73,7 @@ impl FileLanguage {
             "tsx" => Ok(Self::Tsx),
             "javascript" => Ok(Self::JavaScript),
             "python" => Ok(Self::Python),
+            "go" => Ok(Self::Go),
             "shell" => Ok(Self::Shell),
             "text" => Ok(Self::Text),
             _ => Err(StoreError::InvalidStoredValue {

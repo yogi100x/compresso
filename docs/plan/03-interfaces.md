@@ -179,7 +179,7 @@ pub type RepoId = i64;
 pub type FileId = i64;
 pub struct RepoRecord { pub id: RepoId, pub root: PathBuf, pub approved_at: i64, pub parser_version: String, pub schema_version: u32, pub last_indexed_at: Option<i64> }
 pub struct IndexVersionRecord { pub parser_version: String, pub schema_version: u32, pub created_at: i64 }
-pub enum FileLanguage { Rust, TypeScript, Tsx, JavaScript, Python, Shell, Text }
+pub enum FileLanguage { Rust, TypeScript, Tsx, JavaScript, Python, Go, Shell, Text } // `as_str()`: the stored lowercase name; per-language rules live in `compresso_atlas::parsers::LANGUAGES` (D102)
 pub struct FileRecord { pub path: String, pub hash: String, pub language: Option<FileLanguage>, pub size_bytes: u64, pub token_estimate: usize, pub indexed_at: i64 }
 pub enum SymbolKind { Function, Method, Struct, Class, Enum, Trait, Interface, Const, Type, Module }
 pub struct SymbolRecord { pub name: String, pub qualified_name: String, pub kind: SymbolKind, pub signature: Option<String>, pub start_line: u32, pub end_line: u32, pub token_estimate: usize }

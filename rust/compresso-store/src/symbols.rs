@@ -448,6 +448,22 @@ impl Store {
             .collect()
     }
 
+    /// Lists `(source path, import as written)` for every edge recorded as
+    /// external (a standard-library or dependency import), in path order.
+    pub fn external_edges(&self, repo: RepoId) -> Result<Vec<(String, String)>, StoreError> {
+        let connection = self.connection()?;
+        ensure_repo_exists(&connection, repo)?;
+        let mut statement = connection.prepare(
+            "SELECT source.path, e.to_path FROM edges AS e JOIN files AS source ON source.id = e.from_file_id WHERE e.repo_id = ?1 AND e.resolution_status = 'unresolved' AND e.resolution_detail = ?2 ORDER BY source.path ASC, e.to_path ASC, e.id ASC",
+        )?;
+        statement
+            .query_map(params![repo, EDGE_DETAIL_EXTERNAL], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
     /// Lists files whose outgoing edges may become resolvable when repository paths expand.
     pub fn unresolved_edge_sources(&self, repo: RepoId) -> Result<Vec<String>, StoreError> {
         let connection = self.connection()?;

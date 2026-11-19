@@ -118,8 +118,9 @@ pub(crate) enum TaskIdentifier {
 }
 
 /// File extensions that make a dotted word a file name.
-const PATH_EXTENSIONS: [&str; 14] = [
-    "rs", "ts", "tsx", "js", "jsx", "mjs", "py", "sh", "md", "toml", "json", "yaml", "yml", "sql",
+const PATH_EXTENSIONS: [&str; 15] = [
+    "rs", "ts", "tsx", "js", "jsx", "mjs", "py", "go", "sh", "md", "toml", "json", "yaml", "yml",
+    "sql",
 ];
 
 /// Identifiers in task order, without repeats, at most
@@ -269,6 +270,14 @@ mod tests {
         assert_eq!(
             symbols("a b c d e f g h One_a Two_b Three_c Four_d Five_e Six_f Seven_g").len(),
             6
+        );
+    }
+
+    #[test]
+    fn test_go_file_names_are_paths() {
+        assert_eq!(
+            symbols("Why does server.go retry when store/db.go fails?"),
+            ["path:server.go", "path:store/db.go"]
         );
     }
 

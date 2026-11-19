@@ -2947,18 +2947,13 @@ fn task_requests_text_evidence(task: &str) -> bool {
         })
 }
 
-const fn context_language_order(language: Option<FileLanguage>) -> u8 {
+/// Shell first, then every grammar-parsed language, then other text.
+fn context_language_order(language: Option<FileLanguage>) -> u8 {
     match language {
-        Some(FileLanguage::Shell) => 0,
-        Some(
-            FileLanguage::Rust
-            | FileLanguage::TypeScript
-            | FileLanguage::Tsx
-            | FileLanguage::JavaScript
-            | FileLanguage::Python,
-        ) => 1,
-        Some(FileLanguage::Text) => 2,
         None => 3,
+        Some(FileLanguage::Shell) => 0,
+        Some(language) if crate::parsers::languages::spec(language).has_grammar() => 1,
+        Some(_) => 2,
     }
 }
 

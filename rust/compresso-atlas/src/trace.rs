@@ -17,6 +17,8 @@ use compresso_store::{
 
 use crate::AtlasError;
 use crate::parsers::ParserRegistry;
+use crate::parsers::go_package_local_name;
+use crate::parsers::languages::{is_test_file, package_is_directory};
 use crate::queries::QueryError;
 use crate::scanner::is_secret_path;
 
@@ -85,6 +87,9 @@ impl TraceEnd {
 pub enum CallResolution {
     /// The only candidate in the caller's file.
     SameFile,
+    /// The only candidate in another file of the caller's Go package (its
+    /// directory): Go code calls its own package without importing it.
+    SamePackage,
     /// The only candidate in a file the caller's file imports.
     Import,
     /// The only candidate in the repository.
@@ -98,6 +103,7 @@ impl CallResolution {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::SameFile => "same_file",
+            Self::SamePackage => "same_package",
             Self::Import => "import",
             Self::UniqueName => "unique_name",
             Self::NameOnly => "name_only",
@@ -439,10 +445,28 @@ fn strip_generics(text: &str) -> String {
     output
 }
 
+fn parent_directory(path: &str) -> &str {
+    path.rsplit_once('/').map_or("", |(parent, _)| parent)
+}
+
 /// The module name a file provides: its stem, or its directory for
 /// `mod.rs`, `__init__.py`, `index.*`, `lib.rs`, and `main.rs`, or the crate
-/// directory for `src/lib.rs`. `-` reads as `_`.
+/// directory for `src/lib.rs`. A Go file provides its directory's name, and
+/// a Go file at the repository root provides none (its package name is not
+/// indexed), so no qualifier names it. `-` reads as `_`.
 fn module_name(path: &str) -> String {
+    if package_is_directory(path) {
+        // A Go package is its directory; `store.Open()` names `store/*.go`.
+        return path
+            .rsplit_once('/')
+            .map_or_else(String::new, |(parent, _)| {
+                parent
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(parent)
+                    .replace('-', "_")
+            });
+    }
     let mut segments = path.rsplit('/');
     let file = segments.next().unwrap_or(path);
     let stem = file.split('.').next().unwrap_or(file);
@@ -544,6 +568,9 @@ struct Resolver<'a> {
     repo: RepoId,
     by_name: HashMap<String, Vec<i64>>,
     imports: Option<HashMap<String, HashSet<String>>>,
+    /// Go only: local names of each file's external imports.
+    external_names: Option<HashMap<String, HashSet<String>>>,
+    no_names: HashSet<String>,
     symbols: HashMap<i64, IndexedSymbol>,
     shapes: HashMap<ShapeKey, Rc<Filtered>>,
     resolved: HashMap<CallKey, Resolution>,
@@ -556,6 +583,8 @@ impl<'a> Resolver<'a> {
             repo,
             by_name: HashMap::new(),
             imports: None,
+            external_names: None,
+            no_names: HashSet::new(),
             symbols: HashMap::new(),
             shapes: HashMap::new(),
             resolved: HashMap::new(),
@@ -602,7 +631,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve(&mut self, call: &StoredCallSite) -> Result<Resolution, AtlasError> {
-        // A call never crosses languages: Rust, Python, and the script
+        // A call never crosses languages: Rust, Python, Go, and the script
         // family (JavaScript, TypeScript, TSX) resolve only within themselves.
         let shape = ShapeKey {
             name: call.callee_name.clone(),
@@ -624,6 +653,9 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_uncached(&mut self, key: &CallKey) -> Result<Resolution, AtlasError> {
+        if package_is_directory(&key.from_path) {
+            return self.resolve_go(key);
+        }
         let filtered = self.filtered(&key.shape)?;
         let (all, by_path, name_only) = match filtered.as_ref() {
             Filtered::Early(resolution) => return Ok(resolution.clone()),
@@ -668,6 +700,173 @@ impl<'a> Resolver<'a> {
             CallResolution::UniqueName
         };
         Ok(tier(all, rule).unwrap_or(Resolution::Unresolved("not_found")))
+    }
+
+    /// Go's rules (D102). A package is a directory: plain, reference, and
+    /// self calls reach only the caller's file and then its package (test
+    /// files only from test files). A path call on a qualifier that names an
+    /// external import is a library call; one that names a package directory
+    /// reaches that package's exported names (never the caller's own
+    /// directory), first in imported files; any other qualifier is a
+    /// variable, and its call falls back to methods of that name anywhere,
+    /// labelled `name_only`. Receiver calls reach methods by file, package,
+    /// import, then `name_only`.
+    fn resolve_go(&mut self, key: &CallKey) -> Result<Resolution, AtlasError> {
+        let shape = &key.shape;
+        let from = key.from_path.as_str();
+        let caller_directory = parent_directory(from);
+        let caller_is_test = is_test_file(from);
+        let ids = self.named(&shape.name)?.to_vec();
+        let candidates = ids
+            .iter()
+            .filter_map(|id| self.symbols.get(id))
+            .filter(|candidate| {
+                shape.family.is_some()
+                    && language_family(candidate.language) == shape.family
+                    && (caller_is_test || !is_test_file(&candidate.path))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let pick = |predicate: &dyn Fn(&IndexedSymbol) -> bool| {
+            candidates
+                .iter()
+                .filter(|candidate| predicate(candidate))
+                .map(|candidate| candidate.id)
+                .collect::<Vec<_>>()
+        };
+        let form = shape.form;
+        let ids = match form {
+            CallForm::Plain => pick(&|candidate| {
+                matches!(
+                    candidate.symbol.kind,
+                    SymbolKind::Function | SymbolKind::Class | SymbolKind::Struct
+                )
+            }),
+            CallForm::Reference => pick(&|candidate| candidate.symbol.kind == SymbolKind::Function),
+            CallForm::SelfRef => {
+                let Some(owner) = shape.caller_owner.as_deref() else {
+                    return Ok(Resolution::Unresolved("no_owner"));
+                };
+                pick(&|candidate| {
+                    candidate.symbol.kind == SymbolKind::Method
+                        && owner_base(&candidate.symbol.qualified_name).as_deref() == Some(owner)
+                })
+            }
+            CallForm::Receiver => {
+                let methods = pick(&|candidate| candidate.symbol.kind == SymbolKind::Method);
+                let local = go_tiers(&methods, &candidates, from, caller_directory, form);
+                if !matches!(local, Resolution::Unresolved(_)) {
+                    return Ok(local);
+                }
+                if let Some(resolution) = self.imported_tier(from, &methods, &candidates)? {
+                    return Ok(resolution);
+                }
+                return Ok(tier(&methods, CallResolution::NameOnly)
+                    .unwrap_or(Resolution::Unresolved("not_found")));
+            }
+            CallForm::Path => return self.resolve_go_path(key, &candidates),
+        };
+        Ok(go_tiers(&ids, &candidates, from, caller_directory, form))
+    }
+
+    /// The candidates among `ids` in files `from` imports, as one tier.
+    fn imported_tier(
+        &mut self,
+        from: &str,
+        ids: &[i64],
+        candidates: &[IndexedSymbol],
+    ) -> Result<Option<Resolution>, AtlasError> {
+        self.load_imports()?;
+        let imported_paths = self
+            .imports
+            .as_ref()
+            .and_then(|imports| imports.get(from))
+            .cloned()
+            .unwrap_or_default();
+        let imported = ids
+            .iter()
+            .copied()
+            .filter(|id| {
+                candidates
+                    .iter()
+                    .find(|candidate| candidate.id == *id)
+                    .is_some_and(|candidate| imported_paths.contains(&candidate.path))
+            })
+            .collect::<Vec<_>>();
+        Ok(tier(&imported, CallResolution::Import))
+    }
+
+    fn resolve_go_path(
+        &mut self,
+        key: &CallKey,
+        candidates: &[IndexedSymbol],
+    ) -> Result<Resolution, AtlasError> {
+        let from = key.from_path.as_str();
+        let caller_directory = parent_directory(from);
+        let qualifier = key.shape.qualifier.as_deref().unwrap_or_default();
+        self.load_imports()?;
+        let imports_package = self
+            .imports
+            .as_ref()
+            .and_then(|imports| imports.get(from))
+            .is_some_and(|paths| paths.iter().any(|path| module_name(path) == qualifier));
+        if !imports_package && self.go_external_names(from)?.contains(qualifier) {
+            return Ok(Resolution::Unresolved("external_path"));
+        }
+        let package = candidates
+            .iter()
+            .filter(|candidate| {
+                (matches!(
+                    candidate.symbol.kind,
+                    SymbolKind::Function | SymbolKind::Class | SymbolKind::Struct
+                ) && parent_directory(&candidate.path) != caller_directory
+                    && module_name(&candidate.path) == qualifier
+                    && candidate
+                        .symbol
+                        .name
+                        .chars()
+                        .next()
+                        .is_some_and(char::is_uppercase))
+                    || owner_base(&candidate.symbol.qualified_name).as_deref() == Some(qualifier)
+            })
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>();
+        if !package.is_empty() {
+            if let Some(resolution) = self.imported_tier(from, &package, candidates)? {
+                return Ok(resolution);
+            }
+            return Ok(tier(&package, CallResolution::UniqueName)
+                .unwrap_or(Resolution::Unresolved("not_found")));
+        }
+        // A variable: a method of that name anywhere, always `name_only`.
+        let methods = candidates
+            .iter()
+            .filter(|candidate| candidate.symbol.kind == SymbolKind::Method)
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>();
+        Ok(tier(&methods, CallResolution::NameOnly).unwrap_or(Resolution::Unresolved("not_found")))
+    }
+
+    /// The local names (`fmt`, `yaml` for `gopkg.in/yaml.v3`) of the imports
+    /// `from` records as external, loaded once per trace.
+    fn go_external_names(&mut self, from: &str) -> Result<&HashSet<String>, AtlasError> {
+        if self.external_names.is_none() {
+            let mut names = HashMap::<String, HashSet<String>>::new();
+            for (path, import) in self.store.external_edges(self.repo)? {
+                if package_is_directory(&path) {
+                    names
+                        .entry(path)
+                        .or_default()
+                        .insert(go_package_local_name(&import));
+                }
+            }
+            self.external_names = Some(names);
+        }
+        Ok(self
+            .external_names
+            .as_ref()
+            .and_then(|names| names.get(from))
+            .unwrap_or(&self.no_names))
     }
 
     /// The candidates a call shape may reach, computed once per shape.
@@ -778,12 +977,43 @@ fn silent_reference_ambiguity(form: CallForm, resolution: Resolution) -> Resolut
 }
 
 fn language_family(language: Option<FileLanguage>) -> Option<u8> {
-    match language? {
-        FileLanguage::Rust => Some(0),
-        FileLanguage::Python => Some(1),
-        FileLanguage::JavaScript | FileLanguage::TypeScript | FileLanguage::Tsx => Some(2),
-        FileLanguage::Shell | FileLanguage::Text => None,
+    crate::parsers::languages::spec(language?).call_family
+}
+
+/// Same file, then same package; nothing else is in scope.
+fn go_tiers(
+    ids: &[i64],
+    candidates: &[IndexedSymbol],
+    from: &str,
+    caller_directory: &str,
+    form: CallForm,
+) -> Resolution {
+    let path_of = |id: &i64| {
+        candidates
+            .iter()
+            .find(|candidate| candidate.id == *id)
+            .map(|candidate| candidate.path.as_str())
+    };
+    let same_file = ids
+        .iter()
+        .copied()
+        .filter(|id| path_of(id) == Some(from))
+        .collect::<Vec<_>>();
+    if let Some(resolution) = tier(&same_file, CallResolution::SameFile) {
+        return silent_reference_ambiguity(form, resolution);
     }
+    let same_package = ids
+        .iter()
+        .copied()
+        .filter(|id| {
+            path_of(id)
+                .is_some_and(|path| path != from && parent_directory(path) == caller_directory)
+        })
+        .collect::<Vec<_>>();
+    if let Some(resolution) = tier(&same_package, CallResolution::SamePackage) {
+        return silent_reference_ambiguity(form, resolution);
+    }
+    Resolution::Unresolved("not_found")
 }
 
 fn tier(ids: &[i64], rule: CallResolution) -> Option<Resolution> {
@@ -1349,6 +1579,11 @@ mod tests {
         assert_eq!(module_name("pkg/util/__init__.py"), "util");
         assert_eq!(module_name("src/parsers/mod.rs"), "parsers");
         assert_eq!(module_name("web/api.ts"), "api");
+        assert_eq!(module_name("internal/store/db.go"), "store");
+        // A root-level Go file names no package: `errors.New()` never
+        // reaches a root `errors.go`.
+        assert_eq!(module_name("main.go"), "");
+        assert_eq!(module_name("errors.go"), "");
     }
 
     #[test]

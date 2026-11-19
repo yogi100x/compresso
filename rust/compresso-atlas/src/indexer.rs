@@ -14,6 +14,8 @@ use compresso_store::{
 };
 
 use crate::concurrency::{Concurrency, ReadAhead};
+use crate::go_imports::GoModules;
+use crate::parsers::languages::{self, ImportStyle};
 use crate::parsers::{ImportRecord, ImportResolution, ParseError, ParserRegistry};
 use crate::rust_imports::{self, RustWorkspace};
 use crate::scanner::{AtlasError, DEFAULT_MAX_FILE_BYTES, ScanOptions, scan_with_concurrency};
@@ -21,7 +23,7 @@ use crate::scanner::{AtlasError, DEFAULT_MAX_FILE_BYTES, ScanOptions, scan_with_
 const INDEX_SCHEMA_VERSION: u32 = 1;
 pub(crate) const DEFAULT_PARSER_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
-    "+atlas-shell-text-v1+rust-imports-v2+calls-v1"
+    "+atlas-shell-text-v1+rust-imports-v2+go-v1+calls-v1"
 );
 /// Marks an index whose parser recorded call sites (D89). Every version this
 /// indexer stamps carries it, including one set with
@@ -197,7 +199,28 @@ impl<'a> Indexer<'a> {
         let git_exclude_unusable = scan.git_exclude_unusable;
         let known_paths = known_repository_paths(&previous_hashes, &scan, &removed_set)?;
         let rust_workspace = RustWorkspace::discover(&canonical_root, &known_paths);
+        let go_modules = GoModules::discover(&canonical_root, &known_paths);
         let paths_expanded = !scan.added.is_empty();
+        // A `go.mod` added, changed, or removed can move any Go import
+        // between a package directory and the outside world.
+        let go_modules_changed = scan
+            .added
+            .iter()
+            .chain(&scan.changed)
+            .any(|path| path.file_name().is_some_and(|name| name == "go.mod"))
+            || scan
+                .removed
+                .iter()
+                .any(|path| path == "go.mod" || path.ends_with("/go.mod"));
+        // A file added to a Go package directory belongs to every import of
+        // that package, so files importing the package are re-resolved.
+        let grown_packages = scan
+            .added
+            .iter()
+            .filter_map(|path| path.to_str())
+            .filter(|path| languages::package_is_directory(path))
+            .map(|path| parent_path(path).to_owned())
+            .collect::<HashSet<_>>();
         let mut candidates = scan
             .added
             .into_iter()
@@ -210,6 +233,24 @@ impl<'a> Indexer<'a> {
                     .into_iter()
                     .filter(|path| !removed_set.contains(path))
                     .map(PathBuf::from),
+            );
+        }
+        if go_modules_changed {
+            candidates.extend(
+                known_paths
+                    .iter()
+                    .filter(|path| path.ends_with(".go") && !removed_set.contains(*path))
+                    .map(PathBuf::from),
+            );
+        }
+        if !grown_packages.is_empty() {
+            candidates.extend(
+                self.store
+                    .resolved_edges(repo)?
+                    .into_iter()
+                    .filter(|edge| grown_packages.contains(parent_path(&edge.to_path)))
+                    .filter(|edge| !removed_set.contains(&edge.from_path))
+                    .map(|edge| PathBuf::from(edge.from_path)),
             );
         }
         if !removed_set.is_empty() {
@@ -252,6 +293,7 @@ impl<'a> Indexer<'a> {
             root: &canonical_root,
             known_paths: &known_paths,
             rust_workspace: &rust_workspace,
+            go_modules: &go_modules,
             counter: self.counter,
             indexed_at,
         };
@@ -371,6 +413,7 @@ struct PrepareContext<'a> {
     root: &'a Path,
     known_paths: &'a BTreeSet<String>,
     rust_workspace: &'a RustWorkspace,
+    go_modules: &'a GoModules,
     counter: &'a dyn TokenCounter,
     indexed_at: i64,
 }
@@ -455,6 +498,7 @@ fn prepare_file(
             &mut extraction.imports,
             context.known_paths,
             context.rust_workspace,
+            context.go_modules,
         );
         symbols = extraction.symbols;
         calls = extraction.calls;
@@ -643,19 +687,28 @@ fn known_repository_paths(
 
 fn resolve_repository_imports(
     importer: &str,
-    imports: &mut [ImportRecord],
+    imports: &mut Vec<ImportRecord>,
     known_paths: &BTreeSet<String>,
     rust_workspace: &RustWorkspace,
+    go_modules: &GoModules,
 ) {
-    for import in imports {
-        let candidates = match importer.rsplit_once('.').map(|(_, extension)| extension) {
-            Some("rs") => {
+    let style = ParserRegistry::for_path(Path::new(importer))
+        .map_or(ImportStyle::None, |language| {
+            languages::spec(language).imports
+        });
+    if style == ImportStyle::Go {
+        *imports = resolve_go_imports(importer, std::mem::take(imports), go_modules);
+        return;
+    }
+    for import in imports.iter_mut() {
+        let candidates = match style {
+            ImportStyle::Rust => {
                 (import.resolved_path, import.resolution) =
                     rust_imports::resolve(importer, &import.raw, known_paths, rust_workspace);
                 continue;
             }
-            Some("py") => python_candidates(importer, &import.raw),
-            Some("ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs") => {
+            ImportStyle::Python => python_candidates(importer, &import.raw),
+            ImportStyle::Script => {
                 // The `node:` scheme only ever names a runtime built-in.
                 if import.raw.starts_with("node:") {
                     import.resolved_path = None;
@@ -665,7 +718,7 @@ fn resolve_repository_imports(
                 }
                 script_candidates(importer, &import.raw)
             }
-            _ => BTreeSet::new(),
+            ImportStyle::None | ImportStyle::Go => BTreeSet::new(),
         };
         let matches = candidates
             .into_iter()
@@ -686,6 +739,57 @@ fn resolve_repository_imports(
             }
         }
     }
+}
+
+/// Resolved edges one Go file may hold. A file importing more package files
+/// than this keeps the first ones and records one unresolved
+/// [`GO_EDGE_LIMIT`] edge per import it cut, so `impact` reports it as
+/// incomplete instead of silently missing dependents.
+pub(crate) const MAX_GO_IMPORT_EDGES_PER_FILE: usize = 4_096;
+/// Detail of the unresolved edge that marks an import cut by
+/// [`MAX_GO_IMPORT_EDGES_PER_FILE`].
+pub(crate) const GO_EDGE_LIMIT: &str = "edge_limit";
+
+/// A Go import names a package directory: one edge per file in it. A path
+/// imported twice (`import _ "p"` repeated) counts once.
+fn resolve_go_imports(
+    importer: &str,
+    imports: Vec<ImportRecord>,
+    go_modules: &GoModules,
+) -> Vec<ImportRecord> {
+    let mut seen = HashSet::new();
+    let mut resolved_edges = 0_usize;
+    let mut output = Vec::new();
+    for import in imports {
+        if !seen.insert(import.raw.clone()) {
+            continue;
+        }
+        let mut cut = false;
+        for (resolved_path, resolution) in go_modules.resolve(importer, &import.raw) {
+            if resolution == ImportResolution::Resolved {
+                if resolved_edges == MAX_GO_IMPORT_EDGES_PER_FILE {
+                    cut = true;
+                    continue;
+                }
+                resolved_edges += 1;
+            }
+            output.push(ImportRecord {
+                raw: import.raw.clone(),
+                kind: import.kind,
+                resolved_path,
+                resolution,
+            });
+        }
+        if cut {
+            output.push(ImportRecord {
+                raw: import.raw,
+                kind: import.kind,
+                resolved_path: None,
+                resolution: ImportResolution::Unresolved(GO_EDGE_LIMIT.to_owned()),
+            });
+        }
+    }
+    output
 }
 
 fn script_candidates(importer: &str, raw: &str) -> BTreeSet<String> {
@@ -1065,6 +1169,7 @@ mod tests {
             root: &root,
             known_paths: &known_paths,
             rust_workspace: &RustWorkspace::default(),
+            go_modules: &GoModules::default(),
             counter: counter_for(TokenProvider::Heuristic),
             indexed_at: 1,
         };
@@ -1278,9 +1383,57 @@ mod tests {
     }
 
     #[test]
+    fn test_go_imports_are_deduplicated_and_capped_per_file() {
+        let mut known = BTreeSet::from(["main.go".to_owned()]);
+        for index in 0..(MAX_GO_IMPORT_EDGES_PER_FILE + 10) {
+            known.insert(format!("p/f{index}.go"));
+        }
+        known.insert("q/q.go".to_owned());
+        let modules = GoModules::for_test(&[("m", "")], &known);
+        let import = |raw: &str| ImportRecord {
+            raw: raw.to_owned(),
+            kind: ImportKind::Import,
+            resolved_path: None,
+            resolution: ImportResolution::Unresolved("not_indexed".to_owned()),
+        };
+        let mut imports = vec![import("m/q"), import("m/q"), import("m/q"), import("fmt")];
+        resolve_repository_imports(
+            "main.go",
+            &mut imports,
+            &known,
+            &RustWorkspace::default(),
+            &modules,
+        );
+        assert_eq!(imports.len(), 2, "{imports:?}");
+        assert_eq!(imports[0].resolved_path.as_deref(), Some("q/q.go"));
+
+        let mut imports = vec![import("m/p"), import("m/q")];
+        resolve_repository_imports(
+            "main.go",
+            &mut imports,
+            &known,
+            &RustWorkspace::default(),
+            &modules,
+        );
+        let resolved = imports
+            .iter()
+            .filter(|import| import.resolution == ImportResolution::Resolved)
+            .count();
+        assert_eq!(resolved, MAX_GO_IMPORT_EDGES_PER_FILE);
+        let cut = imports
+            .iter()
+            .filter(|import| {
+                import.resolution == ImportResolution::Unresolved(GO_EDGE_LIMIT.to_owned())
+            })
+            .map(|import| import.raw.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(cut, ["m/p", "m/q"]);
+    }
+
+    #[test]
     fn test_local_import_resolution_preserves_ambiguity_and_unresolved_state() {
         let known = BTreeSet::from(["src/choice.js".to_owned(), "src/choice.ts".to_owned()]);
-        let mut imports = [
+        let mut imports = vec![
             ImportRecord {
                 raw: "./choice".to_owned(),
                 kind: ImportKind::Import,
@@ -1300,9 +1453,10 @@ mod tests {
             &mut imports,
             &known,
             &RustWorkspace::default(),
+            &GoModules::default(),
         );
 
-        let mut builtins = [ImportRecord {
+        let mut builtins = vec![ImportRecord {
             raw: "node:fs/promises".to_owned(),
             kind: ImportKind::Import,
             resolved_path: None,
@@ -1313,6 +1467,7 @@ mod tests {
             &mut builtins,
             &known,
             &RustWorkspace::default(),
+            &GoModules::default(),
         );
         assert_eq!(
             builtins[0].resolution,

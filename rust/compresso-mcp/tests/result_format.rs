@@ -1314,6 +1314,83 @@ async fn test_text_grep_lists_production_code_with_test_like_names() {
     harness.close().await;
 }
 
+/// E17-37 (D102): Go reserves `_test.go` file names for tests, so their
+/// rows are named by line wherever they sit; no other file name counts.
+#[tokio::test]
+async fn test_text_grep_names_go_test_file_rows_by_line() {
+    let fixture = Fixture::new();
+    write_file(
+        &fixture.root,
+        "store/db.go",
+        "package store\n\nfunc OpenStore() int {\n\treturn 1\n}\n",
+    );
+    write_file(
+        &fixture.root,
+        "store/db_test.go",
+        "package store\n\nimport \"testing\"\n\nfunc TestOpenStore(t *testing.T) {\n\tOpenStore()\n}\n",
+    );
+    write_file(
+        &fixture.root,
+        "store/test_utils.go",
+        "package store\n\nfunc helper() int { return OpenStore() }\n",
+    );
+    write_file(
+        &fixture.root,
+        "src/db_test.rs",
+        "// OpenStore is the Go entry point.\npub fn unrelated() {}\n",
+    );
+    Indexer::new(&fixture.store, counter_for(TokenProvider::OpenAiO200k))
+        .index(&fixture.root, |_| {})
+        .expect("fixture reindexes");
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, _) = harness
+        .call("compresso_grep", &json!({ "pattern": "OpenStore" }))
+        .await;
+    assert!(
+        text.contains("store/db_test.go (2; tests: 5, 6)\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("store/db.go (1)\n3 [def OpenStore] func OpenStore() int {\n"),
+        "{text}"
+    );
+    assert!(text.contains("store/test_utils.go (1)\n3 "), "{text}");
+    assert!(text.contains("src/db_test.rs (1)\n1 "), "{text}");
+    harness.close().await;
+}
+
+/// E17-37 (D102): Go symbols tag grep rows with their enclosing symbol and
+/// are named in a read-window note.
+#[tokio::test]
+async fn test_text_results_name_go_symbols_in_grep_rows_and_read_windows() {
+    let fixture = Fixture::new();
+    let mut source = String::from(
+        "package store\n\ntype Store struct{}\n\nfunc (s *Store) Close() {\n\ts.flushAll()\n}\n",
+    );
+    for index in 0..40 {
+        source.push_str(&format!(
+            "\nfunc Step{index}() int {{\n\treturn {index}\n}}\n"
+        ));
+    }
+    write_file(&fixture.root, "store/store.go", &source);
+    Indexer::new(&fixture.store, counter_for(TokenProvider::OpenAiO200k))
+        .index(&fixture.root, |_| {})
+        .expect("fixture reindexes");
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, _) = harness
+        .call("compresso_grep", &json!({ "pattern": "flushAll" }))
+        .await;
+    assert!(
+        text.contains("store/store.go (1)\n6 [Store::Close] s.flushAll()\n"),
+        "{text}"
+    );
+    let (text, _) = harness
+        .call("compresso_read", &json!({ "path": "store/store.go" }))
+        .await;
+    assert!(text.contains("starts there: Step"), "{text}");
+    harness.close().await;
+}
+
 /// E17-34 (D99): a pattern that names tests, or a block whose code rows are
 /// all repeats, lists its test rows.
 #[tokio::test]

@@ -389,15 +389,7 @@ pub(crate) const fn symbol_kind_name(kind: SymbolKind) -> &'static str {
 }
 
 pub(crate) const fn language_name(language: FileLanguage) -> &'static str {
-    match language {
-        FileLanguage::Rust => "rust",
-        FileLanguage::TypeScript => "typescript",
-        FileLanguage::Tsx => "tsx",
-        FileLanguage::JavaScript => "javascript",
-        FileLanguage::Python => "python",
-        FileLanguage::Shell => "shell",
-        FileLanguage::Text => "text",
-    }
+    language.as_str()
 }
 
 pub(crate) fn symbol_value(symbol: &SymbolRecord) -> Value {
