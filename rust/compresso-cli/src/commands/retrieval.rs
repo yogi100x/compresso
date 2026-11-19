@@ -866,7 +866,7 @@ fn validate_budget(budget: usize) -> Result<(), RetrievalError> {
     }
 }
 
-fn resolve_repository(
+pub(crate) fn resolve_repository(
     store: &Store,
     requested_root: Option<&Path>,
     cwd: &Path,

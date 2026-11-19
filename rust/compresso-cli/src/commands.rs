@@ -11,6 +11,7 @@ use compresso_store::Store;
 
 mod decisions;
 mod doctor;
+mod edit;
 mod engine;
 mod index;
 mod integrations;
@@ -28,6 +29,7 @@ pub use decisions::{
     DecisionsArgs, PostError, PullRequestPoster, SystemPullRequestPoster, execute_decisions,
 };
 pub use doctor::{ConfigExplainArgs, ConfigModeArg, DiagnosticEnvironment, DoctorArgs};
+pub use edit::EditArgs;
 pub use engine::{CompressArgs, ExplainArgs, StatsArgs};
 pub use index::IndexArgs;
 pub use integrations::{IntegrationEnvironment, execute_integrations};
@@ -70,6 +72,9 @@ pub enum RootCommand {
     Impact(ImpactArgs),
     /// Show who calls a symbol, what it calls, or how one reaches another.
     Trace(TraceArgs),
+    /// Apply verified literal edits to indexed files: replace, rename, or
+    /// insert, all or nothing, then re-index (opt-in write path, D97).
+    Edit(EditArgs),
     Compress(CompressArgs),
     Explain(ExplainArgs),
     /// Summarize locally recorded savings. Covers MCP sessions and `compress`;
@@ -492,6 +497,32 @@ fn execute_command(
             let stdin = std::io::stdin();
             execute_engine(command, &store, &mut stdin.lock(), output, errors)
         }
+        RootCommand::Edit(arguments) => {
+            let json = arguments.output.json;
+            let store = match Store::open_default() {
+                Ok(store) => store,
+                Err(_) => {
+                    let _ = write_error(
+                        errors,
+                        "internal",
+                        "failed to open the local Compresso store",
+                        json,
+                    );
+                    return CliExitCode::Failure;
+                }
+            };
+            let Ok(cwd) = std::env::current_dir() else {
+                let _ = write_error(
+                    errors,
+                    "internal",
+                    "failed to resolve the current working directory",
+                    json,
+                );
+                return CliExitCode::Failure;
+            };
+            let stdin = std::io::stdin();
+            execute_edit(arguments, &store, &cwd, &mut stdin.lock(), output, errors)
+        }
         command if command.is_retrieval() => {
             let json = command.json();
             let store = match Store::open_default() {
@@ -621,6 +652,7 @@ pub fn execute_with_store_and_input(
         }
         command if command.is_engine() => execute_engine(command, store, input, output, errors),
         command if command.is_retrieval() => execute_retrieval(command, store, cwd, output, errors),
+        RootCommand::Edit(arguments) => execute_edit(arguments, store, cwd, input, output, errors),
         command => {
             let json = command.json();
             let _ = write_error(
@@ -698,6 +730,37 @@ fn execute_engine(
 ) -> CliExitCode {
     let json = command.json();
     match engine::execute(command, store, input) {
+        Ok(rendered) => {
+            let result = if json {
+                serde_json::to_writer(&mut *output, &rendered.json)
+                    .map_err(std::io::Error::other)
+                    .and_then(|()| writeln!(output))
+            } else {
+                output.write_all(rendered.human.as_bytes())
+            };
+            if result.is_ok() {
+                CliExitCode::Success
+            } else {
+                CliExitCode::Failure
+            }
+        }
+        Err(error) => {
+            let _ = write_error(errors, error.code, &error.message, json);
+            CliExitCode::Failure
+        }
+    }
+}
+
+fn execute_edit(
+    arguments: EditArgs,
+    store: &Store,
+    cwd: &std::path::Path,
+    input: &mut dyn Read,
+    output: &mut impl Write,
+    errors: &mut impl Write,
+) -> CliExitCode {
+    let json = arguments.output.json;
+    match edit::execute(arguments, store, cwd, input) {
         Ok(rendered) => {
             let result = if json {
                 serde_json::to_writer(&mut *output, &rendered.json)
@@ -915,6 +978,7 @@ impl RootCommand {
             Self::Context(arguments) => arguments.output.json,
             Self::Impact(arguments) => arguments.output.json,
             Self::Trace(arguments) => arguments.output.json,
+            Self::Edit(arguments) => arguments.output.json,
             Self::Compress(arguments) => arguments.output.json,
             Self::Explain(arguments) => arguments.output.json,
             Self::Stats(arguments) => arguments.output.json,

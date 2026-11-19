@@ -31,6 +31,7 @@ fn test_canonical_command_snapshot() {
             "context",
             "impact",
             "trace",
+            "edit",
             "compress",
             "explain",
             "stats",
