@@ -90,6 +90,7 @@ fn render(
             "files_indexed": report.files_indexed,
             "files_removed": report.files_removed,
             "files_skipped": report.files_skipped,
+            "git_exclude_unusable": report.git_exclude_unusable,
             "imports_resolved": report.imports_resolved,
             "imports_unresolved": report.imports_unresolved,
             "stale": report.stale,
@@ -111,8 +112,17 @@ fn render(
     });
     let human = match report {
         Some(report) => format!(
-            "Indexed {root}: {} files indexed, {} removed, {} skipped, {} symbols.\n",
-            report.files_indexed, report.files_removed, report.files_skipped, report.symbols
+            "Indexed {root}: {} files indexed, {} removed, {} skipped, {} symbols.\n{}",
+            report.files_indexed,
+            report.files_removed,
+            report.files_skipped,
+            report.symbols,
+            if report.git_exclude_unusable {
+                "Note: the repository's info/exclude was not applied in full (unsafe or \
+                 unreadable path, over 1 MiB, or an unparsable pattern).\n"
+            } else {
+                ""
+            }
         ),
         None => format!("Would index {root}.\n"),
     };
