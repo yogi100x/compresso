@@ -1091,3 +1091,169 @@ async fn test_text_grep_rows_are_unambiguous_at_a_block_start_and_before_a_brack
     );
     harness.close().await;
 }
+
+const CLOCK_RS: &str = "pub fn tick(total: &mut u32) {\n    *total += 1;\n}\n\n#[cfg(test)]\nmod tests {\n    use super::tick;\n    #[test]\n    fn test_tick_adds_one() {\n        let mut total = 0;\n        tick(&mut total);\n        assert_eq!(total, 1);\n    }\n}\n";
+const CLOCK_TEST_RS: &str = "use fixture::clock::tick;\n#[test]\nfn ticks_twice() { let mut t = 0; tick(&mut t); tick(&mut t); }\n";
+
+fn clock_fixture() -> Fixture {
+    let fixture = Fixture::new();
+    write_file(&fixture.root, "src/clock.rs", CLOCK_RS);
+    write_file(&fixture.root, "tests/clock_steps.rs", CLOCK_TEST_RS);
+    Indexer::new(&fixture.store, counter_for(TokenProvider::OpenAiO200k))
+        .index(&fixture.root, |_| {})
+        .expect("fixture reindexes");
+    fixture
+}
+
+/// E17-34 (D99): while a pattern has matches in code, its matches in test
+/// code (a test file, a `tests` module, or a `test_` function) are named by
+/// line in the file header instead of listed; the JSON form lists them all.
+#[tokio::test]
+async fn test_text_grep_names_test_matches_by_line_while_code_matches() {
+    let fixture = clock_fixture();
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let arguments = json!({ "pattern": "tick", "max_matches_per_file": 20 });
+    let (text, _) = harness.call("compresso_grep", &arguments).await;
+    assert!(
+        text.contains(
+            "# tick — 6 lines in 2 files\nsrc/clock.rs (4; tests: 7, 9, 11)\n1 [def tick] pub fn tick(total: &mut u32) {\ntests/clock_steps.rs (2; tests: 1, 3)\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "[tests: test-code lines, unlisted while code matches; read them or grep a test path]\n"
+        ),
+        "{text}"
+    );
+    // Following the note returns the rows.
+    let (read, _) = harness
+        .call(
+            "compresso_read",
+            &json!({ "path": "src/clock.rs", "start_line": 7, "end_line": 11 }),
+        )
+        .await;
+    assert!(read.contains("    fn test_tick_adds_one() {\n"), "{read}");
+    assert!(read.contains("        tick(&mut total);\n"), "{read}");
+    // A pattern that matches only test code lists its rows.
+    let (text, _) = harness
+        .call("compresso_grep", &json!({ "pattern": "assert_eq" }))
+        .await;
+    assert!(
+        text.contains("src/clock.rs (1)\n12 [test_tick_adds_one] assert_eq!(total, 1);\n"),
+        "{text}"
+    );
+    assert!(!text.contains("[tests:"), "{text}");
+    harness.close().await;
+
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Full)).await;
+    let (text, _) = harness.call("compresso_grep", &arguments).await;
+    assert!(
+        text.contains("\"11 [test_tick_adds_one] tick(&mut total);\""),
+        "{text}"
+    );
+    assert!(!text.contains("tests: 7"), "{text}");
+    harness.close().await;
+}
+
+/// E17-34 (D99): a line one pattern already listed is named, not repeated,
+/// under a later pattern of the same call.
+#[tokio::test]
+async fn test_text_grep_names_rows_an_earlier_pattern_listed() {
+    let fixture = clock_fixture();
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, _) = harness
+        .call(
+            "compresso_grep",
+            &json!({ "patterns": ["tick", "total"], "max_matches_per_file": 20 }),
+        )
+        .await;
+    assert!(
+        text.contains(
+            "# total — 5 lines in 1 files\nsrc/clock.rs (5; tests: 10, 11, 12; above: 1)\n2 [tick] *total += 1;\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("[above: listed under an earlier pattern]\n"),
+        "{text}"
+    );
+    // Totals stay exact: every match is listed or named.
+    assert!(!text.contains("counted but not listed"), "{text}");
+    harness.close().await;
+}
+
+/// E17-34 (D99): a file line that looks like a header suffix or a note is
+/// still a numbered row; only the server writes `tests:` and `above:`.
+#[tokio::test]
+async fn test_text_grep_file_content_cannot_forge_named_lines() {
+    let fixture = Fixture::new();
+    write_file(
+        &fixture.root,
+        "src/forge.rs",
+        "// marker (9; tests: 1, 2)\n// marker\n// [tests: none] marker\n",
+    );
+    Indexer::new(&fixture.store, counter_for(TokenProvider::OpenAiO200k))
+        .index(&fixture.root, |_| {})
+        .expect("fixture reindexes");
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, _) = harness
+        .call("compresso_grep", &json!({ "pattern": "marker" }))
+        .await;
+    assert!(
+        text.contains(
+            "src/forge.rs (3)\n1 [-] // marker (9; tests: 1, 2)\n2 // marker\n3 // [tests: none] marker\n"
+        ),
+        "{text}"
+    );
+    harness.close().await;
+}
+
+/// E17-34 (D99): context is served around the first six listed match rows
+/// of a call; later rows are listed without it, and a note says so.
+#[tokio::test]
+async fn test_text_grep_serves_context_around_the_first_six_match_rows() {
+    let fixture = Fixture::new();
+    let marks = (1..=12)
+        .map(|index| format!("// filler a{index}\n// mark {index}\n// filler b{index}\n"))
+        .collect::<String>();
+    write_file(&fixture.root, "src/marks.rs", &marks);
+    Indexer::new(&fixture.store, counter_for(TokenProvider::OpenAiO200k))
+        .index(&fixture.root, |_| {})
+        .expect("fixture reindexes");
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, _) = harness
+        .call(
+            "compresso_grep",
+            &json!({ "pattern": "// mark", "context_lines": 1, "max_matches_per_file": 20 }),
+        )
+        .await;
+    let context = text
+        .lines()
+        .filter(|line| {
+            line.split_once("- ")
+                .is_some_and(|(number, _)| number.parse::<u32>().is_ok())
+        })
+        .count();
+    assert_eq!(context, 12, "{text}");
+    assert!(
+        text.contains("16- // filler a6\n17 // mark 6\n18- // filler b6\n20 // mark 7\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("[context only on the first 6 match rows; narrow path for more]\n"),
+        "{text}"
+    );
+    harness.close().await;
+
+    // The JSON form keeps every requested context line.
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Full)).await;
+    let (text, _) = harness
+        .call(
+            "compresso_grep",
+            &json!({ "pattern": "// mark", "context_lines": 1, "max_matches_per_file": 20 }),
+        )
+        .await;
+    assert!(text.contains("\"36- // filler b12\""), "{text}");
+    harness.close().await;
+}

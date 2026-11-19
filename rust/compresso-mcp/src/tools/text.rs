@@ -346,6 +346,7 @@ fn search(payload: &Value, out: &mut Out) {
 
 fn grep(payload: &Value, out: &mut Out) {
     let mut unlisted = 0;
+    let (mut named_tests, mut named_above) = (false, false);
     for result in array(payload, "results") {
         let pattern = string(result, "pattern").unwrap_or_default();
         let matches = number(result, "matches_total");
@@ -354,13 +355,27 @@ fn grep(payload: &Value, out: &mut Out) {
             continue;
         }
         out.line(format!(
-            "# {pattern} — {matches} matching lines in {} files",
+            "# {pattern} — {matches} lines in {} files",
             number(result, "files_total")
         ));
         unlisted += number(result, "matches_total").saturating_sub(number(result, "lines_listed"));
         for file in array(result, "files") {
+            // Lines named instead of listed (E17-34, D99) are numbers the
+            // server wrote, never repository text.
+            let named = [("tests", &mut named_tests), ("above", &mut named_above)]
+                .into_iter()
+                .filter_map(|(key, seen)| {
+                    let lines = array(file, key)
+                        .iter()
+                        .filter_map(Value::as_u64)
+                        .map(|line| line.to_string())
+                        .collect::<Vec<_>>();
+                    *seen |= !lines.is_empty();
+                    (!lines.is_empty()).then(|| format!("; {key}: {}", lines.join(", ")))
+                })
+                .collect::<String>();
             out.line(format!(
-                "{} ({}{})",
+                "{} ({}{}{named})",
                 string(file, "path").unwrap_or_default(),
                 number(file, "matches"),
                 if flag(file, "stale") {
@@ -375,6 +390,20 @@ fn grep(payload: &Value, out: &mut Out) {
                 out.line(row.as_str().unwrap_or_default());
             }
         }
+    }
+    if named_tests {
+        out.note(
+            "tests: test-code lines, unlisted while code matches; read them or grep a test path",
+        );
+    }
+    if named_above {
+        out.note("above: listed under an earlier pattern");
+    }
+    let context_rows = number(payload, "context_cut_after");
+    if context_rows > 0 {
+        out.note(format!(
+            "context only on the first {context_rows} match rows; narrow path for more"
+        ));
     }
     let scan = payload.get("scan").unwrap_or(&Value::Null);
     let skipped = number(scan, "files_skipped_oversize") + number(scan, "files_skipped_unreadable");
