@@ -864,3 +864,44 @@ fn test_a_call_stops_at_the_write_byte_bound() {
     );
     assert!(fixture.text("big00.txt").starts_with("token_a\n"));
 }
+
+#[test]
+fn test_agent_instruction_files_are_refused_in_any_case() {
+    let fixture = Fixture::new(&[
+        ("AGENTS.md", b"Use helper_name.\n"),
+        ("docs/claude.md", b"helper_name\n"),
+        (".Claude/settings.json", b"{}\n"),
+        ("Jenkinsfile", b"sh helper_name\n"),
+        ("src/lib.rs", b"fn helper_name() {}\n"),
+    ]);
+    for path in [
+        "AGENTS.md",
+        "docs/claude.md",
+        ".Claude/settings.json",
+        "Jenkinsfile",
+    ] {
+        let old = if path.ends_with(".json") {
+            "{}"
+        } else {
+            "helper_name"
+        };
+        assert_eq!(
+            refusal(fixture.apply(vec![replace(path, old, "x", 1)]).unwrap_err()),
+            Refusal::ControlFile,
+            "{path}"
+        );
+    }
+    let report = fixture
+        .apply(vec![rename("helper_name", "helper_label", None, None)])
+        .expect("rename applies to the source");
+    let outcome = report.operations[0].rename.as_ref().expect("outcome");
+    assert!(!outcome.complete);
+    let mut skipped = outcome
+        .files_skipped
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect::<Vec<_>>();
+    skipped.sort_unstable();
+    assert_eq!(skipped, ["AGENTS.md", "Jenkinsfile", "docs/claude.md"]);
+    assert_eq!(fixture.text("AGENTS.md"), "Use helper_name.\n");
+}

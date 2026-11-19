@@ -949,31 +949,84 @@ fn load(gate: &Gate<'_>, path: &str) -> Result<WorkingFile, EditError> {
     })
 }
 
-/// Directories whose files configure agents, editors, CI, or git hooks.
+/// Directories (at any depth) whose files configure agents, editors, CI,
+/// development containers, or git hooks. Compared case-insensitively.
 const CONTROL_DIRECTORIES: &[&str] = &[
-    ".claude", ".codex", ".cursor", ".vscode", ".idea", ".github", ".gitlab", ".husky",
+    ".claude",
+    ".codex",
+    ".cursor",
+    ".vscode",
+    ".idea",
+    ".github",
+    ".gitlab",
+    ".husky",
+    ".circleci",
+    ".devcontainer",
+    ".buildkite",
+    ".woodpecker",
+    ".windsurf",
+    ".gemini",
+    ".continue",
+    ".zed",
 ];
-/// File names the scanner honours as ignore files, or that configure an
-/// agent or CI, outside the directories above.
-const CONTROL_FILES: &[&str] = &[".ignore", ".rgignore", ".mcp.json"];
+/// File names (at any depth) that are ignore files, agent instructions, or
+/// hook, CI, or environment-execution configuration. Compared
+/// case-insensitively.
+const CONTROL_FILES: &[&str] = &[
+    ".ignore",
+    ".rgignore",
+    ".mcp.json",
+    ".claude.json",
+    "claude.md",
+    "claude.local.md",
+    "agents.md",
+    "gemini.md",
+    ".cursorrules",
+    ".windsurfrules",
+    ".clinerules",
+    ".pre-commit-config.yaml",
+    ".pre-commit-config.yml",
+    ".travis.yml",
+    "azure-pipelines.yml",
+    "jenkinsfile",
+    ".envrc",
+    "lefthook.yml",
+    "lefthook.yaml",
+    ".lefthook.yml",
+    ".lefthook.yaml",
+];
 
-/// Whether `relative` is a file that controls the edit gates themselves
-/// (ignore files decide what is indexed and editable) or how an agent,
-/// editor, CI system, or git hook runs, at any depth. Every name starting
-/// with `.git` is included (`.gitignore`, `.gitattributes`, `.gitmodules`,
-/// `.gitlab-ci.yml`, ...).
+/// A path component as case-insensitive file systems and Windows compare it:
+/// ASCII-lowercased, without trailing dots and spaces.
+fn control_key(name: &str) -> String {
+    name.trim_end_matches(['.', ' ']).to_ascii_lowercase()
+}
+
+/// Whether `relative` is a known control file: one that decides what the
+/// edit gates allow (ignore files) or how an agent, editor, CI system,
+/// development container, or git hook behaves, at any depth. Every name
+/// starting with `.git` (`.gitignore`, `.gitattributes`, `.gitmodules`,
+/// `.gitlab-ci.yml`, ...) or `.aider` is included.
+///
+/// This is a denylist of known control files, not a guarantee: build
+/// scripts and other code that a tool may later execute stay editable,
+/// because editing code is the tool's purpose. Names are compared after
+/// ASCII case folding and trimming trailing dots and spaces; ASCII names
+/// have no other Unicode-equivalent spelling, and a look-alike name using
+/// other scripts names a different file, which clients do not load as the
+/// control file.
 pub fn is_control_path(relative: &Path) -> bool {
     let mut components = relative.components().peekable();
     while let Some(component) = components.next() {
-        let name = component.as_os_str().to_string_lossy();
+        let name = control_key(&component.as_os_str().to_string_lossy());
         let is_file = components.peek().is_none();
-        if name.starts_with(".git") {
+        if name.starts_with(".git") || name.starts_with(".aider") {
             return true;
         }
-        if !is_file && CONTROL_DIRECTORIES.contains(&name.as_ref()) {
+        if !is_file && CONTROL_DIRECTORIES.contains(&name.as_str()) {
             return true;
         }
-        if is_file && CONTROL_FILES.contains(&name.as_ref()) {
+        if is_file && CONTROL_FILES.contains(&name.as_str()) {
             return true;
         }
     }
@@ -1806,6 +1859,61 @@ mod tests {
         assert!(!is_identifier("1abc"));
         assert!(!is_identifier("a-b"));
         assert!(!is_identifier(""));
+    }
+
+    #[test]
+    fn test_control_paths_are_matched_at_any_depth_and_any_case() {
+        for path in [
+            ".gitignore",
+            "sub/.GITIGNORE",
+            ".gitlab-ci.yml",
+            ".Claude/settings.json",
+            "pkg/.claude/agents/x.md",
+            "CLAUDE.md",
+            "docs/claude.md",
+            "CLAUDE.local.md",
+            "AGENTS.md",
+            "GEMINI.md",
+            ".cursorrules",
+            ".windsurfrules",
+            ".clinerules",
+            ".claude.json",
+            ".aider.conf.yml",
+            ".aider/cache",
+            ".github/copilot-instructions.md",
+            ".pre-commit-config.yaml",
+            ".circleci/config.yml",
+            ".devcontainer/devcontainer.json",
+            ".travis.yml",
+            "azure-pipelines.yml",
+            "Jenkinsfile",
+            ".envrc",
+            ".buildkite/pipeline.yml",
+            ".woodpecker/ci.yml",
+            "lefthook.yml",
+            ".lefthook.yml",
+            ".windsurf/rules.md",
+            ".gemini/settings.json",
+            ".continue/config.json",
+            ".zed/settings.json",
+            ".mcp.json",
+            ".husky/pre-commit",
+            "AGENTS.md.",
+            ".envrc ",
+        ] {
+            assert!(is_control_path(Path::new(path)), "{path}");
+        }
+        for path in [
+            "src/lib.rs",
+            "build.rs",
+            "package.json",
+            "Makefile",
+            "docs/agents.txt",
+            "claude/notes.md",
+            "src/.claudeignore_not",
+        ] {
+            assert!(!is_control_path(Path::new(path)), "{path}");
+        }
     }
 
     #[test]
