@@ -1,0 +1,71 @@
+rust/compresso-atlas/src/edit.rs
+  s_89a704cfae63f5::t_2d1a5cfed28117 230-233,247-248,255,262-265,292-295,382-390,454-460,868,870,878-880,889-890,919-921,952-977
+  s_89a704cfae63f5::t_b0fee326b09e3e 555,724,1529,1541,1561-1563,1576,1583,1811-1833,1835-1959
+  s_89a704cfae63f5::t_0f421a959cb5d1 201,800-801,819-824,948,1069-1075,1077-1088,1090-1091,1117,1120,1153,1167-1237,1241-1242,1245-1246,1260,1267-1268,1272-1287,1295-1304,1310-1318,1331,1349-1357,1367
+  s_89a704cfae63f5::t_7f9a27430bf811 552-554
+  s_89a704cfae63f5::t_a1eaba0f910e21 1076
+  s_89a704cfae63f5::t_f95788d2e20783 1526-1528
+  s_89a704cfae63f5::t_fb720c64f95112 1530-1532,1538-1540
+  s_89a704cfae63f5::t_bd8a4418cc0070 1542
+  s_89a704cfae63f5::t_a3e01402e4c096 1558-1560
+  s_89a704cfae63f5::t_370904c76091fa 1564-1566,1573-1575
+  s_89a704cfae63f5::t_8036e7cf852167 1577
+  s_89a704cfae63f5::t_d2122341e3e859 1580-1582
+  s_89a704cfae63f5::t_3137942964efd7 1834
+  s_4f2f665d3f9d40::t_6e3f0f6ccbbb6e 62,130-131,221-222,510-511,544,548-551,1388,1390,1443-1444,1452-1453,1456-1461,1469,1473,1475-1477,1479-1482,1484-1486,1489-1501,1504-1513,1524-1525,1533-1537,1544-1557,1567-1572,1587-1596,1601,1603,1611
+rust/compresso-atlas/tests/edit.rs
+  s_89a704cfae63f5::t_918a620bcdf5ee 134,323-324,438-439,570-571,682-866
+rust/compresso-cli/src/commands/edit.rs
+  s_89a704cfae63f5::t_41ca177b922214 60-62,95
+rust/compresso-mcp/src/profile.rs
+  s_89a704cfae63f5::t_41ca177b922214 156
+rust/compresso-mcp/src/server.rs
+  s_89a704cfae63f5::t_41ca177b922214 134,1003
+rust/compresso-mcp/src/tools/text.rs
+  s_89a704cfae63f5::t_41ca177b922214 650-652
+rust/compresso-mcp/tests/tools_edit.rs
+  s_89a704cfae63f5::t_3d3630adc89a9b 342-349
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_f496497b0da594 49,539,542,544,546,548,550,552,813
+rust/compresso-mcp/src/tools/edit.rs
+  s_89a704cfae63f5::t_41ca177b922214 164,191,250-253,377,496
+docs/plan/08-ip-and-secure-deployment.md
+  s_89a704cfae63f5::t_f496497b0da594 138
+rust/compresso-cli/tests/cli_explore_agent.rs
+  s_89a704cfae63f5::t_f82f3b6ddeafa7 445,472-478,480-483
+  s_89a704cfae63f5::t_c0a04978c520a3 382-444,446-471,479,484-485
+rust/compresso-cli/tests/cli_edit.rs
+  s_89a704cfae63f5::t_61c1de36354026 195,228,230,247
+  s_89a704cfae63f5::t_3d3630adc89a9b 243
+rust/compresso-integrations/src/explore_agent.rs
+  s_89a704cfae63f5::t_41ca177b922214 58
+rust/compresso-integrations/src/server_entry.rs
+  s_89a704cfae63f5::t_d8dc0235c331fb 448-467
+docs/adr/0035-opt-in-verified-edit-tool.md
+  s_89a704cfae63f5::t_f496497b0da594 51-57,63-66,70-72,80-84,86-95,97,104-105,116-117,148-149,152-154
+  s_89a704cfae63f5::t_2811bf199eab7a 150-151
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7628d6785d8b4e8d8c4452a9e3f49063338b3629",
+  "prompts": {},
+  "sessions": {
+    "s_4f2f665d3f9d40": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ab9aa35752b0f6bbc",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
