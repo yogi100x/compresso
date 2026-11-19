@@ -1,0 +1,31 @@
+compresso-threat-model.md
+  s_0259ed4fdf1f0e::t_c31d02d8ef3cfb 212
+decisions.md
+  s_0259ed4fdf1f0e::t_2728f31a1ac71f 110
+docs/plan/00-overview.md
+  s_0259ed4fdf1f0e::t_1e2567a0f72b36 59,94
+docs/plan/03-interfaces.md
+  s_0259ed4fdf1f0e::t_0fd3855bcd6ca6 257
+docs/plan/04-mcp-and-integrations.md
+  s_0259ed4fdf1f0e::t_3d03ce90fcdbd6 326,548
+docs/plan/05-tickets.md
+  s_0259ed4fdf1f0e::t_a5c0017af6ec7b 2702,3324-3339,3355,3386-3388
+docs/plan/08-ip-and-secure-deployment.md
+  s_0259ed4fdf1f0e::t_44b64a76f4f795 138
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "02f114daeeedb49550b5f895a0a07f96d067203a",
+  "prompts": {},
+  "sessions": {
+    "s_0259ed4fdf1f0e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a51f49d57a351ff18",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
