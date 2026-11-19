@@ -1257,3 +1257,28 @@ async fn test_text_grep_serves_context_around_the_first_six_match_rows() {
     assert!(text.contains("\"36- // filler b12\""), "{text}");
     harness.close().await;
 }
+
+/// E17-34 (D99): a long line is cut to a snippet around each pattern's
+/// match, so a later pattern that shows different text of the same line
+/// lists it rather than naming it.
+#[tokio::test]
+async fn test_text_grep_lists_a_long_line_again_when_another_pattern_shows_other_text() {
+    let fixture = Fixture::new();
+    let long = format!("// alpha {} omega\n", "x".repeat(300));
+    write_file(&fixture.root, "src/long_line.rs", &long);
+    Indexer::new(&fixture.store, counter_for(TokenProvider::OpenAiO200k))
+        .index(&fixture.root, |_| {})
+        .expect("fixture reindexes");
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, _) = harness
+        .call(
+            "compresso_grep",
+            &json!({ "patterns": ["alpha", "omega"], "path": "src/long_line.rs" }),
+        )
+        .await;
+    assert!(!text.contains("above:"), "{text}");
+    let omega = text.split("# omega").nth(1).unwrap_or_default();
+    assert!(omega.contains("\n1 [-] …"), "{text}");
+    assert!(omega.contains(" omega\n"), "{text}");
+    harness.close().await;
+}

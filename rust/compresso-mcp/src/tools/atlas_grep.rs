@@ -319,12 +319,13 @@ impl TestCode {
 /// Text form only: the rows of each listed file (E17-33, D98), plus the
 /// lines named instead of listed (E17-34, D99). While a pattern matches
 /// code, its matches in test code are named under `tests`; a line an
-/// earlier pattern of the call listed is named under `above`; context is
+/// earlier pattern of the call listed with the same snippet is named under
+/// `above` (a long line cut around another match is listed again); context is
 /// served around the first [`TEXT_CONTEXT_MATCH_ROWS`] listed match rows,
 /// and `context_cut_after` says when later rows went without it. Every match the
 /// JSON form lists is listed or named. The JSON payload is left unchanged.
 fn compact_rows_of(payload: &mut Value, report: &GrepReport, tests: &TestCode) {
-    let mut listed = HashSet::<(&str, u32)>::new();
+    let mut listed = HashSet::<(&str, u32, &str)>::new();
     let mut rows_left = TEXT_CONTEXT_MATCH_ROWS;
     let mut context_cut = false;
     for (result, value) in report.results.iter().zip(
@@ -346,12 +347,12 @@ fn compact_rows_of(payload: &mut Value, report: &GrepReport, tests: &TestCode) {
             let mut test_lines = Vec::new();
             let mut above = Vec::new();
             for line in &file.lines {
-                if listed.contains(&(file.path.as_str(), line.line)) {
+                if listed.contains(&(file.path.as_str(), line.line, line.snippet.as_str())) {
                     above.push(line.line);
                 } else if matches_code && tests.contains(&file.path, line) {
                     test_lines.push(line.line);
                 } else {
-                    listed.insert((file.path.as_str(), line.line));
+                    listed.insert((file.path.as_str(), line.line, line.snippet.as_str()));
                     let with_context = rows_left > 0;
                     rows_left = rows_left.saturating_sub(1);
                     let has_context = !line.before.is_empty() || !line.after.is_empty();

@@ -232,25 +232,29 @@ fn compare_needles(
     let mut lost = Vec::new();
     let mut base_facts = BTreeSet::new();
     let mut current_facts = BTreeSet::new();
+    let mut not_shown_in_call = Vec::new();
     for (index, call) in calls.iter().enumerate() {
         let (Some(before), Some(after)) = (baseline.get(index), current.get(index)) else {
             continue;
         };
         let (before, after_shown) = (shown(&call.tool, before), shown(&call.tool, after));
         for fact in facts {
-            if before
+            let was = before
                 .lines
                 .values()
-                .any(|text| text.contains(fact.as_str()))
-            {
+                .any(|text| text.contains(fact.as_str()));
+            let is = after_shown
+                .lines
+                .values()
+                .any(|text| text.contains(fact.as_str()));
+            if was {
                 base_facts.insert(fact.clone());
             }
-            if after_shown
-                .lines
-                .values()
-                .any(|text| text.contains(fact.as_str()))
-            {
+            if is {
                 current_facts.insert(fact.clone());
+            }
+            if was && !is {
+                not_shown_in_call.push(json!({ "call": index, "fact": fact }));
             }
         }
         for (key, text) in &before.lines {
@@ -275,6 +279,7 @@ fn compare_needles(
         "named_not_listed": named,
         "lost": lost,
         "facts_shown_by_baseline_only": base_facts.difference(&current_facts).collect::<Vec<_>>(),
+        "facts_not_shown_in_call": not_shown_in_call,
     })
 }
 
@@ -453,6 +458,10 @@ fn test_needles_are_kept_named_or_lost_against_a_baseline() {
         json!([{ "call": 1, "tool": "compresso_read", "file": "src/b.rs", "line": 4 }])
     );
     assert_eq!(report["facts_shown_by_baseline_only"], json!(["TICK_MAX"]));
+    assert_eq!(
+        report["facts_not_shown_in_call"],
+        json!([{ "call": 0, "fact": "TICK_MAX" }, { "call": 1, "fact": "TICK_MAX" }])
+    );
 }
 
 /// A synthetic repository with one 300-line file, indexed by the built
