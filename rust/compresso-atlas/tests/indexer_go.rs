@@ -356,26 +356,10 @@ fn test_a_file_added_to_an_imported_package_gains_its_importers() {
     assert_eq!(dependents, ["cmd/main.go"]);
 }
 
-/// Known limit (D102): a package and a variable look alike in Go syntax, so
-/// a path call whose qualifier names no repository package falls back to a
-/// method of that name anywhere in the repository (`name_only`), as for
-/// Python and script variables. A standard-library call can therefore
-/// resolve to a lone repository method of the same name.
-#[test]
-fn test_go_path_calls_without_a_package_fall_back_to_methods_by_name() {
+fn index_files(files: &[(&str, &str)]) -> (TempDir, Store, RepoId) {
     let temp = tempfile::tempdir().expect("temporary directory");
     let root = temp.path().join("repo");
-    for (path, source) in [
-        ("go.mod", "module example.com/svc\n"),
-        (
-            "main.go",
-            "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tl := &Logger{}\n\tl.Flush()\n\tfmt.Printf(\"x\")\n}\n",
-        ),
-        (
-            "log/logger.go",
-            "package log\n\ntype Logger struct{}\n\nfunc (l *Logger) Flush() {}\n\nfunc (l *Logger) Printf(format string) {}\n",
-        ),
-    ] {
+    for (path, source) in files {
         let absolute = root.join(path);
         fs::create_dir_all(absolute.parent().expect("parent")).expect("directory");
         fs::write(absolute, source).expect("file");
@@ -390,20 +374,148 @@ fn test_go_path_calls_without_a_package_fall_back_to_methods_by_name() {
         .expect("lookup")
         .expect("repository")
         .id;
-    let report = trace(&store, repo, Some("main"), None, TraceOptions::default()).expect("trace");
-    let TraceResult::Callees(callees) = &report.result else {
-        panic!("expected callees, got {:?}", report.result);
-    };
-    let found = callees
-        .iter()
-        .map(|callee| (callee.symbol.qualified_name.as_str(), callee.resolution))
-        .collect::<Vec<_>>();
-    assert!(
-        found.contains(&("Logger::Flush", CallResolution::NameOnly)),
-        "{found:?}"
+    (temp, store, repo)
+}
+
+fn callees_of(store: &Store, repo: RepoId, from: &str) -> Vec<(String, CallResolution)> {
+    let report = trace(store, repo, Some(from), None, TraceOptions::default()).expect("trace");
+    match report.result {
+        TraceResult::Callees(callees) => callees
+            .into_iter()
+            .map(|callee| (callee.symbol.qualified_name, callee.resolution))
+            .collect(),
+        TraceResult::NoPath => Vec::new(),
+        other => panic!("expected callees, got {other:?}"),
+    }
+}
+
+/// A package and a variable look alike in Go syntax. A qualifier that names
+/// an external import is a library call; a qualifier that names neither an
+/// import nor a package directory is a variable, and its call falls back to
+/// a method of that name, labelled `name_only` whichever file it is in.
+#[test]
+fn test_go_library_calls_stay_external_and_variable_calls_are_name_only() {
+    let (_temp, store, repo) = index_files(&[
+        ("go.mod", "module example.com/svc\n"),
+        (
+            "main.go",
+            "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tl := &Logger{}\n\tl.Flush()\n\tfmt.Printf(\"x\")\n}\n\ntype Logger struct{}\n\nfunc (l *Logger) Flush() {}\n",
+        ),
+        (
+            "log/logger.go",
+            "package log\n\nimport \"fmt\"\n\ntype Logger struct{}\n\nfunc (l *Logger) Printf(format string) {\n\tfmt.Printf(format)\n}\n",
+        ),
+    ]);
+    let found = callees_of(&store, repo, "main");
+    assert_eq!(
+        found,
+        [("Logger::Flush".to_owned(), CallResolution::NameOnly)],
+        "fmt.Printf is a library call, not the repository method"
     );
     assert!(
-        found.contains(&("Logger::Printf", CallResolution::NameOnly)),
-        "fmt.Printf falls back to the repository method: {found:?}"
+        callees_of(&store, repo, "Logger::Printf").is_empty(),
+        "no false self-cycle through fmt.Printf"
+    );
+}
+
+#[test]
+fn test_go_package_qualifier_never_resolves_into_its_own_directory() {
+    let (_temp, store, repo) = index_files(&[
+        ("go.mod", "module example.com/svc\n"),
+        (
+            "internal/json/json.go",
+            "package json\n\nimport \"encoding/json\"\n\nfunc Marshal(v any) ([]byte, error) {\n\treturn json.Marshal(v)\n}\n",
+        ),
+    ]);
+    assert!(callees_of(&store, repo, "Marshal").is_empty());
+}
+
+#[test]
+fn test_go_aliased_import_calls_resolve_to_the_package() {
+    let (_temp, store, repo) = index_files(&[
+        ("go.mod", "module example.com/svc\n"),
+        (
+            "cmd/main.go",
+            "package main\n\nimport st \"example.com/svc/store\"\n\nfunc main() { st.Open() }\n",
+        ),
+        ("store/store.go", "package store\n\nfunc Open() {}\n"),
+    ]);
+    assert_eq!(
+        callees_of(&store, repo, "main"),
+        [("Open".to_owned(), CallResolution::Import)]
+    );
+}
+
+#[test]
+fn test_go_plain_calls_resolve_only_within_their_package() {
+    let (_temp, store, repo) = index_files(&[
+        ("go.mod", "module example.com/svc\n"),
+        ("a/a.go", "package a\n\nfunc run() {\n\tvalidate()\n}\n"),
+        ("b/b.go", "package b\n\nfunc validate() {}\n"),
+    ]);
+    assert!(callees_of(&store, repo, "run").is_empty());
+}
+
+#[test]
+fn test_go_same_package_calls_skip_test_files_for_non_test_callers() {
+    let (_temp, store, repo) = index_files(&[
+        ("go.mod", "module example.com/svc\n"),
+        (
+            "store/store.go",
+            "package store\n\nfunc Open() {\n\thelper()\n}\n",
+        ),
+        ("store/helper.go", "package store\n\nfunc helper() {}\n"),
+        (
+            "store/helper_test.go",
+            "package store_test\n\nfunc helper() {}\n",
+        ),
+    ]);
+    assert_eq!(
+        callees_of(&store, repo, "Open"),
+        [("helper".to_owned(), CallResolution::SamePackage)]
+    );
+}
+
+#[test]
+fn test_a_changed_go_mod_re_resolves_go_imports() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let root = temp.path().join("repo");
+    for (path, source) in [
+        ("go.mod", "module example.com/old\n"),
+        (
+            "cmd/main.go",
+            "package main\n\nimport \"example.com/svc/store\"\n\nfunc main() { store.Open() }\n",
+        ),
+        ("store/store.go", "package store\n\nfunc Open() {}\n"),
+    ] {
+        let absolute = root.join(path);
+        fs::create_dir_all(absolute.parent().expect("parent")).expect("directory");
+        fs::write(absolute, source).expect("file");
+    }
+    let store = Store::open(&temp.path().join("compresso.db")).expect("store opens");
+    let counter = counter_for(TokenProvider::Heuristic);
+    Indexer::new(&store, counter)
+        .index(&root, |_| {})
+        .expect("first index");
+    let canonical = fs::canonicalize(&root).expect("root canonicalizes");
+    let repo = store
+        .repo_by_root(&canonical)
+        .expect("lookup")
+        .expect("repository")
+        .id;
+    assert!(store.resolved_edges(repo).expect("edges").is_empty());
+    fs::write(root.join("go.mod"), "module example.com/svc\n").expect("go.mod");
+    Indexer::new(&store, counter)
+        .index(&root, |_| {})
+        .expect("second index");
+    let edges = store
+        .resolved_edges(repo)
+        .expect("edges")
+        .into_iter()
+        .map(|edge| (edge.from_path, edge.to_path))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        edges,
+        [("cmd/main.go".to_owned(), "store/store.go".to_owned())]
     );
 }

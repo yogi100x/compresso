@@ -70,6 +70,32 @@ const GO_PREDECLARED: [&str; 40] = [
     "uintptr",
     "comparable",
 ];
+/// The predeclared Go type names: an index of one of these is a type
+/// argument, not a slice index.
+const GO_PREDECLARED_TYPES: [&str; 22] = [
+    "any",
+    "bool",
+    "byte",
+    "comparable",
+    "complex64",
+    "complex128",
+    "error",
+    "float32",
+    "float64",
+    "int",
+    "int8",
+    "int16",
+    "int32",
+    "int64",
+    "rune",
+    "string",
+    "uint",
+    "uint8",
+    "uint16",
+    "uint32",
+    "uint64",
+    "uintptr",
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CallSyntax {
@@ -621,9 +647,10 @@ fn script_callee<'tree>(function: Node<'tree>, source: &str) -> Option<Callee<'t
 /// `f()`, `pkg.F()`, and `x.M()`. A call on the enclosing method's receiver
 /// name (`s.save()` in `func (s *Store) Close()`) is a self call; a call on
 /// any other plain name keeps that name as its qualifier, because a package
-/// and a variable look alike in syntax. Generic instantiations
-/// (`New[int]()`) are unwrapped; other callee expressions are receiver calls
-/// or dropped.
+/// and a variable look alike in syntax; a qualifier that is an import's
+/// alias is replaced by the imported path's last segment. Generic
+/// instantiations (`New[int, string]()`) are unwrapped; other callee
+/// expressions are receiver calls or dropped.
 fn go_callee<'tree>(
     call: Node<'tree>,
     function: Node<'tree>,
@@ -631,13 +658,25 @@ fn go_callee<'tree>(
     receivers: &GoReceivers<'_>,
 ) -> Option<Callee<'tree>> {
     let mut function = function;
-    while matches!(
-        function.kind(),
-        "index_expression" | "generic_type" | "type_instantiation_expression"
-    ) {
-        function = function
-            .child_by_field_name("operand")
-            .or_else(|| function.child_by_field_name("type"))?;
+    // `New[int, string]()` is an instantiation. `New[int]()` parses as an
+    // index expression, like `handlers[i]()`: it is unwrapped only when the
+    // index is a predeclared type name, so an indexed function value is
+    // never a call to the slice. `New[T]()` with a type parameter is lost.
+    loop {
+        function = match function.kind() {
+            "generic_type" | "type_instantiation_expression" => {
+                function.child_by_field_name("type")?
+            }
+            "index_expression"
+                if function
+                    .child_by_field_name("index")
+                    .and_then(|index| node_text(index, source))
+                    .is_some_and(|index| GO_PREDECLARED_TYPES.contains(&index)) =>
+            {
+                function.child_by_field_name("operand")?
+            }
+            _ => break,
+        };
     }
     match function.kind() {
         "identifier" => Some(plain(function)),
@@ -651,15 +690,22 @@ fn go_callee<'tree>(
                 return Some(receiver(name));
             }
             let qualifier = node_text(operand, source)?;
-            let form = if receivers.at(call.start_byte()) == Some(qualifier) {
-                CallForm::SelfRef
-            } else {
-                CallForm::Path
-            };
+            if receivers.at(call.start_byte()) == Some(qualifier) {
+                return Some(Callee {
+                    name,
+                    qualifier: Some(qualifier.to_owned()),
+                    form: CallForm::SelfRef,
+                });
+            }
+            let qualifier = receivers
+                .aliases
+                .get(qualifier)
+                .cloned()
+                .unwrap_or_else(|| qualifier.to_owned());
             Some(Callee {
                 name,
-                qualifier: Some(qualifier.to_owned()),
-                form,
+                qualifier: Some(qualifier),
+                form: CallForm::Path,
             })
         }
         _ => None,
@@ -669,27 +715,60 @@ fn go_callee<'tree>(
 /// The receiver name of each method declaration, by byte range, read once
 /// per file: Go methods are declared only at the top level, so a call's
 /// receiver is found by binary search instead of walking its ancestors.
+/// Import aliases are read the same way, so `st.Open()` after
+/// `import st "…/store"` is recorded with the qualifier `store`.
 #[derive(Default)]
 struct GoReceivers<'source> {
     /// (start byte, end byte, receiver name), in source order.
     methods: Vec<(usize, usize, Option<&'source str>)>,
+    /// Import alias to the imported package's default local name.
+    aliases: std::collections::HashMap<&'source str, String>,
 }
 
 impl<'source> GoReceivers<'source> {
     fn new(root: Node<'_>, source: &'source str) -> Self {
+        let mut methods = Vec::new();
+        let mut aliases = std::collections::HashMap::new();
         let mut cursor = root.walk();
-        let methods = root
-            .children(&mut cursor)
-            .filter(|child| child.kind() == "method_declaration")
-            .map(|method| {
-                (
-                    method.start_byte(),
-                    method.end_byte(),
-                    super::go::receiver_name(method, source),
-                )
-            })
-            .collect();
-        Self { methods }
+        for child in root.children(&mut cursor) {
+            match child.kind() {
+                "method_declaration" => methods.push((
+                    child.start_byte(),
+                    child.end_byte(),
+                    super::go::receiver_name(child, source),
+                )),
+                "import_declaration" => {
+                    let mut specs = Vec::new();
+                    let mut inner = child.walk();
+                    for spec in child.named_children(&mut inner) {
+                        if spec.kind() == "import_spec_list" {
+                            let mut list = spec.walk();
+                            specs.extend(
+                                spec.named_children(&mut list)
+                                    .filter(|item| item.kind() == "import_spec"),
+                            );
+                        } else if spec.kind() == "import_spec" {
+                            specs.push(spec);
+                        }
+                    }
+                    for spec in specs {
+                        let alias = spec
+                            .child_by_field_name("name")
+                            .filter(|name| name.kind() == "package_identifier")
+                            .and_then(|name| node_text(name, source));
+                        let path = spec
+                            .child_by_field_name("path")
+                            .and_then(|path| node_text(path, source))
+                            .map(|path| path.trim_matches(['"', '`']));
+                        if let (Some(alias), Some(path)) = (alias, path) {
+                            aliases.insert(alias, super::go::package_local_name(path));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Self { methods, aliases }
     }
 
     fn at(&self, byte: usize) -> Option<&'source str> {

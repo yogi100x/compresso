@@ -74,7 +74,7 @@ fn test_go_functions_methods_types_and_package_values() {
                 SymbolKind::Const,
                 16,
                 16,
-                Some("const defaultName, backupName = \"main\", \"backup\""),
+                Some("const defaultName"),
             ),
             (
                 "backupName",
@@ -82,7 +82,7 @@ fn test_go_functions_methods_types_and_package_values() {
                 SymbolKind::Const,
                 16,
                 16,
-                Some("const defaultName, backupName = \"main\", \"backup\""),
+                Some("const backupName"),
             ),
             (
                 "ErrClosed",
@@ -276,5 +276,90 @@ fn test_every_table_language_has_unique_extensions_and_parses_its_sample() {
         LANGUAGES
             .iter()
             .any(|spec| spec.language == Language::Go && spec.has_grammar())
+    );
+}
+
+#[test]
+fn test_go_multi_name_value_signatures_are_per_name_and_bounded() {
+    let names = (0..2_000)
+        .map(|index| format!("a{index}"))
+        .collect::<Vec<_>>();
+    let values = vec!["0"; names.len()];
+    let source = format!(
+        "package p\n\nvar {} = {}\n\nconst Long = \"{}\"\n",
+        names.join(", "),
+        values.join(", "),
+        "x".repeat(4_000)
+    );
+    let extraction = ParserRegistry::extract(Language::Go, &source).expect("Go source extracts");
+    assert_eq!(extraction.symbols.len(), 2_001);
+    assert_eq!(extraction.symbols[0].signature.as_deref(), Some("var a0"));
+    assert_eq!(
+        extraction.symbols[1_999].signature.as_deref(),
+        Some("var a1999")
+    );
+    let total = extraction
+        .symbols
+        .iter()
+        .map(|symbol| symbol.signature.as_deref().unwrap_or_default().len())
+        .sum::<usize>();
+    assert!(total < source.len(), "{total} signature bytes");
+    let long = extraction.symbols.last().expect("Long");
+    assert!(long.signature.as_deref().unwrap_or_default().len() <= 1_024);
+}
+
+fn const_block(count: usize) -> String {
+    let mut source = String::from("package p\n\nconst (\n");
+    for index in 0..count {
+        source.push_str(&format!("\tC{index} = {index}\n"));
+    }
+    source.push_str(")\n");
+    source
+}
+
+/// A grouped declaration is expanded in time linear in its size: eight
+/// times the specs cost well under eight squared times the time.
+#[test]
+fn test_go_huge_const_block_extracts_in_bounded_time() {
+    let time = |count: usize| {
+        let source = const_block(count);
+        let started = std::time::Instant::now();
+        let extraction =
+            ParserRegistry::extract(Language::Go, &source).expect("Go source extracts");
+        assert_eq!(extraction.symbols.len(), count);
+        started.elapsed()
+    };
+    let small = time(30_000);
+    let large = time(240_000);
+    eprintln!("30k specs {small:?}, 240k specs {large:?}");
+    assert!(
+        large < small * 14,
+        "30k specs {small:?}, 240k specs {large:?}"
+    );
+}
+
+#[test]
+fn test_go_blank_function_and_type_names_are_not_symbols() {
+    let source = "package p\n\nfunc _() {}\n\ntype _ struct{}\n\nvar _ = 1\n\nfunc Kept() {}\n";
+    let extraction = ParserRegistry::extract(Language::Go, source).expect("Go source extracts");
+    let names = extraction
+        .symbols
+        .iter()
+        .map(|symbol| symbol.qualified_name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["Kept"]);
+}
+
+#[test]
+fn test_go_indexed_function_values_are_not_calls_to_the_slice() {
+    let source =
+        "package p\n\nfunc run(handlers []func()) {\n\thandlers[0]()\n\tGeneric[int]()\n}\n";
+    let extraction = ParserRegistry::extract(Language::Go, source).expect("Go source extracts");
+    let calls = call_rows(&extraction);
+    assert!(
+        !calls
+            .iter()
+            .any(|row| row.1 == "handlers" && row.3 == CallForm::Plain),
+        "{calls:?}"
     );
 }

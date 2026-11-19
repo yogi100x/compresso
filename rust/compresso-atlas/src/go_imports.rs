@@ -6,10 +6,13 @@
 //! `example.com/svc`) names the matching directory, and resolves to every
 //! indexed `.go` file directly in it except `_test.go` files, one edge each.
 //! Any other import (the standard library, a third-party module) is
-//! external. Not handled: `replace` directives, `go.work` workspaces beyond
-//! the modules their `go.mod` files declare, vendored packages, build
-//! constraints that exclude a file, and a package whose `package` clause
-//! differs from its directory name (the files are still found by directory).
+//! external. A `go.mod` under `testdata`, `vendor`, or a directory starting
+//! with `_` or `.` is ignored; a module path declared twice resolves through
+//! the declaration nearest the importer. Not handled: `replace` directives,
+//! `go.work` workspaces beyond the modules their `go.mod` files declare,
+//! vendored packages, build constraints that exclude a file, and a package
+//! whose `package` clause differs from its directory name (the files are
+//! still found by directory).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -21,17 +24,32 @@ use crate::rust_imports::{EXTERNAL, NOT_INDEXED};
 /// Largest `go.mod` read for its module path; a real one is far smaller.
 const MAX_GO_MOD_BYTES: u64 = 256 * 1024;
 
-/// The Go modules found in one repository, built once per index run.
+/// The Go modules and packages found in one repository, built once per
+/// index run.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct GoModules {
-    /// Module path to the repository directory of its `go.mod` (`""` for
-    /// the root). A module path declared twice keeps the first directory.
-    modules: BTreeMap<String, String>,
+    /// Module path to the repository directories declaring it (`""` for the
+    /// root), sorted. A path declared twice resolves through the directory
+    /// nearest the importer.
+    modules: BTreeMap<String, Vec<String>>,
+    /// Package directory to its indexed non-test `.go` files, sorted.
+    packages: BTreeMap<String, Vec<String>>,
+}
+
+/// Whether a `go.mod` in `directory` can declare an importable module: the
+/// Go tool ignores `testdata`, `vendor` holds copies, and directories
+/// starting with `_` or `.` are never packages.
+fn module_directory_allowed(directory: &str) -> bool {
+    directory.is_empty()
+        || directory
+            .split('/')
+            .all(|part| !matches!(part, "testdata" | "vendor") && !part.starts_with(['_', '.']))
 }
 
 impl GoModules {
-    /// Reads the `go.mod` of every directory that holds an indexed `.go`
-    /// file or is an ancestor of one.
+    /// Reads the `go.mod` of every allowed directory that holds an indexed
+    /// `.go` file or is an ancestor of one, and groups the indexed non-test
+    /// `.go` files by directory.
     pub(crate) fn discover(root: &Path, known_paths: &BTreeSet<String>) -> Self {
         let mut directories = BTreeSet::new();
         for path in known_paths.iter().filter(|path| path.ends_with(".go")) {
@@ -43,25 +61,40 @@ impl GoModules {
                 directory = parent_path(directory);
             }
         }
-        let mut modules = BTreeMap::new();
+        let mut modules = BTreeMap::<String, Vec<String>>::new();
         for directory in directories {
+            if !module_directory_allowed(&directory) {
+                continue;
+            }
             if let Some(module) = read_go_mod(root, &directory)
                 .as_deref()
                 .and_then(module_path)
             {
-                modules.entry(module).or_insert(directory);
+                modules.entry(module).or_default().push(directory);
             }
         }
-        Self { modules }
+        Self {
+            modules,
+            packages: packages(known_paths),
+        }
     }
 
     #[cfg(test)]
-    fn with(modules: &[(&str, &str)]) -> Self {
+    pub(crate) fn for_test(modules: &[(&str, &str)], known_paths: &BTreeSet<String>) -> Self {
+        Self::with(modules, known_paths)
+    }
+
+    #[cfg(test)]
+    fn with(modules: &[(&str, &str)], known_paths: &BTreeSet<String>) -> Self {
+        let mut map = BTreeMap::<String, Vec<String>>::new();
+        for (module, directory) in modules {
+            map.entry((*module).to_owned())
+                .or_default()
+                .push((*directory).to_owned());
+        }
         Self {
-            modules: modules
-                .iter()
-                .map(|(module, directory)| ((*module).to_owned(), (*directory).to_owned()))
-                .collect(),
+            modules: map,
+            packages: packages(known_paths),
         }
     }
 
@@ -72,26 +105,16 @@ impl GoModules {
         &self,
         importer: &str,
         raw: &str,
-        known_paths: &BTreeSet<String>,
     ) -> Vec<(Option<String>, ImportResolution)> {
-        let Some(directory) = self.package_directory(raw) else {
+        let Some(directory) = self.package_directory(importer, raw) else {
             return vec![(None, ImportResolution::Unresolved(EXTERNAL.to_owned()))];
         };
-        let prefix = if directory.is_empty() {
-            String::new()
-        } else {
-            format!("{directory}/")
-        };
-        let files = known_paths
-            .range(prefix.clone()..)
-            .take_while(|path| path.starts_with(&prefix))
-            .filter(|path| {
-                let name = &path[prefix.len()..];
-                !name.contains('/')
-                    && name.ends_with(".go")
-                    && !name.ends_with("_test.go")
-                    && path.as_str() != importer
-            })
+        let files = self
+            .packages
+            .get(&directory)
+            .into_iter()
+            .flatten()
+            .filter(|path| path.as_str() != importer)
             .map(|path| (Some(path.clone()), ImportResolution::Resolved))
             .collect::<Vec<_>>();
         if files.is_empty() {
@@ -102,20 +125,30 @@ impl GoModules {
     }
 
     /// The repository directory of the package `raw` names, through the
-    /// longest module path that is `raw` or a prefix of it.
-    fn package_directory(&self, raw: &str) -> Option<String> {
-        let (module, directory) = self
-            .modules
-            .iter()
-            .filter(|(module, _)| {
-                raw == module.as_str()
-                    || raw
-                        .strip_prefix(module.as_str())
-                        .is_some_and(|rest| rest.starts_with('/'))
-            })
-            .max_by_key(|(module, _)| module.len())?;
+    /// longest module path that is `raw` or a prefix of it (looked up one
+    /// path segment at a time, so the cost does not grow with the number of
+    /// modules), and, for a module declared twice, the declaring directory
+    /// nearest the importer.
+    fn package_directory(&self, importer: &str, raw: &str) -> Option<String> {
+        let mut module = raw;
+        let directories = loop {
+            if let Some(directories) = self.modules.get(module) {
+                break directories;
+            }
+            module = &module[..module.rfind('/')?];
+        };
+        let directory = directories.iter().max_by_key(|directory| {
+            let shared = if directory.is_empty() {
+                1
+            } else if importer.starts_with(&format!("{directory}/")) {
+                directory.len() + 2
+            } else {
+                0
+            };
+            (shared, std::cmp::Reverse(directory.as_str()))
+        })?;
         let rest = raw[module.len()..].trim_start_matches('/');
-        if rest.split('/').any(|part| matches!(part, "" | "." | "..")) && !rest.is_empty() {
+        if !rest.is_empty() && rest.split('/').any(|part| matches!(part, "" | "." | "..")) {
             return None;
         }
         Some(match (directory.is_empty(), rest.is_empty()) {
@@ -124,6 +157,19 @@ impl GoModules {
             (false, false) => format!("{directory}/{rest}"),
         })
     }
+}
+
+fn packages(known_paths: &BTreeSet<String>) -> BTreeMap<String, Vec<String>> {
+    let mut packages = BTreeMap::<String, Vec<String>>::new();
+    for path in known_paths {
+        if path.ends_with(".go") && !path.ends_with("_test.go") {
+            packages
+                .entry(parent_path(path).to_owned())
+                .or_default()
+                .push(path.clone());
+        }
+    }
+    packages
 }
 
 /// The `module` directive of a `go.mod`, unquoted, without comments.
@@ -188,17 +234,19 @@ mod tests {
 
     #[test]
     fn test_import_resolves_to_every_non_test_file_of_the_package() {
-        let modules = GoModules::with(&[("example.com/svc", "")]);
-        let paths = known(&[
-            "cmd/main.go",
-            "store/db.go",
-            "store/db_test.go",
-            "store/open.go",
-            "store/sub/inner.go",
-            "store/README.md",
-        ]);
+        let modules = GoModules::with(
+            &[("example.com/svc", "")],
+            &known(&[
+                "cmd/main.go",
+                "store/db.go",
+                "store/db_test.go",
+                "store/open.go",
+                "store/sub/inner.go",
+                "store/README.md",
+            ]),
+        );
         assert_eq!(
-            modules.resolve("cmd/main.go", "example.com/svc/store", &paths),
+            modules.resolve("cmd/main.go", "example.com/svc/store"),
             vec![
                 (Some("store/db.go".to_owned()), ImportResolution::Resolved),
                 (Some("store/open.go".to_owned()), ImportResolution::Resolved),
@@ -208,44 +256,75 @@ mod tests {
 
     #[test]
     fn test_external_and_unindexed_imports_stay_single_unresolved_records() {
-        let modules = GoModules::with(&[("example.com/svc", "services/api")]);
-        let paths = known(&["services/api/main.go", "services/api/store/db.go"]);
+        let modules = GoModules::with(
+            &[("example.com/svc", "services/api")],
+            &known(&["services/api/main.go", "services/api/store/db.go"]),
+        );
         assert_eq!(
-            modules.resolve("services/api/main.go", "fmt", &paths),
+            modules.resolve("services/api/main.go", "fmt"),
             vec![(None, ImportResolution::Unresolved(EXTERNAL.to_owned()))]
         );
         assert_eq!(
-            modules.resolve("services/api/main.go", "example.com/svcx/store", &paths),
+            modules.resolve("services/api/main.go", "example.com/svcx/store"),
             vec![(None, ImportResolution::Unresolved(EXTERNAL.to_owned()))]
         );
         assert_eq!(
-            modules.resolve("services/api/main.go", "example.com/svc/store", &paths),
+            modules.resolve("services/api/main.go", "example.com/svc/store"),
             vec![(
                 Some("services/api/store/db.go".to_owned()),
                 ImportResolution::Resolved
             )]
         );
         assert_eq!(
-            modules.resolve("services/api/main.go", "example.com/svc/missing", &paths),
+            modules.resolve("services/api/main.go", "example.com/svc/missing"),
             vec![(None, ImportResolution::Unresolved(NOT_INDEXED.to_owned()))]
         );
         assert_eq!(
-            modules.resolve("services/api/main.go", "example.com/svc/../x", &paths),
+            modules.resolve("services/api/main.go", "example.com/svc/../x"),
             vec![(None, ImportResolution::Unresolved(EXTERNAL.to_owned()))]
         );
     }
 
     #[test]
     fn test_the_longest_module_path_wins() {
-        let modules =
-            GoModules::with(&[("example.com/svc", ""), ("example.com/svc/tools", "tools")]);
-        let paths = known(&["tools/gen/gen.go", "tools/tools/gen/other.go"]);
+        // The nested module lives outside the outer module's matching
+        // directory, so only the longest match finds `third_party/tools/gen`.
+        let modules = GoModules::with(
+            &[
+                ("example.com/svc", ""),
+                ("example.com/svc/tools", "third_party/tools"),
+            ],
+            &known(&["tools/gen/gen.go", "third_party/tools/gen/other.go"]),
+        );
         assert_eq!(
-            modules.resolve("main.go", "example.com/svc/tools/gen", &paths),
+            modules.resolve("main.go", "example.com/svc/tools/gen"),
             vec![(
-                Some("tools/gen/gen.go".to_owned()),
+                Some("third_party/tools/gen/other.go".to_owned()),
                 ImportResolution::Resolved
             )]
         );
+    }
+
+    #[test]
+    fn test_a_duplicate_module_path_resolves_through_the_module_nearest_the_importer() {
+        let modules = GoModules::with(
+            &[("example.com/svc", "a"), ("example.com/svc", "b")],
+            &known(&["a/store/a.go", "b/store/b.go", "b/cmd/main.go"]),
+        );
+        assert_eq!(
+            modules.resolve("b/cmd/main.go", "example.com/svc/store"),
+            vec![(Some("b/store/b.go".to_owned()), ImportResolution::Resolved)]
+        );
+    }
+
+    #[test]
+    fn test_modules_under_testdata_vendor_and_hidden_directories_are_ignored() {
+        assert!(!module_directory_allowed("testdata/fake"));
+        assert!(!module_directory_allowed("internal/testdata"));
+        assert!(!module_directory_allowed("vendor/example.com/x"));
+        assert!(!module_directory_allowed("_examples/one"));
+        assert!(!module_directory_allowed(".github/tool"));
+        assert!(module_directory_allowed(""));
+        assert!(module_directory_allowed("services/api"));
     }
 }

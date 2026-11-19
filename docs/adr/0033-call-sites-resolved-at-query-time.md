@@ -49,9 +49,10 @@ Option 2.
   characters and at most 256 bytes; anything else from error recovery is
   dropped, so a malformed file cannot abort an index (as in E17-21).
   Covered: Rust, Python, JavaScript, TypeScript, TSX, and Go (E17-37,
-  D102: receiver-name self calls, a package qualifier names a directory,
-  and a call resolves within its package directory as `same_package`
-  after `same_file`; builtins are dropped). Rust macro arguments
+  D102: receiver-name self calls, a package qualifier names a directory
+  and reaches its exported names, a qualifier naming an external import
+  is a library call, plain calls resolve only as `same_file` or
+  `same_package`, and builtins are dropped). Rust macro arguments
   are a flat token tree, so calls inside them (`assert!(run())`,
   `format!("{}", self.name())`) are read from tokens: a name followed by a
   parenthesized group, optionally behind `Type::`, `self.`, or `expr.`; a

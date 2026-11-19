@@ -197,6 +197,17 @@ impl<'a> Indexer<'a> {
         let rust_workspace = RustWorkspace::discover(&canonical_root, &known_paths);
         let go_modules = GoModules::discover(&canonical_root, &known_paths);
         let paths_expanded = !scan.added.is_empty();
+        // A `go.mod` added, changed, or removed can move any Go import
+        // between a package directory and the outside world.
+        let go_modules_changed = scan
+            .added
+            .iter()
+            .chain(&scan.changed)
+            .any(|path| path.file_name().is_some_and(|name| name == "go.mod"))
+            || scan
+                .removed
+                .iter()
+                .any(|path| path == "go.mod" || path.ends_with("/go.mod"));
         // A file added to a Go package directory belongs to every import of
         // that package, so files importing the package are re-resolved.
         let grown_packages = scan
@@ -217,6 +228,14 @@ impl<'a> Indexer<'a> {
                     .unresolved_edge_sources(repo)?
                     .into_iter()
                     .filter(|path| !removed_set.contains(path))
+                    .map(PathBuf::from),
+            );
+        }
+        if go_modules_changed {
+            candidates.extend(
+                known_paths
+                    .iter()
+                    .filter(|path| path.ends_with(".go") && !removed_set.contains(*path))
                     .map(PathBuf::from),
             );
         }
@@ -673,21 +692,7 @@ fn resolve_repository_imports(
             languages::spec(language).imports
         });
     if style == ImportStyle::Go {
-        // A Go import names a package directory: one edge per file in it.
-        *imports = imports
-            .drain(..)
-            .flat_map(|import| {
-                go_modules
-                    .resolve(importer, &import.raw, known_paths)
-                    .into_iter()
-                    .map(move |(resolved_path, resolution)| ImportRecord {
-                        raw: import.raw.clone(),
-                        kind: import.kind,
-                        resolved_path,
-                        resolution,
-                    })
-            })
-            .collect();
+        *imports = resolve_go_imports(importer, std::mem::take(imports), go_modules);
         return;
     }
     for import in imports.iter_mut() {
@@ -729,6 +734,57 @@ fn resolve_repository_imports(
             }
         }
     }
+}
+
+/// Resolved edges one Go file may hold. A file importing more package files
+/// than this keeps the first ones and records one unresolved
+/// [`GO_EDGE_LIMIT`] edge per import it cut, so `impact` reports it as
+/// incomplete instead of silently missing dependents.
+pub(crate) const MAX_GO_IMPORT_EDGES_PER_FILE: usize = 4_096;
+/// Detail of the unresolved edge that marks an import cut by
+/// [`MAX_GO_IMPORT_EDGES_PER_FILE`].
+pub(crate) const GO_EDGE_LIMIT: &str = "edge_limit";
+
+/// A Go import names a package directory: one edge per file in it. A path
+/// imported twice (`import _ "p"` repeated) counts once.
+fn resolve_go_imports(
+    importer: &str,
+    imports: Vec<ImportRecord>,
+    go_modules: &GoModules,
+) -> Vec<ImportRecord> {
+    let mut seen = HashSet::new();
+    let mut resolved_edges = 0_usize;
+    let mut output = Vec::new();
+    for import in imports {
+        if !seen.insert(import.raw.clone()) {
+            continue;
+        }
+        let mut cut = false;
+        for (resolved_path, resolution) in go_modules.resolve(importer, &import.raw) {
+            if resolution == ImportResolution::Resolved {
+                if resolved_edges == MAX_GO_IMPORT_EDGES_PER_FILE {
+                    cut = true;
+                    continue;
+                }
+                resolved_edges += 1;
+            }
+            output.push(ImportRecord {
+                raw: import.raw.clone(),
+                kind: import.kind,
+                resolved_path,
+                resolution,
+            });
+        }
+        if cut {
+            output.push(ImportRecord {
+                raw: import.raw,
+                kind: import.kind,
+                resolved_path: None,
+                resolution: ImportResolution::Unresolved(GO_EDGE_LIMIT.to_owned()),
+            });
+        }
+    }
+    output
 }
 
 fn script_candidates(importer: &str, raw: &str) -> BTreeSet<String> {
@@ -1319,6 +1375,54 @@ mod tests {
             symbols,
             edges,
         }
+    }
+
+    #[test]
+    fn test_go_imports_are_deduplicated_and_capped_per_file() {
+        let mut known = BTreeSet::from(["main.go".to_owned()]);
+        for index in 0..(MAX_GO_IMPORT_EDGES_PER_FILE + 10) {
+            known.insert(format!("p/f{index}.go"));
+        }
+        known.insert("q/q.go".to_owned());
+        let modules = GoModules::for_test(&[("m", "")], &known);
+        let import = |raw: &str| ImportRecord {
+            raw: raw.to_owned(),
+            kind: ImportKind::Import,
+            resolved_path: None,
+            resolution: ImportResolution::Unresolved("not_indexed".to_owned()),
+        };
+        let mut imports = vec![import("m/q"), import("m/q"), import("m/q"), import("fmt")];
+        resolve_repository_imports(
+            "main.go",
+            &mut imports,
+            &known,
+            &RustWorkspace::default(),
+            &modules,
+        );
+        assert_eq!(imports.len(), 2, "{imports:?}");
+        assert_eq!(imports[0].resolved_path.as_deref(), Some("q/q.go"));
+
+        let mut imports = vec![import("m/p"), import("m/q")];
+        resolve_repository_imports(
+            "main.go",
+            &mut imports,
+            &known,
+            &RustWorkspace::default(),
+            &modules,
+        );
+        let resolved = imports
+            .iter()
+            .filter(|import| import.resolution == ImportResolution::Resolved)
+            .count();
+        assert_eq!(resolved, MAX_GO_IMPORT_EDGES_PER_FILE);
+        let cut = imports
+            .iter()
+            .filter(|import| {
+                import.resolution == ImportResolution::Unresolved(GO_EDGE_LIMIT.to_owned())
+            })
+            .map(|import| import.raw.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(cut, ["m/p", "m/q"]);
     }
 
     #[test]

@@ -12,6 +12,7 @@ mod text;
 
 use calls::CallSyntax;
 pub use calls::{MAX_CALL_NODES_PER_FILE, MAX_CALLS_PER_FILE};
+pub(crate) use go::package_local_name as go_package_local_name;
 use languages::Extractor;
 pub use languages::{LANGUAGES, LanguageSpec};
 

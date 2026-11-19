@@ -468,7 +468,10 @@ fn go_package_doc(text: &str) -> Option<String> {
     let mut lines = text.lines();
     while let Some(line) = lines.next() {
         let line = line.trim();
-        if line.starts_with("package ") || line == "package" {
+        if line
+            .strip_prefix("package")
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        {
             break;
         }
         if line.is_empty() {
@@ -821,6 +824,10 @@ mod tests {
                 "// Copyright 2026 Example.\n// Use of this source is governed by a license.\npackage p\n"
             ),
             None
+        );
+        assert_eq!(
+            go_package_doc("// Package p tabs.\npackage\tp\n").as_deref(),
+            Some("Package p tabs.")
         );
         assert_eq!(go_package_doc("// Detached.\n\npackage p\n"), None);
         assert_eq!(go_package_doc("package p\n// Late.\n"), None);

@@ -1,10 +1,9 @@
-; Package-level filtering, receiver owners, and grouped declarations are
-; handled after these syntax captures.
+; Declarations are anchored under `source_file`, so a match is package-level
+; without walking parents; grouped specs are expanded from the declaration.
 (function_declaration) @definition.function
 (method_declaration) @definition.method
-(type_spec) @definition.type
-(type_alias) @definition.type
-(const_spec) @definition.const
-(var_spec) @definition.variable
+(source_file (type_declaration) @definition.type)
+(source_file (const_declaration) @definition.const)
+(source_file (var_declaration) @definition.variable)
 
 (import_spec) @import.import
