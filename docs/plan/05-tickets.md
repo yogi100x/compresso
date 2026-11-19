@@ -2699,7 +2699,7 @@ Test cases:
 
 ## E17 — Session continuity, savings fidelity, and platform hardening
 
-Added 2026-11-14 (D70). Clean-room follow-ups to the local slice; E17-01..10 landed together through `integration/e17`, E17-11..14 are open follow-ups; E17-15 is open and E17-16 landed 2026-11-15 (D77). E17-17..21 landed 2026-11-16 (D83–D86); E17-22..29 landed 2026-11-18 (D87–D94). D83–D94 were confirmed by the owner on 2026-11-19. E17-30..32 landed 2026-11-19 (D95–D97); D97 records the owner's decision to build the opt-in edit tool; D95, D96, and the design choices listed in D97 were confirmed by the owner on 2026-11-19. E17-33 landed 2026-11-19 (D98, confirmed by the owner the same day). E17-34 was implemented 2026-11-19 (D99, proposed; awaits owner confirmation).
+Added 2026-11-14 (D70). Clean-room follow-ups to the local slice; E17-01..10 landed together through `integration/e17`, E17-11..14 are open follow-ups; E17-15 is open and E17-16 landed 2026-11-15 (D77). E17-17..21 landed 2026-11-16 (D83–D86); E17-22..29 landed 2026-11-18 (D87–D94). D83–D94 were confirmed by the owner on 2026-11-19. E17-30..32 landed 2026-11-19 (D95–D97); D97 records the owner's decision to build the opt-in edit tool; D95, D96, and the design choices listed in D97 were confirmed by the owner on 2026-11-19. E17-33 landed 2026-11-19 (D98, confirmed by the owner the same day). E17-34 was implemented 2026-11-19 (D99, confirmed by the owner the same day).
 
 ### [x] E17-01: Re-assert tool routing after client compaction
 Owner: D1 · Estimate: 2d · Depends: E5-01, E6-01, E6-02, E6-03
@@ -3336,7 +3336,7 @@ Wave 6 — release engineering and hardening close-out: E12-01, E13-32, E12-02, 
 Wave 7 — E15 A-F plus threat-model and sandbox foundations: E15-01, E14-17, E14-18, E15-02, E15-03, E15-05, E15-09, E15-11, E15-14, E15-19, E15-06..E15-17, E15-18, E15-18b, E15-18c, E15-20..E15-30 subject to dependencies.
 Wave 8 — full-product completion: E16-01..E16-16 subject to listed dependencies.
 Wave 9 — deferred sandbox actions: E14-19, E14-20, E15-04, E15-31, E15-32.
-E17 (delivered after the slice, independent of waves 1–9): E17-05, E17-03, E17-04, E17-07, E17-02, E17-09, E17-01, E17-06, E17-10, E17-08; follow-ups E17-11, E17-12, E17-13, E17-14, E17-15; E17-16 delivered 2026-11-15; E17-17, E17-18, E17-19, E17-20, E17-21 delivered 2026-11-16; E17-22, E17-23, E17-24, E17-25, E17-26, E17-27, E17-28, E17-29 delivered 2026-11-18; E17-30, E17-31, E17-32, E17-33 delivered 2026-11-19; E17-34 implemented 2026-11-19 (D99 awaits owner confirmation).
+E17 (delivered after the slice, independent of waves 1–9): E17-05, E17-03, E17-04, E17-07, E17-02, E17-09, E17-01, E17-06, E17-10, E17-08; follow-ups E17-11, E17-12, E17-13, E17-14, E17-15; E17-16 delivered 2026-11-15; E17-17, E17-18, E17-19, E17-20, E17-21 delivered 2026-11-16; E17-22, E17-23, E17-24, E17-25, E17-26, E17-27, E17-28, E17-29 delivered 2026-11-18; E17-30, E17-31, E17-32, E17-33 delivered 2026-11-19; E17-34 implemented 2026-11-19 (D99 confirmed by the owner the same day).
 
 Parallelism notes:
 - Slice: E2 (R1) and E3 (R2) run concurrently after E1; E7-01/E7-02 (PQ/R1) overlap E2's tail; E4 (D1) starts once E2-09 and E3-12 land; E5 (R2) follows E3; E6 (D1) follows E5-01 and overlaps E5-02..07; E1-06 and E4-05 (I1) slot in any time after E1-02/E4-04. E2-02a is a maintainer task (needs an Anthropic API key) and can land any time after E2-02 without blocking anything — until it lands, the interim 1.15 factor applies.
