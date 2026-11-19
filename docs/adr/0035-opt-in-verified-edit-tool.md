@@ -22,9 +22,8 @@ and got 8 of 8. The failure was not the edit itself but the missing
 verification: nothing told the model that zero sites changed.
 
 ADR-0024 and E15 (`09-advanced-capabilities.md`) plan a broader edit surface:
-a `compresso-edit` crate with separate `compresso_edit_plan`,
-`compresso_edit_apply`, and `compresso_edit_rollback` tools, content-hashed
-plans, permission classes, and rollback. That remains future scope. This ADR
+a `compresso-edit` crate with separate plan, apply, and rollback edit
+tools, content-hashed plans, permission classes, and rollback. That remains future scope. This ADR
 adds a narrower tool now, ahead of E15.
 
 ## Decision

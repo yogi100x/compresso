@@ -13,6 +13,16 @@ use compresso_store::Store;
 use super::recall::system_home_dir;
 use super::{CliExitCode, McpCommand, write_error};
 
+/// Every flag `mcp serve` parses by hand. Clap sees only a trailing
+/// argument list, so the surface inventory takes the flags from here.
+pub(crate) const SERVE_FLAGS: &[&str] = &[
+    "--edits",
+    "--recall-source",
+    "--results",
+    "--root",
+    "--tools",
+];
+
 const USAGE: &str = "mcp serve accepts only optional --root PATH, --recall-source SOURCE, --tools full|lean, --results json|text, and --edits arguments";
 
 /// Operator-supplied `mcp serve` options.
@@ -328,6 +338,23 @@ mod tests {
         assert!(parse(&["--results"]).is_err());
         assert!(parse(&["--results", "yaml"]).is_err());
         assert!(parse(&["--results", "json", "--results", "json"]).is_err());
+    }
+
+    #[test]
+    fn test_every_advertised_serve_flag_is_parsed() {
+        for (flag, value) in [
+            ("--edits", None),
+            ("--recall-source", Some("codex")),
+            ("--results", Some("text")),
+            ("--root", Some("/repo")),
+            ("--tools", Some("lean")),
+        ] {
+            assert!(SERVE_FLAGS.contains(&flag));
+            let mut arguments = vec![flag];
+            arguments.extend(value);
+            assert!(parse(&arguments).is_ok(), "{flag}");
+        }
+        assert_eq!(SERVE_FLAGS.len(), 5);
     }
 
     #[test]

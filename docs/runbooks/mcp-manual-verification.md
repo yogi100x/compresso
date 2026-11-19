@@ -93,8 +93,9 @@ required rejection excerpt.
 The record above covers the read-only tools of a server started without
 `--edits`; that server still lists no write tool. `compresso_edit` (served only
 by `compresso mcp serve --edits`, ADR-0035) has not been verified in a live
-client session. To verify it, register a second entry with
-`claude mcp add compresso -- ~/.local/bin/compresso mcp serve --edits`, call
+client session. To verify it, register a second Claude Code server entry whose
+arguments are `mcp serve --edits` (or run
+`compresso integrations install claude-code --edits`), call
 `compresso_edit` with `dry_run: true` on a scratch repository, confirm the
 diff and that nothing was written, then apply it and confirm the report shows
 every file `verified` and, for a rename, 0 remaining whole matches.

@@ -2,8 +2,11 @@
 
 Compresso is a local-first context intelligence layer for AI coding tools. The
 current delivery target is the offline vertical slice covering the compression
-core, repository indexing, CLI, read-only MCP server, and supported client
-integrations.
+core, repository indexing, CLI, MCP server, and supported client
+integrations. The MCP server is read-only unless the operator starts it with
+`--edits`, which adds one write tool, `compresso_edit`, for verified literal
+replacements, identifier renames, and anchored inserts in indexed files
+(ADR-0035); `compresso edit` runs the same edits from the command line.
 
 ## Connecting a coding client
 

@@ -15,7 +15,7 @@ mod edit;
 mod engine;
 mod index;
 mod integrations;
-mod mcp;
+pub(crate) mod mcp;
 mod mcp_probe;
 mod pr_post;
 mod quiet_pipe;
