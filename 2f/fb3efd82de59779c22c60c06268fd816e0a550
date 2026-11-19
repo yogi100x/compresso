@@ -1,0 +1,23 @@
+rust/compresso-cli/tests/replay_results.rs
+  s_89a704cfae63f5::t_27081062ba25c9 235,242,245-246,249-253,256-258,282,461-464
+rust/compresso-mcp/src/tools/atlas_grep.rs
+  s_89a704cfae63f5::t_4f0c88d43612d2 322-323,328,350,355
+rust/compresso-mcp/tests/result_format.rs
+  s_89a704cfae63f5::t_53e9948605fa0b 1260-1284
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2ffb3efd82de59779c22c60c06268fd816e0a550",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
