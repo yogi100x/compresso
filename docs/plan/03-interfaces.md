@@ -484,7 +484,7 @@ Opt-in surfaces for lower fixed overhead, tool substitution, and orientation (D9
 - **`compresso-atlas::cards`** (E17-26, D91): `module_cards(store, repo, root, CardOptions { path, max_cards, budget_tokens }) -> Result<ModuleCards, AtlasError>`; `ModuleCards { cards, cards_total, tokens_used, token_provider, truncated }`; `ModuleCard { path, purpose, files, symbols, entry_points, public_symbols: Vec<CardSymbol>, depends_on, depends_on_total, used_by, used_by_total, rendered, tokens }`; `CardSymbol { name, kind, file, line }`; `DEFAULT_MAX_CARDS` = 12, `MAX_CARDS` = 50. Read-only, deterministic, no model call; `path` is validated like `repo_map_focused`'s focus. `repo_map` and `repo_map_focused` are unchanged. MCP `compresso_repo_map` gains opt-in `cards` and `path`; CLI `compresso map` gains `--cards`, `--path`, and `--max-cards` (04 §1.3).
 - **`compresso-integrations::explore_agent`** (E17-28, D93, ADR-0034): `ExploreAgentIntegration::new(user_home, compresso_tools)` implementing `Integration` (client `claude-code`), plus `config_path(scope)`, `render()`, and `EXPLORE_AGENT_NAME` = `compresso-explorer`. `ConfigFormat::Markdown` is a whole-file owned format whose empty uninstall target deletes the file; `UNMODIFIED_FILE_REMOVED_BACKUP_SENTINEL`; `IntegrationError::UserFilePresent { path }` (CLI code `user_file_present`). CLI: `--explore-agent` on `integrations install|uninstall|status|verify` (04 §2.6). The CLI passes `compresso_mcp::lean_tool_allowlist()` minus `compresso_recall` as the agent's Compresso tools.
 
-## 14. E17-32 interfaces (D97, ADR-0035; design awaits owner confirmation)
+## 14. E17-32 interfaces (D97, ADR-0035)
 
 One opt-in write path. Every other interface in this document stays read-only; no network or process capability is added.
 
@@ -494,7 +494,7 @@ One opt-in write path. Every other interface in this document stays read-only; n
 - **`compresso-cli`**: `compresso edit` (`EditArgs`), and `--edits` on `integrations install` (Claude Code server entry, or with `--explore-agent` the agent's tool list).
 - **`compresso-integrations`**: `ClaudeCodeIntegration::with_edits(bool)`, `ExploreAgentIntegration::with_edits(bool)`, `server_enables_edits(args)`; adapter-shaped arguments are the base, optionally `--edits`, optionally the recall pair, in that order.
 
-## 13. E17-31 interfaces (awaits owner confirmation, D96)
+## 13. E17-31 interfaces (D96)
 
 Compact text tool results for the lean profile. The full profile's JSON results are unchanged byte for byte; no new network or process capability.
 

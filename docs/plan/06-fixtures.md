@@ -1304,7 +1304,7 @@ and before D88 the raise site was missing and the pack was false-ready. With
 the three tasks the measured precision is 0.3885 (the 22 earlier tasks are
 unchanged at 0.3835); the committed thresholds are unchanged.
 
-Several-part tasks (D95, awaiting owner confirmation): `engine/src/report_cache.rs`
+Several-part tasks (D95): `engine/src/report_cache.rs`
 mirrors a staleness check. `report_current` (one report) and `catalog_stale`
 (the whole catalog) share the helper `source_unchanged`, which asks
 `metadata_verdict` (length, then modification time against a slack constant)
