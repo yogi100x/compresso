@@ -254,7 +254,7 @@ pub fn scan(store: &Store, repo: RepoId, root: &Path) -> Result<ScanResult, Atla
 pub fn scan_with_options(store: &Store, repo: RepoId, root: &Path, options: ScanOptions) -> Result<ScanResult, AtlasError>;
 pub struct Concurrency { /* jobs clamped to 1..=available CPUs; memory_budget_bytes (default 64 MiB) */ } // Concurrency::default(), ::serial(), ::bounded(jobs, memory_budget_bytes)
 pub fn scan_with_concurrency(store: &Store, repo: RepoId, root: &Path, options: ScanOptions, concurrency: Concurrency) -> Result<ScanResult, AtlasError>; // identical ScanResult at every concurrency; scan/scan_with_options use Concurrency::default()
-// respects .gitignore + built-in exclusions (binaries, >max_file_bytes, node_modules/target/dist/.git, secret-file patterns: .env*, *.pem, id_rsa*)
+// respects .gitignore + the repository's own info/exclude (below .gitignore; for a .git file found via gitdir:/commondir, D100) + built-in exclusions (binaries, >max_file_bytes, node_modules/target/dist/.git, any `.git` entry, nested linked worktrees, secret-file patterns: .env*, *.pem, id_rsa*); no global or user excludes
 // ignored and built-in excluded directories are reported once in skipped and pruned before descent; descendants are intentionally not enumerated
 
 // parsers.rs
