@@ -35,6 +35,16 @@ impl Fixture {
     }
 
     fn write_indexed_bytes(&self, path: &str, source: &[u8], symbols: &[SymbolRecord]) {
+        self.write_indexed_as(path, source, Some(FileLanguage::Rust), symbols);
+    }
+
+    fn write_indexed_as(
+        &self,
+        path: &str,
+        source: &[u8],
+        language: Option<FileLanguage>,
+        symbols: &[SymbolRecord],
+    ) {
         let destination = self.root.join(path);
         fs::create_dir_all(destination.parent().expect("parent")).expect("directory created");
         fs::write(&destination, source).expect("source written");
@@ -44,7 +54,7 @@ impl Fixture {
                 &FileRecord {
                     path: path.to_owned(),
                     hash: blake3::hash(source).to_hex().to_string(),
-                    language: Some(FileLanguage::Rust),
+                    language,
                     size_bytes: source.len() as u64,
                     token_estimate: source.len() / 4,
                     indexed_at: 10,
@@ -73,6 +83,7 @@ impl Fixture {
             max_matches_per_file: 5,
             context_lines: 0,
             scopes: Vec::new(),
+            select_rows: false,
         };
         configure(&mut options);
         grep(
@@ -87,6 +98,7 @@ impl Fixture {
                 max_matches_per_file: options.max_matches_per_file,
                 context_lines: options.context_lines,
                 scopes: &options.scopes,
+                select_rows: options.select_rows,
             },
         )
     }
@@ -101,6 +113,8 @@ struct Options {
     context_lines: usize,
     /// Per-pattern scopes (E17-36); empty when no pattern has one.
     scopes: Vec<Option<String>>,
+    /// Row selection under the per-file cap (E17-39).
+    select_rows: bool,
 }
 
 fn symbol(name: &str, kind: SymbolKind, start_line: u32, end_line: u32) -> SymbolRecord {
@@ -644,4 +658,204 @@ fn test_grep_accepts_ordinary_counted_repetitions_and_explains_the_size_bound() 
     let message = failure.to_string();
     assert!(message.contains("too large"), "{message}");
     assert!(message.contains("shorten counted repetitions"), "{message}");
+}
+
+/// Listed line numbers of the only file of the first pattern.
+fn listed(report: &GrepReport) -> Vec<u32> {
+    report.results[0].files[0]
+        .lines
+        .iter()
+        .map(|line| line.line)
+        .collect()
+}
+
+/// E17-39 (D104): row selection reads comments through the file's language;
+/// a file of no indexed language has no comment syntax, so every row is
+/// code and the first lines are listed. Without selection the first lines
+/// are listed whatever they are.
+#[test]
+fn test_grep_row_selection_uses_the_file_language_for_comments() {
+    let fixture = Fixture::new();
+    let source = b"// beacon one\n// beacon two\nlet beacon = 3;\n";
+    fixture.write_indexed_as("src/known.rs", source, Some(FileLanguage::Rust), &[]);
+    fixture.write_indexed_as("src/unknown.cfg", source, None, &[]);
+    let select = |path: &str, select_rows: bool| {
+        fixture.grep(&["beacon"], |options| {
+            options.path = Some(path.to_owned());
+            options.max_matches_per_file = 1;
+            options.select_rows = select_rows;
+        })
+    };
+    let known = select("src/known.rs", true);
+    assert_eq!(listed(&known), [3]);
+    assert_eq!(known.results[0].files[0].lines_unlisted, [1, 2]);
+    assert_eq!(listed(&select("src/unknown.cfg", true)), [1]);
+    let first = select("src/known.rs", false);
+    assert_eq!(listed(&first), [1]);
+    assert!(first.results[0].files[0].lines_unlisted.is_empty());
+}
+
+/// E17-39 (D104): a file changed since it was indexed is searched as it is
+/// now: comments are still recognised, and it has no symbols.
+#[test]
+fn test_grep_row_selection_reads_comments_in_a_changed_file() {
+    let fixture = Fixture::new();
+    fixture.write_indexed("src/changed.rs", "let beacon = 1;\n", &[]);
+    fs::write(
+        fixture.root.join("src/changed.rs"),
+        "// beacon one\n// beacon two\nlet beacon = 3;\n",
+    )
+    .expect("file changed");
+    let report = fixture.grep(&["beacon"], |options| {
+        options.max_matches_per_file = 1;
+        options.select_rows = true;
+    });
+    let file = &report.results[0].files[0];
+    assert!(file.stale);
+    assert_eq!(listed(&report), [3]);
+    assert!(file.lines.iter().all(|line| line.symbol.is_none()));
+}
+
+/// E17-39 (D104): rows are chosen from the first `GREP_ROW_CANDIDATES`
+/// matching lines; a later match is counted but never listed or named.
+#[test]
+fn test_grep_row_selection_chooses_from_the_first_candidates_only() {
+    let fixture = Fixture::new();
+    let mut source = "// beacon\n".repeat(compresso_atlas::GREP_ROW_CANDIDATES);
+    source.push_str("let beacon = 1;\n");
+    fixture.write_indexed("src/many.rs", &source, &[]);
+    let report = fixture.grep(&["beacon"], |options| {
+        options.max_matches_per_file = 1;
+        options.select_rows = true;
+    });
+    let file = &report.results[0].files[0];
+    assert_eq!(file.matches_total, compresso_atlas::GREP_ROW_CANDIDATES + 1);
+    assert_eq!(listed(&report), [1]);
+    assert_eq!(
+        file.lines_unlisted,
+        (2..=9).collect::<Vec<u32>>(),
+        "the next candidates, never the line past the bound"
+    );
+}
+
+/// E17-39 review (item 1): a symbol's first line ranks as a definition
+/// only when the match is on the symbol's name; a parameter or receiver
+/// that matches makes it an ordinary code row.
+#[test]
+fn test_grep_row_selection_ranks_a_definition_only_when_its_name_matches() {
+    let fixture = Fixture::new();
+    fixture.write_indexed(
+        "src/reasons.rs",
+        "fn cordon_a(reason: &str) {}\nfn cordon_b(reason: &str) {}\nfn selection_reason() -> u8 { 1 }\n",
+        &[
+            symbol("cordon_a", SymbolKind::Function, 1, 1),
+            symbol("cordon_b", SymbolKind::Function, 2, 2),
+            symbol("selection_reason", SymbolKind::Function, 3, 3),
+        ],
+    );
+    let report = fixture.grep(&["reason"], |options| {
+        options.max_matches_per_file = 1;
+        options.select_rows = true;
+    });
+    assert_eq!(listed(&report), [3]);
+}
+
+/// E17-39 review (item 3): with row selection on, every file's rows are
+/// ranked, so a budget cut keeps code before comments even in a file at or
+/// under the cap.
+#[test]
+fn test_grep_row_selection_ranks_rows_of_a_file_under_the_cap() {
+    let fixture = Fixture::new();
+    let mut source = "// beacon note\n".repeat(8);
+    source.push_str("let beacon = 1;\nlet beacon_two = 2;\n");
+    fixture.write_indexed("src/under.rs", &source, &[]);
+    let report = fixture.grep(&["beacon"], |options| {
+        options.max_matches_per_file = 50;
+        options.select_rows = true;
+    });
+    let ranks = report.results[0].files[0]
+        .lines
+        .iter()
+        .map(|line| (line.line, line.rank))
+        .collect::<Vec<_>>();
+    assert_eq!(ranks[8], (9, 0), "{ranks:?}");
+    assert_eq!(ranks[9], (10, 1), "{ranks:?}");
+}
+
+/// E17-39 review (nit): a block opener with no closer nearby (a `/*` inside
+/// a multi-line string) does not turn the following code into comments.
+#[test]
+fn test_grep_row_selection_ignores_a_block_opener_with_no_closer() {
+    let fixture = Fixture::new();
+    fixture.write_indexed(
+        "src/glob.rs",
+        "// beacon note\nlet glob = \"\n/* not a comment\n\";\nlet beacon = 1;\n",
+        &[],
+    );
+    let report = fixture.grep(&["beacon"], |options| {
+        options.max_matches_per_file = 1;
+        options.select_rows = true;
+    });
+    assert_eq!(listed(&report), [5]);
+}
+
+/// E17-39 review (item 5): selecting rows in a large file with many
+/// symbols stays fast: one sorted pass finds every candidate's symbol.
+#[test]
+fn test_grep_row_selection_stays_fast_with_many_symbols_and_candidates() {
+    let fixture = Fixture::new();
+    let lines = 10_000_u32;
+    let source = (0..lines)
+        .map(|index| format!("fn beacon_{index}() {{}}\n"))
+        .collect::<String>();
+    let symbols = (0..lines)
+        .map(|index| {
+            symbol(
+                &format!("beacon_{index}"),
+                SymbolKind::Function,
+                index + 1,
+                index + 1,
+            )
+        })
+        .collect::<Vec<_>>();
+    fixture.write_indexed("src/huge.rs", &source, &symbols);
+    let timed = |select_rows: bool| {
+        let started = Instant::now();
+        let report = fixture.grep(&["beacon"], |options| {
+            options.max_matches_per_file = 5;
+            options.select_rows = select_rows;
+        });
+        assert_eq!(report.results[0].files[0].lines.len(), 5);
+        started.elapsed()
+    };
+    let first = timed(false);
+    let selected = timed(true);
+    println!("10,000 symbols: first lines {first:?}, row selection {selected:?}");
+    // Selection adds a sorted pass, not a scan of every symbol per row.
+    assert!(
+        selected < first * 3 + Duration::from_millis(50),
+        "{first:?} vs {selected:?}"
+    );
+}
+
+/// E17-39 review (item 1): a symbol's first line that matches only through
+/// a parameter, receiver, or type ranks after code rows in bodies, so method
+/// signatures do not crowd out the use sites.
+#[test]
+fn test_grep_row_selection_ranks_signature_mentions_after_body_code() {
+    let fixture = Fixture::new();
+    fixture.write_indexed(
+        "src/signatures.rs",
+        "fn cordon_a(reason: &str) {}\nfn pick() {\n    let r = reason_of();\n}\nfn selection_reason() {}\n",
+        &[
+            symbol("cordon_a", SymbolKind::Function, 1, 1),
+            symbol("pick", SymbolKind::Function, 2, 4),
+            symbol("selection_reason", SymbolKind::Function, 5, 5),
+        ],
+    );
+    let report = fixture.grep(&["reason"], |options| {
+        options.max_matches_per_file = 2;
+        options.select_rows = true;
+    });
+    assert_eq!(listed(&report), [3, 5]);
 }

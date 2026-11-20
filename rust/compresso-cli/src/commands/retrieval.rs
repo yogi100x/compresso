@@ -375,6 +375,8 @@ fn execute_grep(
         max_matches_per_file: arguments.max_matches_per_file,
         context_lines: arguments.context_lines,
         scopes: &[],
+        // The CLI lists the first lines, as before (E17-39, D104).
+        select_rows: false,
     };
     compresso_atlas::validate_grep(&options)
         .map_err(|error| RetrievalError::invalid(&error.to_string()))?;

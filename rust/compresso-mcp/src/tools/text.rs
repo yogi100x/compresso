@@ -428,6 +428,27 @@ fn grep(payload: &Value, out: &mut Out) {
                     (!lines.is_empty()).then(|| format!("; {key}: {}", lines.join(", ")))
                 })
                 .collect::<String>();
+            // E17-39 (D104): the most useful unlisted lines, by number,
+            // then how many more are unlisted.
+            let unlisted_lines = array(file, "unlisted")
+                .iter()
+                .filter_map(Value::as_u64)
+                .map(|line| line.to_string())
+                .collect::<Vec<_>>();
+            let named = if unlisted_lines.is_empty() {
+                named
+            } else {
+                let more = number(file, "unlisted_more");
+                format!(
+                    "{named}; unlisted: {}{}",
+                    unlisted_lines.join(", "),
+                    if more > 0 {
+                        format!(", … +{more}")
+                    } else {
+                        String::new()
+                    }
+                )
+            };
             out.line(format!(
                 "{} ({}{}{named})",
                 header_path(string(file, "path").unwrap_or_default()),
@@ -452,12 +473,12 @@ fn grep(payload: &Value, out: &mut Out) {
                 .saturating_sub(array(result, "files").len() as u64)
                 .saturating_sub(named.len() as u64);
             out.line(format!(
-                "[not listed: {}{}]",
+                "[unlisted files: {}{}]",
                 named
                     .iter()
                     .map(|entry| format!(
                         "{} ({})",
-                        header_path(string(entry, "path").unwrap_or_default()),
+                        list_path(string(entry, "path").unwrap_or_default()),
                         number(entry, "matches")
                     ))
                     .collect::<Vec<_>>()
@@ -545,7 +566,7 @@ fn grep(payload: &Value, out: &mut Out) {
     }
     if unlisted > 0 {
         out.note(format!(
-            "{unlisted} matching lines counted but not listed; narrow with path or a more specific pattern rather than raising limits"
+            "{unlisted} matching lines counted but not listed; pass unlisted lines as ranges in your next call, packed with its patterns, or narrow with path or a more specific pattern rather than raising limits"
         ));
     }
     // A packed call's reads (E17-36, D101) follow every grep section and
@@ -580,6 +601,13 @@ fn header_path(path: &str) -> String {
             safe
         })
         .collect()
+}
+
+/// A path in the `[unlisted files: ...]` line (E17-39, D104): a header
+/// path with `]` and `,` also replaced, so a path cannot end the list or
+/// split an entry.
+fn list_path(path: &str) -> String {
+    header_path(path).replace([']', ','], "?")
 }
 
 /// One bounded read: `@@ path:START-END of TOTAL`, the raw content, and a

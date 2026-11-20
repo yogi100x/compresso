@@ -77,6 +77,35 @@ pub(crate) enum Visibility {
     Capitalized,
 }
 
+/// How a line is recognised as comment or documentation text when grep
+/// chooses which capped rows to list (E17-39, D104). Only line starts are
+/// read: a line comment marker or a block opener counts only as the first
+/// non-blank text of a line, so a marker inside a string or after code never
+/// makes a row a comment. Anything not recognised is code.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CommentSyntax {
+    /// Line comment markers (`//`, `#`).
+    pub line: &'static [&'static str],
+    /// A block comment's opener and closer (`/*`, `*/`).
+    pub block: Option<(&'static str, &'static str)>,
+}
+
+impl CommentSyntax {
+    /// No comment syntax: every line is code.
+    pub const NONE: Self = Self {
+        line: &[],
+        block: None,
+    };
+    const C_LIKE: Self = Self {
+        line: &["//"],
+        block: Some(("/*", "*/")),
+    };
+    const HASH: Self = Self {
+        line: &["#"],
+        block: None,
+    };
+}
+
 /// One indexed language.
 pub struct LanguageSpec {
     pub language: FileLanguage,
@@ -102,6 +131,9 @@ pub struct LanguageSpec {
     /// `pkg`, and a call reaches other files of its own directory without an
     /// import.
     pub(crate) package_is_directory: bool,
+    /// Comment syntax for grep row selection (E17-39, D104). Python
+    /// docstrings, Markdown, and other text count as code.
+    pub comments: CommentSyntax,
 }
 
 impl LanguageSpec {
@@ -155,6 +187,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         entry_files: &["lib.rs", "main.rs", "mod.rs"],
         test_file_suffix: None,
         package_is_directory: false,
+        comments: CommentSyntax::C_LIKE,
     },
     LanguageSpec {
         language: FileLanguage::TypeScript,
@@ -174,6 +207,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         entry_files: &["index.ts", "main.ts"],
         test_file_suffix: None,
         package_is_directory: false,
+        comments: CommentSyntax::C_LIKE,
     },
     LanguageSpec {
         language: FileLanguage::Tsx,
@@ -193,6 +227,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         entry_files: &["index.tsx"],
         test_file_suffix: None,
         package_is_directory: false,
+        comments: CommentSyntax::C_LIKE,
     },
     LanguageSpec {
         language: FileLanguage::JavaScript,
@@ -212,6 +247,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         entry_files: &["index.js", "index.mjs", "main.js"],
         test_file_suffix: None,
         package_is_directory: false,
+        comments: CommentSyntax::C_LIKE,
     },
     LanguageSpec {
         language: FileLanguage::Python,
@@ -231,6 +267,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         entry_files: &["__init__.py", "__main__.py", "main.py"],
         test_file_suffix: None,
         package_is_directory: false,
+        comments: CommentSyntax::HASH,
     },
     LanguageSpec {
         language: FileLanguage::Go,
@@ -250,6 +287,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         entry_files: &["main.go", "doc.go"],
         test_file_suffix: Some("_test.go"),
         package_is_directory: true,
+        comments: CommentSyntax::C_LIKE,
     },
     LanguageSpec {
         language: FileLanguage::Shell,
@@ -264,6 +302,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         entry_files: &[],
         test_file_suffix: None,
         package_is_directory: false,
+        comments: CommentSyntax::HASH,
     },
     LanguageSpec {
         language: FileLanguage::Text,
@@ -278,6 +317,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         entry_files: &[],
         test_file_suffix: None,
         package_is_directory: false,
+        comments: CommentSyntax::NONE,
     },
 ];
 
@@ -366,6 +406,27 @@ mod tests {
             );
             assert_eq!(spec(language).language, language);
         }
+    }
+
+    /// E17-39 (D104): every language states its comment syntax; text
+    /// files have none, so a Markdown `# Heading` row is never a comment.
+    #[test]
+    fn test_each_language_states_its_comment_syntax() {
+        for language in [
+            FileLanguage::Rust,
+            FileLanguage::TypeScript,
+            FileLanguage::Tsx,
+            FileLanguage::JavaScript,
+            FileLanguage::Go,
+        ] {
+            assert_eq!(spec(language).comments.line, &["//"], "{language:?}");
+            assert_eq!(spec(language).comments.block, Some(("/*", "*/")));
+        }
+        for language in [FileLanguage::Python, FileLanguage::Shell] {
+            assert_eq!(spec(language).comments.line, &["#"], "{language:?}");
+            assert_eq!(spec(language).comments.block, None);
+        }
+        assert_eq!(spec(FileLanguage::Text).comments, CommentSyntax::NONE);
     }
 
     #[test]

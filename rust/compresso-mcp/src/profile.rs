@@ -176,7 +176,7 @@ fn lean_grep_ranges() -> Value {
         "type": "array", "maxItems": 8,
         "items": { "type": "object", "required": ["path"], "properties": {
             "path": { "type": "string" }, "start_line": { "type": "integer" }, "end_line": { "type": "integer" } } },
-        "description": "Lines to read in this call, e.g. from an earlier result; they add 2000 to the default max_tokens."
+        "description": "Lines to read in this call, e.g. from an earlier result: hits or unlisted lines, all in this one call with the next patterns; they add 2000 to the default max_tokens."
     })
 }
 

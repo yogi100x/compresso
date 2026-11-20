@@ -1033,7 +1033,10 @@ async fn test_text_grep_lists_fewer_lines_by_default_and_keeps_requested_context
     let (text, _) = harness
         .call("compresso_grep", &json!({ "pattern": "budget" }))
         .await;
-    assert!(text.contains("src/steps.rs (400)\n"), "{text}");
+    assert!(
+        text.contains("src/steps.rs (400; unlisted: 4, 5, 6, 7, 8, 9, 10, 11, … +389)\n"),
+        "{text}"
+    );
     let rows = text
         .lines()
         .filter(|line| {
@@ -2072,7 +2075,7 @@ async fn test_grep_names_files_counted_but_not_listed() {
     assert!(!is_error, "{text}");
     let row = text
         .lines()
-        .find(|line| line.starts_with("[not listed: "))
+        .find(|line| line.starts_with("[unlisted files: "))
         .unwrap_or_else(|| panic!("{text}"));
     assert!(
         row.contains("src/lib.rs (1)") || row.contains("README.md (1)"),
@@ -2154,7 +2157,7 @@ async fn test_unlisted_file_names_never_fail_a_small_budget() {
         )
         .await;
     assert!(!is_error, "{text}");
-    assert!(!text.contains("[not listed: "), "{text}");
+    assert!(!text.contains("[unlisted files: "), "{text}");
     lean.close().await;
 }
 
@@ -2382,4 +2385,337 @@ async fn test_scoped_patterns_apply_go_test_files_per_section() {
         "{text}"
     );
     harness.close().await;
+}
+
+/// Reindexes `fixture` after writing `files`.
+fn fixture_with(files: &[(&str, &str)]) -> Fixture {
+    let fixture = Fixture::new();
+    for (path, contents) in files {
+        write_file(&fixture.root, path, contents);
+    }
+    Indexer::new(&fixture.store, counter_for(TokenProvider::OpenAiO200k))
+        .index(&fixture.root, |_| {})
+        .expect("fixture reindexes");
+    fixture
+}
+
+const PROTO_TS: &str = "/**\n * The version travels first.\n * A version mismatch is reported.\n * Each version is a number.\n */\nexport const protocolVersion = 1;\n\nexport const decode = (input: number[]): number => {\n  const version = input[0];\n  return version;\n};\n";
+
+/// E17-39 (D104): when a file has more matching lines than the per-file cap,
+/// the text form lists definitions first, then code, then comment or
+/// documentation rows, shown in line order, and names the rest by line in
+/// the file header. The JSON form keeps the first lines in line order.
+#[tokio::test]
+async fn test_text_grep_lists_definitions_and_code_before_comments_under_the_cap() {
+    let fixture = fixture_with(&[("src/proto.ts", PROTO_TS)]);
+    let call = json!({
+        "pattern": "version",
+        "case_insensitive": true,
+        "path": "src/proto.ts",
+        "max_matches_per_file": 2
+    });
+    let mut lean = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, is_error) = lean.call("compresso_grep", &call).await;
+    assert!(!is_error, "{text}");
+    assert!(
+        text.contains(
+            "src/proto.ts (6; unlisted: 2, 3, 4, 10)\n6 [def protocolVersion] export const protocolVersion = 1;\n9 [decode] const version = input[0];\n"
+        ),
+        "{text}"
+    );
+    lean.close().await;
+
+    let mut json_form = Harness::start(
+        &fixture,
+        options_with(&fixture, McpToolProfile::Lean, McpResultFormat::Json),
+    )
+    .await;
+    let (text, _) = json_form.call("compresso_grep", &call).await;
+    let value: Value = serde_json::from_str(&text).expect("JSON result");
+    assert_eq!(
+        value["results"][0]["files"][0]["lines"],
+        json!([
+            "2 * The version travels first.",
+            "3 * A version mismatch is reported."
+        ]),
+        "{value}"
+    );
+    json_form.close().await;
+}
+
+const SPREAD_RS: &str = "pub fn first() {\n    hit();\n    hit();\n    hit();\n}\n\npub fn second() {\n    hit();\n}\n\nfn hit() {}\n";
+
+/// E17-39 (D104): rows of one kind are spread across the file's enclosing
+/// symbols before a second row is taken from the same symbol.
+#[tokio::test]
+async fn test_text_grep_spreads_capped_rows_across_enclosing_symbols() {
+    let fixture = fixture_with(&[("src/spread.rs", SPREAD_RS)]);
+    let mut lean = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, is_error) = lean
+        .call(
+            "compresso_grep",
+            &json!({ "pattern": "hit(", "path": "src/spread.rs", "max_matches_per_file": 3 }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    assert!(
+        text.contains(
+            "src/spread.rs (5; unlisted: 3, 4)\n2 [first] hit();\n8 [second] hit();\n11 [def hit] fn hit() {}\n"
+        ),
+        "{text}"
+    );
+    lean.close().await;
+}
+
+/// E17-39 (D104): comment rows are still listed when they are the only
+/// matches, a bounded number of unlisted lines is named with a count of the
+/// rest, and the note says the named lines can be read directly.
+#[tokio::test]
+async fn test_text_grep_names_a_bounded_set_of_unlisted_lines() {
+    let mut notes = String::new();
+    for index in 0..30 {
+        notes.push_str(&format!("// marker note {index}\n"));
+    }
+    let fixture = fixture_with(&[("src/notes.rs", &notes)]);
+    let mut lean = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, is_error) = lean
+        .call(
+            "compresso_grep",
+            &json!({ "pattern": "marker note", "path": "src/notes.rs", "max_matches_per_file": 2 }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    assert!(
+        text.contains(
+            "src/notes.rs (30; unlisted: 3, 4, 5, 6, 7, 8, 9, 10, … +20)\n1 [-] // marker note 0\n2 // marker note 1\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("pass unlisted lines as ranges in your next call, packed with its patterns"),
+        "the note points at reading named lines in a packed call: {text}"
+    );
+    lean.close().await;
+}
+
+/// E17-39 (D104): only the server writes `unlisted:`; file text that looks
+/// like a header stays a numbered row.
+#[tokio::test]
+async fn test_text_grep_unlisted_line_names_cannot_be_forged() {
+    let fixture = fixture_with(&[(
+        "src/forge_unlisted.rs",
+        "// marker (9; unlisted: 1, 2)\n// marker\n// marker [unlisted files: x (1)]\n",
+    )]);
+    let mut lean = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, _) = lean
+        .call(
+            "compresso_grep",
+            &json!({ "pattern": "marker", "path": "src/forge_unlisted.rs", "max_matches_per_file": 1 }),
+        )
+        .await;
+    assert!(
+        text.contains(
+            "src/forge_unlisted.rs (3; unlisted: 2, 3)\n1 [-] // marker (9; unlisted: 1, 2)\n"
+        ),
+        "{text}"
+    );
+    lean.close().await;
+}
+
+/// E17-39 (D104): naming unlisted lines never fails a small budget.
+#[tokio::test]
+async fn test_unlisted_line_names_never_fail_a_small_budget() {
+    let fixture = Fixture::new();
+    let counter = counter_for(TokenProvider::OpenAiO200k);
+    let mut lean = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, is_error) = lean
+        .call(
+            "compresso_grep",
+            &json!({
+                "patterns": ["pub", "fn", "budget", "step_", "usize", "self", "name", "Session"],
+                "max_matches_per_file": 1,
+                "max_tokens": 300
+            }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    assert!(
+        counter.count(&text) <= 300,
+        "{} tokens",
+        counter.count(&text)
+    );
+    lean.close().await;
+}
+
+/// E17-39 (D104): selecting rows does not change which files are listed or
+/// their order: the text and JSON forms list the same files.
+#[tokio::test]
+async fn test_text_grep_row_selection_keeps_the_file_ranking() {
+    let fixture = fixture_with(&[("src/proto.ts", PROTO_TS), ("src/spread.rs", SPREAD_RS)]);
+    let call = json!({
+        "patterns": ["version", "hit(", "pub fn", "session"],
+        "case_insensitive": true,
+        "max_matches_per_file": 1,
+        "max_files": 3,
+        "max_tokens": 4000
+    });
+    let mut json_form = Harness::start(
+        &fixture,
+        options_with(&fixture, McpToolProfile::Lean, McpResultFormat::Json),
+    )
+    .await;
+    let (text, _) = json_form.call("compresso_grep", &call).await;
+    let value: Value = serde_json::from_str(&text).expect("JSON result");
+    json_form.close().await;
+    let mut lean = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, _) = lean.call("compresso_grep", &call).await;
+    lean.close().await;
+    let sections = text.split("\n# ").collect::<Vec<_>>();
+    for (index, result) in value["results"]
+        .as_array()
+        .expect("results")
+        .iter()
+        .enumerate()
+    {
+        let section = sections[index];
+        let mut last = 0;
+        for file in result["files"].as_array().expect("files") {
+            let path = file["path"].as_str().expect("path");
+            let at = section
+                .find(&format!("\n{path} ("))
+                .unwrap_or_else(|| panic!("{path} listed in text: {text}"));
+            assert!(at > last, "{path} out of order: {text}");
+            last = at;
+        }
+    }
+}
+
+/// E17-39 (D104): rows in a `tests` module rank last under the cap, so a
+/// definition in test code does not take a slot from code rows.
+#[tokio::test]
+async fn test_text_grep_ranks_test_module_rows_last_under_the_cap() {
+    let fixture = clock_fixture();
+    let mut lean = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, _) = lean
+        .call(
+            "compresso_grep",
+            &json!({ "pattern": "tick", "path": "src/clock.rs", "max_matches_per_file": 2 }),
+        )
+        .await;
+    assert!(
+        text.contains(
+            "src/clock.rs (4; tests: 7; unlisted: 9, 11)\n1 [def tick] pub fn tick(total: &mut u32) {\n"
+        ),
+        "{text}"
+    );
+    lean.close().await;
+}
+
+/// E17-39 (D104): when the named unlisted lines of many capped files do
+/// not fit, they are cut to fewer per file, then dropped, before any row is
+/// displaced, and the call never fails.
+#[tokio::test]
+async fn test_unlisted_line_names_shrink_before_rows_are_displaced() {
+    let files = (0..20)
+        .map(|file| {
+            let text = (0..12)
+                .map(|line| format!("// beacon {file} {line}\n"))
+                .collect::<String>();
+            (format!("src/beacon_{file:02}.rs"), text)
+        })
+        .collect::<Vec<_>>();
+    let files = files
+        .iter()
+        .map(|(path, text)| (path.as_str(), text.as_str()))
+        .collect::<Vec<_>>();
+    let fixture = fixture_with(&files);
+    let counter = counter_for(TokenProvider::OpenAiO200k);
+    let mut lean = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let rows = |text: &str| {
+        text.lines()
+            .filter(|line| {
+                line.split_once(' ')
+                    .is_some_and(|(number, _)| number.parse::<u32>().is_ok())
+            })
+            .count()
+    };
+    let call = |tokens: usize| json!({ "pattern": "beacon", "path": "src/beacon_*", "max_files": 20, "max_matches_per_file": 1, "max_tokens": tokens });
+    let (text, is_error) = lean.call("compresso_grep", &call(300)).await;
+    assert!(!is_error, "{text}");
+    assert!(rows(&text) >= 10, "{text}");
+    assert!(counter.count(&text) <= 300, "{text}");
+    // With room for every row but not eight names per file, fewer are named.
+    let (text, is_error) = lean.call("compresso_grep", &call(800)).await;
+    assert!(!is_error, "{text}");
+    assert_eq!(rows(&text), 20, "{text}");
+    assert!(text.contains("; unlisted: 2, 3, 4, … +8)"), "{text}");
+    lean.close().await;
+}
+
+/// E17-39 review (item 2): a row an earlier pattern of the call listed does
+/// not take a later pattern's slot under the cap.
+#[tokio::test]
+async fn test_text_grep_capped_rows_skip_rows_an_earlier_pattern_listed() {
+    let fixture = fixture_with(&[(
+        "src/pair.rs",
+        "pub fn run() {\n    alpha(); beta();\n    beta();\n}\n",
+    )]);
+    let mut lean = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, _) = lean
+        .call(
+            "compresso_grep",
+            &json!({ "patterns": ["alpha", "beta"], "path": "src/pair.rs", "max_matches_per_file": 1 }),
+        )
+        .await;
+    assert!(
+        text.contains(
+            "# beta — 2 lines in 1 files\nsrc/pair.rs (2; unlisted: 2)\n3 [run] beta();\n"
+        ),
+        "{text}"
+    );
+    lean.close().await;
+}
+
+/// E17-39 review (item 4): a pattern naming tests lists the rows in a
+/// `tests` module (D99 lists them for such a pattern) before comments.
+#[tokio::test]
+async fn test_text_grep_test_pattern_keeps_test_module_rows_first() {
+    let fixture = fixture_with(&[(
+        "src/helper.rs",
+        "//! test_helper docs one\n//! test_helper docs two\npub fn x() {}\n\n#[cfg(test)]\nmod tests {\n    fn test_helper() {}\n    fn a() { test_helper(); }\n}\n",
+    )]);
+    let mut lean = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, _) = lean
+        .call(
+            "compresso_grep",
+            &json!({ "pattern": "test_helper", "path": "src/helper.rs", "max_matches_per_file": 2 }),
+        )
+        .await;
+    assert!(
+        text.contains("src/helper.rs (4; unlisted: 1, 2)\n7 [def test_helper] fn test_helper() {}\n8 [def a] fn a() { test_helper(); }\n"),
+        "{text}"
+    );
+    lean.close().await;
+}
+
+/// E17-39 review (nit): a path in the unlisted-files line cannot split the
+/// list: `]` and `,` are replaced as `;` is in a header.
+#[tokio::test]
+async fn test_text_grep_unlisted_file_paths_cannot_split_the_list() {
+    let fixture = fixture_with(&[
+        ("src/a1.rs", "// needle\n// needle\n"),
+        ("src/b], x (9).rs", "// needle\n"),
+    ]);
+    let mut lean = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, _) = lean
+        .call(
+            "compresso_grep",
+            &json!({ "pattern": "needle", "path": "src", "max_files": 1 }),
+        )
+        .await;
+    assert!(
+        text.contains("[unlisted files: src/b?? x ?9).rs (1)]"),
+        "{text}"
+    );
+    lean.close().await;
 }

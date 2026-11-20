@@ -10,10 +10,11 @@
 use std::path::Path;
 
 use compresso_core::TokenCounter;
-use compresso_store::{FileLanguage, FileRecord, RepoId, Store, SymbolRecord};
+use compresso_store::{FileLanguage, FileRecord, RepoId, Store, SymbolKind, SymbolRecord};
 use regex::{Regex, RegexBuilder};
 
 use crate::AtlasError;
+use crate::parsers::languages::CommentSyntax;
 use crate::queries::{
     QueryError, ResolvedEntry, canonical_query_root, map_path_matches_focus, read_utf8,
     resolve_under_root, smallest_enclosing_symbol, validate_map_focus,
@@ -43,6 +44,12 @@ pub const GREP_SCAN_MAX_BYTES: u64 = 256 * 1024 * 1024;
 pub const GREP_REGEX_MAX_BYTES_PER_PATTERN: u64 = 64 * 1024 * 1024;
 /// Upper bound for [`GrepOptions::context_lines`].
 pub const GREP_MAX_CONTEXT_LINES: usize = 10;
+/// Matching lines per file that [`GrepOptions::select_rows`] chooses from
+/// (E17-39, D104); later matches of the file are counted, never listed or
+/// named.
+pub const GREP_ROW_CANDIDATES: usize = 2_000;
+/// Unlisted lines of a listed file named by line (E17-39, D104).
+pub const GREP_UNLISTED_LINES_NAMED: usize = 8;
 
 /// Compiled program ceiling for a search pattern. Matching is linear-time
 /// whatever the pattern, so this bounds memory: it applies to each compiled
@@ -110,6 +117,13 @@ pub struct GrepOptions<'a> {
     /// pattern has one, else one entry per pattern. A pattern with a scope
     /// searches only the files in scope of both `path` and its own scope.
     pub scopes: &'a [Option<String>],
+    /// Choose which lines of a file to list by usefulness when it has more
+    /// than `max_matches_per_file` (E17-39, D104): definitions, then code,
+    /// then comment or documentation lines, then lines in a `tests` module,
+    /// spread across enclosing symbols, then line order; the rest are named
+    /// in [`GrepFile::lines_unlisted`]. Off, the first lines in line order
+    /// are listed, as before; files rank the same either way.
+    pub select_rows: bool,
 }
 
 /// One line shown around a match, cut like a snippet.
@@ -136,6 +150,10 @@ pub struct GrepLine {
     pub before: Vec<GrepContextLine>,
     /// Context lines after the match, stopping before the next listed match.
     pub after: Vec<GrepContextLine>,
+    /// Usefulness among the file's listed lines, 0 first (E17-39, D104):
+    /// a budget cut keeps the lowest ranks. Line order without
+    /// [`GrepOptions::select_rows`].
+    pub rank: usize,
 }
 
 /// One file's matches for one pattern.
@@ -145,10 +163,24 @@ pub struct GrepFile {
     pub language: Option<FileLanguage>,
     /// Every matching line in the file, listed or not.
     pub matches_total: usize,
-    /// The first matching lines, in line order.
+    /// The listed matching lines, in line order: the first ones, or with
+    /// [`GrepOptions::select_rows`] the most useful ones.
     pub lines: Vec<GrepLine>,
     /// The file changed since it was indexed; lines are current, symbols absent.
     pub stale: bool,
+    /// Matching lines not listed, the most useful first, at most
+    /// [`GREP_UNLISTED_LINES_NAMED`] (E17-39, D104): lines a budget cut
+    /// dropped, then, with [`GrepOptions::select_rows`], the next most
+    /// useful lines past the cap. Only the text form prints them.
+    pub lines_unlisted: Vec<u32>,
+    /// A definition is among the file's first `max_matches_per_file`
+    /// matching lines: the file ranks as defining a symbol (D87), whichever
+    /// lines are listed.
+    pub ranks_as_definition: bool,
+    /// Text of rows a budget cut dropped before a listed row, with their
+    /// context, in line order (E17-39, D104): the text form uses it so
+    /// every listed row keeps the context the call asked for.
+    pub context_spare: Vec<GrepContextLine>,
 }
 
 /// Every file one pattern matched, ranked.
@@ -302,18 +334,47 @@ impl GrepReport {
                     fitted.results[index].files.push(file.clone());
                     continue;
                 }
-                // List the file with the lines that fit, then stop.
+                // List the file with the most useful lines that fit, in
+                // line order, name the lines left out first, then stop.
                 let mut partial = GrepFile {
                     lines: Vec::new(),
                     ..file.clone()
                 };
-                for line in &file.lines {
-                    partial.lines.push(line.clone());
+                let mut by_rank = file.lines.iter().collect::<Vec<_>>();
+                by_rank.sort_by_key(|line| line.rank);
+                let mut dropped = Vec::new();
+                for line in by_rank {
+                    if !dropped.is_empty() {
+                        dropped.push(line.line);
+                        continue;
+                    }
+                    let at = partial.lines.partition_point(|kept| kept.line < line.line);
+                    partial.lines.insert(at, line.clone());
                     if used + counter.count(&render_file(&partial)) > budget {
-                        partial.lines.pop();
-                        break;
+                        partial.lines.remove(at);
+                        dropped.push(line.line);
                     }
                 }
+                // A dropped row before a listed one leaves its text and
+                // context behind for the listed rows' context.
+                let last_listed = partial.lines.last().map_or(0, |line| line.line);
+                for line in file
+                    .lines
+                    .iter()
+                    .filter(|line| dropped.contains(&line.line) && line.line < last_listed)
+                {
+                    partial.context_spare.extend(line.before.iter().cloned());
+                    partial.context_spare.push(GrepContextLine {
+                        line: line.line,
+                        text: line.snippet.clone(),
+                    });
+                    partial.context_spare.extend(line.after.iter().cloned());
+                }
+                partial.context_spare.sort_by_key(|line| line.line);
+                partial.context_spare.dedup_by_key(|line| line.line);
+                dropped.extend(file.lines_unlisted.iter().copied());
+                dropped.truncate(GREP_UNLISTED_LINES_NAMED);
+                partial.lines_unlisted = dropped;
                 if !partial.lines.is_empty() {
                     used += counter.count(&render_file(&partial));
                     fitted.results[index].files.push(partial);
@@ -675,7 +736,7 @@ struct RankKey<'a> {
 impl RankKey<'_> {
     fn of(file: &GrepFile) -> RankKey<'_> {
         RankKey {
-            defines: file.lines.iter().any(|line| line.definition),
+            defines: file.ranks_as_definition,
             test: is_test_path(&file.path),
             matches: file.matches_total,
             path: &file.path,
@@ -834,7 +895,14 @@ fn grep_with_regex_budget(
         // Snippets and symbols are built while the source is at hand, so a
         // search never holds more than one file's content.
         let mut symbols = None;
-        for ((matcher, scan), scope) in matchers.iter().zip(&mut scans).zip(&scopes) {
+        // Lines earlier patterns chose in this file (E17-39, D104).
+        let mut shown = Vec::<u32>::new();
+        for (((matcher, scan), scope), pattern) in matchers
+            .iter()
+            .zip(&mut scans)
+            .zip(&scopes)
+            .zip(options.patterns)
+        {
             if scope
                 .as_ref()
                 .is_some_and(|scope| !scope.matches(&record.path))
@@ -849,10 +917,17 @@ fn grep_with_regex_budget(
                 }
                 scan.regex_bytes_left -= source_bytes;
             }
-            let (matches_total, kept) = if options.regex {
-                matching_lines_by_line(matcher, &source, options.max_matches_per_file)
+            // With row selection, up to GREP_ROW_CANDIDATES lines are kept
+            // to choose from (E17-39, D104).
+            let keep = if options.select_rows {
+                GREP_ROW_CANDIDATES.max(options.max_matches_per_file)
             } else {
-                matching_lines(matcher, &source, options.max_matches_per_file)
+                options.max_matches_per_file
+            };
+            let (matches_total, kept) = if options.regex {
+                matching_lines_by_line(matcher, &source, keep)
+            } else {
+                matching_lines(matcher, &source, keep)
             };
             if matches_total == 0 {
                 continue;
@@ -871,22 +946,53 @@ fn grep_with_regex_budget(
                     None => symbols.insert(store.symbols_in_file(repo, &record.path)?),
                 })
             };
+            let enclosing_of =
+                |line: u32| symbols.and_then(|symbols| smallest_enclosing_symbol(symbols, line));
+            let is_definition =
+                |line: u32| enclosing_of(line).is_some_and(|symbol| symbol.start_line == line);
+            // The file ranks by its first lines, as before row selection.
+            let ranks_as_definition = kept
+                .iter()
+                .take(options.max_matches_per_file)
+                .any(|&(line, ..)| is_definition(line));
+            let (kept, ranks, lines_unlisted) = if options.select_rows {
+                let selected = select_rows(
+                    &Selection {
+                        source: &source,
+                        language: record.language,
+                        symbols: symbols.map(Vec::as_slice),
+                        matcher,
+                        names_tests: pattern.to_ascii_lowercase().contains("test"),
+                        shown: &shown,
+                    },
+                    kept,
+                    options.max_matches_per_file,
+                );
+                shown.extend(selected.0.iter().map(|&(line, ..)| line));
+                selected
+            } else {
+                let ranks = (0..kept.len()).collect();
+                (kept, ranks, Vec::new())
+            };
             let contexts = merged_context(&source, &kept, options.context_lines);
             let lines = kept
                 .iter()
                 .zip(contexts)
-                .map(|(&(line, start, end, match_start), (before, after))| {
-                    let enclosing =
-                        symbols.and_then(|symbols| smallest_enclosing_symbol(symbols, line));
-                    GrepLine {
-                        line,
-                        snippet: snippet(&source, start, end, match_start),
-                        symbol: enclosing.map(|symbol| symbol.qualified_name.clone()),
-                        definition: enclosing.is_some_and(|symbol| symbol.start_line == line),
-                        before,
-                        after,
-                    }
-                })
+                .zip(ranks)
+                .map(
+                    |((&(line, start, end, match_start), (before, after)), rank)| {
+                        let enclosing = enclosing_of(line);
+                        GrepLine {
+                            line,
+                            snippet: snippet(&source, start, end, match_start),
+                            symbol: enclosing.map(|symbol| symbol.qualified_name.clone()),
+                            definition: enclosing.is_some_and(|symbol| symbol.start_line == line),
+                            before,
+                            after,
+                            rank,
+                        }
+                    },
+                )
                 .collect();
             scan.offer(
                 GrepFile {
@@ -895,6 +1001,9 @@ fn grep_with_regex_budget(
                     matches_total,
                     lines,
                     stale,
+                    lines_unlisted,
+                    ranks_as_definition,
+                    context_spare: Vec::new(),
                 },
                 options.max_files,
             );
@@ -921,6 +1030,329 @@ fn grep_with_regex_budget(
         });
     }
     Ok(report)
+}
+
+/// A kept match: `(line, line start, line end, match start)`.
+type KeptMatch = (u32, usize, usize, usize);
+
+/// How useful a capped row is (E17-39, D104), most useful first.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+enum RowClass {
+    /// The first line of its enclosing indexed symbol.
+    Definition,
+    Code,
+    /// A symbol's first line that matches only outside the symbol's name (a
+    /// parameter, receiver, or type): a mention, after body code, so method
+    /// signatures do not crowd out use sites.
+    Signature,
+    /// A line that starts as comment or documentation text.
+    Comment,
+    /// A line inside an indexed module named `tests`, which the text form
+    /// names by line while the pattern lists code (E17-34, D99); not
+    /// demoted for a pattern naming tests, which D99 lists.
+    TestModule,
+    /// A line an earlier pattern of the call chose in this file: the text
+    /// form names it under `above` instead of listing it again.
+    Repeat,
+}
+
+/// What [`select_rows`] reads about one file and pattern.
+struct Selection<'a> {
+    source: &'a str,
+    language: Option<FileLanguage>,
+    symbols: Option<&'a [SymbolRecord]>,
+    matcher: &'a Regex,
+    /// The pattern names tests (D99 lists its test rows).
+    names_tests: bool,
+    /// Lines earlier patterns of the call chose in this file.
+    shown: &'a [u32],
+}
+
+/// Row selection (E17-39, D104): ranks `kept` (candidates in line order)
+/// and returns the `keep` most useful in line order with each row's rank,
+/// plus the next most useful lines, named instead of listed. Rows rank by
+/// [`RowClass`]; within a class, rows are spread across enclosing symbols
+/// (the first row of each symbol, then the second, ...), then by line. A
+/// symbol's first line is a definition only when a match overlaps the
+/// symbol's name there. No file is re-parsed: symbols come from the index
+/// in one sorted pass and comments from [`comment_rows`].
+fn select_rows(
+    selection: &Selection<'_>,
+    kept: Vec<KeptMatch>,
+    keep: usize,
+) -> (Vec<KeptMatch>, Vec<usize>, Vec<u32>) {
+    let source = selection.source;
+    let numbers = kept.iter().map(|&(line, ..)| line).collect::<Vec<_>>();
+    let comments = selection.language.map_or_else(
+        || vec![false; numbers.len()],
+        |language| {
+            comment_rows(
+                source,
+                &crate::parsers::languages::spec(language).comments,
+                &numbers,
+            )
+        },
+    );
+    let symbols = selection.symbols.unwrap_or_default();
+    // `tests` module ranges, found once per file, sorted and merged so each
+    // candidate is one binary search.
+    let mut ranges = symbols
+        .iter()
+        .filter(|symbol| symbol.kind == SymbolKind::Module && symbol.name == "tests")
+        .map(|symbol| (symbol.start_line, symbol.end_line))
+        .collect::<Vec<_>>();
+    ranges.sort_unstable();
+    let mut tests = Vec::<(u32, u32)>::new();
+    for (start, end) in ranges {
+        match tests.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => tests.push((start, end)),
+        }
+    }
+    let enclosing = enclosing_symbols(symbols, &numbers);
+    let candidates = kept
+        .iter()
+        .zip(&comments)
+        .zip(&enclosing)
+        .map(|((&(line, start, end, _), &comment), &enclosing)| {
+            let in_tests = !selection.names_tests && in_tests_module(&tests, line);
+            let class = if selection.shown.contains(&line) {
+                RowClass::Repeat
+            } else if in_tests {
+                RowClass::TestModule
+            } else if let Some(symbol) =
+                enclosing.filter(|symbol| symbol.start_line == line && !comment)
+            {
+                if match_on_name(selection.matcher, &source[start..end], &symbol.name) {
+                    RowClass::Definition
+                } else {
+                    RowClass::Signature
+                }
+            } else if comment {
+                RowClass::Comment
+            } else {
+                RowClass::Code
+            };
+            (
+                line,
+                class,
+                enclosing.map(|symbol| symbol.qualified_name.as_str()),
+            )
+        })
+        .collect::<Vec<_>>();
+    let order = rank_rows(&candidates);
+    let mut rank_of = vec![usize::MAX; kept.len()];
+    for (rank, &index) in order.iter().enumerate() {
+        rank_of[index] = rank;
+    }
+    let unlisted = order
+        .iter()
+        .skip(keep)
+        .take(GREP_UNLISTED_LINES_NAMED)
+        .map(|&index| numbers[index])
+        .collect();
+    let (chosen, ranks) = kept
+        .into_iter()
+        .zip(rank_of)
+        .filter(|&(_, rank)| rank < keep)
+        .unzip();
+    (chosen, ranks, unlisted)
+}
+
+/// Whether `line` is inside one of `ranges` (sorted, disjoint).
+fn in_tests_module(ranges: &[(u32, u32)], line: u32) -> bool {
+    let at = ranges.partition_point(|&(start, _)| start <= line);
+    at > 0 && ranges[at - 1].1 >= line
+}
+
+/// Whether a match of `matcher` in `line` overlaps the first occurrence of
+/// `name` there: the line defines that name rather than mentioning a
+/// parameter, receiver, or type.
+fn match_on_name(matcher: &Regex, line: &str, name: &str) -> bool {
+    let line = line.trim_end_matches('\r');
+    let Some(at) = (!name.is_empty()).then(|| line.find(name)).flatten() else {
+        return false;
+    };
+    let end = at + name.len();
+    matcher
+        .find_iter(line)
+        .any(|found| found.start() < end && at < found.end())
+}
+
+/// The smallest enclosing symbol of each of `lines` (ascending), as
+/// [`smallest_enclosing_symbol`] finds it (the smallest span, the earliest
+/// symbol on a tie), in one pass over the symbols sorted by first line:
+/// each symbol enters and leaves an ordered set once, so the cost is
+/// O((symbols + lines) log symbols) however the symbols overlap.
+fn enclosing_symbols<'a>(
+    symbols: &'a [SymbolRecord],
+    lines: &[u32],
+) -> Vec<Option<&'a SymbolRecord>> {
+    use std::cmp::Reverse;
+    use std::collections::{BTreeSet, BinaryHeap};
+    let mut by_start = (0..symbols.len()).collect::<Vec<_>>();
+    by_start.sort_by_key(|&index| symbols[index].start_line);
+    let span = |index: usize| symbols[index].end_line - symbols[index].start_line;
+    let mut next = 0;
+    let mut active = BTreeSet::<(u32, usize)>::new();
+    let mut ends = BinaryHeap::<Reverse<(u32, usize)>>::new();
+    lines
+        .iter()
+        .map(|&line| {
+            while let Some(&index) = by_start.get(next) {
+                if symbols[index].start_line > line {
+                    break;
+                }
+                // A symbol ending before it starts encloses no line.
+                if symbols[index].end_line >= symbols[index].start_line {
+                    active.insert((span(index), index));
+                    ends.push(Reverse((symbols[index].end_line, index)));
+                }
+                next += 1;
+            }
+            while let Some(&Reverse((end, index))) = ends.peek() {
+                if end >= line {
+                    break;
+                }
+                ends.pop();
+                active.remove(&(span(index), index));
+            }
+            active.first().map(|&(_, index)| &symbols[index])
+        })
+        .collect()
+}
+
+/// Indexes of `candidates` (`(line, class, enclosing symbol)`, in line
+/// order), most useful first: by class, then by how many earlier rows of
+/// the same class share the symbol, then by line.
+fn rank_rows(candidates: &[(u32, RowClass, Option<&str>)]) -> Vec<usize> {
+    let mut seen = std::collections::HashMap::<(RowClass, Option<&str>), usize>::new();
+    let mut keys = candidates
+        .iter()
+        .enumerate()
+        .map(|(index, &(line, class, symbol))| {
+            let occurrence = seen.entry((class, symbol)).or_default();
+            let key = (class, *occurrence, line, index);
+            *occurrence += 1;
+            key
+        })
+        .collect::<Vec<_>>();
+    keys.sort_unstable();
+    keys.into_iter().map(|(.., index)| index).collect()
+}
+
+/// Whether each of `lines` (ascending line numbers) starts as comment or
+/// documentation text under `syntax` (E17-39, D104), in one pass over
+/// `source` that stops at the last line asked for. Only line starts count:
+/// a line comment marker or a block opener must be the line's first
+/// non-blank text, so a marker in a string or after code never opens a
+/// comment, and a block opened after code is not followed. A line inside a
+/// block, or that opens one, is a comment unless code follows the block's
+/// closer on that line. Anything else is code.
+fn comment_rows(source: &str, syntax: &CommentSyntax, lines: &[u32]) -> Vec<bool> {
+    let mut flags = Vec::with_capacity(lines.len());
+    let Some(&last) = lines.last() else {
+        return flags;
+    };
+    if syntax.line.is_empty() && syntax.block.is_none() {
+        return vec![false; lines.len()];
+    }
+    let mut wanted = lines.iter().peekable();
+    let mut in_block = false;
+    let mut offset = 0_usize;
+    let mut closers = CloserCursor::default();
+    for (index, text) in source.split('\n').enumerate() {
+        let line_start = offset;
+        offset += text.len() + 1;
+        let number = u32::try_from(index + 1).unwrap_or(u32::MAX);
+        if number > last {
+            break;
+        }
+        let trimmed = text.trim_start();
+        // The text after a block's closer, when the block closes here.
+        let closes = |rest: &str, close: &str| {
+            rest.find(close)
+                .map(|at| rest[at + close.len()..].trim().is_empty())
+        };
+        let comment = match syntax.block {
+            Some((_, close)) if in_block => match closes(trimmed, close) {
+                Some(only_comment) => {
+                    in_block = false;
+                    only_comment
+                }
+                None => true,
+            },
+            Some((open, close)) if trimmed.starts_with(open) => {
+                match closes(&trimmed[open.len()..], close) {
+                    Some(only_comment) => only_comment,
+                    // A block counts only when its closer follows within
+                    // BLOCK_COMMENT_LOOKAHEAD bytes; an opener inside a
+                    // multi-line string usually has none, so it stays code.
+                    None if closers.follows(source, line_start + text.len(), close) => {
+                        in_block = true;
+                        true
+                    }
+                    None => false,
+                }
+            }
+            _ => syntax.line.iter().any(|marker| trimmed.starts_with(marker)),
+        };
+        while wanted.next_if_eq(&&number).is_some() {
+            flags.push(comment);
+        }
+    }
+    flags.resize(lines.len(), false);
+    flags
+}
+
+/// Bytes after a block comment's opening line searched for its closer.
+const BLOCK_COMMENT_LOOKAHEAD: usize = 64 * 1024;
+
+/// Finds block-comment closers for [`comment_rows`] with one forward
+/// cursor, so a file is searched at most about once whatever its lines
+/// hold (security review: a file of many unclosed openers must not cost
+/// lines times the lookahead). Queries come in increasing `from` order.
+#[derive(Default)]
+struct CloserCursor {
+    /// The first closer at or after the last searched start, if found.
+    next: Option<usize>,
+    /// No closer starts before this offset at or after the last start.
+    clear_until: usize,
+}
+
+impl CloserCursor {
+    /// Whether `close` starts within [`BLOCK_COMMENT_LOOKAHEAD`] bytes of
+    /// `from` (the whole closer inside that window).
+    fn follows(&mut self, source: &str, from: usize, close: &str) -> bool {
+        let bytes = source.as_bytes();
+        let from = from.min(bytes.len());
+        let window_end = (from + BLOCK_COMMENT_LOOKAHEAD).min(bytes.len());
+        if let Some(at) = self.next.filter(|&at| at >= from) {
+            return at + close.len() <= window_end;
+        }
+        // Resume where the last search ended: nothing before it matches.
+        let start = from.max(self.clear_until);
+        if close.is_empty() || start + close.len() > window_end {
+            return false;
+        }
+        if let Some(offset) = find_bytes(&bytes[start..window_end], close.as_bytes()) {
+            self.next = Some(start + offset);
+            true
+        } else {
+            self.next = None;
+            // The last `close.len() - 1` bytes may start a closer that runs
+            // past this window, so the next search covers them again.
+            self.clear_until = window_end + 1 - close.len();
+            false
+        }
+    }
+}
+
+/// The first offset of `needle` (not empty) in `haystack`.
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 /// Context for each kept match `(line, line start, line end, match start)`,
@@ -1254,6 +1686,7 @@ mod tests {
             max_matches_per_file: 5,
             context_lines: 0,
             scopes: &[],
+            select_rows: false,
         };
         let budget = 2 * source.len() as u64;
         let cut = grep_with_regex_budget(&store, repo, &options(true), budget).expect("grep");
@@ -1315,5 +1748,266 @@ mod tests {
         assert!(!deep.matches("lib/a/mod.rs"));
         assert!(PathFilter::parse("../etc").is_err());
         assert!(PathFilter::parse("/etc").is_err());
+    }
+
+    fn rows(source: &str, syntax: CommentSyntax) -> Vec<bool> {
+        let count = u32::try_from(source.lines().count()).expect("small");
+        comment_rows(source, &syntax, &(1..=count).collect::<Vec<_>>())
+    }
+
+    const C_LIKE: CommentSyntax = CommentSyntax {
+        line: &["//"],
+        block: Some(("/*", "*/")),
+    };
+
+    /// E17-39 (D104): a comment is recognised only from a line start; a
+    /// dereference, a marker in a string, or a block opened after code is
+    /// code, and a line with code after a block's closer is code.
+    #[test]
+    fn test_comment_rows_read_only_line_starts_and_err_toward_code() {
+        let source = "//! module docs\n/**\n * version docs\n */\nlet glob = \"src/**/*.ts\";\n*total += 1;\nfoo(); /* trailing\nstill code */\n/* one */ code();\n/* one */\n  // indented\ncode(); // tail\n";
+        assert_eq!(
+            rows(source, C_LIKE),
+            [
+                true, true, true, true, false, false, false, false, false, true, true, false
+            ]
+        );
+        let python = "# comment\n\"\"\"Docstring.\"\"\"\nx = 1  # tail\n";
+        assert_eq!(
+            rows(
+                python,
+                CommentSyntax {
+                    line: &["#"],
+                    block: None
+                }
+            ),
+            [true, false, false]
+        );
+        assert_eq!(
+            rows("# Heading\ntext\n", CommentSyntax::NONE),
+            [false, false]
+        );
+        // Only the lines asked for are returned, in order.
+        assert_eq!(
+            comment_rows(source, &C_LIKE, &[3, 5, 99]),
+            [true, false, false]
+        );
+        assert!(comment_rows(source, &C_LIKE, &[]).is_empty());
+    }
+
+    /// E17-39 (D104): definitions, then code, then comments, then rows in a
+    /// `tests` module; within a class, one row per enclosing symbol per
+    /// round, then line order.
+    #[test]
+    fn test_rank_rows_orders_by_class_then_spreads_across_symbols() {
+        let candidates = [
+            (1, RowClass::Comment, None),
+            (2, RowClass::Comment, None),
+            (5, RowClass::Code, Some("a")),
+            (6, RowClass::Code, Some("a")),
+            (7, RowClass::Code, Some("a")),
+            (9, RowClass::Definition, Some("b")),
+            (10, RowClass::Code, Some("b")),
+            (12, RowClass::TestModule, Some("tests::t")),
+            (13, RowClass::Comment, Some("b")),
+        ];
+        let lines = rank_rows(&candidates)
+            .into_iter()
+            .map(|index| candidates[index].0)
+            .collect::<Vec<_>>();
+        assert_eq!(lines, [9, 5, 10, 6, 7, 1, 13, 2, 12]);
+    }
+
+    fn line(number: u32, rank: usize) -> GrepLine {
+        GrepLine {
+            line: number,
+            snippet: format!("row {number} with some text"),
+            symbol: None,
+            definition: false,
+            before: Vec::new(),
+            after: Vec::new(),
+            rank,
+        }
+    }
+
+    /// E17-39 (D104): a budget cut keeps a file's most useful rows, shown in
+    /// line order, and names the rows it drops first.
+    #[test]
+    fn test_budget_cut_keeps_the_most_useful_rows_and_names_the_rest() {
+        let file = GrepFile {
+            path: "src/a.rs".to_owned(),
+            language: None,
+            matches_total: 6,
+            lines: vec![line(1, 2), line(4, 0), line(8, 1)],
+            stale: false,
+            lines_unlisted: vec![2, 3, 5],
+            ranks_as_definition: false,
+            context_spare: Vec::new(),
+        };
+        let report = GrepReport {
+            results: vec![GrepPatternResult {
+                pattern: "row".to_owned(),
+                matches_total: 6,
+                files_total: 1,
+                files: vec![file.clone()],
+                files_unlisted: Vec::new(),
+            }],
+            files_scanned: 1,
+            bytes_scanned: 1,
+            files_in_scope: 1,
+            files_skipped_oversize: 0,
+            files_skipped_unreadable: 0,
+            stale_files: 0,
+            scan_truncated: false,
+            output_truncated: true,
+            paths_unmatched: Vec::new(),
+        };
+        let counter = compresso_core::counter_for(compresso_core::TokenProvider::OpenAiO200k);
+        let header = counter.count("# row — 6 matching lines in 1 files\n");
+        let two = GrepFile {
+            lines: vec![line(4, 0), line(8, 1)],
+            ..file
+        };
+        let budget = header + counter.count(&render_file(&two));
+        let fitted = report.fit_to_budget(budget, counter);
+        let kept = &fitted.results[0].files[0];
+        assert_eq!(
+            kept.lines.iter().map(|line| line.line).collect::<Vec<_>>(),
+            [4, 8]
+        );
+        assert_eq!(kept.lines_unlisted, [1, 2, 3, 5]);
+    }
+
+    /// E17-39 review (item 7): a row a budget cut drops between two listed
+    /// rows leaves its own text and context behind, so the listed rows keep
+    /// the context the call asked for.
+    #[test]
+    fn test_budget_cut_keeps_a_dropped_middle_rows_text_for_context() {
+        let context = |number: u32| GrepContextLine {
+            line: number,
+            text: format!("context {number}"),
+        };
+        let middle = GrepLine {
+            before: vec![context(3)],
+            after: vec![context(5)],
+            ..line(4, 2)
+        };
+        let file = GrepFile {
+            path: "src/a.rs".to_owned(),
+            language: None,
+            matches_total: 3,
+            lines: vec![line(2, 0), middle, line(6, 1)],
+            stale: false,
+            lines_unlisted: Vec::new(),
+            ranks_as_definition: false,
+            context_spare: Vec::new(),
+        };
+        let report = GrepReport {
+            results: vec![GrepPatternResult {
+                pattern: "row".to_owned(),
+                matches_total: 3,
+                files_total: 1,
+                files: vec![file.clone()],
+                files_unlisted: Vec::new(),
+            }],
+            files_scanned: 1,
+            bytes_scanned: 1,
+            files_in_scope: 1,
+            files_skipped_oversize: 0,
+            files_skipped_unreadable: 0,
+            stale_files: 0,
+            scan_truncated: false,
+            output_truncated: false,
+            paths_unmatched: Vec::new(),
+        };
+        let counter = compresso_core::counter_for(compresso_core::TokenProvider::OpenAiO200k);
+        let header = counter.count("# row — 3 matching lines in 1 files\n");
+        let two = GrepFile {
+            lines: vec![line(2, 0), line(6, 1)],
+            ..file
+        };
+        let budget = header + counter.count(&render_file(&two));
+        let fitted = report.fit_to_budget(budget, counter);
+        let kept = &fitted.results[0].files[0];
+        assert_eq!(
+            kept.lines.iter().map(|line| line.line).collect::<Vec<_>>(),
+            [2, 6]
+        );
+        assert_eq!(
+            kept.context_spare
+                .iter()
+                .map(|line| line.line)
+                .collect::<Vec<_>>(),
+            [3, 4, 5]
+        );
+    }
+
+    /// E17-39 security review: a file of many lines that each open a block
+    /// comment and never close one is classified in time linear in its size,
+    /// and those lines stay code (no closer follows).
+    #[test]
+    fn test_comment_rows_stay_linear_on_unclosed_block_openers() {
+        let count = 400_000_u32;
+        let source = "/*x\n".repeat(count as usize);
+        let lines = (1..=count).step_by(997).chain([count]).collect::<Vec<_>>();
+        let started = std::time::Instant::now();
+        let flags = comment_rows(&source, &C_LIKE, &lines);
+        let elapsed = started.elapsed();
+        println!("{count} unclosed openers: {elapsed:?}");
+        assert!(flags.iter().all(|comment| !comment));
+        assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
+        // A closer far ahead (past the lookahead) still leaves them code; a
+        // near one makes the block a comment.
+        let near = "/*x\n * y\n */\nz\n";
+        assert_eq!(rows(near, C_LIKE), [true, true, true, false]);
+    }
+
+    /// E17-39 security review: the enclosing symbols of every candidate are
+    /// those `smallest_enclosing_symbol` finds, in time that does not grow
+    /// with symbols times candidates when many symbols overlap.
+    #[test]
+    fn test_enclosing_symbols_match_the_scan_and_stay_fast_when_overlapping() {
+        let symbol = |name: &str, start_line: u32, end_line: u32| SymbolRecord {
+            name: name.to_owned(),
+            qualified_name: name.to_owned(),
+            kind: SymbolKind::Function,
+            signature: None,
+            start_line,
+            end_line,
+            token_estimate: 1,
+        };
+        let mut symbols = vec![
+            symbol("outer", 1, 100),
+            symbol("inner", 10, 20),
+            symbol("tie_a", 30, 40),
+            symbol("tie_b", 30, 40),
+            symbol("late", 90, 120),
+        ];
+        let lines = [1, 10, 15, 21, 30, 35, 95, 101, 121];
+        let swept = enclosing_symbols(&symbols, &lines);
+        for (line, found) in lines.iter().zip(swept) {
+            assert_eq!(
+                found.map(|symbol| symbol.name.as_str()),
+                smallest_enclosing_symbol(&symbols, *line).map(|symbol| symbol.name.as_str()),
+                "line {line}"
+            );
+        }
+        symbols = (0..50_000)
+            .map(|index| symbol(&format!("s{index}"), 1, 1_000_000 - index))
+            .collect();
+        let lines = (1..=2_000).collect::<Vec<u32>>();
+        let started = std::time::Instant::now();
+        let swept = enclosing_symbols(&symbols, &lines);
+        let elapsed = started.elapsed();
+        println!("50,000 overlapping symbols, 2,000 lines: {elapsed:?}");
+        assert!(
+            swept
+                .iter()
+                .all(|found| found.is_some_and(|symbol| symbol.name == "s49999"))
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "{elapsed:?}"
+        );
     }
 }

@@ -379,6 +379,43 @@ fn test_lean_grep_wording_says_test_hits_are_named_by_line() {
     );
 }
 
+/// E17-39 (D104, review): the lean grep wording keeps D101's packing rule
+/// and exact totals, and its `ranges` say unlisted lines are read there,
+/// together, with the next lookups; the full description does not change.
+#[test]
+fn test_lean_grep_wording_says_unlisted_lines_can_be_read_directly() {
+    let grep = |profile| {
+        let (tools, _) = advertised_surface(profile, false);
+        tools
+            .into_iter()
+            .find(|tool| tool.name == "compresso_grep")
+            .expect("grep served")
+    };
+    let lean = grep(McpToolProfile::Lean);
+    let description = lean.description.as_deref().unwrap_or_default().to_owned();
+    assert!(description.contains("exact totals"), "{description}");
+    assert!(
+        description.contains("One call carries every lookup you have: patterns and ranges."),
+        "{description}"
+    );
+    let ranges = lean.input_schema["properties"]["ranges"]["description"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        ranges.contains("unlisted lines, all in this one call with the next patterns"),
+        "{ranges}"
+    );
+    let full = grep(McpToolProfile::Full);
+    assert!(
+        !full
+            .description
+            .as_deref()
+            .unwrap_or_default()
+            .contains("unlisted")
+    );
+}
+
 /// E17-33 (D98): the lean grep schema states the defaults the lean profile
 /// applies; the full schema keeps its own.
 #[test]
