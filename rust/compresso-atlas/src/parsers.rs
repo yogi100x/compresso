@@ -5,13 +5,17 @@ use compresso_store::{CallSiteRecord, SymbolKind, SymbolRecord};
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
 
 mod calls;
+mod csharp;
+mod declarations;
 mod go;
+mod java;
 pub mod languages;
 mod shell;
 mod text;
 
 use calls::CallSyntax;
 pub use calls::{MAX_CALL_NODES_PER_FILE, MAX_CALLS_PER_FILE};
+pub(crate) use declarations::modifiers as signature_modifiers;
 pub(crate) use go::package_local_name as go_package_local_name;
 use languages::Extractor;
 pub use languages::{LANGUAGES, LanguageSpec};
@@ -91,6 +95,11 @@ impl ParserRegistry {
                 calls,
                 process,
             } => extract_with_query(grammar(), spec.name, query, source, calls, process),
+            Extractor::Walk {
+                grammar,
+                calls,
+                walk,
+            } => extract_with_walk(grammar(), spec.name, source, calls, walk),
             Extractor::Custom(extract) => Ok(extract(source)),
         }
     }
@@ -198,6 +207,89 @@ fn extract_with_query(
     extraction.calls_truncated = calls.truncated;
 
     Ok(extraction)
+}
+
+/// Parses `source` and hands its tree to a hand-written declaration walk
+/// (Java, C#), then records call sites inside the walked functions and
+/// methods exactly as the query-based extractors do.
+fn extract_with_walk(
+    language: tree_sitter::Language,
+    language_name: &'static str,
+    source: &str,
+    call_syntax: CallSyntax,
+    walk: languages::Walk,
+) -> Result<Extraction, ParseError> {
+    let tree = parse_tree(&language, language_name, source)?;
+    let mut extraction = Extraction {
+        symbols: Vec::new(),
+        imports: Vec::new(),
+        calls: Vec::new(),
+        calls_truncated: false,
+    };
+    let mut symbol_bytes = Vec::new();
+    walk(tree.root_node(), source, &mut extraction, &mut symbol_bytes);
+    debug_assert_eq!(symbol_bytes.len(), extraction.symbols.len());
+    extraction
+        .imports
+        .retain(|import| !import.raw.trim().is_empty());
+    let calls = calls::extract(
+        call_syntax,
+        tree.root_node(),
+        source,
+        &extraction.symbols,
+        &symbol_bytes,
+    );
+    extraction.calls = calls.calls;
+    extraction.calls_truncated = calls.truncated;
+    Ok(extraction)
+}
+
+fn parse_tree(
+    language: &tree_sitter::Language,
+    language_name: &'static str,
+    source: &str,
+) -> Result<tree_sitter::Tree, ParseError> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(language)
+        .map_err(|error| ParseError::Language {
+            language: language_name,
+            message: error.to_string(),
+        })?;
+    parser.parse(source, None).ok_or(ParseError::ParseFailed)
+}
+
+/// The packages (Java) or namespaces (C#) a source file declares, read the
+/// same way extraction records them as `module` symbols, so the import map
+/// built before a run agrees with what the run stores (E17-40, D105). Empty
+/// for every other language and for a source the grammar cannot parse.
+pub(crate) fn declared_packages(language: Language, source: &str) -> Vec<String> {
+    let spec = languages::spec(language);
+    let Some(declarations) = spec.declarations else {
+        return Vec::new();
+    };
+    let Extractor::Walk { grammar, .. } = spec.extractor else {
+        return Vec::new();
+    };
+    parse_tree(&grammar(), spec.name, source)
+        .map(|tree| declarations(tree.root_node(), source))
+        .unwrap_or_default()
+}
+
+/// Largest signature kept for Go, Java, and C# (as for shell and text
+/// headings); a longer one is cut at a character boundary and marked `…`.
+pub(crate) const MAX_SIGNATURE_BYTES: usize = 1_024;
+
+fn bounded_signature(text: &str) -> Option<String> {
+    let signature = trimmed_signature(text)?;
+    if signature.len() <= MAX_SIGNATURE_BYTES {
+        return Some(signature);
+    }
+    let mut end = MAX_SIGNATURE_BYTES - '…'.len_utf8();
+    while !signature.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(format!("{}…", &signature[..end]))
 }
 
 fn capture_kind(name: &str) -> Option<CaptureKind> {

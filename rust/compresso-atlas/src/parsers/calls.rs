@@ -103,6 +103,8 @@ pub(crate) enum CallSyntax {
     Python,
     Script,
     Go,
+    Java,
+    CSharp,
 }
 
 struct Callee<'tree> {
@@ -131,10 +133,15 @@ pub(super) fn extract(
         };
     };
 
-    let receivers = if syntax == CallSyntax::Go {
-        GoReceivers::new(root, source)
-    } else {
-        GoReceivers::default()
+    let receivers = match syntax {
+        CallSyntax::Go => GoReceivers::new(root, source),
+        CallSyntax::CSharp => GoReceivers {
+            using_aliases: super::csharp::using_aliases(root, source)
+                .into_iter()
+                .collect(),
+            ..GoReceivers::default()
+        },
+        _ => GoReceivers::default(),
     };
     let mut calls = Vec::new();
     let mut seen = HashSet::new();
@@ -203,6 +210,12 @@ const fn is_call_node(syntax: CallSyntax, kind: &str) -> bool {
         CallSyntax::Python => const_eq(kind, "call"),
         CallSyntax::Script => const_eq(kind, "call_expression") || const_eq(kind, "new_expression"),
         CallSyntax::Go => const_eq(kind, "call_expression"),
+        CallSyntax::Java => {
+            const_eq(kind, "method_invocation") || const_eq(kind, "object_creation_expression")
+        }
+        CallSyntax::CSharp => {
+            const_eq(kind, "invocation_expression") || const_eq(kind, "object_creation_expression")
+        }
     }
 }
 
@@ -210,6 +223,8 @@ const fn is_argument_list(syntax: CallSyntax, kind: &str) -> bool {
     match syntax {
         CallSyntax::Rust | CallSyntax::Script => const_eq(kind, "arguments"),
         CallSyntax::Python | CallSyntax::Go => const_eq(kind, "argument_list"),
+        // Java and C# have no free functions: a bare argument is a value.
+        CallSyntax::Java | CallSyntax::CSharp => false,
     }
 }
 
@@ -457,7 +472,145 @@ fn callee<'tree>(
             }
             Some(callee)
         }
+        (CallSyntax::Java, "method_invocation") => java_callee(node, source),
+        (CallSyntax::CSharp, "invocation_expression") => {
+            csharp_callee(node.child_by_field_name("function")?, source, receivers)
+        }
+        (CallSyntax::Java | CallSyntax::CSharp, "object_creation_expression") => {
+            created_type(node.child_by_field_name("type")?).map(plain)
+        }
         _ => None,
+    }
+}
+
+/// `m()` (a method of the enclosing type, recorded plain), `this.m()` and
+/// `super.m()` (self calls), `a.b.m()` on a chain of plain names (a path
+/// call: a variable, a field, a type, or a package-qualified type, which
+/// look alike in syntax), and `expr.m()` on anything else (a receiver call).
+fn java_callee<'tree>(call: Node<'tree>, source: &str) -> Option<Callee<'tree>> {
+    let name = call.child_by_field_name("name")?;
+    if name.kind() != "identifier" {
+        return None;
+    }
+    let Some(object) = call.child_by_field_name("object") else {
+        return Some(plain(name));
+    };
+    Some(match object.kind() {
+        "this" | "super" => Callee {
+            name,
+            qualifier: Some(object.kind().to_owned()),
+            form: CallForm::SelfRef,
+        },
+        "identifier" | "field_access" => {
+            dotted(name, object, source, "field_access", "field", "object")
+        }
+        _ => receiver(name),
+    })
+}
+
+/// As for Java, with `base.M()` as the self call on the base type. A call
+/// on a predefined type (`string.Join()`) and `nameof(x)` are not calls to
+/// repository code. The first part of a path call's qualifier that is a
+/// `using` alias is replaced by the last part of the name it stands for.
+fn csharp_callee<'tree>(
+    function: Node<'tree>,
+    source: &str,
+    receivers: &GoReceivers<'_>,
+) -> Option<Callee<'tree>> {
+    match function.kind() {
+        "identifier" => (node_text(function, source)? != "nameof").then(|| plain(function)),
+        "generic_name" => generic_identifier(function).map(plain),
+        "member_access_expression" => {
+            let name = function.child_by_field_name("name")?;
+            let name = match name.kind() {
+                "identifier" => name,
+                "generic_name" => generic_identifier(name)?,
+                _ => return None,
+            };
+            let object = function.child_by_field_name("expression")?;
+            Some(match object.kind() {
+                "this" | "base" => Callee {
+                    name,
+                    qualifier: Some(object.kind().to_owned()),
+                    form: CallForm::SelfRef,
+                },
+                "predefined_type" => return None,
+                "identifier" | "member_access_expression" => {
+                    let mut callee = dotted(
+                        name,
+                        object,
+                        source,
+                        "member_access_expression",
+                        "name",
+                        "expression",
+                    );
+                    if let Some(qualifier) = callee.qualifier.as_mut() {
+                        let (first, rest) = qualifier
+                            .split_once('.')
+                            .map_or((qualifier.as_str(), ""), |(first, rest)| (first, rest));
+                        if let Some(target) = receivers.using_aliases.get(first) {
+                            *qualifier = if rest.is_empty() {
+                                target.clone()
+                            } else {
+                                format!("{target}.{rest}")
+                            };
+                        }
+                    }
+                    callee
+                }
+                _ => receiver(name),
+            })
+        }
+        "conditional_access_expression" => {
+            let mut cursor = function.walk();
+            let binding = function
+                .named_children(&mut cursor)
+                .find(|child| child.kind() == "member_binding_expression")?;
+            let name = binding.child_by_field_name("name")?;
+            let name = match name.kind() {
+                "identifier" => name,
+                "generic_name" => generic_identifier(name)?,
+                _ => return None,
+            };
+            Some(receiver(name))
+        }
+        _ => None,
+    }
+}
+
+fn generic_identifier(generic: Node<'_>) -> Option<Node<'_>> {
+    let mut cursor = generic.walk();
+    generic
+        .named_children(&mut cursor)
+        .find(|child| child.kind() == "identifier")
+}
+
+/// The type name a `new` expression creates (`Box` in `new Box<>(1)`,
+/// `Inner` in `new a.b.Inner()`): recorded as a plain call, which resolves
+/// to the type, as `new X()` does in script. Predefined, array, and
+/// implicit (`new()`) types give none.
+fn created_type(mut kind: Node<'_>) -> Option<Node<'_>> {
+    loop {
+        kind = match kind.kind() {
+            "type_identifier" | "identifier" => return Some(kind),
+            "generic_type" | "generic_name" => {
+                let mut cursor = kind.walk();
+                kind.named_children(&mut cursor).find(|child| {
+                    matches!(
+                        child.kind(),
+                        "type_identifier" | "identifier" | "scoped_type_identifier"
+                    )
+                })?
+            }
+            "scoped_type_identifier" => {
+                let mut cursor = kind.walk();
+                kind.named_children(&mut cursor)
+                    .filter(|child| child.kind() == "type_identifier")
+                    .last()?
+            }
+            "qualified_name" => kind.child_by_field_name("name")?,
+            _ => return None,
+        };
     }
 }
 
@@ -610,7 +763,14 @@ fn python_callee<'tree>(function: Node<'tree>, source: &str) -> Option<Callee<'t
                     form: CallForm::SelfRef,
                 });
             }
-            Some(dotted(name, object, source, "attribute", "attribute"))
+            Some(dotted(
+                name,
+                object,
+                source,
+                "attribute",
+                "attribute",
+                "object",
+            ))
         }
         _ => None,
     }
@@ -638,6 +798,7 @@ fn script_callee<'tree>(function: Node<'tree>, source: &str) -> Option<Callee<'t
                 source,
                 "member_expression",
                 "property",
+                "object",
             ))
         }
         _ => None,
@@ -723,6 +884,8 @@ struct GoReceivers<'source> {
     methods: Vec<(usize, usize, Option<&'source str>)>,
     /// Import alias to the imported package's default local name.
     aliases: std::collections::HashMap<&'source str, String>,
+    /// C#: `using` alias to the last part of the name it stands for.
+    using_aliases: std::collections::HashMap<String, String>,
 }
 
 impl<'source> GoReceivers<'source> {
@@ -768,7 +931,11 @@ impl<'source> GoReceivers<'source> {
                 _ => {}
             }
         }
-        Self { methods, aliases }
+        Self {
+            methods,
+            aliases,
+            using_aliases: std::collections::HashMap::new(),
+        }
     }
 
     fn at(&self, byte: usize) -> Option<&'source str> {
@@ -789,8 +956,9 @@ fn dotted<'tree>(
     source: &str,
     member_kind: &str,
     member_field: &str,
+    object_field: &str,
 ) -> Callee<'tree> {
-    if is_dotted(object, member_kind, member_field)
+    if is_dotted(object, member_kind, member_field, object_field)
         && let Some(text) = node_text(object, source)
     {
         let qualifier = text
@@ -811,7 +979,7 @@ fn dotted<'tree>(
 /// Whether `node` is a chain of plain names (`a`, `a.b`, `a.b.c`). Walks
 /// the chain iteratively; a chain longer than a stored qualifier is rejected
 /// before it is walked.
-fn is_dotted(node: Node<'_>, member_kind: &str, member_field: &str) -> bool {
+fn is_dotted(node: Node<'_>, member_kind: &str, member_field: &str, object_field: &str) -> bool {
     if node.byte_range().len() > MAX_CALL_TEXT_BYTES {
         return false;
     }
@@ -825,7 +993,7 @@ fn is_dotted(node: Node<'_>, member_kind: &str, member_field: &str) -> bool {
                     .is_some_and(|member| {
                         matches!(member.kind(), "identifier" | "property_identifier")
                     });
-                let Some(object) = node.child_by_field_name("object") else {
+                let Some(object) = node.child_by_field_name(object_field) else {
                     return false;
                 };
                 if !member_ok {

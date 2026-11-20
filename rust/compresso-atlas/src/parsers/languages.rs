@@ -14,6 +14,19 @@ use compresso_store::FileLanguage;
 use super::calls::CallSyntax;
 use super::{Candidate, Extraction};
 
+/// A hand-written declaration walk over a parsed tree: pushes symbols and
+/// imports, and for each symbol the byte range of its node when its recorded
+/// lines are the node's lines (call attribution, as for query extractors).
+pub(crate) type Walk = for<'tree> fn(
+    tree_sitter::Node<'tree>,
+    &str,
+    &mut Extraction,
+    &mut Vec<Option<(usize, usize)>>,
+);
+
+/// The packages or namespaces a parsed file declares (Java, C#).
+pub(crate) type Declarations = for<'tree> fn(tree_sitter::Node<'tree>, &str) -> Vec<String>;
+
 /// How the files of one language are turned into symbols, imports, and calls.
 #[derive(Clone, Copy)]
 pub(crate) enum Extractor {
@@ -23,6 +36,13 @@ pub(crate) enum Extractor {
         query: &'static str,
         calls: CallSyntax,
         process: for<'tree> fn(Candidate<'tree>, &str, &mut Extraction),
+    },
+    /// A tree-sitter grammar walked by hand: one iterative pass over the
+    /// declaration levels with an owner stack (Java, C#), no query.
+    Walk {
+        grammar: fn() -> tree_sitter::Language,
+        calls: CallSyntax,
+        walk: Walk,
     },
     /// A hand-written extractor that cannot fail.
     Custom(fn(&str) -> Extraction),
@@ -42,6 +62,11 @@ pub(crate) enum ImportStyle {
     /// Package paths under a `go.mod` module path, to every non-test `.go`
     /// file of that package directory.
     Go,
+    /// `a.b.C` to the files declaring package `a.b` whose file name is
+    /// `C.java`; `a.b.*` to every file declaring package `a.b`.
+    Java,
+    /// `using N;` to every file declaring namespace `N`.
+    CSharp,
 }
 
 /// The leading comment or docstring read as a file's purpose line.
@@ -58,6 +83,11 @@ pub(crate) enum ModuleDoc {
     Shell,
     /// The comment block directly above the `package` clause.
     Go,
+    /// The Javadoc block above the `package` clause, or else above the first
+    /// type declaration.
+    Java,
+    /// The `///` XML documentation above the first type declaration.
+    CSharp,
 }
 
 /// The signature heuristic that marks a top-level symbol public; the store
@@ -75,6 +105,22 @@ pub(crate) enum Visibility {
     TopLevel,
     /// The name starts with an uppercase letter (Go export rule).
     Capitalized,
+    /// The signature's modifiers include `public` (Java, C#).
+    PublicModifier,
+}
+
+/// Which rule set resolves a language's calls at query time (`trace`).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CallRules {
+    /// Candidates by name narrowed by call form, then the caller's file, an
+    /// imported file, or the repository (D90).
+    ByName,
+    /// Go: a package is a directory (D102).
+    GoPackages,
+    /// Java and C#: types and methods live in declared packages or
+    /// namespaces, and visibility modifiers decide what another file can
+    /// reach (D105).
+    DeclaredPackages,
 }
 
 /// How a line is recognised as comment or documentation text when grep
@@ -131,6 +177,14 @@ pub struct LanguageSpec {
     /// `pkg`, and a call reaches other files of its own directory without an
     /// import.
     pub(crate) package_is_directory: bool,
+    /// The call-resolution rule set.
+    pub(crate) call_rules: CallRules,
+    /// A static method of this name marks its file as an entry point
+    /// (`main` in Java, `Main` in C#).
+    pub(crate) entry_method: Option<&'static str>,
+    /// Reads the declared packages or namespaces from a parsed file, for the
+    /// import map built before a run (Java, C#).
+    pub(crate) declarations: Option<Declarations>,
     /// Comment syntax for grep row selection (E17-39, D104). Python
     /// docstrings, Markdown, and other text count as code.
     pub comments: CommentSyntax,
@@ -139,7 +193,10 @@ pub struct LanguageSpec {
 impl LanguageSpec {
     /// Whether this language is parsed by a tree-sitter grammar.
     pub const fn has_grammar(&self) -> bool {
-        matches!(self.extractor, Extractor::Query { .. })
+        matches!(
+            self.extractor,
+            Extractor::Query { .. } | Extractor::Walk { .. }
+        )
     }
 }
 
@@ -167,6 +224,14 @@ fn go_grammar() -> tree_sitter::Language {
     tree_sitter_go::LANGUAGE.into()
 }
 
+fn java_grammar() -> tree_sitter::Language {
+    tree_sitter_java::LANGUAGE.into()
+}
+
+fn csharp_grammar() -> tree_sitter::Language {
+    tree_sitter_c_sharp::LANGUAGE.into()
+}
+
 /// Every indexed language. Extensions are unique across entries.
 pub static LANGUAGES: &[LanguageSpec] = &[
     LanguageSpec {
@@ -187,6 +252,9 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         entry_files: &["lib.rs", "main.rs", "mod.rs"],
         test_file_suffix: None,
         package_is_directory: false,
+        call_rules: CallRules::ByName,
+        entry_method: None,
+        declarations: None,
         comments: CommentSyntax::C_LIKE,
     },
     LanguageSpec {
@@ -207,6 +275,9 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         entry_files: &["index.ts", "main.ts"],
         test_file_suffix: None,
         package_is_directory: false,
+        call_rules: CallRules::ByName,
+        entry_method: None,
+        declarations: None,
         comments: CommentSyntax::C_LIKE,
     },
     LanguageSpec {
@@ -227,6 +298,9 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         entry_files: &["index.tsx"],
         test_file_suffix: None,
         package_is_directory: false,
+        call_rules: CallRules::ByName,
+        entry_method: None,
+        declarations: None,
         comments: CommentSyntax::C_LIKE,
     },
     LanguageSpec {
@@ -247,6 +321,9 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         entry_files: &["index.js", "index.mjs", "main.js"],
         test_file_suffix: None,
         package_is_directory: false,
+        call_rules: CallRules::ByName,
+        entry_method: None,
+        declarations: None,
         comments: CommentSyntax::C_LIKE,
     },
     LanguageSpec {
@@ -267,6 +344,9 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         entry_files: &["__init__.py", "__main__.py", "main.py"],
         test_file_suffix: None,
         package_is_directory: false,
+        call_rules: CallRules::ByName,
+        entry_method: None,
+        declarations: None,
         comments: CommentSyntax::HASH,
     },
     LanguageSpec {
@@ -287,6 +367,53 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         entry_files: &["main.go", "doc.go"],
         test_file_suffix: Some("_test.go"),
         package_is_directory: true,
+        call_rules: CallRules::GoPackages,
+        entry_method: None,
+        declarations: None,
+        comments: CommentSyntax::C_LIKE,
+    },
+    LanguageSpec {
+        language: FileLanguage::Java,
+        name: "Java",
+        extensions: &["java"],
+        smoke_sample: "package check;\n\nclass Check { void check() {} }\n",
+        extractor: Extractor::Walk {
+            grammar: java_grammar,
+            calls: CallSyntax::Java,
+            walk: super::java::walk,
+        },
+        imports: ImportStyle::Java,
+        call_family: Some(4),
+        module_doc: ModuleDoc::Java,
+        visibility: Visibility::PublicModifier,
+        entry_files: &["package-info.java"],
+        test_file_suffix: None,
+        package_is_directory: false,
+        call_rules: CallRules::DeclaredPackages,
+        entry_method: Some("main"),
+        declarations: Some(super::java::declarations),
+        comments: CommentSyntax::C_LIKE,
+    },
+    LanguageSpec {
+        language: FileLanguage::CSharp,
+        name: "C#",
+        extensions: &["cs"],
+        smoke_sample: "namespace Check;\n\nclass Check { void Run() {} }\n",
+        extractor: Extractor::Walk {
+            grammar: csharp_grammar,
+            calls: CallSyntax::CSharp,
+            walk: super::csharp::walk,
+        },
+        imports: ImportStyle::CSharp,
+        call_family: Some(5),
+        module_doc: ModuleDoc::CSharp,
+        visibility: Visibility::PublicModifier,
+        entry_files: &["Program.cs"],
+        test_file_suffix: None,
+        package_is_directory: false,
+        call_rules: CallRules::DeclaredPackages,
+        entry_method: Some("Main"),
+        declarations: Some(super::csharp::declarations),
         comments: CommentSyntax::C_LIKE,
     },
     LanguageSpec {
@@ -302,6 +429,9 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         entry_files: &[],
         test_file_suffix: None,
         package_is_directory: false,
+        call_rules: CallRules::ByName,
+        entry_method: None,
+        declarations: None,
         comments: CommentSyntax::HASH,
     },
     LanguageSpec {
@@ -317,6 +447,9 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         entry_files: &[],
         test_file_suffix: None,
         package_is_directory: false,
+        call_rules: CallRules::ByName,
+        entry_method: None,
+        declarations: None,
         comments: CommentSyntax::NONE,
     },
 ];
@@ -355,6 +488,13 @@ pub(crate) fn package_is_directory(path: &str) -> bool {
         .is_some_and(|spec| spec.package_is_directory)
 }
 
+/// The call-resolution rule set of a repository path's language.
+pub(crate) fn call_rules(path: &str) -> CallRules {
+    path.rsplit_once('.')
+        .and_then(|(_, extension)| for_extension(extension))
+        .map_or(CallRules::ByName, |spec| spec.call_rules)
+}
+
 /// Whether `file_name` is an entry-point file name of any language.
 pub(crate) fn is_entry_file(file_name: &str) -> bool {
     LANGUAGES
@@ -376,8 +516,10 @@ mod tests {
             FileLanguage::JavaScript => 3,
             FileLanguage::Python => 4,
             FileLanguage::Go => 5,
-            FileLanguage::Shell => 6,
-            FileLanguage::Text => 7,
+            FileLanguage::Java => 6,
+            FileLanguage::CSharp => 7,
+            FileLanguage::Shell => 8,
+            FileLanguage::Text => 9,
         }
     }
 
@@ -390,6 +532,8 @@ mod tests {
             FileLanguage::JavaScript,
             FileLanguage::Python,
             FileLanguage::Go,
+            FileLanguage::Java,
+            FileLanguage::CSharp,
             FileLanguage::Shell,
             FileLanguage::Text,
         ];
@@ -418,6 +562,8 @@ mod tests {
             FileLanguage::Tsx,
             FileLanguage::JavaScript,
             FileLanguage::Go,
+            FileLanguage::Java,
+            FileLanguage::CSharp,
         ] {
             assert_eq!(spec(language).comments.line, &["//"], "{language:?}");
             assert_eq!(spec(language).comments.block, Some(("/*", "*/")));
@@ -437,5 +583,43 @@ mod tests {
         assert!(!is_test_file("store/test_utils.go"));
         assert!(!is_test_file("src/db_test.rs"));
         assert!(!is_test_file("web/db_test.ts"));
+        // E17-40 (D105): Java and C# reserve no file name for tests; their
+        // tests are test code through D99's directory rule only.
+        assert!(!is_test_file("src/test/java/a/StoreTest.java"));
+        assert!(!is_test_file("Acme.Tests/StoreTests.cs"));
+    }
+
+    /// E17-40 (D105): Java and C# resolve calls by declared packages, never
+    /// by Go's directory rule, and each is its own call family.
+    #[test]
+    fn test_java_and_csharp_use_declared_package_rules_and_their_own_families() {
+        for (language, path) in [
+            (FileLanguage::Java, "src/a/Store.java"),
+            (FileLanguage::CSharp, "src/Store.cs"),
+        ] {
+            let spec = spec(language);
+            assert!(!spec.package_is_directory, "{language:?}");
+            assert!(!package_is_directory(path));
+            assert_eq!(call_rules(path), CallRules::DeclaredPackages);
+            assert!(spec.declarations.is_some());
+            assert!(spec.has_grammar());
+        }
+        assert_eq!(call_rules("main.go"), CallRules::GoPackages);
+        assert_eq!(call_rules("src/lib.rs"), CallRules::ByName);
+        let families = LANGUAGES
+            .iter()
+            .filter_map(|spec| spec.call_family)
+            .collect::<Vec<_>>();
+        let java = spec(FileLanguage::Java)
+            .call_family
+            .expect("Java records calls");
+        let csharp = spec(FileLanguage::CSharp)
+            .call_family
+            .expect("C# records calls");
+        assert_eq!(families.iter().filter(|family| **family == java).count(), 1);
+        assert_eq!(
+            families.iter().filter(|family| **family == csharp).count(),
+            1
+        );
     }
 }

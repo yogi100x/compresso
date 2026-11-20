@@ -464,6 +464,56 @@ impl Store {
             .map_err(StoreError::from)
     }
 
+    /// Lists `(path, qualified name)` of every `module` symbol in the files of
+    /// `languages`, in path and line order: the declared Java packages and C#
+    /// namespaces of the indexed files (E17-40, D105).
+    pub fn module_declarations(
+        &self,
+        repo: RepoId,
+        languages: &[FileLanguage],
+    ) -> Result<Vec<(String, String)>, StoreError> {
+        let connection = self.connection()?;
+        ensure_repo_exists(&connection, repo)?;
+        let mut statement = connection.prepare(
+            "SELECT f.path, f.language, s.qualified_name FROM symbols AS s JOIN files AS f ON f.id = s.file_id WHERE f.repo_id = ?1 AND s.kind = 'module' AND f.language IS NOT NULL ORDER BY f.path ASC, s.start_line ASC, s.id ASC",
+        )?;
+        let rows = statement
+            .query_map([repo], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .filter(|(_, language, _)| {
+                languages
+                    .iter()
+                    .any(|wanted| wanted.as_db() == language.as_str())
+            })
+            .map(|(path, _, name)| (path, name))
+            .collect())
+    }
+
+    /// Lists `(source path, import as written)` for every unresolved edge,
+    /// external or not, in path order.
+    pub fn unresolved_edge_targets(
+        &self,
+        repo: RepoId,
+    ) -> Result<Vec<(String, String)>, StoreError> {
+        let connection = self.connection()?;
+        ensure_repo_exists(&connection, repo)?;
+        let mut statement = connection.prepare(
+            "SELECT source.path, e.to_path FROM edges AS e JOIN files AS source ON source.id = e.from_file_id WHERE e.repo_id = ?1 AND e.resolution_status != 'resolved' ORDER BY source.path ASC, e.to_path ASC, e.id ASC",
+        )?;
+        statement
+            .query_map([repo], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
     /// Lists files whose outgoing edges may become resolvable when repository paths expand.
     pub fn unresolved_edge_sources(&self, repo: RepoId) -> Result<Vec<String>, StoreError> {
         let connection = self.connection()?;

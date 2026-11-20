@@ -2719,3 +2719,64 @@ async fn test_text_grep_unlisted_file_paths_cannot_split_the_list() {
     );
     lean.close().await;
 }
+
+const STORE_JAVA: &str = "package a;\n\n/** Saves jobs: save is atomic. */\npublic class Store {\n    /** save writes one job. */\n    public void save(String job) {\n        write(job);\n    }\n\n    void write(String job) {\n        save(job);\n    }\n}\n";
+
+const STORE_CS: &str = "namespace A;\n\n/// <summary>Saves jobs: Save is atomic.</summary>\npublic class Store\n{\n    /// <summary>Save writes one job.</summary>\n    public void Save(string job)\n    {\n        Write(job);\n    }\n\n    void Write(string job)\n    {\n        Save(job);\n    }\n}\n";
+
+/// E17-40 (D105): Java and C# rows carry their enclosing symbols, the
+/// capped rows list definitions and code before Javadoc and `///` lines,
+/// and a read window names the symbols it starts in.
+#[tokio::test]
+async fn test_text_results_name_java_and_csharp_symbols_and_rank_doc_rows_last() {
+    let fixture = fixture_with(&[
+        ("src/main/java/a/Store.java", STORE_JAVA),
+        ("src/A/Store.cs", STORE_CS),
+    ]);
+    let mut source = String::from("package a;\n\npublic class Steps {\n");
+    for index in 0..40 {
+        source.push_str(&format!(
+            "\n    public int step{index}() {{\n        return {index};\n    }}\n"
+        ));
+    }
+    source.push_str("}\n");
+    write_file(&fixture.root, "src/main/java/a/Steps.java", &source);
+    Indexer::new(&fixture.store, counter_for(TokenProvider::OpenAiO200k))
+        .index(&fixture.root, |_| {})
+        .expect("fixture reindexes");
+    let mut lean = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, is_error) = lean
+        .call(
+            "compresso_grep",
+            &json!({ "pattern": "save", "path": "src/main/java/a/Store.java", "max_matches_per_file": 2 }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    assert!(
+        text.contains(
+            "src/main/java/a/Store.java (4; unlisted: 3, 5)\n6 [def Store::save] public void save(String job) {\n11 [Store::write] save(job);\n"
+        ),
+        "{text}"
+    );
+    let (text, is_error) = lean
+        .call(
+            "compresso_grep",
+            &json!({ "pattern": "Save", "path": "src/A/Store.cs", "max_matches_per_file": 2 }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    assert!(
+        text.contains(
+            "src/A/Store.cs (4; unlisted: 3, 6)\n7 [def Store::Save] public void Save(string job)\n14 [Store::Write] Save(job);\n"
+        ),
+        "{text}"
+    );
+    let (text, _) = lean
+        .call(
+            "compresso_read",
+            &json!({ "path": "src/main/java/a/Steps.java" }),
+        )
+        .await;
+    assert!(text.contains("starts there: Steps::step"), "{text}");
+    lean.close().await;
+}

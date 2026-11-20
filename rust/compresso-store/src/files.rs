@@ -14,6 +14,8 @@ pub enum FileLanguage {
     JavaScript,
     Python,
     Go,
+    Java,
+    CSharp,
     Shell,
     Text,
 }
@@ -61,6 +63,8 @@ impl FileLanguage {
             Self::JavaScript => "javascript",
             Self::Python => "python",
             Self::Go => "go",
+            Self::Java => "java",
+            Self::CSharp => "csharp",
             Self::Shell => "shell",
             Self::Text => "text",
         }
@@ -74,6 +78,8 @@ impl FileLanguage {
             "javascript" => Ok(Self::JavaScript),
             "python" => Ok(Self::Python),
             "go" => Ok(Self::Go),
+            "java" => Ok(Self::Java),
+            "csharp" => Ok(Self::CSharp),
             "shell" => Ok(Self::Shell),
             "text" => Ok(Self::Text),
             _ => Err(StoreError::InvalidStoredValue {

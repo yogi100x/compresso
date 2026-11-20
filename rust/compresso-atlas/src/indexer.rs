@@ -14,6 +14,7 @@ use compresso_store::{
 };
 
 use crate::concurrency::{Concurrency, ReadAhead};
+use crate::declared_imports::DeclaredPackages;
 use crate::go_imports::GoModules;
 use crate::parsers::languages::{self, ImportStyle};
 use crate::parsers::{ImportRecord, ImportResolution, ParseError, ParserRegistry};
@@ -23,7 +24,7 @@ use crate::scanner::{AtlasError, DEFAULT_MAX_FILE_BYTES, ScanOptions, scan_with_
 const INDEX_SCHEMA_VERSION: u32 = 1;
 pub(crate) const DEFAULT_PARSER_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
-    "+atlas-shell-text-v1+rust-imports-v2+go-v1+calls-v1"
+    "+atlas-shell-text-v1+rust-imports-v2+java-csharp-v1+go-v1+calls-v1"
 );
 /// Marks an index whose parser recorded call sites (D89). Every version this
 /// indexer stamps carries it, including one set with
@@ -221,6 +222,12 @@ impl<'a> Indexer<'a> {
             .filter(|path| languages::package_is_directory(path))
             .map(|path| parent_path(path).to_owned())
             .collect::<HashSet<_>>();
+        let added = scan
+            .added
+            .iter()
+            .filter_map(|path| path.to_str())
+            .map(str::to_owned)
+            .collect::<HashSet<_>>();
         let mut candidates = scan
             .added
             .into_iter()
@@ -277,6 +284,15 @@ impl<'a> Indexer<'a> {
                     .map(PathBuf::from),
             );
         }
+        let declared = self.declared_packages(
+            repo,
+            &canonical_root,
+            &known_paths,
+            &removed_set,
+            &added,
+            stale,
+            &mut candidates,
+        )?;
 
         let indexed_at = unix_timestamp()?;
         let mut files_indexed = 0_usize;
@@ -294,6 +310,7 @@ impl<'a> Indexer<'a> {
             known_paths: &known_paths,
             rust_workspace: &rust_workspace,
             go_modules: &go_modules,
+            declared: &declared,
             counter: self.counter,
             indexed_at,
         };
@@ -381,6 +398,213 @@ impl<'a> Indexer<'a> {
     }
 }
 
+/// The language of a path whose files declare packages or namespaces (Java,
+/// C#).
+fn declaring_language(path: &str) -> Option<compresso_store::FileLanguage> {
+    ParserRegistry::for_path(Path::new(path))
+        .filter(|language| languages::spec(*language).declarations.is_some())
+}
+
+impl Indexer<'_> {
+    /// The declared packages and namespaces of every scanned Java and C#
+    /// file (D105): stored declarations for files this run does not re-parse,
+    /// and, for the candidates it does, declarations read before the run, so
+    /// an import resolves against what every file declares now. A candidate
+    /// that is added, removed, or declares something else than before makes
+    /// every file importing the packages it left or joined a candidate too.
+    #[allow(clippy::too_many_arguments)]
+    fn declared_packages(
+        &self,
+        repo: RepoId,
+        root: &Path,
+        known_paths: &BTreeSet<String>,
+        removed: &HashSet<String>,
+        added: &HashSet<String>,
+        stale: bool,
+        candidates: &mut BTreeSet<PathBuf>,
+    ) -> Result<DeclaredPackages, AtlasError> {
+        let any_declaring = known_paths
+            .iter()
+            .chain(removed)
+            .any(|path| declaring_language(path).is_some());
+        if !any_declaring {
+            return Ok(DeclaredPackages::default());
+        }
+        let mut stored = BTreeMap::<String, Vec<String>>::new();
+        for (path, name) in self.store.module_declarations(
+            repo,
+            &[
+                compresso_store::FileLanguage::Java,
+                compresso_store::FileLanguage::CSharp,
+            ],
+        )? {
+            stored.entry(path).or_default().push(name);
+        }
+        let to_read = candidates
+            .iter()
+            .filter_map(|path| path.to_str())
+            .filter(|path| !removed.contains(*path) && declaring_language(path).is_some())
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let workers = if to_read.len() < PARALLEL_INDEX_MIN_CANDIDATES {
+            1
+        } else {
+            self.concurrency
+                .workers_for(to_read.len(), DEFAULT_MAX_FILE_BYTES)
+        };
+        let read = read_declarations(root, &to_read, workers);
+
+        let declarations_of = |path: &str| {
+            read.get(path)
+                .or_else(|| stored.get(path))
+                .map_or(&[][..], Vec::as_slice)
+        };
+        let mut rows = Vec::new();
+        for path in known_paths {
+            if removed.contains(path) {
+                continue;
+            }
+            if let Some(language) = declaring_language(path) {
+                for name in declarations_of(path) {
+                    rows.push((path.clone(), language, name.clone()));
+                }
+            }
+        }
+        if !stale {
+            self.re_resolve_importers(repo, &stored, &read, removed, added, candidates)?;
+        }
+        Ok(DeclaredPackages::new(rows))
+    }
+
+    /// Adds to `candidates` the files whose imports named a package or
+    /// namespace that a file joined or left in this run.
+    fn re_resolve_importers(
+        &self,
+        repo: RepoId,
+        stored: &BTreeMap<String, Vec<String>>,
+        read: &BTreeMap<String, Vec<String>>,
+        removed: &HashSet<String>,
+        added: &HashSet<String>,
+        candidates: &mut BTreeSet<PathBuf>,
+    ) -> Result<(), AtlasError> {
+        let mut moved = HashSet::<(&'static str, String)>::new();
+        let mut note = |path: &str, names: &[String]| {
+            if let Some(language) = declaring_language(path) {
+                moved.extend(names.iter().map(|name| (language.as_str(), name.clone())));
+            }
+        };
+        for (path, now) in read {
+            let before = stored.get(path).map_or(&[][..], Vec::as_slice);
+            let unchanged = {
+                let mut left = before.iter().collect::<Vec<_>>();
+                let mut right = now.iter().collect::<Vec<_>>();
+                left.sort();
+                right.sort();
+                left == right
+            };
+            if added.contains(path) || !unchanged {
+                note(path, before);
+                note(path, now);
+            }
+        }
+        for path in removed {
+            note(path, stored.get(path).map_or(&[][..], Vec::as_slice));
+        }
+        if moved.is_empty() {
+            return Ok(());
+        }
+        let touches = |path: &str| {
+            declaring_language(path).is_some_and(|language| {
+                stored
+                    .get(path)
+                    .into_iter()
+                    .chain(read.get(path))
+                    .flatten()
+                    .any(|name| moved.contains(&(language.as_str(), name.clone())))
+            })
+        };
+        for edge in self.store.resolved_edges(repo)? {
+            if !removed.contains(&edge.from_path) && touches(&edge.to_path) {
+                candidates.insert(PathBuf::from(edge.from_path));
+            }
+        }
+        for (from, raw) in self.store.unresolved_edge_targets(repo)? {
+            if removed.contains(&from) {
+                continue;
+            }
+            let Some(language) = declaring_language(&from) else {
+                continue;
+            };
+            let raw = raw.strip_suffix(".*").unwrap_or(&raw);
+            // Every dotted prefix of the import, `a.b.C` then `a.b` then `a`.
+            let mut end = raw.len();
+            let names_moved = loop {
+                if moved.contains(&(language.as_str(), raw[..end].to_owned())) {
+                    break true;
+                }
+                match raw[..end].rfind('.') {
+                    Some(dot) => end = dot,
+                    None => break false,
+                }
+            };
+            if names_moved {
+                candidates.insert(PathBuf::from(from));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Reads the declared packages or namespaces of `paths` on `workers`
+/// threads. A file that cannot be read or parsed declares nothing here; its
+/// own preparation reports the failure.
+fn read_declarations(
+    root: &Path,
+    paths: &[String],
+    workers: usize,
+) -> BTreeMap<String, Vec<String>> {
+    let declarations_of = |path: &str| -> Vec<String> {
+        let Some(language) = declaring_language(path) else {
+            return Vec::new();
+        };
+        let Ok(absolute) = resolve_candidate(root, Path::new(path)) else {
+            return Vec::new();
+        };
+        let Ok(source) = fs::read_to_string(&absolute) else {
+            return Vec::new();
+        };
+        panic::catch_unwind(AssertUnwindSafe(|| {
+            crate::parsers::declared_packages(language, &source)
+        }))
+        .unwrap_or_default()
+    };
+    if workers <= 1 {
+        return paths
+            .iter()
+            .map(|path| (path.clone(), declarations_of(path)))
+            .collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let found = Mutex::new(BTreeMap::new());
+    thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(path) = paths.get(index) else {
+                        break;
+                    };
+                    let declared = declarations_of(path);
+                    if let Ok(mut found) = found.lock() {
+                        found.insert(path.clone(), declared);
+                    }
+                }
+            });
+        }
+    });
+    found.into_inner().unwrap_or_default()
+}
+
 /// Writes one prepared file in one transaction and reports whether its call
 /// sites were dropped.
 ///
@@ -414,6 +638,7 @@ struct PrepareContext<'a> {
     known_paths: &'a BTreeSet<String>,
     rust_workspace: &'a RustWorkspace,
     go_modules: &'a GoModules,
+    declared: &'a DeclaredPackages,
     counter: &'a dyn TokenCounter,
     indexed_at: i64,
 }
@@ -499,6 +724,7 @@ fn prepare_file(
             context.known_paths,
             context.rust_workspace,
             context.go_modules,
+            context.declared,
         );
         symbols = extraction.symbols;
         calls = extraction.calls;
@@ -691,13 +917,18 @@ fn resolve_repository_imports(
     known_paths: &BTreeSet<String>,
     rust_workspace: &RustWorkspace,
     go_modules: &GoModules,
+    declared: &DeclaredPackages,
 ) {
-    let style = ParserRegistry::for_path(Path::new(importer))
-        .map_or(ImportStyle::None, |language| {
-            languages::spec(language).imports
-        });
+    let language = ParserRegistry::for_path(Path::new(importer));
+    let style = language.map_or(ImportStyle::None, |language| {
+        languages::spec(language).imports
+    });
     if style == ImportStyle::Go {
         *imports = resolve_go_imports(importer, std::mem::take(imports), go_modules);
+        return;
+    }
+    if let (ImportStyle::Java | ImportStyle::CSharp, Some(language)) = (style, language) {
+        *imports = resolve_declared_imports(importer, language, std::mem::take(imports), declared);
         return;
     }
     for import in imports.iter_mut() {
@@ -718,7 +949,9 @@ fn resolve_repository_imports(
                 }
                 script_candidates(importer, &import.raw)
             }
-            ImportStyle::None | ImportStyle::Go => BTreeSet::new(),
+            ImportStyle::None | ImportStyle::Go | ImportStyle::Java | ImportStyle::CSharp => {
+                BTreeSet::new()
+            }
         };
         let matches = candidates
             .into_iter()
@@ -771,6 +1004,60 @@ fn resolve_go_imports(
                     cut = true;
                     continue;
                 }
+                resolved_edges += 1;
+            }
+            output.push(ImportRecord {
+                raw: import.raw.clone(),
+                kind: import.kind,
+                resolved_path,
+                resolution,
+            });
+        }
+        if cut {
+            output.push(ImportRecord {
+                raw: import.raw,
+                kind: import.kind,
+                resolved_path: None,
+                resolution: ImportResolution::Unresolved(GO_EDGE_LIMIT.to_owned()),
+            });
+        }
+    }
+    output
+}
+
+/// A Java import or C# `using` names files by their declared package or
+/// namespace (D105): one edge per file. A file reached by several imports
+/// counts once, a repeated import counts once, and at most
+/// [`MAX_GO_IMPORT_EDGES_PER_FILE`] resolved edges are kept per file, with an
+/// unresolved [`GO_EDGE_LIMIT`] edge for each import the bound cut.
+fn resolve_declared_imports(
+    importer: &str,
+    language: compresso_store::FileLanguage,
+    imports: Vec<ImportRecord>,
+    declared: &DeclaredPackages,
+) -> Vec<ImportRecord> {
+    let mut seen = HashSet::new();
+    let mut reached = HashSet::new();
+    let mut resolved_edges = 0_usize;
+    let mut output = Vec::new();
+    for import in imports {
+        if !seen.insert(import.raw.clone()) {
+            continue;
+        }
+        let mut cut = false;
+        for (resolved_path, resolution) in declared.resolve(importer, language, &import.raw) {
+            if resolution == ImportResolution::Resolved {
+                let Some(path) = resolved_path.as_deref() else {
+                    continue;
+                };
+                if reached.contains(path) {
+                    continue;
+                }
+                if resolved_edges == MAX_GO_IMPORT_EDGES_PER_FILE {
+                    cut = true;
+                    continue;
+                }
+                reached.insert(path.to_owned());
                 resolved_edges += 1;
             }
             output.push(ImportRecord {
@@ -1170,6 +1457,7 @@ mod tests {
             known_paths: &known_paths,
             rust_workspace: &RustWorkspace::default(),
             go_modules: &GoModules::default(),
+            declared: &DeclaredPackages::default(),
             counter: counter_for(TokenProvider::Heuristic),
             indexed_at: 1,
         };
@@ -1403,6 +1691,7 @@ mod tests {
             &known,
             &RustWorkspace::default(),
             &modules,
+            &DeclaredPackages::default(),
         );
         assert_eq!(imports.len(), 2, "{imports:?}");
         assert_eq!(imports[0].resolved_path.as_deref(), Some("q/q.go"));
@@ -1414,6 +1703,7 @@ mod tests {
             &known,
             &RustWorkspace::default(),
             &modules,
+            &DeclaredPackages::default(),
         );
         let resolved = imports
             .iter()
@@ -1428,6 +1718,81 @@ mod tests {
             .map(|import| import.raw.as_str())
             .collect::<Vec<_>>();
         assert_eq!(cut, ["m/p", "m/q"]);
+    }
+
+    /// E17-40 (D105): a namespace of more files than the bound keeps the
+    /// first ones and marks the cut; a file reached twice counts once.
+    #[test]
+    fn test_declared_imports_are_deduplicated_and_capped_per_file() {
+        use compresso_store::FileLanguage;
+        let mut rows = Vec::new();
+        for index in 0..(MAX_GO_IMPORT_EDGES_PER_FILE + 10) {
+            rows.push((
+                format!("big/F{index}.cs"),
+                FileLanguage::CSharp,
+                "Big".to_owned(),
+            ));
+        }
+        rows.push((
+            "small/Only.cs".to_owned(),
+            FileLanguage::CSharp,
+            "Small".to_owned(),
+        ));
+        rows.push((
+            "small/Only.cs".to_owned(),
+            FileLanguage::CSharp,
+            "Small.Inner".to_owned(),
+        ));
+        let declared = DeclaredPackages::new(rows);
+        let import = |raw: &str| ImportRecord {
+            raw: raw.to_owned(),
+            kind: ImportKind::Import,
+            resolved_path: None,
+            resolution: ImportResolution::Unresolved("not_indexed".to_owned()),
+        };
+        let known = BTreeSet::new();
+        let mut imports = vec![
+            import("Small"),
+            import("Small.Inner"),
+            import("Small"),
+            import("System"),
+        ];
+        resolve_repository_imports(
+            "app/Main.cs",
+            &mut imports,
+            &known,
+            &RustWorkspace::default(),
+            &GoModules::default(),
+            &declared,
+        );
+        let rows = imports
+            .iter()
+            .map(|import| (import.raw.as_str(), import.resolved_path.as_deref()))
+            .collect::<Vec<_>>();
+        assert_eq!(rows, [("Small", Some("small/Only.cs")), ("System", None)]);
+
+        let mut imports = vec![import("Big"), import("Small")];
+        resolve_repository_imports(
+            "app/Main.cs",
+            &mut imports,
+            &known,
+            &RustWorkspace::default(),
+            &GoModules::default(),
+            &declared,
+        );
+        let resolved = imports
+            .iter()
+            .filter(|import| import.resolution == ImportResolution::Resolved)
+            .count();
+        assert_eq!(resolved, MAX_GO_IMPORT_EDGES_PER_FILE);
+        let cut = imports
+            .iter()
+            .filter(|import| {
+                import.resolution == ImportResolution::Unresolved(GO_EDGE_LIMIT.to_owned())
+            })
+            .map(|import| import.raw.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(cut, ["Big", "Small"]);
     }
 
     #[test]
@@ -1454,6 +1819,7 @@ mod tests {
             &known,
             &RustWorkspace::default(),
             &GoModules::default(),
+            &DeclaredPackages::default(),
         );
 
         let mut builtins = vec![ImportRecord {
@@ -1468,6 +1834,7 @@ mod tests {
             &known,
             &RustWorkspace::default(),
             &GoModules::default(),
+            &DeclaredPackages::default(),
         );
         assert_eq!(
             builtins[0].resolution,

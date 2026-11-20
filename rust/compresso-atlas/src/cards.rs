@@ -28,6 +28,7 @@ use compresso_store::{
 
 use crate::AtlasError;
 use crate::parsers::languages::{self, ModuleDoc, Visibility};
+use crate::parsers::signature_modifiers;
 use crate::queries::{
     ResolvedEntry, canonical_query_root, file_matches_index, map_path_matches_focus,
     resolve_under_root, validate_map_focus,
@@ -140,11 +141,20 @@ pub fn module_cards(
         let entry = directories.entry(directory).or_default();
         let file_name = file_name_of(&file.path).to_owned();
         let symbols = store.symbols_in_file(repo, &file.path)?;
+        let entry_method = file
+            .language
+            .and_then(|language| languages::spec(language).entry_method);
         if languages::is_entry_file(&file_name)
             || symbols.iter().any(|symbol| {
                 symbol.kind == SymbolKind::Function
                     && symbol.name == "main"
                     && symbol.qualified_name == "main"
+            })
+            || symbols.iter().any(|symbol| {
+                // Java `public static void main`, C# `static void Main`.
+                symbol.kind == SymbolKind::Method
+                    && Some(symbol.name.as_str()) == entry_method
+                    && signature_modifiers(symbol.signature.as_deref()).contains(&"static")
             })
         {
             entry.entry_points.insert(file_name.clone());
@@ -376,6 +386,8 @@ fn purpose_of(root: &Path, file: &FileRecord) -> Option<String> {
         ModuleDoc::Script => script_module_doc(&text),
         ModuleDoc::Shell => shell_module_doc(&text),
         ModuleDoc::Go => go_package_doc(&text),
+        ModuleDoc::Java => java_package_doc(&text),
+        ModuleDoc::CSharp => csharp_type_doc(&text),
         ModuleDoc::None => None,
     }?;
     first_sentence(&doc)
@@ -504,6 +516,115 @@ fn go_package_doc(text: &str) -> Option<String> {
         .then_some(doc)
 }
 
+/// The Javadoc block directly above the `package` declaration (the
+/// `package-info.java` convention), or else directly above the first
+/// top-level type; annotations may sit between. Plain `/* */` blocks (license
+/// headers) are not purposes, nor is a block naming a copyright or license.
+fn java_package_doc(text: &str) -> Option<String> {
+    let mut doc = None::<String>;
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("/**") {
+            let mut block = rest.to_owned();
+            while !block.contains("*/") {
+                block.push('\n');
+                block.push_str(lines.next()?);
+            }
+            let (body, after) = block.split_once("*/")?;
+            doc = after.trim().is_empty().then(|| block_comment_text(body));
+            continue;
+        }
+        if line.is_empty() || line.starts_with('@') || line.starts_with("//") {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("/*") {
+            // A plain block comment: skipped whole, and not a doc.
+            let mut block = rest.to_owned();
+            while !block.contains("*/") {
+                block.push('\n');
+                block.push_str(lines.next()?);
+            }
+            doc = None;
+            continue;
+        }
+        let declares = line.starts_with("package ") || declares_type(line);
+        if declares && doc.is_some() {
+            break;
+        }
+        doc = None;
+        if declares && !line.starts_with("package ") {
+            return None;
+        }
+    }
+    let doc = doc?;
+    let lowered = doc.to_ascii_lowercase();
+    (!doc.trim().is_empty() && !lowered.contains("copyright") && !lowered.contains("license"))
+        .then_some(doc)
+}
+
+/// The `///` XML documentation directly above the first type declaration
+/// (attributes may sit between), its `<summary>` text when it has one, with
+/// tags removed.
+fn csharp_type_doc(text: &str) -> Option<String> {
+    let mut doc = Vec::<&str>::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("///") {
+            doc.push(rest.trim());
+            continue;
+        }
+        if line.starts_with('[') {
+            continue;
+        }
+        if declares_type(line) && !doc.is_empty() {
+            break;
+        }
+        if declares_type(line) {
+            return None;
+        }
+        doc.clear();
+    }
+    if doc.is_empty() {
+        return None;
+    }
+    let xml = doc.join(" ");
+    let summary = xml
+        .split_once("<summary>")
+        .and_then(|(_, rest)| rest.split_once("</summary>"))
+        .map_or(xml.as_str(), |(summary, _)| summary);
+    let mut plain = String::with_capacity(summary.len());
+    let mut in_tag = false;
+    for character in summary.chars() {
+        match character {
+            '<' => in_tag = true,
+            '>' if in_tag => in_tag = false,
+            _ if !in_tag => plain.push(character),
+            _ => {}
+        }
+    }
+    let plain = plain.trim().to_owned();
+    let lowered = plain.to_ascii_lowercase();
+    (!plain.is_empty() && !lowered.contains("copyright") && !lowered.contains("license"))
+        .then_some(plain)
+}
+
+/// Whether a line starts a Java or C# type declaration: modifier words, then
+/// `class`, `interface`, `enum`, `record`, `struct`, `delegate`, or
+/// `@interface`.
+fn declares_type(line: &str) -> bool {
+    for word in line.split_whitespace() {
+        match word {
+            "class" | "interface" | "enum" | "record" | "struct" | "delegate" | "@interface" => {
+                return true;
+            }
+            word if signature_modifiers(Some(word)).len() == 1 => {}
+            _ => return false,
+        }
+    }
+    false
+}
+
 fn block_comment_text(body: &str) -> String {
     body.lines()
         .map(|line| line.trim().trim_start_matches('*').trim())
@@ -550,8 +671,9 @@ fn first_sentence(doc: &str) -> Option<String> {
 /// Rust: a top-level item whose signature starts with `pub`. TypeScript and
 /// JavaScript: a top-level `export`. Python: a top-level name without a
 /// leading underscore. Shell: every top-level function. Go: a top-level name
-/// that starts with an uppercase letter. Text headings are never public
-/// symbols.
+/// that starts with an uppercase letter. Java and C#: a top-level type whose
+/// modifiers include `public` (package-private and `internal` types are
+/// not). Text headings are never public symbols.
 fn is_public(symbol: &SymbolRecord, language: Option<FileLanguage>) -> bool {
     let top_level = symbol.qualified_name == symbol.name;
     let signature = symbol.signature.as_deref().unwrap_or_default();
@@ -567,6 +689,9 @@ fn is_public(symbol: &SymbolRecord, language: Option<FileLanguage>) -> bool {
         Visibility::TopLevel => top_level,
         Visibility::Capitalized => {
             top_level && symbol.name.chars().next().is_some_and(char::is_uppercase)
+        }
+        Visibility::PublicModifier => {
+            top_level && signature_modifiers(Some(signature)).contains(&"public")
         }
         Visibility::Never => false,
     }
@@ -831,5 +956,106 @@ mod tests {
         );
         assert_eq!(go_package_doc("// Detached.\n\npackage p\n"), None);
         assert_eq!(go_package_doc("package p\n// Late.\n"), None);
+    }
+
+    /// E17-40 (D105): a Java or C# top-level type is public when its
+    /// modifiers, after annotations or attributes, include `public`.
+    #[test]
+    fn test_java_and_csharp_public_types_carry_the_public_modifier() {
+        let symbol = |name: &str, qualified: &str, signature: &str| SymbolRecord {
+            name: name.to_owned(),
+            qualified_name: qualified.to_owned(),
+            kind: SymbolKind::Class,
+            signature: Some(signature.to_owned()),
+            start_line: 1,
+            end_line: 1,
+            token_estimate: 1,
+        };
+        for language in [Some(FileLanguage::Java), Some(FileLanguage::CSharp)] {
+            assert!(is_public(
+                &symbol("Store", "Store", "public class Store"),
+                language
+            ));
+            assert!(is_public(
+                &symbol(
+                    "Store",
+                    "Store",
+                    "@Named(\"public\")\npublic final class Store"
+                ),
+                language
+            ));
+            assert!(is_public(
+                &symbol(
+                    "Store",
+                    "Store",
+                    "[Obsolete(\"x\")] public sealed class Store"
+                ),
+                language
+            ));
+            assert!(!is_public(
+                &symbol("Store", "Store", "class Store"),
+                language
+            ));
+            assert!(!is_public(
+                &symbol("Store", "Store", "internal class Store"),
+                language
+            ));
+            assert!(!is_public(
+                &symbol("Store", "Store", "@Doc(\"public\") class Store"),
+                language
+            ));
+            assert!(!is_public(
+                &symbol("Inner", "Store::Inner", "public class Inner"),
+                language
+            ));
+            assert!(!is_public(&symbol("a.b", "a.b", "package a.b"), language));
+        }
+    }
+
+    #[test]
+    fn test_java_package_doc_is_the_javadoc_above_the_package_or_first_type() {
+        assert_eq!(
+            java_package_doc("/**\n * Stores jobs. More.\n */\npackage a.b;\n").as_deref(),
+            Some("Stores jobs. More.")
+        );
+        assert_eq!(
+            java_package_doc(
+                "/*\n * Copyright 2026 Example.\n */\npackage a;\n\nimport x.Y;\n\n/** Keeps jobs. */\n@Deprecated\npublic class Store {}\n"
+            )
+            .as_deref(),
+            Some("Keeps jobs.")
+        );
+        assert_eq!(
+            java_package_doc("/** Licensed under the MIT license. */\npackage a;\n"),
+            None
+        );
+        assert_eq!(
+            java_package_doc("package a;\n\npublic class Store {}\n/** Late. */\n"),
+            None
+        );
+        assert_eq!(
+            java_package_doc("/** Detached. */\nimport x.Y;\nclass Store {}\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_csharp_type_doc_is_the_summary_above_the_first_type() {
+        assert_eq!(
+            csharp_type_doc(
+                "// Copyright 2026 Example.\nnamespace A;\n\n/// <summary>\n/// Keeps <see cref=\"Job\"/> rows.\n/// </summary>\n/// <remarks>More.</remarks>\n[Serializable]\npublic class Store { }\n"
+            )
+            .as_deref(),
+            Some("Keeps  rows.")
+        );
+        assert_eq!(
+            csharp_type_doc("/// Plain text doc.\ninternal static class Keys { }\n").as_deref(),
+            Some("Plain text doc.")
+        );
+        assert_eq!(csharp_type_doc("public class Store { }\n/// Late.\n"), None);
+        assert_eq!(
+            csharp_type_doc("/// Detached.\nusing System;\nclass Store { }\n"),
+            None
+        );
     }
 }

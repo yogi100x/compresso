@@ -34,7 +34,8 @@
 //! different identifier and is not renamed; in Scala and Dart `$name` may be
 //! an identifier or string interpolation, so it is adjacent; elsewhere
 //! (shell, PHP, Perl, Kotlin templates, ...) `$name` and `${name}` are the
-//! variable `name` and are renamed. Otherwise matching is textual:
+//! variable `name` and are renamed. A C# verbatim identifier `@name` is the
+//! identifier `name` and is renamed. Otherwise matching is textual:
 //! occurrences inside comments and strings are renamed too, and the report
 //! lists every remaining substring and adjacent occurrence.
 //!
@@ -2460,6 +2461,24 @@ mod tests {
         );
         assert_eq!(SourceLanguage::for_path("lib.rs"), SourceLanguage::Rust);
         assert_eq!(SourceLanguage::for_path("run.sh"), SourceLanguage::Other);
+    }
+
+    /// E17-40 (D105): in C#, `@name` is the verbatim spelling of the same
+    /// identifier `name` (`@class`, `@event`), so it is renamed; `$` is not
+    /// an identifier character (`$"{name}"` is an interpolated string), so
+    /// C# needs no `$` rule. Java keeps `$name` as a different identifier.
+    #[test]
+    fn test_csharp_verbatim_identifiers_are_renamed_and_java_dollar_names_are_not() {
+        let csharp = SourceLanguage::for_path("src/Acme/Store.cs");
+        assert_eq!(csharp, SourceLanguage::Other);
+        let found =
+            identifier_occurrences("var @event = event; Log($\"{event}\");", "event", csharp);
+        assert_eq!(found.whole.len(), 3, "{found:?}");
+        assert!(found.substring.is_empty() && found.adjacent.is_empty());
+        let java = SourceLanguage::for_path("src/a/Store.java");
+        assert_eq!(java, SourceLanguage::DollarIdentifier);
+        let found = identifier_occurrences("int $count = count;", "count", java);
+        assert_eq!((found.whole.len(), found.substring.len()), (1, 1));
     }
 
     #[cfg(unix)]

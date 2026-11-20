@@ -18,7 +18,8 @@ use compresso_store::{
 use crate::AtlasError;
 use crate::parsers::ParserRegistry;
 use crate::parsers::go_package_local_name;
-use crate::parsers::languages::{is_test_file, package_is_directory};
+use crate::parsers::languages::{CallRules, call_rules, is_test_file, package_is_directory};
+use crate::parsers::signature_modifiers as modifiers;
 use crate::queries::QueryError;
 use crate::scanner::is_secret_path;
 
@@ -87,8 +88,9 @@ impl TraceEnd {
 pub enum CallResolution {
     /// The only candidate in the caller's file.
     SameFile,
-    /// The only candidate in another file of the caller's Go package (its
-    /// directory): Go code calls its own package without importing it.
+    /// The only candidate in another file of the caller's package: its
+    /// directory in Go, its declared package in Java, and its namespace (or
+    /// an enclosing one) in C#, which code reaches without importing it.
     SamePackage,
     /// The only candidate in a file the caller's file imports.
     Import,
@@ -549,6 +551,9 @@ struct ShapeKey {
     form: CallForm,
     qualifier: Option<String>,
     caller_owner: Option<String>,
+    /// Java and C# only: the caller's owner types, outermost first
+    /// (`Outer::Inner`).
+    caller_owners: Option<String>,
 }
 
 /// The parts of a call that decide its resolution: the shape plus the file.
@@ -570,6 +575,11 @@ struct Resolver<'a> {
     imports: Option<HashMap<String, HashSet<String>>>,
     /// Go only: local names of each file's external imports.
     external_names: Option<HashMap<String, HashSet<String>>>,
+    /// Java and C# only: the simple names (last part) of each file's
+    /// external imports.
+    declared_external_names: Option<HashMap<String, HashSet<String>>>,
+    /// Java and C# only: the packages or namespaces each file declares.
+    file_packages: Option<HashMap<String, Vec<String>>>,
     no_names: HashSet<String>,
     symbols: HashMap<i64, IndexedSymbol>,
     shapes: HashMap<ShapeKey, Rc<Filtered>>,
@@ -584,6 +594,8 @@ impl<'a> Resolver<'a> {
             by_name: HashMap::new(),
             imports: None,
             external_names: None,
+            declared_external_names: None,
+            file_packages: None,
             no_names: HashSet::new(),
             symbols: HashMap::new(),
             shapes: HashMap::new(),
@@ -639,6 +651,13 @@ impl<'a> Resolver<'a> {
             form: call.form,
             qualifier: call.qualifier.clone(),
             caller_owner: owner_base(&call.caller_qualified_name),
+            caller_owners: (call_rules(&call.from_path) == CallRules::DeclaredPackages)
+                .then(|| {
+                    call.caller_qualified_name
+                        .rsplit_once("::")
+                        .map(|(owners, _)| owners.to_owned())
+                })
+                .flatten(),
         };
         let key = CallKey {
             from_path: call.from_path.clone(),
@@ -653,8 +672,10 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_uncached(&mut self, key: &CallKey) -> Result<Resolution, AtlasError> {
-        if package_is_directory(&key.from_path) {
-            return self.resolve_go(key);
+        match call_rules(&key.from_path) {
+            CallRules::GoPackages => return self.resolve_go(key),
+            CallRules::DeclaredPackages => return self.resolve_declared(key),
+            CallRules::ByName => {}
         }
         let filtered = self.filtered(&key.shape)?;
         let (all, by_path, name_only) = match filtered.as_ref() {
@@ -869,6 +890,319 @@ impl<'a> Resolver<'a> {
             .unwrap_or(&self.no_names))
     }
 
+    /// Java and C# rules (D105). Candidates are the same language's symbols
+    /// of the call's name that the caller may reach: another file's
+    /// `private` member never (in C#, a member without an access modifier
+    /// is private, except to another declaration of the same partial type),
+    /// a Java member without `public` only from its own package, and test
+    /// code only from test code (a file under a `test`, `tests`,
+    /// `__tests__`, or `testdata` directory). Tiers run in order and the
+    /// first non-empty one answers: the caller's file (`same_file`), its
+    /// package or namespace (`same_package`; in C# also an enclosing
+    /// namespace), then files it imports (`import`). Unqualified and
+    /// `this.` calls reach methods of the caller's own types (the innermost
+    /// one that has the name), then of the types its type extends or
+    /// implements as declared in its signature; unqualified calls also reach
+    /// types (`new T()`) and, through imports, static methods. `super.` and
+    /// `base.` calls reach only the declared supertypes, never the caller's
+    /// own type. A path call `Q.m()` reaches methods of type `Q` in scope,
+    /// or of a package-qualified type (`unique_name`); a qualifier that is an
+    /// external import, or names a type that is not the repository's
+    /// (`System.out`, `String`, `java.util.Objects`), is a library call
+    /// (`external_path`); a type of the repository that is out of scope
+    /// resolves to nothing; any other qualifier is a variable, and its call
+    /// falls back to the only reachable method of that name anywhere,
+    /// always `name_only`. Receiver calls reach methods by file, package,
+    /// import, then `name_only`. Several partial declarations of one type
+    /// count as that type's first declaration; overloads stay ambiguous.
+    fn resolve_declared(&mut self, key: &CallKey) -> Result<Resolution, AtlasError> {
+        let shape = &key.shape;
+        let from = key.from_path.as_str();
+        let Some(family) = shape.family else {
+            return Ok(Resolution::Unresolved("not_found"));
+        };
+        let csharp = ParserRegistry::for_path(Path::new(from)) == Some(FileLanguage::CSharp);
+        let owners = shape
+            .caller_owners
+            .as_deref()
+            .map(|owners| owners.split("::").map(str::to_owned).collect::<Vec<_>>())
+            .unwrap_or_default();
+        // Everything that needs the store is loaded first.
+        let ids = self.named(&shape.name)?.to_vec();
+        self.load_imports()?;
+        self.load_file_packages()?;
+        let supertypes = match shape.form {
+            CallForm::Plain | CallForm::SelfRef => self.supertypes(from, &owners, family)?,
+            _ => Vec::new(),
+        };
+        let qualifier = shape.qualifier.as_deref().unwrap_or_default();
+        let (external, type_segment_is_repository_type) = if shape.form == CallForm::Path {
+            let names = self.declared_external_names(from)?;
+            // Any dotted prefix: `Collections`, `System.Console`.
+            let external = qualifier
+                .match_indices('.')
+                .map(|(dot, _)| &qualifier[..dot])
+                .chain([qualifier])
+                .any(|prefix| names.contains(prefix));
+            let type_segment = qualifier
+                .split('.')
+                .find(|segment| segment.chars().next().is_some_and(char::is_uppercase));
+            let repository_type = match type_segment {
+                Some(segment) => Some(self.is_repository_type(segment, family)?),
+                None => None,
+            };
+            (external, repository_type)
+        } else {
+            (false, None)
+        };
+
+        let caller_is_test = is_test_code(from);
+        let packages = self.file_packages.as_ref().expect("loaded above");
+        let scope = DeclaredScope {
+            from,
+            csharp,
+            from_packages: packages_of(packages, from),
+            imports: self.imports.as_ref().and_then(|imports| imports.get(from)),
+            packages,
+            owners: &owners,
+        };
+        let candidates = ids
+            .iter()
+            .filter_map(|id| self.symbols.get(id))
+            .filter(|candidate| {
+                language_family(candidate.language) == Some(family)
+                    && (caller_is_test || !is_test_code(&candidate.path))
+                    && scope.reachable(candidate)
+            })
+            .collect::<Vec<_>>();
+        let is_method = |candidate: &&IndexedSymbol| candidate.symbol.kind == SymbolKind::Method;
+        let owned_by = |candidate: &&IndexedSymbol, owner: &str| {
+            candidate.symbol.kind == SymbolKind::Method
+                && owner_base(&candidate.symbol.qualified_name).as_deref() == Some(owner)
+        };
+        let inherited = candidates
+            .iter()
+            .copied()
+            .filter(|candidate| {
+                supertypes
+                    .iter()
+                    .any(|supertype| owned_by(candidate, supertype))
+            })
+            .collect::<Vec<_>>();
+        let form = shape.form;
+        let resolution = match (form, qualifier) {
+            (CallForm::SelfRef, "super" | "base") => scope.tiers(&inherited, true),
+            (CallForm::Plain | CallForm::SelfRef, _) => {
+                // The innermost own type that declares the name.
+                let own = owners
+                    .iter()
+                    .rev()
+                    .map(|owner| {
+                        candidates
+                            .iter()
+                            .copied()
+                            .filter(|candidate| owned_by(candidate, owner))
+                            .collect::<Vec<_>>()
+                    })
+                    .find(|methods| !methods.is_empty())
+                    .unwrap_or_default();
+                let mut local = own;
+                if form == CallForm::Plain {
+                    local.extend(candidates.iter().copied().filter(|candidate| {
+                        matches!(
+                            candidate.symbol.kind,
+                            SymbolKind::Class | SymbolKind::Struct
+                        )
+                    }));
+                }
+                scope
+                    .tiers(&local, form == CallForm::Plain)
+                    .or_else(|| scope.tiers(&inherited, true))
+                    .or_else(|| {
+                        if form != CallForm::Plain {
+                            return None;
+                        }
+                        // A statically imported method.
+                        let statics = candidates
+                            .iter()
+                            .copied()
+                            .filter(|candidate| {
+                                is_method(candidate)
+                                    && modifiers(candidate.symbol.signature.as_deref())
+                                        .contains(&"static")
+                                    && scope.imported(candidate)
+                            })
+                            .collect::<Vec<_>>();
+                        declared_tier(&statics, CallResolution::Import)
+                    })
+            }
+            (CallForm::Path, _) => {
+                if external {
+                    return Ok(Resolution::Unresolved("external_path"));
+                }
+                let last = qualifier.rsplit('.').next().unwrap_or(qualifier);
+                let typed = candidates
+                    .iter()
+                    .copied()
+                    .filter(|candidate| owned_by(candidate, last))
+                    .collect::<Vec<_>>();
+                let any_type_method =
+                    ids.iter()
+                        .filter_map(|id| self.symbols.get(id))
+                        .any(|candidate| {
+                            language_family(candidate.language) == Some(family)
+                                && candidate.symbol.kind == SymbolKind::Method
+                                && owner_base(&candidate.symbol.qualified_name).as_deref()
+                                    == Some(last)
+                        });
+                if let Some(resolution) = scope.tiers(&typed, true) {
+                    Some(resolution)
+                } else if let Some((package, _)) = qualifier.rsplit_once('.')
+                    && let Some(resolution) = declared_tier(
+                        &typed
+                            .iter()
+                            .copied()
+                            .filter(|candidate| {
+                                packages_of(packages, &candidate.path).contains(&package)
+                            })
+                            .collect::<Vec<_>>(),
+                        CallResolution::UniqueName,
+                    )
+                {
+                    // A package-qualified type: `com.acme.Strings.trim()`.
+                    Some(resolution)
+                } else if any_type_method {
+                    // A repository type the caller cannot see.
+                    None
+                } else if type_segment_is_repository_type == Some(false) {
+                    // `System.out`, `String`, `java.util.Objects`: a type
+                    // that is not the repository's.
+                    return Ok(Resolution::Unresolved("external_path"));
+                } else {
+                    // A variable or field: a method of that name anywhere.
+                    declared_tier(
+                        &candidates
+                            .iter()
+                            .copied()
+                            .filter(is_method)
+                            .collect::<Vec<_>>(),
+                        CallResolution::NameOnly,
+                    )
+                }
+            }
+            (CallForm::Receiver, _) => {
+                let methods = candidates
+                    .iter()
+                    .copied()
+                    .filter(is_method)
+                    .collect::<Vec<_>>();
+                scope
+                    .tiers(&methods, true)
+                    .or_else(|| declared_tier(&methods, CallResolution::NameOnly))
+            }
+            (CallForm::Reference, _) => None,
+        };
+        Ok(resolution.unwrap_or(Resolution::Unresolved("not_found")))
+    }
+
+    /// The packages or namespaces of every Java and C# file, once per trace.
+    fn load_file_packages(&mut self) -> Result<(), AtlasError> {
+        if self.file_packages.is_none() {
+            let mut packages = HashMap::<String, Vec<String>>::new();
+            for (path, name) in self
+                .store
+                .module_declarations(self.repo, &[FileLanguage::Java, FileLanguage::CSharp])?
+            {
+                packages.entry(path).or_default().push(name);
+            }
+            self.file_packages = Some(packages);
+        }
+        Ok(())
+    }
+
+    /// The names of the imports `from` records as external, whole and by
+    /// their last part (`java.util.Collections` and `Collections`; `System`
+    /// for `using System;`), loaded once per trace.
+    fn declared_external_names(&mut self, from: &str) -> Result<&HashSet<String>, AtlasError> {
+        if self.declared_external_names.is_none() {
+            let mut names = HashMap::<String, HashSet<String>>::new();
+            for (path, import) in self.store.external_edges(self.repo)? {
+                if call_rules(&path) != CallRules::DeclaredPackages || import.ends_with(".*") {
+                    continue;
+                }
+                let last = import.rsplit('.').next().unwrap_or(&import).to_owned();
+                let entry = names.entry(path).or_default();
+                entry.insert(last);
+                entry.insert(import);
+            }
+            self.declared_external_names = Some(names);
+        }
+        Ok(self
+            .declared_external_names
+            .as_ref()
+            .and_then(|names| names.get(from))
+            .unwrap_or(&self.no_names))
+    }
+
+    /// Whether `name` is a type of the repository in this call family.
+    fn is_repository_type(&mut self, name: &str, family: u8) -> Result<bool, AtlasError> {
+        let ids = self.named(name)?.to_vec();
+        Ok(ids
+            .iter()
+            .filter_map(|id| self.symbols.get(id))
+            .any(|candidate| {
+                language_family(candidate.language) == Some(family)
+                    && matches!(
+                        candidate.symbol.kind,
+                        SymbolKind::Class
+                            | SymbolKind::Struct
+                            | SymbolKind::Interface
+                            | SymbolKind::Enum
+                            | SymbolKind::Type
+                    )
+            }))
+    }
+
+    /// The types the caller's innermost type extends or implements, as
+    /// its declarations in the caller's file (and, for a partial C# type,
+    /// in other files of its namespace) write them.
+    fn supertypes(
+        &mut self,
+        from: &str,
+        owners: &[String],
+        family: u8,
+    ) -> Result<Vec<String>, AtlasError> {
+        let Some(innermost) = owners.last() else {
+            return Ok(Vec::new());
+        };
+        let qualified = owners.join("::");
+        let ids = self.named(innermost)?.to_vec();
+        let mut supertypes = Vec::new();
+        for candidate in ids.iter().filter_map(|id| self.symbols.get(id)) {
+            let same_place = candidate.path == from
+                || (from.ends_with(".cs")
+                    && modifiers(candidate.symbol.signature.as_deref()).contains(&"partial"));
+            if language_family(candidate.language) == Some(family)
+                && candidate.symbol.qualified_name == qualified
+                && same_place
+                && matches!(
+                    candidate.symbol.kind,
+                    SymbolKind::Class
+                        | SymbolKind::Struct
+                        | SymbolKind::Interface
+                        | SymbolKind::Enum
+                )
+            {
+                for supertype in declared_supertypes(candidate.symbol.signature.as_deref()) {
+                    if !supertypes.contains(&supertype) && supertype != *innermost {
+                        supertypes.push(supertype);
+                    }
+                }
+            }
+        }
+        Ok(supertypes)
+    }
+
     /// The candidates a call shape may reach, computed once per shape.
     fn filtered(&mut self, shape: &ShapeKey) -> Result<Rc<Filtered>, AtlasError> {
         if let Some(filtered) = self.shapes.get(shape) {
@@ -1022,6 +1356,202 @@ fn tier(ids: &[i64], rule: CallResolution) -> Option<Resolution> {
         [id] => Some(Resolution::Resolved(*id, rule)),
         _ => Some(Resolution::Ambiguous(Rc::from(ids))),
     }
+}
+
+/// What a Java or C# caller can see: its file, packages or namespaces,
+/// imported files, and own types (D105).
+struct DeclaredScope<'a> {
+    from: &'a str,
+    csharp: bool,
+    from_packages: Vec<&'a str>,
+    imports: Option<&'a HashSet<String>>,
+    packages: &'a HashMap<String, Vec<String>>,
+    /// The caller's owner types, outermost first.
+    owners: &'a [String],
+}
+
+impl DeclaredScope<'_> {
+    /// Whether `candidate` lives in the caller's package (Java) or in its
+    /// namespace or an enclosing one (C#); files declaring none share the
+    /// default package or global namespace, which C# sees from everywhere.
+    fn same_package(&self, candidate: &IndexedSymbol) -> bool {
+        packages_of(self.packages, &candidate.path)
+            .iter()
+            .any(|theirs| {
+                self.from_packages.iter().any(|ours| {
+                    ours == theirs
+                        || (self.csharp
+                            && (theirs.is_empty()
+                                || ours
+                                    .strip_prefix(*theirs)
+                                    .is_some_and(|rest| rest.starts_with('.'))))
+                })
+            })
+    }
+
+    fn imported(&self, candidate: &IndexedSymbol) -> bool {
+        self.imports
+            .is_some_and(|imports| imports.contains(&candidate.path))
+    }
+
+    /// Whether the caller may reach `candidate` by its access modifiers.
+    fn reachable(&self, candidate: &IndexedSymbol) -> bool {
+        if candidate.path == self.from {
+            return true;
+        }
+        let modifiers = modifiers(candidate.symbol.signature.as_deref());
+        let access = modifiers.iter().copied().find(|word| {
+            matches!(
+                *word,
+                "public" | "private" | "protected" | "internal" | "file"
+            )
+        });
+        if !self.csharp {
+            return match access {
+                Some("private") => false,
+                Some("public") => true,
+                // Package-private and protected: the same package.
+                _ => self.same_package(candidate),
+            };
+        }
+        let same_type = || {
+            owner_base(&candidate.symbol.qualified_name)
+                .is_some_and(|owner| self.owners.contains(&owner))
+                && self.same_package(candidate)
+        };
+        match access {
+            Some("public" | "internal" | "protected") => true,
+            Some("file") => false,
+            Some("private") => same_type(),
+            // A member without a modifier is private; a top-level type is
+            // internal.
+            _ if candidate.symbol.qualified_name.contains("::") => same_type(),
+            _ => true,
+        }
+    }
+
+    /// Same file, then same package, then (when `imports`) imported files.
+    fn tiers(&self, candidates: &[&IndexedSymbol], imports: bool) -> Option<Resolution> {
+        let pick = |predicate: &dyn Fn(&IndexedSymbol) -> bool| {
+            candidates
+                .iter()
+                .copied()
+                .filter(|candidate| predicate(candidate))
+                .collect::<Vec<_>>()
+        };
+        declared_tier(
+            &pick(&|candidate| candidate.path == self.from),
+            CallResolution::SameFile,
+        )
+        .or_else(|| {
+            declared_tier(
+                &pick(&|candidate| candidate.path != self.from && self.same_package(candidate)),
+                CallResolution::SamePackage,
+            )
+        })
+        .or_else(|| {
+            if !imports {
+                return None;
+            }
+            declared_tier(
+                &pick(&|candidate| candidate.path != self.from && self.imported(candidate)),
+                CallResolution::Import,
+            )
+        })
+    }
+}
+
+/// One tier of Java or C# candidates. Partial declarations of one type
+/// count as one: the first, in path and line order.
+fn declared_tier(candidates: &[&IndexedSymbol], rule: CallResolution) -> Option<Resolution> {
+    let first = candidates.first()?;
+    let one_partial_type = candidates.len() > 1
+        && candidates.iter().all(|candidate| {
+            candidate.symbol.qualified_name == first.symbol.qualified_name
+                && candidate.symbol.kind == first.symbol.kind
+                && matches!(
+                    candidate.symbol.kind,
+                    SymbolKind::Class | SymbolKind::Struct | SymbolKind::Interface
+                )
+                && modifiers(candidate.symbol.signature.as_deref()).contains(&"partial")
+        });
+    if one_partial_type {
+        return Some(Resolution::Resolved(first.id, rule));
+    }
+    let ids = candidates
+        .iter()
+        .map(|candidate| candidate.id)
+        .collect::<Vec<_>>();
+    tier(&ids, rule)
+}
+
+fn packages_of<'a>(packages: &'a HashMap<String, Vec<String>>, path: &str) -> Vec<&'a str> {
+    match packages.get(path) {
+        Some(names) if !names.is_empty() => names.iter().map(String::as_str).collect(),
+        _ => vec![""],
+    }
+}
+
+/// A Java or C# file under a test directory (D99's rule), or a file name a
+/// language reserves for tests.
+fn is_test_code(path: &str) -> bool {
+    is_test_file(path)
+        || path
+            .rsplit('/')
+            .skip(1)
+            .any(|part| matches!(part, "test" | "tests" | "__tests__" | "testdata"))
+}
+
+/// The simple names of the types a Java or C# type declaration extends or
+/// implements: Java `extends A implements B, C`, C# `: A, IB` (before any
+/// `where`); type arguments, record parameters, attributes, and namespaces
+/// are dropped.
+fn declared_supertypes(signature: Option<&str>) -> Vec<String> {
+    let signature = signature.unwrap_or_default();
+    // Without generic arguments or parenthesized groups.
+    let mut flat = String::with_capacity(signature.len());
+    let mut depth = 0_usize;
+    for character in signature.chars() {
+        match character {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => flat.push(character),
+            _ => {}
+        }
+    }
+    let list = if let Some((_, after)) = flat.split_once(':') {
+        after
+            .split(" where ")
+            .next()
+            .unwrap_or(after)
+            .replace(',', " ")
+    } else {
+        let words = flat
+            .split(|character: char| character.is_whitespace() || character == ',')
+            .collect::<Vec<_>>();
+        let mut names = Vec::new();
+        let mut collecting = false;
+        for word in words {
+            match word {
+                "extends" | "implements" => collecting = true,
+                "permits" => collecting = false,
+                "" => {}
+                name if collecting => names.push(name),
+                _ => {}
+            }
+        }
+        names.join(" ")
+    };
+    list.split_whitespace()
+        .map(|name| name.rsplit('.').next().unwrap_or(name))
+        .filter(|name| {
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|character| character == '_' || character.is_alphanumeric())
+        })
+        .map(str::to_owned)
+        .collect()
 }
 
 /// One resolved call from `caller` to `callee`.
@@ -1556,6 +2086,37 @@ mod tests {
 
         // A budget the rows exactly fill is not a cut.
         assert!(!run(30).truncated);
+    }
+
+    /// E17-40 (D105): `super.`/`base.` calls reach the types a declaration
+    /// extends or implements, read from its signature.
+    #[test]
+    fn test_declared_supertypes_read_java_and_csharp_signatures() {
+        assert_eq!(
+            declared_supertypes(Some(
+                "@Entity(name = \"a:b\")\npublic class JobStore<T extends Job> extends a.BaseStore<T> implements Store, java.io.Closeable"
+            )),
+            ["BaseStore", "Store", "Closeable"]
+        );
+        assert_eq!(
+            declared_supertypes(Some("public sealed interface Shape permits Circle, Square")),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            declared_supertypes(Some("record Point(int x) implements Comparable<Point>")),
+            ["Comparable"]
+        );
+        assert_eq!(
+            declared_supertypes(Some(
+                "[Obsolete(\"a:b\")] public partial class JobStore<T> : Acme.StoreBase, IStore where T : Job"
+            )),
+            ["StoreBase", "IStore"]
+        );
+        assert_eq!(
+            declared_supertypes(Some("public record Entry(string Key) : Base(Key)")),
+            ["Base"]
+        );
+        assert!(declared_supertypes(Some("class Plain")).is_empty());
     }
 
     #[test]

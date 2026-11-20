@@ -568,3 +568,22 @@ fn check_grammars() -> DiagnosticCheck {
 const fn source_name(source: ConfigSource) -> &'static str {
     source.as_str()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// E17-40 (D105): the grammar check parses every table language's
+    /// sample, Java and C# included, and names them.
+    #[test]
+    fn test_grammar_check_loads_and_names_java_and_csharp() {
+        let check = check_grammars();
+        assert!(matches!(check.severity, Severity::Ok), "{check:?}");
+        assert_eq!(check.name, "tree_sitter_grammars_load");
+        assert!(
+            check.detail.contains("Go, Java, and C# grammars loaded"),
+            "{}",
+            check.detail
+        );
+    }
+}
