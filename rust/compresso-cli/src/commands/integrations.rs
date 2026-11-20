@@ -17,6 +17,7 @@ use compresso_integrations::{
 use compresso_store::{ReceiptRecord, Store};
 
 use super::mcp_probe::{self, LauncherTrust, McpServerHealth, Severity};
+use super::transcript_stats::printable;
 use super::{
     CliExitCode, IntegrationClientArg, IntegrationMutationArgs, IntegrationReadArgs,
     IntegrationsCommand, write_error,
@@ -1112,11 +1113,10 @@ fn render_hook_status(
                 data["advice"] = advice.into();
             }
         }
-        serde_json::to_writer(
-            &mut *output,
+        write_json_escaped(
+            output,
             &serde_json::json!({ "schema_version": 1, "data": data }),
         )?;
-        writeln!(output)?;
     } else {
         writeln!(output, "client: {}", arguments.client.as_str())?;
         writeln!(
@@ -1151,7 +1151,8 @@ fn render_hook_status(
         if let Some(agent) = &agent {
             writeln!(output, "agent server: {}", agent.server)?;
             if let Some(command) = &agent.command {
-                writeln!(output, "agent command: {command}")?;
+                // Repository content: never written to the terminal raw.
+                writeln!(output, "agent command: {}", printable(command))?;
             }
             writeln!(output, "folder trust: {} (advisory)", agent.folder_trust)?;
             if let Some(advice) = agent.advice() {
@@ -1543,23 +1544,44 @@ fn render_verification(
     json: bool,
 ) -> Result<(), IntegrationCliError> {
     if json {
-        serde_json::to_writer(
-            &mut *output,
+        write_json_escaped(
+            output,
             &serde_json::json!({ "schema_version": 1, "data": report }),
         )?;
-        writeln!(output)?;
     } else {
         writeln!(output, "verified: {}", report.verified)?;
+        // A detail may quote a configuration file's content.
         for check in &report.checks {
             writeln!(
                 output,
                 "{}: {} ({})",
-                check.name,
+                printable(&check.name),
                 if check.passed { "pass" } else { "fail" },
-                check.detail
+                printable(&check.detail)
             )?;
         }
     }
+    Ok(())
+}
+
+/// Writes `value` as one JSON line with DEL and C1 controls escaped too
+/// (`serde_json` escapes only C0), so a value read from a repository file
+/// cannot drive the terminal; the JSON still parses to the same value.
+fn write_json_escaped(
+    output: &mut impl Write,
+    value: &serde_json::Value,
+) -> Result<(), IntegrationCliError> {
+    let text = serde_json::to_string(value)?;
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        if character.is_control() {
+            // Only inside strings: JSON has no raw controls elsewhere.
+            escaped.push_str(&format!("\\u{:04x}", u32::from(character)));
+        } else {
+            escaped.push(character);
+        }
+    }
+    writeln!(output, "{escaped}")?;
     Ok(())
 }
 

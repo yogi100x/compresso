@@ -140,11 +140,15 @@ impl ExploreAgentIntegration {
     }
 
     /// Whether `command` is not this Compresso's launcher (unknown: `false`).
+    /// Compared on the raw value; a command holding a control character is
+    /// never this launcher.
     pub fn is_other_launcher(&self, command: &str) -> bool {
-        self.launcher
-            .as_deref()
-            .and_then(Path::to_str)
-            .is_some_and(|launcher| launcher != command)
+        command.chars().any(char::is_control)
+            || self
+                .launcher
+                .as_deref()
+                .and_then(Path::to_str)
+                .is_some_and(|launcher| launcher != command)
     }
 
     /// Overrides the receipt version, primarily for deterministic embedders.
@@ -446,15 +450,19 @@ impl Integration for ExploreAgentIntegration {
                 detail: if current {
                     let command = command.unwrap_or_default();
                     format!(
-                        "agent definition matches what this Compresso version writes; its server runs {command}{}",
+                        "agent definition matches what this Compresso version writes; its server runs {}{}",
+                        printable(&command),
                         if self.is_other_launcher(&command) {
                             format!(
                                 ", not this Compresso launcher {}; reinstall to point it here",
-                                self.launcher
-                                    .as_deref()
-                                    .map(Path::display)
-                                    .map(|path| path.to_string())
-                                    .unwrap_or_default()
+                                printable(
+                                    &self
+                                        .launcher
+                                        .as_deref()
+                                        .map(Path::display)
+                                        .map(|path| path.to_string())
+                                        .unwrap_or_default()
+                                )
                             )
                         } else {
                             String::new()
@@ -546,6 +554,21 @@ fn needs_yaml_escape(character: char) -> bool {
             character,
             '\u{2028}' | '\u{2029}' | '\u{feff}' | '\u{fffe}' | '\u{ffff}'
         )
+}
+
+/// Text read back from an agent file (repository content) made safe for a
+/// terminal: printable ASCII passes, everything else becomes a visible
+/// `\u{..}` escape.
+fn printable(text: &str) -> String {
+    let mut rendered = String::with_capacity(text.len());
+    for character in text.chars() {
+        if character.is_ascii_graphic() || character == ' ' {
+            rendered.push(character);
+        } else {
+            rendered.extend(character.escape_unicode());
+        }
+    }
+    rendered
 }
 
 /// The frontmatter block of an agent definition.

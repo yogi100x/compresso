@@ -598,3 +598,92 @@ fn test_status_names_the_agent_command_and_warns_on_another_launcher() {
         "{status}"
     );
 }
+
+/// Runs an integrations command and returns its raw standard output.
+fn integrations_raw(fixture: &Fixture, arguments: &[&str]) -> Vec<u8> {
+    let cli = Cli::try_parse_from(
+        ["compresso", "integrations"]
+            .into_iter()
+            .chain(arguments.iter().copied()),
+    )
+    .expect("integration command parses");
+    let RootCommand::Integrations { command } = cli.command else {
+        panic!("expected integration command");
+    };
+    let mut output = Vec::new();
+    let _ = execute_integrations(
+        command,
+        &fixture.environment,
+        &mut Cursor::new(Vec::new()),
+        &mut output,
+        &mut Vec::new(),
+    );
+    output
+}
+
+/// No raw C0 (except line feed), DEL, or C1 control reaches the output.
+fn assert_no_raw_controls(bytes: &[u8]) {
+    let text = String::from_utf8(bytes.to_vec()).expect("UTF-8 output");
+    for character in text.chars() {
+        assert!(
+            character == '\n' || !character.is_control(),
+            "raw control {character:?} in {text:?}"
+        );
+    }
+}
+
+/// E17-38 (D103, security review): an agent file is repository content, so
+/// a command holding terminal escapes never reaches the terminal raw; JSON
+/// still carries the original value.
+#[test]
+fn test_agent_command_with_control_characters_is_escaped_in_output() {
+    let fixture = Fixture::new();
+    let (exit, _, errors) = fixture.integrations(&[
+        "install",
+        "claude-code",
+        "--explore-agent",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    let launcher = fixture
+        .environment
+        .compresso_bin
+        .to_str()
+        .expect("UTF-8")
+        .to_owned();
+    let hostile = "/opt/\u{1b}[2J\r\u{9b}31mcompresso";
+    let text = fs::read_to_string(fixture.agent_path()).expect("agent");
+    fs::write(
+        fixture.agent_path(),
+        text.replace(
+            &serde_json::to_string(&launcher).expect("json"),
+            &serde_json::to_string(hostile).expect("json"),
+        ),
+    )
+    .expect("hostile agent");
+    for arguments in [
+        &["status", "claude-code", "--explore-agent"][..],
+        &["verify", "claude-code", "--explore-agent"][..],
+        &["status", "claude-code", "--explore-agent", "--json"][..],
+        &["verify", "claude-code", "--explore-agent", "--json"][..],
+    ] {
+        let output = integrations_raw(&fixture, arguments);
+        assert_no_raw_controls(&output);
+        if arguments.contains(&"--json") {
+            let value: Value = serde_json::from_slice(&output).expect("JSON output");
+            if arguments[0] == "status" {
+                assert_eq!(value["data"]["agent_command"], hostile);
+                assert!(
+                    value["data"]["advice"]
+                        .as_str()
+                        .is_some_and(|advice| advice.contains("not this Compresso launcher")),
+                    "{value}"
+                );
+            }
+        } else if arguments[0] == "status" {
+            let text = String::from_utf8(output).expect("UTF-8");
+            assert!(text.contains("agent command: /opt/"), "{text}");
+        }
+    }
+}
