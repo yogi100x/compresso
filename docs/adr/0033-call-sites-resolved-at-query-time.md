@@ -48,7 +48,7 @@ Option 2.
   file by a sweep over the symbol ranges. Names must be identifier
   characters and at most 256 bytes; anything else from error recovery is
   dropped, so a malformed file cannot abort an index (as in E17-21).
-  Covered: Rust, Python, JavaScript, TypeScript, TSX, and Go (E17-37,
+  Covered: Rust, Python, JavaScript, TypeScript, TSX, Go (E17-37,
   D102: receiver-name self calls, a package qualifier names a directory
   and reaches its exported names, a qualifier naming an external import
   is a library call, plain calls resolve only as `same_file` or
