@@ -1,0 +1,29 @@
+rust/compresso-integrations/src/explore_agent.rs
+  s_89a704cfae63f5::t_c7b97addf950d1 260,262,548-565
+  s_89a704cfae63f5::t_9b3953b74904f2 713-719,872-879,881-899,903-931,1012-1013,1015,1091-1092,1094,1098
+  s_89a704cfae63f5::t_1316d6c661298f 1041-1044,1050-1052,1056
+  s_89a704cfae63f5::t_7d1ed7df8a088d 880
+  s_89a704cfae63f5::t_e329307bf5bab3 566-567
+  s_89a704cfae63f5::t_14e4f2c234083a 1014
+  s_89a704cfae63f5::t_6cda74ac132c6a 1093
+rust/compresso-cli/tests/cli_explore_agent.rs
+  s_89a704cfae63f5::t_f48c51b22cd1b2 690-739
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_c0a73fa8699f9c 3405
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0aeaa56b4f8ed83edd9dd74aa057a90187730eff",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
