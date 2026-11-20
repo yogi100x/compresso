@@ -19,7 +19,8 @@ use crate::AtlasError;
 use crate::parsers::ParserRegistry;
 use crate::parsers::go_package_local_name;
 use crate::parsers::languages::{
-    CallRules, DeclaredRules, call_rules, declaring_languages, is_test_file, package_is_directory,
+    CallRules, DeclaredRules, ImportStyle, call_rules, declaring_languages, is_test_file,
+    package_is_directory,
 };
 use crate::parsers::signature_modifiers as modifiers;
 use crate::queries::QueryError;
@@ -1153,9 +1154,9 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    /// The names of the imports `from` records as external, whole and by
-    /// their last part (`java.util.Collections` and `Collections`; `System`
-    /// for `using System;`), loaded once per trace.
+    /// The names of the imports `from` records as external: whole, and for
+    /// a Java type import by its last part (`java.util.Collections` and
+    /// `Collections`; `System` for `using System;`), loaded once per trace.
     fn declared_external_names(&mut self, from: &str) -> Result<&HashSet<String>, AtlasError> {
         if self.declared_external_names.is_none() {
             let mut names = HashMap::<String, HashSet<String>>::new();
@@ -1165,9 +1166,17 @@ impl<'a> Resolver<'a> {
                 {
                     continue;
                 }
-                let last = import.rsplit('.').next().unwrap_or(&import).to_owned();
+                // A Java import names a type, known by its last part; a C#
+                // `using` names a namespace, known only whole (an alias or
+                // `using static` type is already rewritten or capitalized).
+                let names_a_type =
+                    ParserRegistry::for_path(Path::new(&path)).is_some_and(|language| {
+                        crate::parsers::languages::spec(language).imports == ImportStyle::Java
+                    });
                 let entry = names.entry(path).or_default();
-                entry.insert(last);
+                if names_a_type {
+                    entry.insert(import.rsplit('.').next().unwrap_or(&import).to_owned());
+                }
                 entry.insert(import);
             }
             self.declared_external_names = Some(names);

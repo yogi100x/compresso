@@ -7,7 +7,8 @@ use std::fs;
 use std::path::Path;
 
 use compresso_atlas::{
-    CallResolution, CardOptions, Indexer, TraceOptions, TraceResult, impact, module_cards, trace,
+    CallResolution, CardOptions, Indexer, TraceOptions, TraceResult, impact, module_cards,
+    repo_map, trace,
 };
 use compresso_core::{TokenProvider, counter_for};
 use compresso_store::{FileLanguage, RepoId, Store, SymbolKind};
@@ -460,6 +461,58 @@ public class Sorter {
         callees_of(&store, repo, "Main::run"),
         [("Sorter::sort".to_owned(), CallResolution::NameOnly)]
     );
+}
+
+/// A C# `using` of an external namespace names the namespace, not its last
+/// part: a repository type that shares that last part still resolves.
+#[test]
+fn test_an_external_csharp_namespace_never_shadows_a_repository_type() {
+    let (_temp, store, repo) = index_files(&[
+        (
+            "app/Main.cs",
+            "using Vendor.Configuration;\n\nnamespace App;\n\npublic class Main\n{\n    public void Run() { Configuration.Load(); }\n}\n",
+        ),
+        (
+            "app/Configuration.cs",
+            "namespace App;\n\npublic static class Configuration { public static void Load() { } }\n",
+        ),
+    ]);
+    assert_eq!(
+        callees_of(&store, repo, "Main::Run"),
+        [(
+            "Configuration::Load".to_owned(),
+            CallResolution::SamePackage
+        )]
+    );
+}
+
+/// The repository map lists a Java or C# file's types and members, not the
+/// package or namespace symbol every file of the package repeats.
+#[test]
+fn test_the_map_lists_types_not_package_or_namespace_symbols() {
+    let (_temp, store, repo) = index_files(&[
+        (
+            "a/Store.java",
+            "package com.acme.store;\n\npublic class Store { void save() {} }\n",
+        ),
+        (
+            "b/Keys.cs",
+            "namespace Acme.Keys\n{\n    public class Keys { void Make() { } }\n}\n",
+        ),
+    ]);
+    let map = repo_map(&store, repo, 2_000).expect("map");
+    assert!(
+        map.rendered.contains("Store.java  — Store, Store::save"),
+        "{}",
+        map.rendered
+    );
+    assert!(
+        map.rendered.contains("Keys.cs  — Keys, Keys::Make"),
+        "{}",
+        map.rendered
+    );
+    assert!(!map.rendered.contains("com.acme.store"), "{}", map.rendered);
+    assert!(!map.rendered.contains("Acme.Keys"), "{}", map.rendered);
 }
 
 #[test]
