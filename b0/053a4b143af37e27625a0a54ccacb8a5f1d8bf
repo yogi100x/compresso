@@ -1,0 +1,19 @@
+rust/compresso-cli/src/commands/pr_post.rs
+  s_89a704cfae63f5::t_1836e7fa5246fb 81-88,90,92-98
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b0053a4b143af37e27625a0a54ccacb8a5f1d8bf",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
