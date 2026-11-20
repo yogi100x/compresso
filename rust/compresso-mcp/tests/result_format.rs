@@ -1847,7 +1847,11 @@ async fn test_literal_pattern_with_a_pipe_falls_back_to_its_literal_parts() {
     );
     lean.close().await;
 
-    let mut full = Harness::start(&fixture, fixture.options(McpToolProfile::Full)).await;
+    let mut full = Harness::start(
+        &fixture,
+        options_with(&fixture, McpToolProfile::Lean, McpResultFormat::Json),
+    )
+    .await;
     let (text, is_error) = full
         .call("compresso_grep", &json!({ "pattern": "open | close" }))
         .await;
@@ -1871,6 +1875,121 @@ async fn test_literal_pattern_with_a_pipe_falls_back_to_its_literal_parts() {
     let value: Value = serde_json::from_str(&text).expect("JSON result");
     assert!(value.get("literal_alternation").is_none(), "{value}");
     full.close().await;
+}
+
+/// E17-38 (D103, review): the full profile is unchanged by the round-trip
+/// notes: a zero-match literal `a|b`, a path matching no file, and unlisted
+/// files give the same keys and values as a call that has none of them.
+#[tokio::test]
+async fn test_full_profile_grep_has_no_round_trip_notes() {
+    let fixture = Fixture::new();
+    let mut full = Harness::start(&fixture, fixture.options(McpToolProfile::Full)).await;
+    let call = |arguments: Value| arguments;
+    let shape = |text: &str| {
+        let mut value: Value = serde_json::from_str(text).expect("JSON result");
+        value
+            .as_object_mut()
+            .expect("object")
+            .remove("operation_id");
+        value
+    };
+    let (piped, _) = full
+        .call(
+            "compresso_grep",
+            &call(json!({ "pattern": "start_session|describe" })),
+        )
+        .await;
+    let (plain, _) = full
+        .call(
+            "compresso_grep",
+            &call(json!({ "pattern": "start_session_describe" })),
+        )
+        .await;
+    let mut piped = shape(&piped);
+    let mut plain = shape(&plain);
+    assert_eq!(piped["results"][0]["matches_total"], 0, "{piped}");
+    for value in [&mut piped, &mut plain] {
+        value["results"][0]["pattern"] = json!("P");
+        value["pattern"] = json!("P");
+        // The two patterns differ in length by one token or so.
+        value["tokens_used"] = json!(0);
+    }
+    assert_eq!(piped, plain);
+    let (text, _) = full
+        .call(
+            "compresso_grep",
+            &json!({ "pattern": "Session", "path": "lib/session.rs" }),
+        )
+        .await;
+    assert!(!text.contains("paths_unmatched"), "{text}");
+    let (text, _) = full
+        .call(
+            "compresso_grep",
+            &json!({ "pattern": "Session", "max_files": 1 }),
+        )
+        .await;
+    assert!(!text.contains("files_unlisted"), "{text}");
+    full.close().await;
+}
+
+/// E17-38 (D103, review): a retry whose escaped alternation would exceed
+/// the pattern limit is skipped, so the call keeps its empty result.
+#[tokio::test]
+async fn test_a_long_literal_with_a_pipe_never_fails_the_call() {
+    let fixture = Fixture::new();
+    let pattern = format!("{}|{}", "a.".repeat(100), "b.".repeat(100));
+    assert!(pattern.len() <= 512);
+    let mut lean = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, is_error) = lean
+        .call("compresso_grep", &json!({ "patterns": [pattern] }))
+        .await;
+    assert!(!is_error, "{text}");
+    assert!(text.contains("— no matches"), "{text}");
+    lean.close().await;
+}
+
+/// E17-38 (D103, review): notes never make a small budget fail: eight
+/// zero-match literal `|` patterns at 300 tokens are served in text, and in
+/// JSON fail only where the same call without the notes fails.
+#[tokio::test]
+async fn test_round_trip_notes_never_fail_a_small_budget() {
+    let fixture = Fixture::new();
+    let piped = (0..8)
+        .map(|index| {
+            format!(
+                "zzqq_absent_identifier_number_{index}_alpha|zzqq_absent_identifier_{index}_beta"
+            )
+        })
+        .collect::<Vec<_>>();
+    let plain = piped
+        .iter()
+        .map(|pattern| pattern.replace('|', "_"))
+        .collect::<Vec<_>>();
+    for results in [McpResultFormat::Text, McpResultFormat::Json] {
+        let mut lean = Harness::start(
+            &fixture,
+            options_with(&fixture, McpToolProfile::Lean, results),
+        )
+        .await;
+        let (text, is_error) = lean
+            .call(
+                "compresso_grep",
+                &json!({ "patterns": piped, "max_tokens": 300 }),
+            )
+            .await;
+        if results == McpResultFormat::Text {
+            assert!(!is_error, "{text}");
+        } else if is_error {
+            let (_, refused) = lean
+                .call(
+                    "compresso_grep",
+                    &json!({ "patterns": plain, "max_tokens": 300 }),
+                )
+                .await;
+            assert!(refused, "only the notes were refused: {text}");
+        }
+        lean.close().await;
+    }
 }
 
 /// E17-38 (D103): a call or pattern path that matches no indexed file says
@@ -1910,7 +2029,11 @@ async fn test_grep_names_a_path_that_matches_no_indexed_file() {
     );
     lean.close().await;
 
-    let mut full = Harness::start(&fixture, fixture.options(McpToolProfile::Full)).await;
+    let mut full = Harness::start(
+        &fixture,
+        options_with(&fixture, McpToolProfile::Lean, McpResultFormat::Json),
+    )
+    .await;
     let (text, _) = full
         .call(
             "compresso_grep",
@@ -1957,7 +2080,11 @@ async fn test_grep_names_files_counted_but_not_listed() {
     );
     lean.close().await;
 
-    let mut full = Harness::start(&fixture, fixture.options(McpToolProfile::Full)).await;
+    let mut full = Harness::start(
+        &fixture,
+        options_with(&fixture, McpToolProfile::Lean, McpResultFormat::Json),
+    )
+    .await;
     let (text, _) = full
         .call(
             "compresso_grep",

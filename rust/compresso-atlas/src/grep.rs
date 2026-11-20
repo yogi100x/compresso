@@ -1182,6 +1182,7 @@ pub fn literal_alternation_source(parts: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
     #[test]
     fn test_literal_alternatives_split_on_unescaped_pipes_only() {
@@ -1211,7 +1212,6 @@ mod tests {
         let source = literal_alternation_source(&["a.b".to_owned(), "(c)".to_owned()]);
         assert_eq!(source, "a\\.b|\\(c\\)");
     }
-    use super::*;
 
     fn literal(pattern: &str) -> Regex {
         Regex::new(&regex::escape(pattern)).expect("pattern compiles")

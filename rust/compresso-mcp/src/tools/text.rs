@@ -490,7 +490,22 @@ fn grep(payload: &Value, out: &mut Out) {
     }
     // E17-38 (D103): a literal `a|b` that matched nothing was searched as
     // its literal parts.
-    for entry in array(payload, "literal_alternation") {
+    // Shrunk to fit a small budget: pattern indexes only.
+    let compact = array(payload, "literal_alternation")
+        .iter()
+        .filter_map(|entry| entry.get("index").and_then(Value::as_u64))
+        .map(|index| index.to_string())
+        .collect::<Vec<_>>();
+    if !compact.is_empty() {
+        out.note(format!(
+            "patterns {} had no literal match, so were searched as their |-separated literal parts",
+            compact.join(", ")
+        ));
+    }
+    for entry in array(payload, "literal_alternation")
+        .iter()
+        .filter(|entry| entry.get("pattern").is_some())
+    {
         let parts = array(entry, "parts")
             .iter()
             .filter_map(Value::as_str)

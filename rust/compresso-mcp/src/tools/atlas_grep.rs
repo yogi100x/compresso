@@ -146,7 +146,28 @@ pub(crate) fn dispatch(
         .map_err(|error| map_grep_error(remap_index(error, caller_index).into()))?;
     let repository = resolve_repository(store, repository_root, root.as_deref())?;
     let mut report = grep(store, repository.id, &options).map_err(map_grep_error)?;
-    let alternations = search_literal_alternations(store, repository.id, &options, &mut report)?;
+    // The round-trip notes of E17-38 (D103) are lean only: the full
+    // profile's behaviour, not only its schemas, is unchanged.
+    let lean = form.is_lean();
+    let alternations = if lean {
+        search_literal_alternations(store, repository.id, &options, &mut report)
+    } else {
+        Vec::new()
+    };
+    let alternation_indexes = alternations
+        .iter()
+        .filter_map(|entry| entry["index"].as_u64())
+        .map(|index| caller_index(usize::try_from(index).unwrap_or(usize::MAX)))
+        .collect::<Vec<_>>();
+    let alternations = alternations
+        .into_iter()
+        .map(|mut entry| {
+            if let Some(object) = entry.as_object_mut() {
+                object.remove("index");
+            }
+            entry
+        })
+        .collect::<Vec<_>>();
     let stale = repository_stale(store, repository.id).map_err(map_atlas_error)?;
     let operation_id = operation_identity().id;
     let counter = navigation_counter();
@@ -167,10 +188,13 @@ pub(crate) fn dispatch(
             .max(MIN_TOKENS.min(max_tokens / 2))
     };
     let mut budget = grep_tokens.saturating_mul(4) / 5;
-    // The names of unlisted files (E17-38, D103) never displace a listed
-    // row or fail a call: the first time a result does not fit, they are
-    // dropped and the same budget is tried again without them.
-    let mut names = true;
+    // The round-trip notes (E17-38, D103) never displace a listed row or
+    // fail a call: the first time a result does not fit, the names of
+    // unlisted files are dropped and the same budget is tried again; the
+    // next time, the alternation notes shrink to one line of pattern
+    // indexes and the unmatched-path notes are dropped.
+    let mut names = lean;
+    let mut full_notes = true;
     let (mut payload, tokens) = loop {
         let mut fitted = report.fit_to_budget(budget, counter);
         if !names {
@@ -187,9 +211,18 @@ pub(crate) fn dispatch(
             payload["clamped"] = json!(clamped);
         }
         if !alternations.is_empty() {
-            payload["literal_alternation"] = json!(alternations);
+            payload["literal_alternation"] = if full_notes {
+                json!(alternations)
+            } else {
+                json!(
+                    alternation_indexes
+                        .iter()
+                        .map(|index| json!({ "index": index }))
+                        .collect::<Vec<_>>()
+                )
+            };
         }
-        if !report.paths_unmatched.is_empty() {
+        if lean && full_notes && !report.paths_unmatched.is_empty() {
             payload["paths_unmatched"] = report
                 .paths_unmatched
                 .iter()
@@ -216,6 +249,11 @@ pub(crate) fn dispatch(
                 .any(|result| !result.files_unlisted.is_empty())
         {
             names = false;
+            continue;
+        }
+        if full_notes && (!alternations.is_empty() || (lean && !report.paths_unmatched.is_empty()))
+        {
+            full_notes = false;
             continue;
         }
         if budget == 0 {
@@ -305,15 +343,18 @@ fn clamped_usize(
 /// written is searched again as an alternation of its literal parts, in one
 /// more scan over the same files and limits, and its result replaces the
 /// empty one (E17-38, D103). Each part is escaped, so no regex syntax is
-/// added. Returns `{pattern, parts}` for every pattern searched that way.
+/// added. A pattern whose escaped alternation would exceed the pattern
+/// limit is not retried, and a failed retry keeps the empty results: the
+/// retry never fails a call. Returns `{index, pattern, parts}` for every
+/// pattern searched that way.
 fn search_literal_alternations(
     store: &Store,
     repo: RepoId,
     options: &GrepOptions<'_>,
     report: &mut GrepReport,
-) -> Result<Vec<Value>, ToolFailure> {
+) -> Vec<Value> {
     if options.regex {
-        return Ok(Vec::new());
+        return Vec::new();
     }
     let retried = report
         .results
@@ -322,11 +363,15 @@ fn search_literal_alternations(
         .filter(|(_, result)| result.matches_total == 0)
         .filter_map(|(index, _)| {
             compresso_atlas::literal_alternatives(&options.patterns[index])
+                .filter(|parts| {
+                    compresso_atlas::literal_alternation_source(parts).len()
+                        <= compresso_atlas::GREP_MAX_PATTERN_BYTES
+                })
                 .map(|parts| (index, parts))
         })
         .collect::<Vec<_>>();
     if retried.is_empty() {
-        return Ok(Vec::new());
+        return Vec::new();
     }
     let patterns = retried
         .iter()
@@ -340,7 +385,7 @@ fn search_literal_alternations(
             .map(|(index, _)| options.scopes[*index].clone())
             .collect()
     };
-    let second = grep(
+    let Ok(second) = grep(
         store,
         repo,
         &GrepOptions {
@@ -349,17 +394,20 @@ fn search_literal_alternations(
             scopes: &scopes,
             ..*options
         },
-    )
-    .map_err(map_grep_error)?;
+    ) else {
+        return Vec::new();
+    };
+    report.files_scanned += second.files_scanned;
+    report.bytes_scanned = report.bytes_scanned.saturating_add(second.bytes_scanned);
     report.scan_truncated |= second.scan_truncated;
     report.output_truncated |= second.output_truncated;
     let mut notes = Vec::with_capacity(retried.len());
     for ((index, parts), mut result) in retried.into_iter().zip(second.results) {
         result.pattern.clone_from(&options.patterns[index]);
         report.results[index] = result;
-        notes.push(json!({ "pattern": options.patterns[index], "parts": parts }));
+        notes.push(json!({ "index": index, "pattern": options.patterns[index], "parts": parts }));
     }
-    Ok(notes)
+    notes
 }
 
 /// Names each scoped pattern's own path on its result (E17-36, D101).
