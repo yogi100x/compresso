@@ -256,21 +256,10 @@ impl ExploreAgentIntegration {
         if !Path::new(command).is_absolute() {
             return Err(invalid("the agent server command must be an absolute path"));
         }
-        if std::iter::once(command)
-            .chain(args.iter().map(String::as_str))
-            .any(|value| value.chars().any(needs_yaml_escape))
-        {
-            return Err(invalid(
-                "the agent server command and project root must not contain control or line-separator characters",
-            ));
-        }
-        // JSON strings and arrays are YAML flow scalars and sequences, so a
-        // path with spaces, quotes, `#`, or `: ` stays one value.
         Ok(format!(
-            "---\nname: {EXPLORE_AGENT_NAME}\ndescription: {DESCRIPTION}\ntools: {}\nmcpServers:\n  - {LEAN_SERVER_KEY}:\n      type: stdio\n      command: {}\n      args: {}\n---\n\n{MARKER}\n\n{INSTRUCTIONS}{}\n",
+            "---\nname: {EXPLORE_AGENT_NAME}\ndescription: {DESCRIPTION}\ntools: {}\n{}---\n\n{MARKER}\n\n{INSTRUCTIONS}{}\n",
             tools.join(", "),
-            Value::from(command),
-            Value::from(args),
+            server_block(command, &args)?,
             if edits { EDIT_INSTRUCTIONS } else { "" }
         ))
     }
@@ -556,6 +545,26 @@ fn needs_yaml_escape(character: char) -> bool {
         )
 }
 
+/// The frontmatter's `mcpServers` block for `command` and `args`. JSON
+/// strings and arrays are YAML flow scalars and sequences, so a path with
+/// spaces, quotes, backslashes (Windows), `#`, or `: ` stays one value;
+/// characters YAML cannot hold on one line are refused.
+fn server_block(command: &str, args: &[String]) -> Result<String, IntegrationError> {
+    if std::iter::once(command)
+        .chain(args.iter().map(String::as_str))
+        .any(|value| value.chars().any(needs_yaml_escape))
+    {
+        return Err(invalid(
+            "the agent server command and project root must not contain control or line-separator characters",
+        ));
+    }
+    Ok(format!(
+        "mcpServers:\n  - {LEAN_SERVER_KEY}:\n      type: stdio\n      command: {}\n      args: {}\n",
+        Value::from(command),
+        Value::from(args.to_vec()),
+    ))
+}
+
 /// Text read back from an agent file (repository content) made safe for a
 /// terminal: printable ASCII passes, everything else becomes a visible
 /// `\u{..}` escape.
@@ -700,6 +709,13 @@ mod tests {
                 .expect("install applies")
         }
     }
+
+    /// An absolute launcher path on this platform that is not the harness's.
+    const OTHER_LAUNCHER: &str = if cfg!(windows) {
+        r"C:\Program Files\compresso\compresso.exe"
+    } else {
+        "/usr/local/bin/compresso"
+    };
 
     /// A stand-in `compresso` launcher: an executable file in `directory`.
     fn executable(directory: &Path) -> PathBuf {
@@ -853,37 +869,66 @@ mod tests {
         );
     }
 
-    /// E17-38 (D103): paths are written as JSON strings, which YAML reads
-    /// back unchanged even with spaces, quotes, `#`, or `: `; a path YAML
-    /// could not hold on one line is refused.
+    /// E17-38 (D103): the server block writes paths as JSON strings, which
+    /// YAML reads back unchanged on every platform: spaces, quotes, `#`,
+    /// `: `, and Windows backslashes and drive letters; a value YAML could
+    /// not hold on one line is refused. String-level, so it runs everywhere.
+    #[test]
+    fn test_server_block_round_trips_any_path_text() {
+        for (command, root) in [
+            (
+                r#"C:\Users\a b\#1: "x"\compresso.exe"#,
+                r"\\?\C:\Users\a b\repo #1: x",
+            ),
+            ("/opt/tools: a#b/compresso", "/home/a b/my repo #1: \"x\""),
+        ] {
+            let args = ["mcp", "serve", "--root", root, "--tools", "lean"].map(str::to_owned);
+            let block = server_block(command, &args).expect("block");
+            let text = format!("---\nname: x\n{block}---\n");
+            let (read_command, read_args) = inline_server(&text);
+            assert_eq!(read_command, command);
+            assert_eq!(read_args, args);
+            assert_eq!(frontmatter_command(&text).as_deref(), Some(command));
+        }
+        for refused in ["/opt/line\u{2028}break", "C:\\a\u{1b}[2J", "/opt/\u{ffff}"] {
+            assert!(server_block(refused, &[]).is_err(), "{refused:?}");
+        }
+    }
+
+    /// E17-38 (D103): a real install with paths holding spaces, `#`, and
+    /// quotes (names every platform allows) reads back unchanged.
     #[test]
     fn test_inline_server_paths_survive_yaml_special_characters() {
         let harness = Harness::new();
-        let project = harness.project.join("my repo #1: \"x\"");
-        fs::create_dir_all(&project).expect("project");
-        let bin = executable(&harness.project.join("tools: a#b"));
-        let context = InstallCtx {
-            compresso_bin: bin.clone(),
-            scope: Scope::Project(project.clone()),
-            session_recall: false,
-        };
-        let text = harness.adapter.render(&context).expect("render");
-        let (command, args) = inline_server(&text);
-        assert_eq!(command, bin.to_str().expect("UTF-8"));
-        assert_eq!(args[3], project.to_str().expect("UTF-8"));
-        assert_eq!(
-            frontmatter_command(&text).as_deref(),
-            Some(command.as_str())
-        );
-
-        let odd = harness.project.join("line\u{2028}break");
-        fs::create_dir_all(&odd).expect("project");
-        let context = InstallCtx {
-            compresso_bin: harness.bin.clone(),
-            scope: Scope::Project(odd),
-            session_recall: false,
-        };
-        assert!(harness.adapter.render(&context).is_err());
+        let mut names = vec![("my repo #1 'x'", "tools a#b")];
+        if cfg!(unix) {
+            // `:` and `"` are not allowed in Windows file names.
+            names.push(("my repo #2: \"x\"", "tools: c#d"));
+        }
+        for (project_name, bin_directory) in names {
+            let project = harness.project.join(project_name);
+            fs::create_dir_all(&project).expect("project");
+            let bin = executable(&harness.project.join(bin_directory));
+            let context = InstallCtx {
+                compresso_bin: bin.clone(),
+                scope: Scope::Project(project.clone()),
+                session_recall: false,
+            };
+            let text = harness.adapter.render(&context).expect("render");
+            let (command, args) = inline_server(&text);
+            assert_eq!(command, bin.to_str().expect("UTF-8"));
+            assert_eq!(
+                args[3],
+                fs::canonicalize(&project)
+                    .expect("canonical")
+                    .to_str()
+                    .expect("UTF-8")
+            );
+            assert_eq!(
+                frontmatter_command(&text).as_deref(),
+                Some(command.as_str())
+            );
+        }
     }
 
     /// E17-38 (D103): live runs on a tab-indented repository lost edit
@@ -964,7 +1009,10 @@ mod tests {
         let launcher = serde_json::to_string(harness.bin.to_str().expect("UTF-8")).expect("json");
         fs::write(
             harness.agent_path(),
-            text.replace(&launcher, "\"/usr/local/bin/compresso\""),
+            text.replace(
+                &launcher,
+                &serde_json::to_string(OTHER_LAUNCHER).expect("json"),
+            ),
         )
         .expect("moved launcher");
         assert!(harness.adapter.verify(&scope).verified);
@@ -990,35 +1038,22 @@ mod tests {
     }
 
     /// E17-38 (D103, review): the trust record is read only from a regular
-    /// file of bounded size; a FIFO or an oversized file is `unknown`, and
-    /// reading never blocks.
-    #[cfg(unix)]
+    /// file of bounded size; a directory or an oversized file is `unknown`.
+    /// (A FIFO, which would block a read, is covered by the CLI test
+    /// `test_status_never_blocks_on_a_fifo_client_config`, since this crate
+    /// may not start processes.)
     #[test]
     fn test_folder_trust_reads_only_a_bounded_regular_file() {
         let harness = Harness::new();
         let scope = Scope::Project(harness.project.clone());
         let config = harness.home.join(".claude.json");
-        let status = std::process::Command::new("mkfifo")
-            .arg(&config)
-            .status()
-            .expect("mkfifo runs");
-        assert!(status.success());
-        let adapter = harness.adapter.clone();
-        let probe = scope.clone();
-        let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = sender.send(adapter.folder_trust(&probe));
-        });
-        assert_eq!(
-            receiver
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .expect("folder_trust does not block on a FIFO"),
-            "unknown"
-        );
-        fs::remove_file(&config).expect("remove FIFO");
+        fs::create_dir(&config).expect("directory in place of the config");
+        assert_eq!(harness.adapter.folder_trust(&scope), "unknown");
+        fs::remove_dir(&config).expect("remove directory");
         let file = fs::File::create(&config).expect("config");
         file.set_len(MAX_CLIENT_CONFIG_BYTES + 1)
             .expect("sparse size");
+        drop(file);
         assert_eq!(harness.adapter.folder_trust(&scope), "unknown");
     }
 
@@ -1053,11 +1088,14 @@ mod tests {
         let launcher = serde_json::to_string(harness.bin.to_str().expect("UTF-8")).expect("json");
         fs::write(
             harness.agent_path(),
-            text.replace(&launcher, "\"/usr/local/bin/compresso\""),
+            text.replace(
+                &launcher,
+                &serde_json::to_string(OTHER_LAUNCHER).expect("json"),
+            ),
         )
         .expect("other launcher");
         let other = detail(&adapter);
-        assert!(other.contains("/usr/local/bin/compresso"), "{other}");
+        assert!(other.contains(&printable(OTHER_LAUNCHER)), "{other}");
         assert!(other.contains("not this Compresso launcher"), "{other}");
     }
 

@@ -687,3 +687,53 @@ fn test_agent_command_with_control_characters_is_escaped_in_output() {
         }
     }
 }
+
+/// E17-38 (D103, review): a FIFO in place of the client's configuration
+/// never blocks `status`; the trust is reported as `unknown`.
+#[test]
+fn test_status_never_blocks_on_a_fifo_client_config() {
+    let fixture = Fixture::new();
+    let (exit, _, errors) = fixture.integrations(&[
+        "install",
+        "claude-code",
+        "--explore-agent",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    let status = std::process::Command::new("mkfifo")
+        .arg(fixture.home.join(".claude.json"))
+        .status()
+        .expect("mkfifo runs");
+    assert!(status.success());
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let environment = fixture.environment.clone();
+    std::thread::spawn(move || {
+        let cli = Cli::try_parse_from([
+            "compresso",
+            "integrations",
+            "status",
+            "claude-code",
+            "--explore-agent",
+            "--json",
+        ])
+        .expect("parses");
+        let RootCommand::Integrations { command } = cli.command else {
+            panic!("expected integration command");
+        };
+        let mut output = Vec::new();
+        let _ = execute_integrations(
+            command,
+            &environment,
+            &mut Cursor::new(Vec::new()),
+            &mut output,
+            &mut Vec::new(),
+        );
+        let _ = sender.send(output);
+    });
+    let output = receiver
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("status does not block on a FIFO");
+    let value: Value = serde_json::from_slice(&output).expect("JSON");
+    assert_eq!(value["data"]["folder_trust"], "unknown", "{value}");
+}
