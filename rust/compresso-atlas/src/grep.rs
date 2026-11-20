@@ -10,7 +10,7 @@
 use std::path::Path;
 
 use compresso_core::TokenCounter;
-use compresso_store::{FileLanguage, RepoId, Store, SymbolRecord};
+use compresso_store::{FileLanguage, FileRecord, RepoId, Store, SymbolRecord};
 use regex::{Regex, RegexBuilder};
 
 use crate::AtlasError;
@@ -162,6 +162,24 @@ pub struct GrepPatternResult {
     /// Ranked: a file defining a symbol on a matching line first, then
     /// non-test before test files, then more matches, then path.
     pub files: Vec<GrepFile>,
+    /// Matched files that are not listed, as `(path, matching lines)`: the
+    /// [`GREP_UNLISTED_FILES_NAMED`] with the most matches (then by path)
+    /// among those past `max_files` or dropped to fit a token budget
+    /// (E17-38, D103).
+    pub files_unlisted: Vec<(String, usize)>,
+}
+
+/// Unlisted files named per pattern (E17-38, D103).
+pub const GREP_UNLISTED_FILES_NAMED: usize = 5;
+
+/// Adds `entry` to the named unlisted files, keeping the most matches.
+fn name_unlisted(named: &mut Vec<(String, usize)>, entry: (String, usize)) {
+    if named.iter().any(|(path, _)| *path == entry.0) {
+        return;
+    }
+    named.push(entry);
+    named.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    named.truncate(GREP_UNLISTED_FILES_NAMED);
 }
 
 impl GrepPatternResult {
@@ -193,6 +211,19 @@ pub struct GrepReport {
     pub scan_truncated: bool,
     /// A file or line cap, or a token budget, left matches unlisted.
     pub output_truncated: bool,
+    /// The call's path and each pattern's own path that match no indexed
+    /// file (E17-38, D103), in call order, each once.
+    pub paths_unmatched: Vec<UnmatchedPath>,
+}
+
+/// A path filter that matches no indexed file, with the nearest indexed
+/// path when one is close: a file or directory of the same name, else the
+/// deepest indexed directory sharing its leading directories.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnmatchedPath {
+    /// The path as the caller wrote it.
+    pub path: String,
+    pub nearest: Option<String>,
 }
 
 impl GrepReport {
@@ -288,6 +319,15 @@ impl GrepReport {
                     fitted.results[index].files.push(partial);
                 }
                 cut = true;
+            }
+        }
+        // Files the budget left out are named with the ones past max_files.
+        for (fitted, result) in fitted.results.iter_mut().zip(&self.results) {
+            for file in result.files.iter().skip(fitted.files.len()) {
+                name_unlisted(
+                    &mut fitted.files_unlisted,
+                    (file.path.clone(), file.matches_total),
+                );
             }
         }
         fitted.output_truncated |= cut;
@@ -514,6 +554,81 @@ fn scope_filters(options: &GrepOptions<'_>) -> Result<Vec<Option<PathFilter>>, G
         .collect()
 }
 
+/// The call's path and pattern paths that admit no indexed (non-secret)
+/// file, each with its nearest indexed path.
+fn unmatched_paths(
+    options: &GrepOptions<'_>,
+    filter: Option<&PathFilter>,
+    scopes: &[Option<PathFilter>],
+    records: &[FileRecord],
+) -> Vec<UnmatchedPath> {
+    let candidates = records
+        .iter()
+        .map(|record| record.path.as_str())
+        .filter(|path| !is_secret_path(Path::new(path)))
+        .collect::<Vec<_>>();
+    let written = std::iter::once(options.path)
+        .chain(options.scopes.iter().map(Option::as_deref))
+        .zip(std::iter::once(filter).chain(scopes.iter().map(Option::as_ref)));
+    let mut unmatched: Vec<UnmatchedPath> = Vec::new();
+    for (text, parsed) in written {
+        let (Some(text), Some(parsed)) = (text, parsed) else {
+            continue;
+        };
+        if unmatched.iter().any(|entry| entry.path == text)
+            || candidates.iter().any(|path| parsed.matches(path))
+        {
+            continue;
+        }
+        unmatched.push(UnmatchedPath {
+            path: text.to_owned(),
+            nearest: nearest_indexed(parsed, &candidates),
+        });
+    }
+    unmatched
+}
+
+/// The indexed path nearest a prefix filter that matched nothing: the first
+/// (by path) file or directory with the filter's last name, else the deepest
+/// directory sharing its leading directories. Globs get none.
+fn nearest_indexed(filter: &PathFilter, candidates: &[&str]) -> Option<String> {
+    let PathFilter::Prefix(prefix) = filter else {
+        return None;
+    };
+    let wanted = prefix.split('/').collect::<Vec<_>>();
+    let name = *wanted.last()?;
+    let mut same_name = candidates
+        .iter()
+        .filter_map(|path| {
+            let segments = path.split('/').collect::<Vec<_>>();
+            let position = segments.iter().position(|segment| *segment == name)?;
+            Some(if position + 1 == segments.len() {
+                (*path).to_owned()
+            } else {
+                format!("{}/", segments[..=position].join("/"))
+            })
+        })
+        .collect::<Vec<_>>();
+    same_name.sort();
+    if let Some(found) = same_name.into_iter().next() {
+        return Some(found);
+    }
+    candidates
+        .iter()
+        .map(|path| {
+            let directories = path.split('/').collect::<Vec<_>>();
+            let directories = &directories[..directories.len().saturating_sub(1)];
+            directories
+                .iter()
+                .zip(&wanted)
+                .take_while(|(have, want)| have == want)
+                .count()
+        })
+        .max()
+        .filter(|shared| *shared > 0)
+        .map(|shared| format!("{}/", wanted[..shared].join("/")))
+}
+
 fn validate_context(context_lines: usize) -> Result<(), GrepError> {
     if context_lines <= GREP_MAX_CONTEXT_LINES {
         Ok(())
@@ -584,6 +699,8 @@ struct PatternScan {
     matches_total: usize,
     files_total: usize,
     kept: Vec<GrepFile>,
+    /// Matched files not kept, the most matches first (E17-38).
+    unlisted: Vec<(String, usize)>,
     regex_bytes_left: u64,
     exhausted: bool,
 }
@@ -612,10 +729,15 @@ impl PatternScan {
             .kept
             .partition_point(|kept| RankKey::of(kept).cmp(&key).is_lt());
         if position >= max_files {
+            name_unlisted(&mut self.unlisted, (file.path, file.matches_total));
             return;
         }
         self.kept.insert(position, file);
-        self.kept.truncate(max_files);
+        if self.kept.len() > max_files
+            && let Some(evicted) = self.kept.pop()
+        {
+            name_unlisted(&mut self.unlisted, (evicted.path, evicted.matches_total));
+        }
     }
 }
 
@@ -655,7 +777,9 @@ fn grep_with_regex_budget(
         stale_files: 0,
         scan_truncated: false,
         output_truncated: false,
+        paths_unmatched: Vec::new(),
     };
+    report.paths_unmatched = unmatched_paths(options, filter.as_ref(), &scopes, &records);
     let mut scans = matchers
         .iter()
         .map(|_| PatternScan {
@@ -736,6 +860,7 @@ fn grep_with_regex_budget(
             scan.matches_total += matches_total;
             scan.files_total += 1;
             if !scan.could_rank(options.max_files, test, matches_total, &record.path) {
+                name_unlisted(&mut scan.unlisted, (record.path.clone(), matches_total));
                 continue;
             }
             let symbols: Option<&Vec<SymbolRecord>> = if stale {
@@ -792,6 +917,7 @@ fn grep_with_regex_budget(
             matches_total: scan.matches_total,
             files_total: scan.files_total,
             files: scan.kept,
+            files_unlisted: scan.unlisted,
         });
     }
     Ok(report)
@@ -1004,9 +1130,88 @@ fn is_test_path(path: &str) -> bool {
         || lowercase.contains(".spec.")
 }
 
+/// The literal parts of a literal (non-regex) pattern that holds an
+/// unescaped `|` (E17-38, D103), trimmed, empty parts dropped; `None` when
+/// it has no unescaped `|`, holds `||` (a code operator, not a choice), or
+/// fewer than two parts remain, or a part is a single character (as in a
+/// closure's `|x|`). A backslash before ASCII punctuation is dropped, so
+/// `\\|` is a literal `|` and a regex-style `ping\\(` is `ping(`. Models
+/// often write `a|b` meaning "a or b" without setting `regex`.
+#[must_use]
+pub fn literal_alternatives(pattern: &str) -> Option<Vec<String>> {
+    if pattern.contains("||") {
+        return None;
+    }
+    let mut parts = vec![String::new()];
+    let mut split = false;
+    let mut characters = pattern.chars().peekable();
+    while let Some(character) = characters.next() {
+        let part = parts.last_mut().expect("one part at least");
+        if character == '\\'
+            && let Some(&next) = characters.peek()
+            && next.is_ascii_punctuation()
+        {
+            characters.next();
+            part.push(next);
+        } else if character == '|' {
+            split = true;
+            parts.push(String::new());
+        } else {
+            part.push(character);
+        }
+    }
+    let parts = parts
+        .into_iter()
+        .map(|part| part.trim().to_owned())
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    (split && parts.len() >= 2 && parts.iter().all(|part| part.chars().count() >= 2))
+        .then_some(parts)
+}
+
+/// A regular expression that matches any of `parts` as literal text: each
+/// part escaped, joined by `|`. No part adds regex syntax.
+#[must_use]
+pub fn literal_alternation_source(parts: &[String]) -> String {
+    parts
+        .iter()
+        .map(|part| regex::escape(part))
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_literal_alternatives_split_on_unescaped_pipes_only() {
+        let parts = |pattern: &str| literal_alternatives(pattern);
+        let owned = |parts: &[&str]| {
+            Some(
+                parts
+                    .iter()
+                    .map(|part| (*part).to_owned())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(parts("ab|cd"), owned(&["ab", "cd"]));
+        assert_eq!(parts(" ab | cd "), owned(&["ab", "cd"]));
+        assert_eq!(parts("xy\\|y|zz"), owned(&["xy|y", "zz"]));
+        assert_eq!(
+            parts("heartbeat|ping\\(|\\.terminate\\("),
+            owned(&["heartbeat", "ping(", ".terminate("])
+        );
+        assert_eq!(parts("ab\\|cd"), None);
+        assert_eq!(parts("ab|"), None);
+        assert_eq!(parts("||"), None);
+        assert_eq!(parts("a == nil || b"), None);
+        assert_eq!(parts("|x| x + 1"), None);
+        assert_eq!(parts("\\d+|\\w+"), owned(&["\\d+", "\\w+"]));
+        assert_eq!(parts("plain"), None);
+        let source = literal_alternation_source(&["a.b".to_owned(), "(c)".to_owned()]);
+        assert_eq!(source, "a\\.b|\\(c\\)");
+    }
 
     fn literal(pattern: &str) -> Regex {
         Regex::new(&regex::escape(pattern)).expect("pattern compiles")

@@ -525,11 +525,29 @@ fn read_ranges_tool(
         ));
     }
     let root = optional_string(&mut arguments, "root", false)?;
+    // E17-38 (D103): in the lean profile, whose read schema advertises only
+    // this form, an out-of-range max_tokens is clamped with a note.
+    let mut clamped = Vec::new();
+    if form.is_lean()
+        && let Some(value) = arguments.get("max_tokens").and_then(Value::as_u64)
+    {
+        let bound = if value < MIN_TOKENS as u64 {
+            Some(MIN_TOKENS)
+        } else if value > MAX_TOKENS as u64 {
+            Some(MAX_TOKENS)
+        } else {
+            None
+        };
+        if let Some(bound) = bound {
+            arguments.insert("max_tokens".to_owned(), json!(bound));
+            clamped.push(format!("max_tokens {value} -> {bound}"));
+        }
+    }
     let max_tokens = token_budget(&mut arguments, READ_DEFAULT_TOKENS)?;
     let ranges = parse_ranges(ranges)?;
     let repository = resolve_repository(store, repository_root, root.as_deref())?;
     let reads = read_ranges(store, &repository, &ranges, max_tokens, form)?;
-    let payload = json!({
+    let mut payload = json!({
         "schema_version": 1,
         "operation_id": operation_identity().id,
         "ranges": reads.values,
@@ -538,6 +556,9 @@ fn read_ranges_tool(
         "token_provider": navigation_counter().provider(),
         "truncated": reads.truncated
     });
+    if !clamped.is_empty() {
+        payload["clamped"] = json!(clamped);
+    }
     Ok(with_budget(payload, max_tokens))
 }
 

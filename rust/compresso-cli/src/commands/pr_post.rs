@@ -78,9 +78,24 @@ mod tests {
     use super::*;
 
     /// Writes an executable stand-in for `gh` and returns its path.
+    ///
+    /// The file that is executed is never opened for writing by this test
+    /// process. Other tests in the binary spawn processes concurrently; a
+    /// child forked while this thread held a write descriptor would keep it
+    /// until its own exec, and executing the file then fails on Linux with
+    /// `ETXTBSY` (seen once on CI as `ExecutionUnavailable`). So the script
+    /// is written under another name and `cp` (its own process, whose
+    /// descriptors no fork of this process inherits) creates the stand-in.
     fn stand_in(directory: &Path, script: &str) -> PathBuf {
+        let draft = directory.join("gh.draft");
         let path = directory.join("gh");
-        fs::write(&path, format!("#!/bin/sh\n{script}\n")).expect("stand-in should be written");
+        fs::write(&draft, format!("#!/bin/sh\n{script}\n")).expect("stand-in should be written");
+        let copied = Command::new("cp")
+            .arg(&draft)
+            .arg(&path)
+            .status()
+            .expect("cp should run");
+        assert!(copied.success(), "stand-in should be copied");
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
             .expect("stand-in should be executable");
         path

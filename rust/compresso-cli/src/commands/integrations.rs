@@ -17,6 +17,7 @@ use compresso_integrations::{
 use compresso_store::{ReceiptRecord, Store};
 
 use super::mcp_probe::{self, LauncherTrust, McpServerHealth, Severity};
+use super::transcript_stats::printable;
 use super::{
     CliExitCode, IntegrationClientArg, IntegrationMutationArgs, IntegrationReadArgs,
     IntegrationsCommand, write_error,
@@ -854,6 +855,17 @@ fn execute_mutation(
     };
     let mut warnings = Vec::new();
     project_canonical_receipts(&receipts, environment, &mut warnings);
+    if action == MutationAction::Install && arguments.explore_agent {
+        let adapter = ExploreAgentIntegration::new(
+            environment.home_dir.clone(),
+            explore_agent_tools_with(false),
+        );
+        if adapter.folder_trust(&scope) != "accepted" {
+            warnings.push(
+                "explore_agent_needs_folder_trust: to let Claude Code start the agent's own lean Compresso server, open Claude Code once interactively in this project folder and accept the folder trust prompt (a parent folder's trust and `-p` sessions do not count; --strict-mcp-config, --bare, and managed MCP policies also skip the server). Until then the agent has no Compresso tools and stops; `compresso integrations status claude-code --explore-agent` shows the recorded trust".to_owned(),
+            );
+        }
+    }
     if action == MutationAction::Uninstall && !arguments.explore_agent {
         if arguments.compaction_hook {
             if matches!(scope, Scope::User)
@@ -966,12 +978,29 @@ fn execute_status(
     let receipt = receipts.active_for(arguments.client.as_str(), &selected.config_path)?;
     let active_receipt = receipt.is_some();
     if arguments.compaction_hook || arguments.explore_agent {
+        let agent = arguments.explore_agent.then(|| {
+            let adapter = ExploreAgentIntegration::new(
+                environment.home_dir.clone(),
+                explore_agent_tools_with(false),
+            )
+            .with_launcher(environment.compresso_bin.clone());
+            let command = adapter.agent_command(&scope);
+            AgentServerStatus {
+                server: adapter.agent_server(&scope),
+                folder_trust: adapter.folder_trust(&scope),
+                other_launcher: command
+                    .as_deref()
+                    .is_some_and(|command| adapter.is_other_launcher(command)),
+                command,
+            }
+        });
         return render_hook_status(
             output,
             &arguments,
             &selected,
             active_receipt,
             selected.adapter.verify(&scope).verified,
+            agent,
         );
     }
     let detection = selected.adapter.detect(&scope);
@@ -1022,12 +1051,43 @@ fn execute_status(
     Ok(())
 }
 
+/// Where the exploration agent's Compresso tools come from (E17-38, D103).
+struct AgentServerStatus {
+    /// `lean`, `shared_full_profile`, `absent`, or `unknown`.
+    server: &'static str,
+    /// Advisory: `accepted`, `not_recorded`, `unknown`, or `not_required`.
+    folder_trust: &'static str,
+    /// The command the agent file's inline server runs.
+    command: Option<String>,
+    /// That command is not this Compresso's launcher.
+    other_launcher: bool,
+}
+
+impl AgentServerStatus {
+    /// What to do about the agent's server, if anything.
+    fn advice(&self) -> Option<&'static str> {
+        match (self.server, self.folder_trust) {
+            ("shared_full_profile", _) => Some(
+                "the agent file predates its own lean server and runs on the shared full-profile server; reinstall it with `compresso integrations install claude-code --explore-agent`",
+            ),
+            ("lean", _) if self.other_launcher => Some(
+                "the agent's server runs a command that is not this Compresso launcher; reinstall it with `compresso integrations install claude-code --explore-agent` to point it here",
+            ),
+            ("lean", "not_recorded" | "unknown") => Some(
+                "open Claude Code once interactively in this project folder and accept the folder trust prompt, so it can start the agent's own lean server (a parent folder's trust and `-p` sessions do not count; --strict-mcp-config, --bare, and managed MCP policies also skip it); until then the agent has no Compresso tools and stops",
+            ),
+            _ => None,
+        }
+    }
+}
+
 fn render_hook_status(
     output: &mut impl Write,
     arguments: &IntegrationReadArgs,
     selected: &SelectedIntegration,
     active_receipt: bool,
     installed: bool,
+    agent: Option<AgentServerStatus>,
 ) -> Result<(), IntegrationCliError> {
     if arguments.output.json {
         let (surface, installed_key) = if arguments.explore_agent {
@@ -1043,11 +1103,20 @@ fn render_hook_status(
             "canonical_receipt_active": active_receipt,
         });
         data[installed_key] = serde_json::Value::Bool(installed);
-        serde_json::to_writer(
-            &mut *output,
+        if let Some(agent) = &agent {
+            data["agent_server"] = agent.server.into();
+            data["folder_trust"] = agent.folder_trust.into();
+            if let Some(command) = &agent.command {
+                data["agent_command"] = command.as_str().into();
+            }
+            if let Some(advice) = agent.advice() {
+                data["advice"] = advice.into();
+            }
+        }
+        write_json_escaped(
+            output,
             &serde_json::json!({ "schema_version": 1, "data": data }),
         )?;
-        writeln!(output)?;
     } else {
         writeln!(output, "client: {}", arguments.client.as_str())?;
         writeln!(
@@ -1079,6 +1148,17 @@ fn render_hook_status(
             "canonical receipt: {}",
             if active_receipt { "active" } else { "none" }
         )?;
+        if let Some(agent) = &agent {
+            writeln!(output, "agent server: {}", agent.server)?;
+            if let Some(command) = &agent.command {
+                // Repository content: never written to the terminal raw.
+                writeln!(output, "agent command: {}", printable(command))?;
+            }
+            writeln!(output, "folder trust: {} (advisory)", agent.folder_trust)?;
+            if let Some(advice) = agent.advice() {
+                writeln!(output, "warning: {advice}")?;
+            }
+        }
     }
     Ok(())
 }
@@ -1278,7 +1358,8 @@ impl SelectedIntegration {
             environment.home_dir.clone(),
             explore_agent_tools_with(edits),
         )
-        .with_edits(edits);
+        .with_edits(edits)
+        .with_launcher(environment.compresso_bin.clone());
         let config_path = adapter.config_path(scope)?;
         Ok(Self {
             adapter: Box::new(adapter),
@@ -1463,23 +1544,44 @@ fn render_verification(
     json: bool,
 ) -> Result<(), IntegrationCliError> {
     if json {
-        serde_json::to_writer(
-            &mut *output,
+        write_json_escaped(
+            output,
             &serde_json::json!({ "schema_version": 1, "data": report }),
         )?;
-        writeln!(output)?;
     } else {
         writeln!(output, "verified: {}", report.verified)?;
+        // A detail may quote a configuration file's content.
         for check in &report.checks {
             writeln!(
                 output,
                 "{}: {} ({})",
-                check.name,
+                printable(&check.name),
                 if check.passed { "pass" } else { "fail" },
-                check.detail
+                printable(&check.detail)
             )?;
         }
     }
+    Ok(())
+}
+
+/// Writes `value` as one JSON line with DEL and C1 controls escaped too
+/// (`serde_json` escapes only C0), so a value read from a repository file
+/// cannot drive the terminal; the JSON still parses to the same value.
+fn write_json_escaped(
+    output: &mut impl Write,
+    value: &serde_json::Value,
+) -> Result<(), IntegrationCliError> {
+    let text = serde_json::to_string(value)?;
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        if character.is_control() {
+            // Only inside strings: JSON has no raw controls elsewhere.
+            escaped.push_str(&format!("\\u{:04x}", u32::from(character)));
+        } else {
+            escaped.push(character);
+        }
+    }
+    writeln!(output, "{escaped}")?;
     Ok(())
 }
 

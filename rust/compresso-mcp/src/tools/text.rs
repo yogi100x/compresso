@@ -444,6 +444,31 @@ fn grep(payload: &Value, out: &mut Out) {
                 out.line(row.as_str().unwrap_or_default());
             }
         }
+        // E17-38 (D103): files counted but not listed, named with their
+        // counts so the next call can scope to them.
+        let named = array(result, "files_unlisted");
+        if !named.is_empty() {
+            let more = number(result, "files_total")
+                .saturating_sub(array(result, "files").len() as u64)
+                .saturating_sub(named.len() as u64);
+            out.line(format!(
+                "[not listed: {}{}]",
+                named
+                    .iter()
+                    .map(|entry| format!(
+                        "{} ({})",
+                        header_path(string(entry, "path").unwrap_or_default()),
+                        number(entry, "matches")
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if more > 0 {
+                    format!(" and {more} more files")
+                } else {
+                    String::new()
+                }
+            ));
+        }
     }
     let clamped = array(payload, "clamped")
         .iter()
@@ -451,6 +476,46 @@ fn grep(payload: &Value, out: &mut Out) {
         .collect::<Vec<_>>();
     if !clamped.is_empty() {
         out.note(format!("limits clamped: {}", clamped.join(", ")));
+    }
+    // E17-38 (D103): a path that admits no indexed file is named.
+    for entry in array(payload, "paths_unmatched") {
+        let path = caller_text(entry["path"].as_str().unwrap_or_default());
+        out.note(match entry["nearest"].as_str() {
+            Some(nearest) => format!(
+                "path {path} matched no indexed file; nearest indexed: {}",
+                header_path(nearest)
+            ),
+            None => format!("path {path} matched no indexed file"),
+        });
+    }
+    // E17-38 (D103): a literal `a|b` that matched nothing was searched as
+    // its literal parts.
+    // Shrunk to fit a small budget: pattern indexes only.
+    let compact = array(payload, "literal_alternation")
+        .iter()
+        .filter_map(|entry| entry.get("index").and_then(Value::as_u64))
+        .map(|index| index.to_string())
+        .collect::<Vec<_>>();
+    if !compact.is_empty() {
+        out.note(format!(
+            "patterns {} had no literal match, so were searched as their |-separated literal parts",
+            compact.join(", ")
+        ));
+    }
+    for entry in array(payload, "literal_alternation")
+        .iter()
+        .filter(|entry| entry.get("pattern").is_some())
+    {
+        let parts = array(entry, "parts")
+            .iter()
+            .filter_map(Value::as_str)
+            .map(caller_text)
+            .collect::<Vec<_>>();
+        out.note(format!(
+            "{}: no literal match, so searched as {} (literal parts); set regex: true for a regular expression",
+            caller_text(entry["pattern"].as_str().unwrap_or_default()),
+            parts.join(" OR ")
+        ));
     }
     // A pattern whose own scope was rejected (E17-36, D101): its section
     // is the error; the caller wrote the pattern and the scope.
@@ -582,6 +647,13 @@ fn read(payload: &Value, out: &mut Out) {
     if let Some(ranges) = payload.get("ranges").and_then(Value::as_array) {
         for range in ranges {
             read_range(range, out);
+        }
+        let clamped = array(payload, "clamped")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        if !clamped.is_empty() {
+            out.note(format!("limits clamped: {}", clamped.join(", ")));
         }
         return;
     }
