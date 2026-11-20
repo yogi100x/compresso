@@ -556,3 +556,45 @@ fn test_status_reports_an_agent_file_written_for_the_shared_server() {
         fixture.integrations(&["verify", "claude-code", "--explore-agent", "--json"]);
     assert_ne!(exit, CliExitCode::Success);
 }
+
+/// E17-38 (D103, review): status names the command the agent file runs
+/// and warns when it is not this Compresso launcher.
+#[test]
+fn test_status_names_the_agent_command_and_warns_on_another_launcher() {
+    let fixture = Fixture::new();
+    let (exit, _, errors) = fixture.integrations(&[
+        "install",
+        "claude-code",
+        "--explore-agent",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    let launcher = fixture
+        .environment
+        .compresso_bin
+        .to_str()
+        .expect("UTF-8")
+        .to_owned();
+    let (_, status, _) =
+        fixture.integrations(&["status", "claude-code", "--explore-agent", "--json"]);
+    assert_eq!(status["data"]["agent_command"], launcher.as_str());
+    let text = fs::read_to_string(fixture.agent_path()).expect("agent");
+    fs::write(
+        fixture.agent_path(),
+        text.replace(
+            &serde_json::to_string(&launcher).expect("json"),
+            "\"/usr/local/bin/compresso\"",
+        ),
+    )
+    .expect("other launcher");
+    let (_, status, _) =
+        fixture.integrations(&["status", "claude-code", "--explore-agent", "--json"]);
+    assert_eq!(status["data"]["agent_command"], "/usr/local/bin/compresso");
+    assert!(
+        status["data"]["advice"]
+            .as_str()
+            .is_some_and(|advice| advice.contains("not this Compresso launcher")),
+        "{status}"
+    );
+}

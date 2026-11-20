@@ -981,10 +981,16 @@ fn execute_status(
             let adapter = ExploreAgentIntegration::new(
                 environment.home_dir.clone(),
                 explore_agent_tools_with(false),
-            );
+            )
+            .with_launcher(environment.compresso_bin.clone());
+            let command = adapter.agent_command(&scope);
             AgentServerStatus {
                 server: adapter.agent_server(&scope),
                 folder_trust: adapter.folder_trust(&scope),
+                other_launcher: command
+                    .as_deref()
+                    .is_some_and(|command| adapter.is_other_launcher(command)),
+                command,
             }
         });
         return render_hook_status(
@@ -1050,6 +1056,10 @@ struct AgentServerStatus {
     server: &'static str,
     /// Advisory: `accepted`, `not_recorded`, `unknown`, or `not_required`.
     folder_trust: &'static str,
+    /// The command the agent file's inline server runs.
+    command: Option<String>,
+    /// That command is not this Compresso's launcher.
+    other_launcher: bool,
 }
 
 impl AgentServerStatus {
@@ -1058,6 +1068,9 @@ impl AgentServerStatus {
         match (self.server, self.folder_trust) {
             ("shared_full_profile", _) => Some(
                 "the agent file predates its own lean server and runs on the shared full-profile server; reinstall it with `compresso integrations install claude-code --explore-agent`",
+            ),
+            ("lean", _) if self.other_launcher => Some(
+                "the agent's server runs a command that is not this Compresso launcher; reinstall it with `compresso integrations install claude-code --explore-agent` to point it here",
             ),
             ("lean", "not_recorded" | "unknown") => Some(
                 "open Claude Code once interactively in this project folder and accept the folder trust prompt, so it can start the agent's own lean server (a parent folder's trust and `-p` sessions do not count; --strict-mcp-config, --bare, and managed MCP policies also skip it); until then the agent has no Compresso tools and stops",
@@ -1092,6 +1105,9 @@ fn render_hook_status(
         if let Some(agent) = &agent {
             data["agent_server"] = agent.server.into();
             data["folder_trust"] = agent.folder_trust.into();
+            if let Some(command) = &agent.command {
+                data["agent_command"] = command.as_str().into();
+            }
             if let Some(advice) = agent.advice() {
                 data["advice"] = advice.into();
             }
@@ -1134,6 +1150,9 @@ fn render_hook_status(
         )?;
         if let Some(agent) = &agent {
             writeln!(output, "agent server: {}", agent.server)?;
+            if let Some(command) = &agent.command {
+                writeln!(output, "agent command: {command}")?;
+            }
             writeln!(output, "folder trust: {} (advisory)", agent.folder_trust)?;
             if let Some(advice) = agent.advice() {
                 writeln!(output, "warning: {advice}")?;
@@ -1338,7 +1357,8 @@ impl SelectedIntegration {
             environment.home_dir.clone(),
             explore_agent_tools_with(edits),
         )
-        .with_edits(edits);
+        .with_edits(edits)
+        .with_launcher(environment.compresso_bin.clone());
         let config_path = adapter.config_path(scope)?;
         Ok(Self {
             adapter: Box::new(adapter),

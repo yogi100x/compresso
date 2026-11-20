@@ -90,7 +90,14 @@ pub struct ExploreAgentIntegration {
     compresso_version: String,
     /// Grant `compresso_edit` and its instructions.
     edits: bool,
+    /// This Compresso's launcher path, when known: verify and status say
+    /// when the agent file's server command is another one.
+    launcher: Option<PathBuf>,
 }
+
+/// Largest client configuration (`~/.claude.json`) read for the folder-trust
+/// record; a larger file is reported as `unknown`.
+pub(crate) const MAX_CLIENT_CONFIG_BYTES: u64 = 64 * 1024 * 1024;
 
 impl ExploreAgentIntegration {
     /// Creates an adapter without consulting global HOME state.
@@ -104,6 +111,7 @@ impl ExploreAgentIntegration {
             compresso_tools,
             compresso_version: env!("CARGO_PKG_VERSION").to_owned(),
             edits: false,
+            launcher: None,
         }
     }
 
@@ -113,6 +121,30 @@ impl ExploreAgentIntegration {
     pub fn with_edits(mut self, edits: bool) -> Self {
         self.edits = edits;
         self
+    }
+
+    /// Records this Compresso's launcher path, so verify and status can say
+    /// when the agent file's server command is another one.
+    pub fn with_launcher(mut self, launcher: PathBuf) -> Self {
+        self.launcher = Some(launcher);
+        self
+    }
+
+    /// The command the agent file's inline server runs, if the file is
+    /// readable and has one.
+    pub fn agent_command(&self, scope: &Scope) -> Option<String> {
+        self.config_path(scope)
+            .ok()
+            .and_then(|path| read_existing(&path).ok().flatten())
+            .and_then(|text| frontmatter_command(&text))
+    }
+
+    /// Whether `command` is not this Compresso's launcher (unknown: `false`).
+    pub fn is_other_launcher(&self, command: &str) -> bool {
+        self.launcher
+            .as_deref()
+            .and_then(Path::to_str)
+            .is_some_and(|launcher| launcher != command)
     }
 
     /// Overrides the receipt version, primarily for deterministic embedders.
@@ -275,8 +307,17 @@ impl ExploreAgentIntegration {
             return "not_required";
         };
         let config = self.user_home.join(".claude.json");
-        if !config.exists() {
-            return "not_recorded";
+        // Only a regular file of bounded size is read (a FIFO would block);
+        // a link is followed, as the client follows it.
+        let metadata = match fs::metadata(&config) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return "not_recorded";
+            }
+            Err(_) => return "unknown",
+        };
+        if !metadata.is_file() || metadata.len() > MAX_CLIENT_CONFIG_BYTES {
+            return "unknown";
         }
         let Ok(document) = read_existing_json_object_for_verify(&config) else {
             return "unknown";
@@ -366,6 +407,7 @@ impl Integration for ExploreAgentIntegration {
         // Status and verify take no --edits flag, so either rendering this
         // version writes is current. Like the shared server entry's check,
         // any absolute launcher path is accepted; the rest must match.
+        let command = existing.as_deref().and_then(frontmatter_command);
         let current = existing.is_some_and(|text| {
             frontmatter_command(&text).is_some_and(|command| {
                 [false, true].into_iter().any(|edits| {
@@ -398,12 +440,30 @@ impl Integration for ExploreAgentIntegration {
                 "agent definition starts its own lean Compresso server",
                 "agent definition does not start its own lean Compresso server (an earlier Compresso version wrote it for the shared full-profile server); reinstall with `compresso integrations install claude-code --explore-agent`",
             ),
-            check(
-                "agent_current",
-                current,
-                "agent definition matches what this Compresso version writes",
-                "agent definition differs from what this Compresso version writes; reinstall to update it",
-            ),
+            VerificationCheck {
+                name: "agent_current".to_owned(),
+                passed: current,
+                detail: if current {
+                    let command = command.unwrap_or_default();
+                    format!(
+                        "agent definition matches what this Compresso version writes; its server runs {command}{}",
+                        if self.is_other_launcher(&command) {
+                            format!(
+                                ", not this Compresso launcher {}; reinstall to point it here",
+                                self.launcher
+                                    .as_deref()
+                                    .map(Path::display)
+                                    .map(|path| path.to_string())
+                                    .unwrap_or_default()
+                            )
+                        } else {
+                            String::new()
+                        }
+                    )
+                } else {
+                    "agent definition differs from what this Compresso version writes; reinstall to update it".to_owned()
+                },
+            },
         ];
         VerificationReport {
             client: CLIENT_ID.to_owned(),
@@ -481,7 +541,11 @@ fn lean_server_args(scope: &Scope, edits: bool) -> Result<Vec<String>, Integrati
 /// Characters a JSON string leaves unescaped that YAML would not read back
 /// as the same scalar on one line.
 fn needs_yaml_escape(character: char) -> bool {
-    character.is_control() || matches!(character, '\u{2028}' | '\u{2029}' | '\u{feff}')
+    character.is_control()
+        || matches!(
+            character,
+            '\u{2028}' | '\u{2029}' | '\u{feff}' | '\u{fffe}' | '\u{ffff}'
+        )
 }
 
 /// The frontmatter block of an agent definition.
@@ -890,6 +954,88 @@ mod tests {
         fs::write(harness.agent_path(), text.replace("\"lean\"", "\"full\"")).expect("full");
         let report = harness.adapter.verify(&scope);
         assert!(!report.verified);
+    }
+
+    /// E17-38 (D103, review): characters YAML does not allow in a document
+    /// are refused too.
+    #[test]
+    fn test_noncharacters_need_escaping() {
+        for character in ['\u{fffe}', '\u{ffff}', '\u{2028}', '\u{7f}', '\n'] {
+            assert!(needs_yaml_escape(character), "{character:?}");
+        }
+        assert!(!needs_yaml_escape('é') && !needs_yaml_escape('#'));
+    }
+
+    /// E17-38 (D103, review): the trust record is read only from a regular
+    /// file of bounded size; a FIFO or an oversized file is `unknown`, and
+    /// reading never blocks.
+    #[cfg(unix)]
+    #[test]
+    fn test_folder_trust_reads_only_a_bounded_regular_file() {
+        let harness = Harness::new();
+        let scope = Scope::Project(harness.project.clone());
+        let config = harness.home.join(".claude.json");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&config)
+            .status()
+            .expect("mkfifo runs");
+        assert!(status.success());
+        let adapter = harness.adapter.clone();
+        let probe = scope.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(adapter.folder_trust(&probe));
+        });
+        assert_eq!(
+            receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("folder_trust does not block on a FIFO"),
+            "unknown"
+        );
+        fs::remove_file(&config).expect("remove FIFO");
+        let file = fs::File::create(&config).expect("config");
+        file.set_len(MAX_CLIENT_CONFIG_BYTES + 1)
+            .expect("sparse size");
+        assert_eq!(harness.adapter.folder_trust(&scope), "unknown");
+    }
+
+    /// E17-38 (D103, review): verify names the command the agent file runs
+    /// and says when it is not this Compresso launcher.
+    #[test]
+    fn test_verify_names_the_agent_command_and_flags_another_launcher() {
+        let harness = Harness::new();
+        let scope = Scope::Project(harness.project.clone());
+        harness.install();
+        let adapter = harness.adapter.clone().with_launcher(harness.bin.clone());
+        let detail = |adapter: &ExploreAgentIntegration| {
+            adapter
+                .verify(&scope)
+                .checks
+                .into_iter()
+                .find(|check| check.name == "agent_current")
+                .expect("agent_current")
+                .detail
+        };
+        let same = detail(&adapter);
+        assert!(
+            same.contains(harness.bin.to_str().expect("UTF-8")),
+            "{same}"
+        );
+        assert!(!same.contains("not this Compresso launcher"), "{same}");
+        assert_eq!(
+            adapter.agent_command(&scope).as_deref(),
+            harness.bin.to_str()
+        );
+        let text = fs::read_to_string(harness.agent_path()).expect("agent");
+        let launcher = serde_json::to_string(harness.bin.to_str().expect("UTF-8")).expect("json");
+        fs::write(
+            harness.agent_path(),
+            text.replace(&launcher, "\"/usr/local/bin/compresso\""),
+        )
+        .expect("other launcher");
+        let other = detail(&adapter);
+        assert!(other.contains("/usr/local/bin/compresso"), "{other}");
+        assert!(other.contains("not this Compresso launcher"), "{other}");
     }
 
     /// E17-38 (D103): the client's folder-trust record is read, never
