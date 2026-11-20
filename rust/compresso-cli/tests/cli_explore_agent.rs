@@ -191,7 +191,7 @@ fn test_agent_install_status_verify_and_uninstall_round_trip() {
     let expected = compresso_mcp::lean_tool_allowlist()
         .into_iter()
         .filter(|name| !matches!(*name, "compresso_recall" | "compresso_edit"))
-        .map(|name| format!("mcp__compresso__{name}"))
+        .map(|name| format!("mcp__compresso-lean__{name}"))
         .chain(["Read", "Edit", "Write"].map(str::to_owned))
         .collect::<Vec<_>>();
     assert_eq!(tools, expected, "agent tools follow the lean allowlist");
@@ -297,7 +297,7 @@ fn test_edits_opt_in_grants_the_edit_tool_and_round_trips() {
     ]);
     assert_eq!(exit, CliExitCode::Success, "{errors}");
     let agent = fs::read_to_string(fixture.agent_path()).expect("agent written");
-    assert!(agent.contains("mcp__compresso__compresso_edit"));
+    assert!(agent.contains("mcp__compresso-lean__compresso_edit"));
     assert!(agent.contains("not shell text substitution"));
     let (exit, _, errors) =
         fixture.integrations(&["verify", "claude-code", "--explore-agent", "--json"]);
@@ -426,7 +426,7 @@ fn test_edits_can_be_turned_on_and_off_over_an_existing_install() {
     install(&["--explore-agent"]);
     install(&["--explore-agent", "--edits"]);
     let agent = fs::read_to_string(fixture.agent_path()).expect("agent");
-    assert!(agent.contains("mcp__compresso__compresso_edit"));
+    assert!(agent.contains("mcp__compresso-lean__compresso_edit"));
     install(&["--explore-agent"]);
     let agent = fs::read_to_string(fixture.agent_path()).expect("agent");
     assert!(!agent.contains("compresso_edit"));
@@ -482,4 +482,77 @@ fn test_setup_rerun_keeps_an_installed_edits_entry() {
         entry_args(&fixture),
         ["mcp", "serve", "--edits", "--recall-source", "claude-code"]
     );
+}
+
+/// E17-38 (D103): an agent install warns that Claude Code starts the
+/// agent's own server only in a trusted folder, unless the client already
+/// records that trust; status reports the agent's server and the trust.
+#[test]
+fn test_agent_install_warns_about_folder_trust_until_it_is_recorded() {
+    let fixture = Fixture::new();
+    let install = || {
+        let (exit, output, errors) = fixture.integrations(&[
+            "install",
+            "claude-code",
+            "--explore-agent",
+            "--yes",
+            "--json",
+        ]);
+        assert_eq!(exit, CliExitCode::Success, "{errors}");
+        output["data"]["warnings"].to_string()
+    };
+    assert!(install().contains("explore_agent_needs_folder_trust"));
+    let (_, status, _) =
+        fixture.integrations(&["status", "claude-code", "--explore-agent", "--json"]);
+    assert_eq!(status["data"]["agent_server"], "lean");
+    assert_eq!(status["data"]["folder_trust"], "not_recorded");
+    assert!(
+        status["data"]["advice"]
+            .as_str()
+            .is_some_and(|advice| advice.starts_with("open Claude Code once interactively in this project folder and accept the folder trust prompt")),
+        "{status}"
+    );
+
+    let record = serde_json::json!({ "projects": {
+        fixture.root.to_str().expect("UTF-8"): { "hasTrustDialogAccepted": true }
+    }});
+    fs::write(fixture.home.join(".claude.json"), record.to_string()).expect("trust record");
+    assert!(!install().contains("explore_agent_needs_folder_trust"));
+    let (_, status, _) =
+        fixture.integrations(&["status", "claude-code", "--explore-agent", "--json"]);
+    assert_eq!(status["data"]["folder_trust"], "accepted");
+    assert!(status["data"].get("advice").is_none(), "{status}");
+}
+
+/// E17-38 (D103): an agent file written before E17-38 (granted the shared
+/// full-profile server's tools) is reported with the reinstall command.
+#[test]
+fn test_status_reports_an_agent_file_written_for_the_shared_server() {
+    let fixture = Fixture::new();
+    let (exit, _, errors) = fixture.integrations(&[
+        "install",
+        "claude-code",
+        "--explore-agent",
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    let current = fs::read_to_string(fixture.agent_path()).expect("agent");
+    let (head, body) = current.split_once("mcpServers:").expect("server block");
+    let (_, rest) = body.split_once("\n---\n").expect("frontmatter end");
+    let old = format!("{head}---\n{rest}").replace("mcp__compresso-lean__", "mcp__compresso__");
+    fs::write(fixture.agent_path(), old).expect("old agent");
+    let (_, status, _) =
+        fixture.integrations(&["status", "claude-code", "--explore-agent", "--json"]);
+    assert_eq!(status["data"]["agent_installed"], false);
+    assert_eq!(status["data"]["agent_server"], "shared_full_profile");
+    assert!(
+        status["data"]["advice"]
+            .as_str()
+            .is_some_and(|advice| advice.contains("install claude-code --explore-agent")),
+        "{status}"
+    );
+    let (exit, _, _) =
+        fixture.integrations(&["verify", "claude-code", "--explore-agent", "--json"]);
+    assert_ne!(exit, CliExitCode::Success);
 }

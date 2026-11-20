@@ -483,7 +483,7 @@ fn is_normalized_absolute_path(path: &Path) -> bool {
         && path.components().collect::<PathBuf>().as_os_str() == path.as_os_str()
 }
 
-fn expected_server_args(scope: &Scope) -> Result<Vec<String>, IntegrationError> {
+pub(crate) fn expected_server_args(scope: &Scope) -> Result<Vec<String>, IntegrationError> {
     let mut args = vec!["mcp".to_owned(), "serve".to_owned()];
     if let Scope::Project(root) = scope {
         let canonical_root = fs::canonicalize(root).map_err(|source| IntegrationError::Io {

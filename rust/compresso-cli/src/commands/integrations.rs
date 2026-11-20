@@ -854,6 +854,17 @@ fn execute_mutation(
     };
     let mut warnings = Vec::new();
     project_canonical_receipts(&receipts, environment, &mut warnings);
+    if action == MutationAction::Install && arguments.explore_agent {
+        let adapter = ExploreAgentIntegration::new(
+            environment.home_dir.clone(),
+            explore_agent_tools_with(false),
+        );
+        if adapter.folder_trust(&scope) != "accepted" {
+            warnings.push(
+                "explore_agent_needs_folder_trust: to let Claude Code start the agent's own lean Compresso server, open Claude Code once interactively in this project folder and accept the folder trust prompt (a parent folder's trust and `-p` sessions do not count; --strict-mcp-config, --bare, and managed MCP policies also skip the server). Until then the agent has no Compresso tools and stops; `compresso integrations status claude-code --explore-agent` shows the recorded trust".to_owned(),
+            );
+        }
+    }
     if action == MutationAction::Uninstall && !arguments.explore_agent {
         if arguments.compaction_hook {
             if matches!(scope, Scope::User)
@@ -966,12 +977,23 @@ fn execute_status(
     let receipt = receipts.active_for(arguments.client.as_str(), &selected.config_path)?;
     let active_receipt = receipt.is_some();
     if arguments.compaction_hook || arguments.explore_agent {
+        let agent = arguments.explore_agent.then(|| {
+            let adapter = ExploreAgentIntegration::new(
+                environment.home_dir.clone(),
+                explore_agent_tools_with(false),
+            );
+            AgentServerStatus {
+                server: adapter.agent_server(&scope),
+                folder_trust: adapter.folder_trust(&scope),
+            }
+        });
         return render_hook_status(
             output,
             &arguments,
             &selected,
             active_receipt,
             selected.adapter.verify(&scope).verified,
+            agent,
         );
     }
     let detection = selected.adapter.detect(&scope);
@@ -1022,12 +1044,36 @@ fn execute_status(
     Ok(())
 }
 
+/// Where the exploration agent's Compresso tools come from (E17-38, D103).
+struct AgentServerStatus {
+    /// `lean`, `shared_full_profile`, `absent`, or `unknown`.
+    server: &'static str,
+    /// Advisory: `accepted`, `not_recorded`, `unknown`, or `not_required`.
+    folder_trust: &'static str,
+}
+
+impl AgentServerStatus {
+    /// What to do about the agent's server, if anything.
+    fn advice(&self) -> Option<&'static str> {
+        match (self.server, self.folder_trust) {
+            ("shared_full_profile", _) => Some(
+                "the agent file predates its own lean server and runs on the shared full-profile server; reinstall it with `compresso integrations install claude-code --explore-agent`",
+            ),
+            ("lean", "not_recorded" | "unknown") => Some(
+                "open Claude Code once interactively in this project folder and accept the folder trust prompt, so it can start the agent's own lean server (a parent folder's trust and `-p` sessions do not count; --strict-mcp-config, --bare, and managed MCP policies also skip it); until then the agent has no Compresso tools and stops",
+            ),
+            _ => None,
+        }
+    }
+}
+
 fn render_hook_status(
     output: &mut impl Write,
     arguments: &IntegrationReadArgs,
     selected: &SelectedIntegration,
     active_receipt: bool,
     installed: bool,
+    agent: Option<AgentServerStatus>,
 ) -> Result<(), IntegrationCliError> {
     if arguments.output.json {
         let (surface, installed_key) = if arguments.explore_agent {
@@ -1043,6 +1089,13 @@ fn render_hook_status(
             "canonical_receipt_active": active_receipt,
         });
         data[installed_key] = serde_json::Value::Bool(installed);
+        if let Some(agent) = &agent {
+            data["agent_server"] = agent.server.into();
+            data["folder_trust"] = agent.folder_trust.into();
+            if let Some(advice) = agent.advice() {
+                data["advice"] = advice.into();
+            }
+        }
         serde_json::to_writer(
             &mut *output,
             &serde_json::json!({ "schema_version": 1, "data": data }),
@@ -1079,6 +1132,13 @@ fn render_hook_status(
             "canonical receipt: {}",
             if active_receipt { "active" } else { "none" }
         )?;
+        if let Some(agent) = &agent {
+            writeln!(output, "agent server: {}", agent.server)?;
+            writeln!(output, "folder trust: {} (advisory)", agent.folder_trust)?;
+            if let Some(advice) = agent.advice() {
+                writeln!(output, "warning: {advice}")?;
+            }
+        }
     }
     Ok(())
 }
