@@ -70,7 +70,7 @@ src/steps.rs (400; unlisted: 4, 5, 6, 7, 8, 9, 10, 11, … +389)
 1 [def step_000] pub fn step_000(budget: &mut usize) { *budget += 0; }
 2 [def step_001] pub fn step_001(budget: &mut usize) { *budget += 1; }
 3 [def step_002] pub fn step_002(budget: &mut usize) { *budget += 2; }
-[397 matching lines counted but not listed; read unlisted lines with compresso_read ranges, or narrow with path or a more specific pattern rather than raising limits]
+[397 matching lines counted but not listed; pass unlisted lines as ranges in your next call, packed with its patterns, or narrow with path or a more specific pattern rather than raising limits]
 
 === read
 @@ src/lib.rs:1-14 of 14

@@ -882,6 +882,10 @@ fn compact_rows(file: &GrepFile, shown: &[Shown], context_lines: usize) -> Vec<S
             text.insert(context.line, context.text.as_str());
         }
     }
+    // Rows a budget cut dropped (E17-39, D104) still serve as context.
+    for context in &file.context_spare {
+        text.entry(context.line).or_insert(context.text.as_str());
+    }
     for line in &file.lines {
         text.entry(line.line).or_insert(line.snippet.as_str());
     }

@@ -737,3 +737,125 @@ fn test_grep_row_selection_chooses_from_the_first_candidates_only() {
         "the next candidates, never the line past the bound"
     );
 }
+
+/// E17-39 review (item 1): a symbol's first line ranks as a definition
+/// only when the match is on the symbol's name; a parameter or receiver
+/// that matches makes it an ordinary code row.
+#[test]
+fn test_grep_row_selection_ranks_a_definition_only_when_its_name_matches() {
+    let fixture = Fixture::new();
+    fixture.write_indexed(
+        "src/reasons.rs",
+        "fn cordon_a(reason: &str) {}\nfn cordon_b(reason: &str) {}\nfn selection_reason() -> u8 { 1 }\n",
+        &[
+            symbol("cordon_a", SymbolKind::Function, 1, 1),
+            symbol("cordon_b", SymbolKind::Function, 2, 2),
+            symbol("selection_reason", SymbolKind::Function, 3, 3),
+        ],
+    );
+    let report = fixture.grep(&["reason"], |options| {
+        options.max_matches_per_file = 1;
+        options.select_rows = true;
+    });
+    assert_eq!(listed(&report), [3]);
+}
+
+/// E17-39 review (item 3): with row selection on, every file's rows are
+/// ranked, so a budget cut keeps code before comments even in a file at or
+/// under the cap.
+#[test]
+fn test_grep_row_selection_ranks_rows_of_a_file_under_the_cap() {
+    let fixture = Fixture::new();
+    let mut source = "// beacon note\n".repeat(8);
+    source.push_str("let beacon = 1;\nlet beacon_two = 2;\n");
+    fixture.write_indexed("src/under.rs", &source, &[]);
+    let report = fixture.grep(&["beacon"], |options| {
+        options.max_matches_per_file = 50;
+        options.select_rows = true;
+    });
+    let ranks = report.results[0].files[0]
+        .lines
+        .iter()
+        .map(|line| (line.line, line.rank))
+        .collect::<Vec<_>>();
+    assert_eq!(ranks[8], (9, 0), "{ranks:?}");
+    assert_eq!(ranks[9], (10, 1), "{ranks:?}");
+}
+
+/// E17-39 review (nit): a block opener with no closer nearby (a `/*` inside
+/// a multi-line string) does not turn the following code into comments.
+#[test]
+fn test_grep_row_selection_ignores_a_block_opener_with_no_closer() {
+    let fixture = Fixture::new();
+    fixture.write_indexed(
+        "src/glob.rs",
+        "// beacon note\nlet glob = \"\n/* not a comment\n\";\nlet beacon = 1;\n",
+        &[],
+    );
+    let report = fixture.grep(&["beacon"], |options| {
+        options.max_matches_per_file = 1;
+        options.select_rows = true;
+    });
+    assert_eq!(listed(&report), [5]);
+}
+
+/// E17-39 review (item 5): selecting rows in a large file with many
+/// symbols stays fast: one sorted pass finds every candidate's symbol.
+#[test]
+fn test_grep_row_selection_stays_fast_with_many_symbols_and_candidates() {
+    let fixture = Fixture::new();
+    let lines = 10_000_u32;
+    let source = (0..lines)
+        .map(|index| format!("fn beacon_{index}() {{}}\n"))
+        .collect::<String>();
+    let symbols = (0..lines)
+        .map(|index| {
+            symbol(
+                &format!("beacon_{index}"),
+                SymbolKind::Function,
+                index + 1,
+                index + 1,
+            )
+        })
+        .collect::<Vec<_>>();
+    fixture.write_indexed("src/huge.rs", &source, &symbols);
+    let timed = |select_rows: bool| {
+        let started = Instant::now();
+        let report = fixture.grep(&["beacon"], |options| {
+            options.max_matches_per_file = 5;
+            options.select_rows = select_rows;
+        });
+        assert_eq!(report.results[0].files[0].lines.len(), 5);
+        started.elapsed()
+    };
+    let first = timed(false);
+    let selected = timed(true);
+    println!("10,000 symbols: first lines {first:?}, row selection {selected:?}");
+    // Selection adds a sorted pass, not a scan of every symbol per row.
+    assert!(
+        selected < first * 3 + Duration::from_millis(50),
+        "{first:?} vs {selected:?}"
+    );
+}
+
+/// E17-39 review (item 1): a symbol's first line that matches only through
+/// a parameter, receiver, or type ranks after code rows in bodies, so method
+/// signatures do not crowd out the use sites.
+#[test]
+fn test_grep_row_selection_ranks_signature_mentions_after_body_code() {
+    let fixture = Fixture::new();
+    fixture.write_indexed(
+        "src/signatures.rs",
+        "fn cordon_a(reason: &str) {}\nfn pick() {\n    let r = reason_of();\n}\nfn selection_reason() {}\n",
+        &[
+            symbol("cordon_a", SymbolKind::Function, 1, 1),
+            symbol("pick", SymbolKind::Function, 2, 4),
+            symbol("selection_reason", SymbolKind::Function, 5, 5),
+        ],
+    );
+    let report = fixture.grep(&["reason"], |options| {
+        options.max_matches_per_file = 2;
+        options.select_rows = true;
+    });
+    assert_eq!(listed(&report), [3, 5]);
+}

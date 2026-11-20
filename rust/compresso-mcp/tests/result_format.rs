@@ -2492,8 +2492,8 @@ async fn test_text_grep_names_a_bounded_set_of_unlisted_lines() {
         "{text}"
     );
     assert!(
-        text.contains("compresso_read ranges"),
-        "the note points at reading named lines: {text}"
+        text.contains("pass unlisted lines as ranges in your next call, packed with its patterns"),
+        "the note points at reading named lines in a packed call: {text}"
     );
     lean.close().await;
 }
@@ -2649,5 +2649,73 @@ async fn test_unlisted_line_names_shrink_before_rows_are_displaced() {
     assert!(!is_error, "{text}");
     assert_eq!(rows(&text), 20, "{text}");
     assert!(text.contains("; unlisted: 2, 3, 4, … +8)"), "{text}");
+    lean.close().await;
+}
+
+/// E17-39 review (item 2): a row an earlier pattern of the call listed does
+/// not take a later pattern's slot under the cap.
+#[tokio::test]
+async fn test_text_grep_capped_rows_skip_rows_an_earlier_pattern_listed() {
+    let fixture = fixture_with(&[(
+        "src/pair.rs",
+        "pub fn run() {\n    alpha(); beta();\n    beta();\n}\n",
+    )]);
+    let mut lean = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, _) = lean
+        .call(
+            "compresso_grep",
+            &json!({ "patterns": ["alpha", "beta"], "path": "src/pair.rs", "max_matches_per_file": 1 }),
+        )
+        .await;
+    assert!(
+        text.contains(
+            "# beta — 2 lines in 1 files\nsrc/pair.rs (2; unlisted: 2)\n3 [run] beta();\n"
+        ),
+        "{text}"
+    );
+    lean.close().await;
+}
+
+/// E17-39 review (item 4): a pattern naming tests lists the rows in a
+/// `tests` module (D99 lists them for such a pattern) before comments.
+#[tokio::test]
+async fn test_text_grep_test_pattern_keeps_test_module_rows_first() {
+    let fixture = fixture_with(&[(
+        "src/helper.rs",
+        "//! test_helper docs one\n//! test_helper docs two\npub fn x() {}\n\n#[cfg(test)]\nmod tests {\n    fn test_helper() {}\n    fn a() { test_helper(); }\n}\n",
+    )]);
+    let mut lean = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, _) = lean
+        .call(
+            "compresso_grep",
+            &json!({ "pattern": "test_helper", "path": "src/helper.rs", "max_matches_per_file": 2 }),
+        )
+        .await;
+    assert!(
+        text.contains("src/helper.rs (4; unlisted: 1, 2)\n7 [def test_helper] fn test_helper() {}\n8 [def a] fn a() { test_helper(); }\n"),
+        "{text}"
+    );
+    lean.close().await;
+}
+
+/// E17-39 review (nit): a path in the unlisted-files line cannot split the
+/// list: `]` and `,` are replaced as `;` is in a header.
+#[tokio::test]
+async fn test_text_grep_unlisted_file_paths_cannot_split_the_list() {
+    let fixture = fixture_with(&[
+        ("src/a1.rs", "// needle\n// needle\n"),
+        ("src/b], x (9).rs", "// needle\n"),
+    ]);
+    let mut lean = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, _) = lean
+        .call(
+            "compresso_grep",
+            &json!({ "pattern": "needle", "path": "src", "max_files": 1 }),
+        )
+        .await;
+    assert!(
+        text.contains("[unlisted files: src/b?? x ?9).rs (1)]"),
+        "{text}"
+    );
     lean.close().await;
 }
