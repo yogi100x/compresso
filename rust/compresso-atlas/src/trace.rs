@@ -18,7 +18,9 @@ use compresso_store::{
 use crate::AtlasError;
 use crate::parsers::ParserRegistry;
 use crate::parsers::go_package_local_name;
-use crate::parsers::languages::{CallRules, call_rules, is_test_file, package_is_directory};
+use crate::parsers::languages::{
+    CallRules, DeclaredRules, call_rules, declaring_languages, is_test_file, package_is_directory,
+};
 use crate::parsers::signature_modifiers as modifiers;
 use crate::queries::QueryError;
 use crate::scanner::is_secret_path;
@@ -580,6 +582,9 @@ struct Resolver<'a> {
     declared_external_names: Option<HashMap<String, HashSet<String>>>,
     /// Java and C# only: the packages or namespaces each file declares.
     file_packages: Option<HashMap<String, Vec<String>>>,
+    /// Java and C# only: per file, the packages or namespaces it imports
+    /// whose files were cut by the import bound (`edge_limit`).
+    capped_imports: Option<HashMap<String, HashSet<String>>>,
     no_names: HashSet<String>,
     symbols: HashMap<i64, IndexedSymbol>,
     shapes: HashMap<ShapeKey, Rc<Filtered>>,
@@ -596,6 +601,7 @@ impl<'a> Resolver<'a> {
             external_names: None,
             declared_external_names: None,
             file_packages: None,
+            capped_imports: None,
             no_names: HashSet::new(),
             symbols: HashMap::new(),
             shapes: HashMap::new(),
@@ -651,7 +657,7 @@ impl<'a> Resolver<'a> {
             form: call.form,
             qualifier: call.qualifier.clone(),
             caller_owner: owner_base(&call.caller_qualified_name),
-            caller_owners: (call_rules(&call.from_path) == CallRules::DeclaredPackages)
+            caller_owners: matches!(call_rules(&call.from_path), CallRules::DeclaredPackages(_))
                 .then(|| {
                     call.caller_qualified_name
                         .rsplit_once("::")
@@ -674,7 +680,7 @@ impl<'a> Resolver<'a> {
     fn resolve_uncached(&mut self, key: &CallKey) -> Result<Resolution, AtlasError> {
         match call_rules(&key.from_path) {
             CallRules::GoPackages => return self.resolve_go(key),
-            CallRules::DeclaredPackages => return self.resolve_declared(key),
+            CallRules::DeclaredPackages(rules) => return self.resolve_declared(key, rules),
             CallRules::ByName => {}
         }
         let filtered = self.filtered(&key.shape)?;
@@ -915,13 +921,16 @@ impl<'a> Resolver<'a> {
     /// always `name_only`. Receiver calls reach methods by file, package,
     /// import, then `name_only`. Several partial declarations of one type
     /// count as that type's first declaration; overloads stay ambiguous.
-    fn resolve_declared(&mut self, key: &CallKey) -> Result<Resolution, AtlasError> {
+    fn resolve_declared(
+        &mut self,
+        key: &CallKey,
+        rules: DeclaredRules,
+    ) -> Result<Resolution, AtlasError> {
         let shape = &key.shape;
         let from = key.from_path.as_str();
         let Some(family) = shape.family else {
             return Ok(Resolution::Unresolved("not_found"));
         };
-        let csharp = ParserRegistry::for_path(Path::new(from)) == Some(FileLanguage::CSharp);
         let owners = shape
             .caller_owners
             .as_deref()
@@ -931,8 +940,9 @@ impl<'a> Resolver<'a> {
         let ids = self.named(&shape.name)?.to_vec();
         self.load_imports()?;
         self.load_file_packages()?;
+        self.load_capped_imports()?;
         let supertypes = match shape.form {
-            CallForm::Plain | CallForm::SelfRef => self.supertypes(from, &owners, family)?,
+            CallForm::Plain | CallForm::SelfRef => self.supertypes(from, &owners, family, rules)?,
             _ => Vec::new(),
         };
         let qualifier = shape.qualifier.as_deref().unwrap_or_default();
@@ -960,9 +970,13 @@ impl<'a> Resolver<'a> {
         let packages = self.file_packages.as_ref().expect("loaded above");
         let scope = DeclaredScope {
             from,
-            csharp,
+            rules,
             from_packages: packages_of(packages, from),
             imports: self.imports.as_ref().and_then(|imports| imports.get(from)),
+            capped: self
+                .capped_imports
+                .as_ref()
+                .and_then(|capped| capped.get(from)),
             packages,
             owners: &owners,
         };
@@ -1111,11 +1125,30 @@ impl<'a> Resolver<'a> {
             let mut packages = HashMap::<String, Vec<String>>::new();
             for (path, name) in self
                 .store
-                .module_declarations(self.repo, &[FileLanguage::Java, FileLanguage::CSharp])?
+                .module_declarations(self.repo, &declaring_languages())?
             {
                 packages.entry(path).or_default().push(name);
             }
             self.file_packages = Some(packages);
+        }
+        Ok(())
+    }
+
+    /// The imports each Java or C# file names whose files were too many to
+    /// record (`a.b` for `a.b.*`, `N` for `using N;`), once per trace.
+    fn load_capped_imports(&mut self) -> Result<(), AtlasError> {
+        if self.capped_imports.is_none() {
+            let mut capped = HashMap::<String, HashSet<String>>::new();
+            for (path, raw) in self
+                .store
+                .unresolved_edge_targets_with_detail(self.repo, crate::indexer::GO_EDGE_LIMIT)?
+            {
+                if matches!(call_rules(&path), CallRules::DeclaredPackages(_)) {
+                    let name = raw.strip_suffix(".*").unwrap_or(&raw).to_owned();
+                    capped.entry(path).or_default().insert(name);
+                }
+            }
+            self.capped_imports = Some(capped);
         }
         Ok(())
     }
@@ -1127,7 +1160,9 @@ impl<'a> Resolver<'a> {
         if self.declared_external_names.is_none() {
             let mut names = HashMap::<String, HashSet<String>>::new();
             for (path, import) in self.store.external_edges(self.repo)? {
-                if call_rules(&path) != CallRules::DeclaredPackages || import.ends_with(".*") {
+                if !matches!(call_rules(&path), CallRules::DeclaredPackages(_))
+                    || import.ends_with(".*")
+                {
                     continue;
                 }
                 let last = import.rsplit('.').next().unwrap_or(&import).to_owned();
@@ -1171,6 +1206,7 @@ impl<'a> Resolver<'a> {
         from: &str,
         owners: &[String],
         family: u8,
+        rules: DeclaredRules,
     ) -> Result<Vec<String>, AtlasError> {
         let Some(innermost) = owners.last() else {
             return Ok(Vec::new());
@@ -1180,7 +1216,7 @@ impl<'a> Resolver<'a> {
         let mut supertypes = Vec::new();
         for candidate in ids.iter().filter_map(|id| self.symbols.get(id)) {
             let same_place = candidate.path == from
-                || (from.ends_with(".cs")
+                || (rules.partial_types
                     && modifiers(candidate.symbol.signature.as_deref()).contains(&"partial"));
             if language_family(candidate.language) == Some(family)
                 && candidate.symbol.qualified_name == qualified
@@ -1362,9 +1398,12 @@ fn tier(ids: &[i64], rule: CallResolution) -> Option<Resolution> {
 /// imported files, and own types (D105).
 struct DeclaredScope<'a> {
     from: &'a str,
-    csharp: bool,
+    rules: DeclaredRules,
     from_packages: Vec<&'a str>,
     imports: Option<&'a HashSet<String>>,
+    /// Packages or namespaces the caller imports whose files were too many
+    /// to record as edges (an `edge_limit` import).
+    capped: Option<&'a HashSet<String>>,
     packages: &'a HashMap<String, Vec<String>>,
     /// The caller's owner types, outermost first.
     owners: &'a [String],
@@ -1380,7 +1419,7 @@ impl DeclaredScope<'_> {
             .any(|theirs| {
                 self.from_packages.iter().any(|ours| {
                     ours == theirs
-                        || (self.csharp
+                        || (self.rules.enclosing_namespaces
                             && (theirs.is_empty()
                                 || ours
                                     .strip_prefix(*theirs)
@@ -1389,9 +1428,17 @@ impl DeclaredScope<'_> {
             })
     }
 
+    /// A file the caller imports: an edge to it, or a package or
+    /// namespace it declares that an import of the caller names but whose
+    /// files were too many to record.
     fn imported(&self, candidate: &IndexedSymbol) -> bool {
         self.imports
             .is_some_and(|imports| imports.contains(&candidate.path))
+            || self.capped.is_some_and(|capped| {
+                packages_of(self.packages, &candidate.path)
+                    .iter()
+                    .any(|package| !package.is_empty() && capped.contains(*package))
+            })
     }
 
     /// Whether the caller may reach `candidate` by its access modifiers.
@@ -1406,7 +1453,7 @@ impl DeclaredScope<'_> {
                 "public" | "private" | "protected" | "internal" | "file"
             )
         });
-        if !self.csharp {
+        if !self.rules.members_default_private {
             return match access {
                 Some("private") => false,
                 Some("public") => true,

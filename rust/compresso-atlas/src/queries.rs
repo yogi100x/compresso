@@ -398,7 +398,12 @@ pub fn repo_map_focused(
         .iter()
         .map(|file| {
             let in_degree = importers.get(&file.path).map_or(0, BTreeSet::len);
-            let symbols = store.symbols_in_file(repo, &file.path)?;
+            let mut symbols = store.symbols_in_file(repo, &file.path)?;
+            // A Java package or C# namespace names the file's place, not
+            // its content: the map lists the file's types and members.
+            if crate::parsers::languages::declares_packages(file.language) {
+                symbols.retain(|symbol| symbol.kind != SymbolKind::Module);
+            }
             let focused = focus.is_some_and(|focus| map_path_matches_focus(&file.path, focus));
             Ok((file.path.clone(), focused, in_degree, symbols))
         })

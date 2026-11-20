@@ -24,6 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use compresso_store::FileLanguage;
 
 use crate::parsers::ImportResolution;
+use crate::parsers::languages::{ImportStyle, spec};
 use crate::rust_imports::{EXTERNAL, NOT_INDEXED};
 
 /// Declared packages and namespaces of one repository, built once per run.
@@ -61,9 +62,9 @@ impl DeclaredPackages {
         language: FileLanguage,
         raw: &str,
     ) -> Vec<(Option<String>, ImportResolution)> {
-        let files = match language {
-            FileLanguage::Java => self.resolve_java(language, raw),
-            FileLanguage::CSharp => self.resolve_csharp(language, raw),
+        let files = match spec(language).imports {
+            ImportStyle::Java => self.resolve_java(language, raw),
+            ImportStyle::CSharp => self.resolve_csharp(language, raw),
             _ => None,
         };
         let Some(files) = files else {

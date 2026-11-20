@@ -691,6 +691,54 @@ fn test_a_file_added_to_a_package_reaches_an_importer_with_no_unresolved_imports
     );
 }
 
+/// A namespace of more files than one import may name records no file
+/// edge, only an `edge_limit` marker: `impact` then reports incomplete
+/// results, and a call into the namespace still resolves as an import. A
+/// file added or removed across the bound re-resolves the importer either
+/// way.
+#[test]
+fn test_a_namespace_over_the_import_bound_is_marked_and_still_traced() {
+    let mut files = vec![(
+        "app/Main.cs".to_owned(),
+        "using Big;\n\nnamespace App;\n\npublic class Main\n{\n    public void Run() { Tools.Make(); }\n}\n"
+            .to_owned(),
+    )];
+    files.push((
+        "big/Tools.cs".to_owned(),
+        "namespace Big;\n\npublic static class Tools { public static void Make() { } }\n"
+            .to_owned(),
+    ));
+    for index in 1..128 {
+        files.push((
+            format!("big/F{index}.cs"),
+            format!("namespace Big;\n\npublic class F{index} {{ }}\n"),
+        ));
+    }
+    let borrowed = files
+        .iter()
+        .map(|(path, source)| (path.as_str(), source.as_str()))
+        .collect::<Vec<_>>();
+    let (temp, store, repo) = index_files(&borrowed);
+    assert_eq!(edges_from(&store, repo, "app/Main.cs").len(), 128);
+
+    write_all(
+        &temp.path().join("repo"),
+        &[("big/F128.cs", "namespace Big;\n\npublic class F128 { }\n")],
+    );
+    reindex(&store, &temp);
+    assert!(edges_from(&store, repo, "app/Main.cs").is_empty());
+    let report = impact(&store, repo, "big/Tools.cs").expect("impact");
+    assert!(report.dependents.is_empty() && !report.complete);
+    assert_eq!(
+        callees_of(&store, repo, "Main::Run"),
+        [("Tools::Make".to_owned(), CallResolution::Import)]
+    );
+
+    fs::remove_file(temp.path().join("repo/big/F128.cs")).expect("remove");
+    reindex(&store, &temp);
+    assert_eq!(edges_from(&store, repo, "app/Main.cs").len(), 128);
+}
+
 /// A changed file that moves into an imported namespace, with no file added
 /// or removed, is reached by its importers; one that moves out loses them.
 #[test]

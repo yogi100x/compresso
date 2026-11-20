@@ -120,7 +120,20 @@ pub(crate) enum CallRules {
     /// Java and C#: types and methods live in declared packages or
     /// namespaces, and visibility modifiers decide what another file can
     /// reach (D105).
-    DeclaredPackages,
+    DeclaredPackages(DeclaredRules),
+}
+
+/// Where Java and C# differ in what a call can reach (D105).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DeclaredRules {
+    /// A member without an access modifier is private (C#), not visible to
+    /// its package (Java); a top-level type without one is `internal`.
+    pub(crate) members_default_private: bool,
+    /// Code sees the types of every enclosing namespace and of the global
+    /// namespace (C#), not only of its own package (Java).
+    pub(crate) enclosing_namespaces: bool,
+    /// A type may be declared in parts across files (`partial`, C#).
+    pub(crate) partial_types: bool,
 }
 
 /// How a line is recognised as comment or documentation text when grep
@@ -389,7 +402,11 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         entry_files: &["package-info.java"],
         test_file_suffix: None,
         package_is_directory: false,
-        call_rules: CallRules::DeclaredPackages,
+        call_rules: CallRules::DeclaredPackages(DeclaredRules {
+            members_default_private: false,
+            enclosing_namespaces: false,
+            partial_types: false,
+        }),
         entry_method: Some("main"),
         declarations: Some(super::java::declarations),
         comments: CommentSyntax::C_LIKE,
@@ -411,7 +428,11 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         entry_files: &["Program.cs"],
         test_file_suffix: None,
         package_is_directory: false,
-        call_rules: CallRules::DeclaredPackages,
+        call_rules: CallRules::DeclaredPackages(DeclaredRules {
+            members_default_private: true,
+            enclosing_namespaces: true,
+            partial_types: true,
+        }),
         entry_method: Some("Main"),
         declarations: Some(super::csharp::declarations),
         comments: CommentSyntax::C_LIKE,
@@ -493,6 +514,21 @@ pub(crate) fn call_rules(path: &str) -> CallRules {
     path.rsplit_once('.')
         .and_then(|(_, extension)| for_extension(extension))
         .map_or(CallRules::ByName, |spec| spec.call_rules)
+}
+
+/// The languages whose files declare packages or namespaces (Java, C#).
+pub(crate) fn declaring_languages() -> Vec<FileLanguage> {
+    LANGUAGES
+        .iter()
+        .filter(|spec| spec.declarations.is_some())
+        .map(|spec| spec.language)
+        .collect()
+}
+
+/// Whether `language` declares packages or namespaces, stored as `module`
+/// symbols.
+pub(crate) fn declares_packages(language: Option<FileLanguage>) -> bool {
+    language.is_some_and(|language| spec(language).declarations.is_some())
 }
 
 /// Whether `file_name` is an entry-point file name of any language.
@@ -600,7 +636,7 @@ mod tests {
             let spec = spec(language);
             assert!(!spec.package_is_directory, "{language:?}");
             assert!(!package_is_directory(path));
-            assert_eq!(call_rules(path), CallRules::DeclaredPackages);
+            assert!(matches!(call_rules(path), CallRules::DeclaredPackages(_)));
             assert!(spec.declarations.is_some());
             assert!(spec.has_grammar());
         }
