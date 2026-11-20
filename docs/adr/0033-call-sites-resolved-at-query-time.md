@@ -52,7 +52,12 @@ Option 2.
   D102: receiver-name self calls, a package qualifier names a directory
   and reaches its exported names, a qualifier naming an external import
   is a library call, plain calls resolve only as `same_file` or
-  `same_package`, and builtins are dropped). Rust macro arguments
+  `same_package`, and builtins are dropped), Java, and C# (E17-40, D105:
+  unqualified and `this.`/`super.`/`base.` calls, type- and
+  variable-qualified calls, receiver calls, and `new T()` as a plain call
+  to the type; resolution by declared package or namespace, access
+  modifiers, imports, and the supertypes a declaration names; no
+  argument references). Rust macro arguments
   are a flat token tree, so calls inside them (`assert!(run())`,
   `format!("{}", self.name())`) are read from tokens: a name followed by a
   parenthesized group, optionally behind `Type::`, `self.`, or `expr.`; a

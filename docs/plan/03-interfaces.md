@@ -179,7 +179,7 @@ pub type RepoId = i64;
 pub type FileId = i64;
 pub struct RepoRecord { pub id: RepoId, pub root: PathBuf, pub approved_at: i64, pub parser_version: String, pub schema_version: u32, pub last_indexed_at: Option<i64> }
 pub struct IndexVersionRecord { pub parser_version: String, pub schema_version: u32, pub created_at: i64 }
-pub enum FileLanguage { Rust, TypeScript, Tsx, JavaScript, Python, Go, Shell, Text } // `as_str()`: the stored lowercase name; per-language rules live in `compresso_atlas::parsers::LANGUAGES` (D102)
+pub enum FileLanguage { Rust, TypeScript, Tsx, JavaScript, Python, Go, Java, CSharp, Shell, Text } // `as_str()`: the stored lowercase name; per-language rules live in `compresso_atlas::parsers::LANGUAGES` (D102)
 pub struct FileRecord { pub path: String, pub hash: String, pub language: Option<FileLanguage>, pub size_bytes: u64, pub token_estimate: usize, pub indexed_at: i64 }
 pub enum SymbolKind { Function, Method, Struct, Class, Enum, Trait, Interface, Const, Type, Module }
 pub struct SymbolRecord { pub name: String, pub qualified_name: String, pub kind: SymbolKind, pub signature: Option<String>, pub start_line: u32, pub end_line: u32, pub token_estimate: usize }
@@ -228,6 +228,8 @@ impl Store {
     pub fn symbols_in_file(&self, repo: RepoId, path: &str) -> Result<Vec<SymbolRecord>>;
     pub fn resolved_edges(&self, repo: RepoId) -> Result<Vec<ResolvedEdgeRecord>>; // deterministic, resolved rows only
     pub fn unresolved_edge_sources(&self, repo: RepoId) -> Result<Vec<String>>; // deterministic sources to reconsider when paths expand
+    pub fn unresolved_edge_targets(&self, repo: RepoId) -> Result<Vec<(String, String)>>; // (source path, import as written) of every unresolved edge (E17-40, D105)
+    pub fn module_declarations(&self, repo: RepoId, languages: &[FileLanguage]) -> Result<Vec<(String, String)>>; // (path, qualified name) of `module` symbols in files of those languages: declared Java packages and C# namespaces (E17-40, D105)
     pub fn symbols_by_identity(&self, repo: RepoId, selector: &SymbolSelector) -> Result<Vec<(FileRecord, SymbolRecord)>>; // never arbitrary first
     pub fn latest_index_version(&self, repo: RepoId) -> Result<Option<IndexVersionRecord>>;
     pub fn stamp_index_version(&self, repo: RepoId, parser_version: &str, schema_version: u32) -> Result<()>;
@@ -489,7 +491,7 @@ Opt-in surfaces for lower fixed overhead, tool substitution, and orientation (D9
 Which rows of a capped grep file the text form lists, and the unlisted lines it names. No network or process capability is added; nothing is executed; no file is re-parsed.
 
 - **`compresso-atlas::grep`**: `GrepOptions.select_rows: bool` (off: the first `max_matches_per_file` lines in line order, as before; on: up to `GREP_ROW_CANDIDATES` = 2,000 matching lines per file are kept and the most useful are listed, in line order); `GrepLine.rank: usize` (0 most useful; line order when not selecting), which `GrepReport::fit_to_budget` uses to keep a partly fitted file's most useful rows; `GrepFile.lines_unlisted: Vec<u32>` (at most `GREP_UNLISTED_LINES_NAMED` = 8: rows a budget cut dropped, then the next most useful rows past the cap); `GrepFile.ranks_as_definition: bool` (a definition among the first `max_matches_per_file` lines, so file ranking is the same with or without selection); `GrepFile.context_spare: Vec<GrepContextLine>` (text of rows a budget cut dropped before a listed row, used only by the text form's context). The CLI `compresso grep` passes `select_rows: false`.
-- **`compresso-atlas::parsers::languages`**: `CommentSyntax { line: &[&str], block: Option<(&str, &str)> }` and `CommentSyntax::NONE`; `LanguageSpec.comments` (`//` and `/* */` for Rust, TypeScript, TSX, JavaScript, Go; `#` for Python and Shell; none for Text).
+- **`compresso-atlas::parsers::languages`**: `CommentSyntax { line: &[&str], block: Option<(&str, &str)> }` and `CommentSyntax::NONE`; `LanguageSpec.comments` (`//` and `/* */` for Rust, TypeScript, TSX, JavaScript, Go, Java, C#; `#` for Python and Shell; none for Text).
 - **`compresso-mcp` grep** (crate-private): `select_rows` is set exactly when the result form is text. The text payload's file entries gain `unlisted` (ascending line numbers) and `unlisted_more` (count) beside `tests` and `above`; the text header prints `; unlisted: L1, L2, … +N`; the section line for unlisted files reads `[unlisted files: P (N), ... and K more files]` (was `[not listed: ...]`; `]` and `,` in its paths become `?`); when a result does not fit, unlisted file names are dropped first, then unlisted line numbers are cut to 3 per file and then dropped (`LINE_NAME_STEPS`), then the other notes shrink. `GREP_ROW_CANDIDATES` and `GREP_UNLISTED_LINES_NAMED` are re-exported from the crate root. The JSON form is unchanged.
 - **`compresso-mcp::profile`** and **`compresso-integrations::explore_agent`**: the lean grep `ranges` description and the agent's grep rule say unlisted lines are read as ranges in the next packed call; the lean grep description is unchanged.
 
