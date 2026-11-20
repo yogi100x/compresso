@@ -35,6 +35,16 @@ impl Fixture {
     }
 
     fn write_indexed_bytes(&self, path: &str, source: &[u8], symbols: &[SymbolRecord]) {
+        self.write_indexed_as(path, source, Some(FileLanguage::Rust), symbols);
+    }
+
+    fn write_indexed_as(
+        &self,
+        path: &str,
+        source: &[u8],
+        language: Option<FileLanguage>,
+        symbols: &[SymbolRecord],
+    ) {
         let destination = self.root.join(path);
         fs::create_dir_all(destination.parent().expect("parent")).expect("directory created");
         fs::write(&destination, source).expect("source written");
@@ -44,7 +54,7 @@ impl Fixture {
                 &FileRecord {
                     path: path.to_owned(),
                     hash: blake3::hash(source).to_hex().to_string(),
-                    language: Some(FileLanguage::Rust),
+                    language,
                     size_bytes: source.len() as u64,
                     token_estimate: source.len() / 4,
                     indexed_at: 10,
@@ -648,4 +658,82 @@ fn test_grep_accepts_ordinary_counted_repetitions_and_explains_the_size_bound() 
     let message = failure.to_string();
     assert!(message.contains("too large"), "{message}");
     assert!(message.contains("shorten counted repetitions"), "{message}");
+}
+
+/// Listed line numbers of the only file of the first pattern.
+fn listed(report: &GrepReport) -> Vec<u32> {
+    report.results[0].files[0]
+        .lines
+        .iter()
+        .map(|line| line.line)
+        .collect()
+}
+
+/// E17-39 (D104): row selection reads comments through the file's language;
+/// a file of no indexed language has no comment syntax, so every row is
+/// code and the first lines are listed. Without selection the first lines
+/// are listed whatever they are.
+#[test]
+fn test_grep_row_selection_uses_the_file_language_for_comments() {
+    let fixture = Fixture::new();
+    let source = b"// beacon one\n// beacon two\nlet beacon = 3;\n";
+    fixture.write_indexed_as("src/known.rs", source, Some(FileLanguage::Rust), &[]);
+    fixture.write_indexed_as("src/unknown.cfg", source, None, &[]);
+    let select = |path: &str, select_rows: bool| {
+        fixture.grep(&["beacon"], |options| {
+            options.path = Some(path.to_owned());
+            options.max_matches_per_file = 1;
+            options.select_rows = select_rows;
+        })
+    };
+    let known = select("src/known.rs", true);
+    assert_eq!(listed(&known), [3]);
+    assert_eq!(known.results[0].files[0].lines_unlisted, [1, 2]);
+    assert_eq!(listed(&select("src/unknown.cfg", true)), [1]);
+    let first = select("src/known.rs", false);
+    assert_eq!(listed(&first), [1]);
+    assert!(first.results[0].files[0].lines_unlisted.is_empty());
+}
+
+/// E17-39 (D104): a file changed since it was indexed is searched as it is
+/// now: comments are still recognised, and it has no symbols.
+#[test]
+fn test_grep_row_selection_reads_comments_in_a_changed_file() {
+    let fixture = Fixture::new();
+    fixture.write_indexed("src/changed.rs", "let beacon = 1;\n", &[]);
+    fs::write(
+        fixture.root.join("src/changed.rs"),
+        "// beacon one\n// beacon two\nlet beacon = 3;\n",
+    )
+    .expect("file changed");
+    let report = fixture.grep(&["beacon"], |options| {
+        options.max_matches_per_file = 1;
+        options.select_rows = true;
+    });
+    let file = &report.results[0].files[0];
+    assert!(file.stale);
+    assert_eq!(listed(&report), [3]);
+    assert!(file.lines.iter().all(|line| line.symbol.is_none()));
+}
+
+/// E17-39 (D104): rows are chosen from the first `GREP_ROW_CANDIDATES`
+/// matching lines; a later match is counted but never listed or named.
+#[test]
+fn test_grep_row_selection_chooses_from_the_first_candidates_only() {
+    let fixture = Fixture::new();
+    let mut source = "// beacon\n".repeat(compresso_atlas::GREP_ROW_CANDIDATES);
+    source.push_str("let beacon = 1;\n");
+    fixture.write_indexed("src/many.rs", &source, &[]);
+    let report = fixture.grep(&["beacon"], |options| {
+        options.max_matches_per_file = 1;
+        options.select_rows = true;
+    });
+    let file = &report.results[0].files[0];
+    assert_eq!(file.matches_total, compresso_atlas::GREP_ROW_CANDIDATES + 1);
+    assert_eq!(listed(&report), [1]);
+    assert_eq!(
+        file.lines_unlisted,
+        (2..=9).collect::<Vec<u32>>(),
+        "the next candidates, never the line past the bound"
+    );
 }

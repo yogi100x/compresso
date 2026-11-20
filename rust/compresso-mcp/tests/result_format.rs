@@ -2610,3 +2610,44 @@ async fn test_text_grep_ranks_test_module_rows_last_under_the_cap() {
     );
     lean.close().await;
 }
+
+/// E17-39 (D104): when the named unlisted lines of many capped files do
+/// not fit, they are cut to fewer per file, then dropped, before any row is
+/// displaced, and the call never fails.
+#[tokio::test]
+async fn test_unlisted_line_names_shrink_before_rows_are_displaced() {
+    let files = (0..20)
+        .map(|file| {
+            let text = (0..12)
+                .map(|line| format!("// beacon {file} {line}\n"))
+                .collect::<String>();
+            (format!("src/beacon_{file:02}.rs"), text)
+        })
+        .collect::<Vec<_>>();
+    let files = files
+        .iter()
+        .map(|(path, text)| (path.as_str(), text.as_str()))
+        .collect::<Vec<_>>();
+    let fixture = fixture_with(&files);
+    let counter = counter_for(TokenProvider::OpenAiO200k);
+    let mut lean = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let rows = |text: &str| {
+        text.lines()
+            .filter(|line| {
+                line.split_once(' ')
+                    .is_some_and(|(number, _)| number.parse::<u32>().is_ok())
+            })
+            .count()
+    };
+    let call = |tokens: usize| json!({ "pattern": "beacon", "path": "src/beacon_*", "max_files": 20, "max_matches_per_file": 1, "max_tokens": tokens });
+    let (text, is_error) = lean.call("compresso_grep", &call(300)).await;
+    assert!(!is_error, "{text}");
+    assert!(rows(&text) >= 10, "{text}");
+    assert!(counter.count(&text) <= 300, "{text}");
+    // With room for every row but not eight names per file, fewer are named.
+    let (text, is_error) = lean.call("compresso_grep", &call(800)).await;
+    assert!(!is_error, "{text}");
+    assert_eq!(rows(&text), 20, "{text}");
+    assert!(text.contains("; unlisted: 2, 3, 4, … +8)"), "{text}");
+    lean.close().await;
+}

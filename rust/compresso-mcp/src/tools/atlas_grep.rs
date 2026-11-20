@@ -196,10 +196,10 @@ pub(crate) fn dispatch(
     // unlisted files are dropped and the same budget is tried again; the
     // next time, the alternation notes shrink to one line of pattern
     // indexes and the unmatched-path notes are dropped.
-    // Unlisted line numbers (E17-39, D104) are dropped next, before the
-    // other notes shrink.
+    // Unlisted line numbers (E17-39, D104) are cut next, to fewer per file
+    // and then none, before the other notes shrink.
     let mut names = lean;
-    let mut line_names = true;
+    let mut line_names = LINE_NAME_STEPS.iter().copied().peekable();
     let mut full_notes = true;
     let (mut payload, tokens) = loop {
         let mut fitted = report.fit_to_budget(budget, counter);
@@ -208,14 +208,13 @@ pub(crate) fn dispatch(
                 result.files_unlisted.clear();
             }
         }
-        if !line_names {
-            for file in fitted
-                .results
-                .iter_mut()
-                .flat_map(|result| &mut result.files)
-            {
-                file.lines_unlisted.clear();
-            }
+        let line_cap = line_names.peek().copied().unwrap_or(0);
+        for file in fitted
+            .results
+            .iter_mut()
+            .flat_map(|result| &mut result.files)
+        {
+            file.lines_unlisted.truncate(line_cap);
         }
         let mut payload = payload(&fitted, &options, &operation_id, stale, counter);
         label_scopes(&mut payload, &scopes);
@@ -266,15 +265,14 @@ pub(crate) fn dispatch(
             names = false;
             continue;
         }
-        if line_names
-            && form.is_text()
+        if form.is_text()
             && fitted
                 .results
                 .iter()
                 .flat_map(|result| &result.files)
                 .any(|file| !file.lines_unlisted.is_empty())
         {
-            line_names = false;
+            line_names.next();
             continue;
         }
         if full_notes && (!alternations.is_empty() || (lean && !report.paths_unmatched.is_empty()))
@@ -328,6 +326,9 @@ pub(crate) fn dispatch(
 /// `max_tokens` (E17-36, D101): the `compresso_read` default, so packing a
 /// read never serves less than the separate read call would.
 pub(crate) const RANGES_DEFAULT_TOKENS: usize = atlas_read::READ_DEFAULT_TOKENS;
+/// Unlisted lines named per file, cut each time a result does not fit
+/// (E17-39, D104): all of them, then three, then none.
+const LINE_NAME_STEPS: [usize; 3] = [compresso_atlas::GREP_UNLISTED_LINES_NAMED, 3, 0];
 /// Tokens withheld per range for its `@@` header and notes.
 const RANGE_HEADER_TOKENS: usize = 24;
 /// Read passes a JSON-form packed call makes to fit its envelope.
@@ -774,8 +775,10 @@ enum Shown {
 /// new row outside test code and does not itself mention `test`, its rows
 /// in test code are named under `tests`; otherwise they are listed. Every
 /// listed row keeps the requested context that its block has not already
-/// printed. Every match the JSON form lists is listed or named; the JSON
-/// payload is left unchanged. The most useful unlisted lines of a file
+/// printed. Every match atlas returned is listed or named; the JSON
+/// payload is left unchanged. In a file over the cap the text form lists
+/// its most useful rows, not the JSON form's first ones, so a row the JSON
+/// form lists may be counted only. The most useful unlisted lines of a file
 /// (E17-39, D104) are named under `unlisted`, with `unlisted_more` counting
 /// the rest.
 fn compact_rows_of(
