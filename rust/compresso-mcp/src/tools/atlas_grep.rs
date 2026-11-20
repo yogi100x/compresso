@@ -61,7 +61,9 @@ pub(crate) fn dispatch(
         ],
     )?;
     let root = optional_string(&mut arguments, "root", false)?;
-    let (patterns, scopes, failed) = patterns_argument(&mut arguments)?;
+    let mut clamped = Vec::new();
+    let (patterns, scopes, failed) =
+        patterns_argument(&mut arguments, form.is_lean().then_some(&mut clamped))?;
     let ranges = arguments
         .remove("ranges")
         .map(atlas_read::parse_ranges)
@@ -70,7 +72,6 @@ pub(crate) fn dispatch(
     let regex = optional_bool(&mut arguments, "regex")?.unwrap_or(false);
     let case_insensitive = optional_bool(&mut arguments, "case_insensitive")?.unwrap_or(false);
     let path = optional_string(&mut arguments, "path", false)?;
-    let mut clamped = Vec::new();
     let max_files = clamped_usize(
         &mut arguments,
         form.is_lean().then_some(&mut clamped),
@@ -144,7 +145,8 @@ pub(crate) fn dispatch(
     validate_grep(&options)
         .map_err(|error| map_grep_error(remap_index(error, caller_index).into()))?;
     let repository = resolve_repository(store, repository_root, root.as_deref())?;
-    let report = grep(store, repository.id, &options).map_err(map_grep_error)?;
+    let mut report = grep(store, repository.id, &options).map_err(map_grep_error)?;
+    let alternations = search_literal_alternations(store, repository.id, &options, &mut report)?;
     let stale = repository_stale(store, repository.id).map_err(map_atlas_error)?;
     let operation_id = operation_identity().id;
     let counter = navigation_counter();
@@ -174,6 +176,19 @@ pub(crate) fn dispatch(
         }
         if !clamped.is_empty() {
             payload["clamped"] = json!(clamped);
+        }
+        if !alternations.is_empty() {
+            payload["literal_alternation"] = json!(alternations);
+        }
+        if !report.paths_unmatched.is_empty() {
+            payload["paths_unmatched"] = report
+                .paths_unmatched
+                .iter()
+                .map(|entry| match &entry.nearest {
+                    Some(nearest) => json!({ "path": entry.path, "nearest": nearest }),
+                    None => json!({ "path": entry.path }),
+                })
+                .collect();
         }
         // Each form is held to max_tokens as it is sent.
         let tokens = if form.is_text() {
@@ -238,8 +253,10 @@ const JSON_FIT_ATTEMPTS: usize = 4;
 
 /// A limit argument. In the lean profile a value above `maximum` is clamped
 /// to it and named in `clamped` (E17-36, D101), since a larger limit is a
-/// request the server can still answer; any other out-of-range value, and
-/// every out-of-range value in the full profile, is rejected as before.
+/// request the server can still answer, and so is a `max_tokens` below its
+/// minimum, which is raised to it (E17-38, D103); any other out-of-range
+/// value, and every out-of-range value in the full profile, is rejected as
+/// before.
 fn clamped_usize(
     arguments: &mut Map<String, Value>,
     clamped: Option<&mut Vec<String>>,
@@ -248,16 +265,83 @@ fn clamped_usize(
     maximum: usize,
 ) -> Result<Option<usize>, ToolFailure> {
     if let Some(clamped) = clamped
-        && let Some(value) = arguments
-            .get(name)
-            .and_then(Value::as_u64)
-            .filter(|value| *value > maximum as u64)
+        && let Some(value) = arguments.get(name).and_then(Value::as_u64)
     {
-        arguments.remove(name);
-        clamped.push(format!("{name} {value} -> {maximum}"));
-        return Ok(Some(maximum));
+        let bound = if value > maximum as u64 {
+            Some(maximum)
+        } else if name == "max_tokens" && value < minimum as u64 {
+            Some(minimum)
+        } else {
+            None
+        };
+        if let Some(bound) = bound {
+            arguments.remove(name);
+            clamped.push(format!("{name} {value} -> {bound}"));
+            return Ok(Some(bound));
+        }
     }
     optional_usize(arguments, name, minimum, maximum)
+}
+
+/// A literal pattern holding an unescaped `|` that matched nothing as
+/// written is searched again as an alternation of its literal parts, in one
+/// more scan over the same files and limits, and its result replaces the
+/// empty one (E17-38, D103). Each part is escaped, so no regex syntax is
+/// added. Returns `{pattern, parts}` for every pattern searched that way.
+fn search_literal_alternations(
+    store: &Store,
+    repo: RepoId,
+    options: &GrepOptions<'_>,
+    report: &mut GrepReport,
+) -> Result<Vec<Value>, ToolFailure> {
+    if options.regex {
+        return Ok(Vec::new());
+    }
+    let retried = report
+        .results
+        .iter()
+        .enumerate()
+        .filter(|(_, result)| result.matches_total == 0)
+        .filter_map(|(index, _)| {
+            compresso_atlas::literal_alternatives(&options.patterns[index])
+                .map(|parts| (index, parts))
+        })
+        .collect::<Vec<_>>();
+    if retried.is_empty() {
+        return Ok(Vec::new());
+    }
+    let patterns = retried
+        .iter()
+        .map(|(_, parts)| compresso_atlas::literal_alternation_source(parts))
+        .collect::<Vec<_>>();
+    let scopes = if options.scopes.is_empty() {
+        Vec::new()
+    } else {
+        retried
+            .iter()
+            .map(|(index, _)| options.scopes[*index].clone())
+            .collect()
+    };
+    let second = grep(
+        store,
+        repo,
+        &GrepOptions {
+            patterns: &patterns,
+            regex: true,
+            scopes: &scopes,
+            ..*options
+        },
+    )
+    .map_err(map_grep_error)?;
+    report.scan_truncated |= second.scan_truncated;
+    report.output_truncated |= second.output_truncated;
+    let mut notes = Vec::with_capacity(retried.len());
+    for ((index, parts), mut result) in retried.into_iter().zip(second.results) {
+        result.pattern.clone_from(&options.patterns[index]);
+        report.results[index] = result;
+        notes.push(json!({ "pattern": options.patterns[index], "parts": parts }));
+    }
+    Ok(notes)
 }
 
 /// Names each scoped pattern's own path on its result (E17-36, D101).
@@ -280,9 +364,26 @@ type Patterns = (Vec<String>, Vec<Option<String>>, Vec<Value>);
 /// `patterns` entry may be `{pattern, path}`, giving that pattern its own
 /// scope (E17-36, D101). A pattern whose scope is invalid fails alone and is
 /// reported in its own section; when every pattern fails, the call fails.
-fn patterns_argument(arguments: &mut Map<String, Value>) -> Result<Patterns, ToolFailure> {
+/// With `clamped` (the lean profile), entries past the pattern cap are
+/// dropped unparsed and named there instead of failing the call (E17-38,
+/// D103).
+fn patterns_argument(
+    arguments: &mut Map<String, Value>,
+    clamped: Option<&mut Vec<String>>,
+) -> Result<Patterns, ToolFailure> {
     let single = optional_string(arguments, "pattern", true)?;
-    let many = arguments.remove("patterns");
+    let mut many = arguments.remove("patterns");
+    if let (Some(clamped), Some(Value::Array(values))) = (clamped, many.as_mut()) {
+        let cap = compresso_atlas::GREP_MAX_PATTERNS;
+        if values.len() > cap {
+            clamped.push(format!(
+                "patterns {} -> {cap} (the last {} not searched)",
+                values.len(),
+                values.len() - cap
+            ));
+            values.truncate(cap);
+        }
+    }
     let invalid = || {
         ToolFailure::invalid(
             "argument 'patterns' must be an array of strings or {pattern, path} objects.",
@@ -412,13 +513,22 @@ fn payload(
         .results
         .iter()
         .map(|result| {
-            json!({
+            let mut value = json!({
                 "pattern": result.pattern,
                 "matches_total": result.matches_total,
                 "files_total": result.files_total,
                 "lines_listed": result.lines_listed(),
                 "files": result.files.iter().map(file_value).collect::<Vec<_>>(),
-            })
+            });
+            // E17-38 (D103): only when a matched file is not listed.
+            if !result.files_unlisted.is_empty() {
+                value["files_unlisted"] = result
+                    .files_unlisted
+                    .iter()
+                    .map(|(path, matches)| json!({ "path": path, "matches": matches }))
+                    .collect();
+            }
+            value
         })
         .collect::<Vec<_>>();
     let unlisted = report

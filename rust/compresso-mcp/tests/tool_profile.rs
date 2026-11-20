@@ -338,6 +338,23 @@ fn test_lean_descriptions_steer_toward_grep_hits_unfold_and_narrow_reads() {
     assert!(read.contains("send the ranges in compresso_grep"), "{read}");
 }
 
+/// E17-38 (D103): a raw tab or line break inside a JSON string makes the
+/// client reject an edit call before the server sees it, so the lean edit
+/// description says how to write them.
+#[test]
+fn test_lean_edit_description_says_to_escape_tabs_and_newlines() {
+    let (tools, _) = compresso_mcp::advertised_surface_with(McpToolProfile::Lean, false, true);
+    let edit = tools
+        .iter()
+        .find(|tool| tool.name == "compresso_edit")
+        .and_then(|tool| tool.description.as_deref())
+        .expect("lean edit tool");
+    assert!(
+        edit.contains("write tabs as \\t and line breaks as \\n"),
+        "{edit}"
+    );
+}
+
 /// E17-34 (D99): the lean grep wording matches the text form, which names
 /// test-code hits by line while a pattern matches code.
 #[test]

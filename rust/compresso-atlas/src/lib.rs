@@ -29,8 +29,10 @@ pub use edit::{
 };
 pub use grep::{
     GREP_MAX_CONTEXT_LINES, GREP_MAX_FILES_LIMIT, GREP_MAX_MATCHES_PER_FILE_LIMIT,
-    GREP_MAX_PATTERN_BYTES, GREP_MAX_PATTERNS, GREP_REGEX_MAX_BYTES_PER_PATTERN, GrepContextLine,
-    GrepError, GrepFile, GrepLine, GrepOptions, GrepPatternResult, GrepReport, grep, validate_grep,
+    GREP_MAX_PATTERN_BYTES, GREP_MAX_PATTERNS, GREP_REGEX_MAX_BYTES_PER_PATTERN,
+    GREP_UNLISTED_FILES_NAMED, GrepContextLine, GrepError, GrepFile, GrepLine, GrepOptions,
+    GrepPatternResult, GrepReport, UnmatchedPath, grep, literal_alternation_source,
+    literal_alternatives, validate_grep,
 };
 pub use indexer::{IndexError, IndexProgress, IndexReport, Indexer};
 pub use queries::{
