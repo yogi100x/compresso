@@ -1132,19 +1132,27 @@ fn is_test_path(path: &str) -> bool {
 
 /// The literal parts of a literal (non-regex) pattern that holds an
 /// unescaped `|` (E17-38, D103), trimmed, empty parts dropped; `None` when
-/// it has no unescaped `|` or fewer than two parts remain. `\\|` is a literal
-/// `|` inside a part. Models often write `a|b` meaning "a or b" without
-/// setting `regex`.
+/// it has no unescaped `|`, holds `||` (a code operator, not a choice), or
+/// fewer than two parts remain, or a part is a single character (as in a
+/// closure's `|x|`). A backslash before ASCII punctuation is dropped, so
+/// `\\|` is a literal `|` and a regex-style `ping\\(` is `ping(`. Models
+/// often write `a|b` meaning "a or b" without setting `regex`.
 #[must_use]
 pub fn literal_alternatives(pattern: &str) -> Option<Vec<String>> {
+    if pattern.contains("||") {
+        return None;
+    }
     let mut parts = vec![String::new()];
     let mut split = false;
     let mut characters = pattern.chars().peekable();
     while let Some(character) = characters.next() {
         let part = parts.last_mut().expect("one part at least");
-        if character == '\\' && characters.peek() == Some(&'|') {
+        if character == '\\'
+            && let Some(&next) = characters.peek()
+            && next.is_ascii_punctuation()
+        {
             characters.next();
-            part.push('|');
+            part.push(next);
         } else if character == '|' {
             split = true;
             parts.push(String::new());
@@ -1157,7 +1165,8 @@ pub fn literal_alternatives(pattern: &str) -> Option<Vec<String>> {
         .map(|part| part.trim().to_owned())
         .filter(|part| !part.is_empty())
         .collect::<Vec<_>>();
-    (split && parts.len() >= 2).then_some(parts)
+    (split && parts.len() >= 2 && parts.iter().all(|part| part.chars().count() >= 2))
+        .then_some(parts)
 }
 
 /// A regular expression that matches any of `parts` as literal text: each
@@ -1177,15 +1186,27 @@ mod tests {
     #[test]
     fn test_literal_alternatives_split_on_unescaped_pipes_only() {
         let parts = |pattern: &str| literal_alternatives(pattern);
-        assert_eq!(parts("a|b"), Some(vec!["a".to_owned(), "b".to_owned()]));
-        assert_eq!(parts(" a | b "), Some(vec!["a".to_owned(), "b".to_owned()]));
+        let owned = |parts: &[&str]| {
+            Some(
+                parts
+                    .iter()
+                    .map(|part| (*part).to_owned())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(parts("ab|cd"), owned(&["ab", "cd"]));
+        assert_eq!(parts(" ab | cd "), owned(&["ab", "cd"]));
+        assert_eq!(parts("xy\\|y|zz"), owned(&["xy|y", "zz"]));
         assert_eq!(
-            parts("x\\|y|z"),
-            Some(vec!["x|y".to_owned(), "z".to_owned()])
+            parts("heartbeat|ping\\(|\\.terminate\\("),
+            owned(&["heartbeat", "ping(", ".terminate("])
         );
-        assert_eq!(parts("a\\|b"), None);
-        assert_eq!(parts("a|"), None);
+        assert_eq!(parts("ab\\|cd"), None);
+        assert_eq!(parts("ab|"), None);
         assert_eq!(parts("||"), None);
+        assert_eq!(parts("a == nil || b"), None);
+        assert_eq!(parts("|x| x + 1"), None);
+        assert_eq!(parts("\\d+|\\w+"), owned(&["\\d+", "\\w+"]));
         assert_eq!(parts("plain"), None);
         let source = literal_alternation_source(&["a.b".to_owned(), "(c)".to_owned()]);
         assert_eq!(source, "a\\.b|\\(c\\)");

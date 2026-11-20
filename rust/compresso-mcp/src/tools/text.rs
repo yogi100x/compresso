@@ -483,7 +483,7 @@ fn grep(payload: &Value, out: &mut Out) {
         out.note(match entry["nearest"].as_str() {
             Some(nearest) => format!(
                 "path {path} matched no indexed file; nearest indexed: {}",
-                caller_text(nearest)
+                header_path(nearest)
             ),
             None => format!("path {path} matched no indexed file"),
         });

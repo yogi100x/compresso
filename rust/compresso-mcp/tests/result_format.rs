@@ -2009,6 +2009,28 @@ async fn test_lean_read_clamps_max_tokens_with_a_note() {
     full.close().await;
 }
 
+/// E17-38 (D103): naming unlisted files never fails a call or displaces a
+/// listed row: at the smallest budget, eight broad patterns are served as
+/// before, without the names.
+#[tokio::test]
+async fn test_unlisted_file_names_never_fail_a_small_budget() {
+    let fixture = Fixture::new();
+    let mut lean = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, is_error) = lean
+        .call(
+            "compresso_grep",
+            &json!({
+                "patterns": ["pub", "fn", "name", "Session", "str", "self", "budget", "open"],
+                "max_files": 1,
+                "max_tokens": 300
+            }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    assert!(!text.contains("[not listed: "), "{text}");
+    lean.close().await;
+}
+
 /// E17-38 (D103): a lean grep `max_tokens` below its minimum (300) is
 /// raised to it with a note; the full profile still rejects it.
 #[tokio::test]

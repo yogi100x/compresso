@@ -167,8 +167,17 @@ pub(crate) fn dispatch(
             .max(MIN_TOKENS.min(max_tokens / 2))
     };
     let mut budget = grep_tokens.saturating_mul(4) / 5;
+    // The names of unlisted files (E17-38, D103) never displace a listed
+    // row or fail a call: the first time a result does not fit, they are
+    // dropped and the same budget is tried again without them.
+    let mut names = true;
     let (mut payload, tokens) = loop {
-        let fitted = report.fit_to_budget(budget, counter);
+        let mut fitted = report.fit_to_budget(budget, counter);
+        if !names {
+            for result in &mut fitted.results {
+                result.files_unlisted.clear();
+            }
+        }
         let mut payload = payload(&fitted, &options, &operation_id, stale, counter);
         label_scopes(&mut payload, &scopes);
         if !failed.is_empty() {
@@ -199,6 +208,15 @@ pub(crate) fn dispatch(
         };
         if tokens <= grep_tokens {
             break (payload, tokens);
+        }
+        if names
+            && fitted
+                .results
+                .iter()
+                .any(|result| !result.files_unlisted.is_empty())
+        {
+            names = false;
+            continue;
         }
         if budget == 0 {
             // Even with no line listed, the per-pattern totals do not fit.
