@@ -117,7 +117,7 @@ pub(crate) const LEAN_TOOLS: &[LeanTool] = &[
     },
     LeanTool {
         name: "compresso_grep",
-        description: "Text or regex search: use sites, enclosing symbol, exact totals; test hits named by line. A hit plus context_lines usually replaces a read. One call carries every lookup you have: patterns and ranges.",
+        description: "Text/regex search: use sites, symbol, totals; test hits named by line. A hit plus context_lines usually replaces a read. Read unlisted lines directly via ranges. Pack all lookups in one call.",
         hint: "compresso_grep for text and use sites",
     },
     LeanTool {

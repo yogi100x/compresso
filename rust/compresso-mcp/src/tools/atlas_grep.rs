@@ -127,6 +127,9 @@ pub(crate) fn dispatch(
         max_matches_per_file,
         context_lines,
         scopes: &scopes,
+        // Text form only (E17-39, D104): the JSON form keeps the first
+        // lines in line order, byte for byte.
+        select_rows: form.is_text(),
     };
     // Reject a bad pattern before the repository is even resolved.
     // Errors name the caller's pattern index, even after a pattern whose
@@ -193,13 +196,25 @@ pub(crate) fn dispatch(
     // unlisted files are dropped and the same budget is tried again; the
     // next time, the alternation notes shrink to one line of pattern
     // indexes and the unmatched-path notes are dropped.
+    // Unlisted line numbers (E17-39, D104) are dropped next, before the
+    // other notes shrink.
     let mut names = lean;
+    let mut line_names = true;
     let mut full_notes = true;
     let (mut payload, tokens) = loop {
         let mut fitted = report.fit_to_budget(budget, counter);
         if !names {
             for result in &mut fitted.results {
                 result.files_unlisted.clear();
+            }
+        }
+        if !line_names {
+            for file in fitted
+                .results
+                .iter_mut()
+                .flat_map(|result| &mut result.files)
+            {
+                file.lines_unlisted.clear();
             }
         }
         let mut payload = payload(&fitted, &options, &operation_id, stale, counter);
@@ -249,6 +264,17 @@ pub(crate) fn dispatch(
                 .any(|result| !result.files_unlisted.is_empty())
         {
             names = false;
+            continue;
+        }
+        if line_names
+            && form.is_text()
+            && fitted
+                .results
+                .iter()
+                .flat_map(|result| &result.files)
+                .any(|file| !file.lines_unlisted.is_empty())
+        {
+            line_names = false;
             continue;
         }
         if full_notes && (!alternations.is_empty() || (lean && !report.paths_unmatched.is_empty()))
@@ -535,6 +561,7 @@ fn scope_failure(scope: &str) -> Option<ToolFailure> {
         max_matches_per_file: 1,
         context_lines: 0,
         scopes: &scopes,
+        select_rows: false,
     })
     .err()
     .map(|error| map_grep_error(error.into()))
@@ -748,7 +775,9 @@ enum Shown {
 /// in test code are named under `tests`; otherwise they are listed. Every
 /// listed row keeps the requested context that its block has not already
 /// printed. Every match the JSON form lists is listed or named; the JSON
-/// payload is left unchanged.
+/// payload is left unchanged. The most useful unlisted lines of a file
+/// (E17-39, D104) are named under `unlisted`, with `unlisted_more` counting
+/// the rest.
 fn compact_rows_of(
     payload: &mut Value,
     report: &GrepReport,
@@ -811,6 +840,20 @@ fn compact_rows_of(
             }
             if !above.is_empty() {
                 file_value["above"] = json!(above);
+            }
+            // E17-39 (D104): unlisted lines named by number, ascending,
+            // with a count of the rest.
+            if !file.lines_unlisted.is_empty() {
+                let mut named = file.lines_unlisted.clone();
+                named.sort_unstable();
+                file_value["unlisted"] = json!(named);
+                let more = file
+                    .matches_total
+                    .saturating_sub(file.lines.len())
+                    .saturating_sub(named.len());
+                if more > 0 {
+                    file_value["unlisted_more"] = json!(more);
+                }
             }
         }
     }

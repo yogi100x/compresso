@@ -379,6 +379,26 @@ fn test_lean_grep_wording_says_test_hits_are_named_by_line() {
     );
 }
 
+/// E17-39 (D104): the lean grep wording says unlisted line numbers can be
+/// read directly; the full description does not change.
+#[test]
+fn test_lean_grep_wording_says_unlisted_lines_can_be_read_directly() {
+    let description = |profile| {
+        let (tools, _) = advertised_surface(profile, false);
+        tools
+            .into_iter()
+            .find(|tool| tool.name == "compresso_grep")
+            .and_then(|tool| tool.description.map(|text| text.into_owned()))
+            .unwrap_or_default()
+    };
+    let lean = description(McpToolProfile::Lean);
+    assert!(
+        lean.contains("Read unlisted lines directly via ranges."),
+        "{lean}"
+    );
+    assert!(!description(McpToolProfile::Full).contains("unlisted lines"));
+}
+
 /// E17-33 (D98): the lean grep schema states the defaults the lean profile
 /// applies; the full schema keeps its own.
 #[test]

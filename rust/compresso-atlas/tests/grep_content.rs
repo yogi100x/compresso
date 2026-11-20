@@ -73,6 +73,7 @@ impl Fixture {
             max_matches_per_file: 5,
             context_lines: 0,
             scopes: Vec::new(),
+            select_rows: false,
         };
         configure(&mut options);
         grep(
@@ -87,6 +88,7 @@ impl Fixture {
                 max_matches_per_file: options.max_matches_per_file,
                 context_lines: options.context_lines,
                 scopes: &options.scopes,
+                select_rows: options.select_rows,
             },
         )
     }
@@ -101,6 +103,8 @@ struct Options {
     context_lines: usize,
     /// Per-pattern scopes (E17-36); empty when no pattern has one.
     scopes: Vec<Option<String>>,
+    /// Row selection under the per-file cap (E17-39).
+    select_rows: bool,
 }
 
 fn symbol(name: &str, kind: SymbolKind, start_line: u32, end_line: u32) -> SymbolRecord {

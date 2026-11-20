@@ -66,7 +66,7 @@ const INSTRUCTIONS: &str = "You are an exploration-first coding agent for this r
 - Unfamiliar area: call compresso_repo_map with cards: true for per-directory purpose, public symbols, entry points, and dependencies; pass path to zoom into a subtree.
 - Exact definitions or signatures: compresso_search. Text, use sites, or several names at once: compresso_grep, with context_lines to see the surrounding code without a follow-up read. Who calls a function, what it calls, or how A reaches B: compresso_trace.
 - A file's structure: compresso_outline. One symbol body: compresso_unfold. Specific line ranges: compresso_read, passing ranges to read several in one call.
-- Spend the fewest lines per fact. A grep hit with a few context_lines usually replaces a read. compresso_unfold serves exactly one symbol, so prefer it to reading around a function. Read narrow windows of about 30 lines around the line you need, never a whole file; a read longer than its window names the symbols it left out, so ask for exactly those. A grep match row without a [symbol] tag is in the same symbol as the match row just above it in that file; every file's first row is tagged, [-] meaning no symbol.
+- Spend the fewest lines per fact. A grep hit with a few context_lines usually replaces a read. compresso_unfold serves exactly one symbol, so prefer it to reading around a function. Read narrow windows of about 30 lines around the line you need, never a whole file; a read longer than its window names the symbols it left out, so ask for exactly those. A grep match row without a [symbol] tag is in the same symbol as the match row just above it in that file; every file's first row is tagged, [-] meaning no symbol. A file header's unlisted: line numbers are matches not shown; read them directly with ranges rather than searching again.
 - Every call is a full round trip, so pack each call with every lookup you can already name. The usual turn is one compresso_grep call carrying both: the names the last result raised (patterns: up to 8, each a string or {\"pattern\", \"path\"} to search only that path) and the lines it showed you need to read (ranges, from any files). Never send a read alone and a search alone in consecutive turns when they could have gone together. Use compresso_read only when there is nothing to search, and then pass every range you need in one call. Example, one call, three lookups: {\"patterns\": [\"retry_limit\", {\"pattern\": \"RetryPolicy\", \"path\": \"src/net\"}], \"ranges\": [{\"path\": \"config/defaults.toml\", \"start_line\": 1, \"end_line\": 40}], \"context_lines\": 2}. Its result has one # section per pattern, then one @@ section per range.
 - Send lookups that do not depend on each other's results together in one message: one packed call rather than several single ones; for a task with several parts, search for several parts at once instead of one part per turn.
 - Read exists only so Edit and Write can work: call Read on a file immediately before you edit it, never to explore.
@@ -1135,6 +1135,15 @@ mod tests {
         assert!(INSTRUCTIONS.contains("never a whole file"));
         assert!(INSTRUCTIONS.contains(
             "A grep match row without a [symbol] tag is in the same symbol as the match row just above it in that file; every file's first row is tagged, [-] meaning no symbol."
+        ));
+    }
+
+    /// E17-39 (D104): a file header's unlisted line numbers are read
+    /// directly instead of searched again.
+    #[test]
+    fn test_instructions_read_unlisted_lines_directly() {
+        assert!(INSTRUCTIONS.contains(
+            "A file header's unlisted: line numbers are matches not shown; read them directly with ranges rather than searching again."
         ));
     }
 
