@@ -1094,22 +1094,28 @@ fn select_rows(
         },
     );
     let symbols = selection.symbols.unwrap_or_default();
-    // `tests` module ranges, found once per file.
-    let tests = symbols
+    // `tests` module ranges, found once per file, sorted and merged so each
+    // candidate is one binary search.
+    let mut ranges = symbols
         .iter()
         .filter(|symbol| symbol.kind == SymbolKind::Module && symbol.name == "tests")
         .map(|symbol| (symbol.start_line, symbol.end_line))
         .collect::<Vec<_>>();
+    ranges.sort_unstable();
+    let mut tests = Vec::<(u32, u32)>::new();
+    for (start, end) in ranges {
+        match tests.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => tests.push((start, end)),
+        }
+    }
     let enclosing = enclosing_symbols(symbols, &numbers);
     let candidates = kept
         .iter()
         .zip(&comments)
         .zip(&enclosing)
         .map(|((&(line, start, end, _), &comment), &enclosing)| {
-            let in_tests = !selection.names_tests
-                && tests
-                    .iter()
-                    .any(|&(first, last)| first <= line && line <= last);
+            let in_tests = !selection.names_tests && in_tests_module(&tests, line);
             let class = if selection.shown.contains(&line) {
                 RowClass::Repeat
             } else if in_tests {
@@ -1153,6 +1159,12 @@ fn select_rows(
     (chosen, ranks, unlisted)
 }
 
+/// Whether `line` is inside one of `ranges` (sorted, disjoint).
+fn in_tests_module(ranges: &[(u32, u32)], line: u32) -> bool {
+    let at = ranges.partition_point(|&(start, _)| start <= line);
+    at > 0 && ranges[at - 1].1 >= line
+}
+
 /// Whether a match of `matcher` in `line` overlaps the first occurrence of
 /// `name` there: the line defines that name rather than mentioning a
 /// parameter, receiver, or type.
@@ -1169,15 +1181,21 @@ fn match_on_name(matcher: &Regex, line: &str, name: &str) -> bool {
 
 /// The smallest enclosing symbol of each of `lines` (ascending), as
 /// [`smallest_enclosing_symbol`] finds it (the smallest span, the earliest
-/// symbol on a tie), in one pass over the symbols sorted by first line.
+/// symbol on a tie), in one pass over the symbols sorted by first line:
+/// each symbol enters and leaves an ordered set once, so the cost is
+/// O((symbols + lines) log symbols) however the symbols overlap.
 fn enclosing_symbols<'a>(
     symbols: &'a [SymbolRecord],
     lines: &[u32],
 ) -> Vec<Option<&'a SymbolRecord>> {
+    use std::cmp::Reverse;
+    use std::collections::{BTreeSet, BinaryHeap};
     let mut by_start = (0..symbols.len()).collect::<Vec<_>>();
     by_start.sort_by_key(|&index| symbols[index].start_line);
+    let span = |index: usize| symbols[index].end_line - symbols[index].start_line;
     let mut next = 0;
-    let mut active = Vec::<usize>::new();
+    let mut active = BTreeSet::<(u32, usize)>::new();
+    let mut ends = BinaryHeap::<Reverse<(u32, usize)>>::new();
     lines
         .iter()
         .map(|&line| {
@@ -1185,14 +1203,21 @@ fn enclosing_symbols<'a>(
                 if symbols[index].start_line > line {
                     break;
                 }
-                active.push(index);
+                // A symbol ending before it starts encloses no line.
+                if symbols[index].end_line >= symbols[index].start_line {
+                    active.insert((span(index), index));
+                    ends.push(Reverse((symbols[index].end_line, index)));
+                }
                 next += 1;
             }
-            active.retain(|&index| symbols[index].end_line >= line);
-            active
-                .iter()
-                .min_by_key(|&&index| (symbols[index].end_line - symbols[index].start_line, index))
-                .map(|&index| &symbols[index])
+            while let Some(&Reverse((end, index))) = ends.peek() {
+                if end >= line {
+                    break;
+                }
+                ends.pop();
+                active.remove(&(span(index), index));
+            }
+            active.first().map(|&(_, index)| &symbols[index])
         })
         .collect()
 }
@@ -1235,6 +1260,7 @@ fn comment_rows(source: &str, syntax: &CommentSyntax, lines: &[u32]) -> Vec<bool
     let mut wanted = lines.iter().peekable();
     let mut in_block = false;
     let mut offset = 0_usize;
+    let mut closers = CloserCursor::default();
     for (index, text) in source.split('\n').enumerate() {
         let line_start = offset;
         offset += text.len() + 1;
@@ -1262,7 +1288,7 @@ fn comment_rows(source: &str, syntax: &CommentSyntax, lines: &[u32]) -> Vec<bool
                     // A block counts only when its closer follows within
                     // BLOCK_COMMENT_LOOKAHEAD bytes; an opener inside a
                     // multi-line string usually has none, so it stays code.
-                    None if closer_follows(source, line_start + text.len(), close) => {
+                    None if closers.follows(source, line_start + text.len(), close) => {
                         in_block = true;
                         true
                     }
@@ -1282,15 +1308,51 @@ fn comment_rows(source: &str, syntax: &CommentSyntax, lines: &[u32]) -> Vec<bool
 /// Bytes after a block comment's opening line searched for its closer.
 const BLOCK_COMMENT_LOOKAHEAD: usize = 64 * 1024;
 
-/// Whether `close` occurs in the [`BLOCK_COMMENT_LOOKAHEAD`] bytes of
-/// `source` from byte `from`.
-fn closer_follows(source: &str, from: usize, close: &str) -> bool {
-    let bytes = source.as_bytes();
-    let from = from.min(bytes.len());
-    let to = (from + BLOCK_COMMENT_LOOKAHEAD).min(bytes.len());
-    bytes[from..to]
-        .windows(close.len())
-        .any(|window| window == close.as_bytes())
+/// Finds block-comment closers for [`comment_rows`] with one forward
+/// cursor, so a file is searched at most about once whatever its lines
+/// hold (security review: a file of many unclosed openers must not cost
+/// lines times the lookahead). Queries come in increasing `from` order.
+#[derive(Default)]
+struct CloserCursor {
+    /// The first closer at or after the last searched start, if found.
+    next: Option<usize>,
+    /// No closer starts before this offset at or after the last start.
+    clear_until: usize,
+}
+
+impl CloserCursor {
+    /// Whether `close` starts within [`BLOCK_COMMENT_LOOKAHEAD`] bytes of
+    /// `from` (the whole closer inside that window).
+    fn follows(&mut self, source: &str, from: usize, close: &str) -> bool {
+        let bytes = source.as_bytes();
+        let from = from.min(bytes.len());
+        let window_end = (from + BLOCK_COMMENT_LOOKAHEAD).min(bytes.len());
+        if let Some(at) = self.next.filter(|&at| at >= from) {
+            return at + close.len() <= window_end;
+        }
+        // Resume where the last search ended: nothing before it matches.
+        let start = from.max(self.clear_until);
+        if close.is_empty() || start + close.len() > window_end {
+            return false;
+        }
+        if let Some(offset) = find_bytes(&bytes[start..window_end], close.as_bytes()) {
+            self.next = Some(start + offset);
+            true
+        } else {
+            self.next = None;
+            // The last `close.len() - 1` bytes may start a closer that runs
+            // past this window, so the next search covers them again.
+            self.clear_until = window_end + 1 - close.len();
+            false
+        }
+    }
+}
+
+/// The first offset of `needle` (not empty) in `haystack`.
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 /// Context for each kept match `(line, line start, line end, match start)`,
@@ -1877,6 +1939,75 @@ mod tests {
                 .map(|line| line.line)
                 .collect::<Vec<_>>(),
             [3, 4, 5]
+        );
+    }
+
+    /// E17-39 security review: a file of many lines that each open a block
+    /// comment and never close one is classified in time linear in its size,
+    /// and those lines stay code (no closer follows).
+    #[test]
+    fn test_comment_rows_stay_linear_on_unclosed_block_openers() {
+        let count = 400_000_u32;
+        let source = "/*x\n".repeat(count as usize);
+        let lines = (1..=count).step_by(997).chain([count]).collect::<Vec<_>>();
+        let started = std::time::Instant::now();
+        let flags = comment_rows(&source, &C_LIKE, &lines);
+        let elapsed = started.elapsed();
+        println!("{count} unclosed openers: {elapsed:?}");
+        assert!(flags.iter().all(|comment| !comment));
+        assert!(elapsed < std::time::Duration::from_secs(2), "{elapsed:?}");
+        // A closer far ahead (past the lookahead) still leaves them code; a
+        // near one makes the block a comment.
+        let near = "/*x\n * y\n */\nz\n";
+        assert_eq!(rows(near, C_LIKE), [true, true, true, false]);
+    }
+
+    /// E17-39 security review: the enclosing symbols of every candidate are
+    /// those `smallest_enclosing_symbol` finds, in time that does not grow
+    /// with symbols times candidates when many symbols overlap.
+    #[test]
+    fn test_enclosing_symbols_match_the_scan_and_stay_fast_when_overlapping() {
+        let symbol = |name: &str, start_line: u32, end_line: u32| SymbolRecord {
+            name: name.to_owned(),
+            qualified_name: name.to_owned(),
+            kind: SymbolKind::Function,
+            signature: None,
+            start_line,
+            end_line,
+            token_estimate: 1,
+        };
+        let mut symbols = vec![
+            symbol("outer", 1, 100),
+            symbol("inner", 10, 20),
+            symbol("tie_a", 30, 40),
+            symbol("tie_b", 30, 40),
+            symbol("late", 90, 120),
+        ];
+        let lines = [1, 10, 15, 21, 30, 35, 95, 101, 121];
+        let swept = enclosing_symbols(&symbols, &lines);
+        for (line, found) in lines.iter().zip(swept) {
+            assert_eq!(
+                found.map(|symbol| symbol.name.as_str()),
+                smallest_enclosing_symbol(&symbols, *line).map(|symbol| symbol.name.as_str()),
+                "line {line}"
+            );
+        }
+        symbols = (0..50_000)
+            .map(|index| symbol(&format!("s{index}"), 1, 1_000_000 - index))
+            .collect();
+        let lines = (1..=2_000).collect::<Vec<u32>>();
+        let started = std::time::Instant::now();
+        let swept = enclosing_symbols(&symbols, &lines);
+        let elapsed = started.elapsed();
+        println!("50,000 overlapping symbols, 2,000 lines: {elapsed:?}");
+        assert!(
+            swept
+                .iter()
+                .all(|found| found.is_some_and(|symbol| symbol.name == "s49999"))
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "{elapsed:?}"
         );
     }
 }
