@@ -1,0 +1,23 @@
+decisions.md
+  s_89a704cfae63f5::t_a010438e03363f 110
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_00bb62bc9d9899 3416,3423
+rust/compresso-atlas/src/grep.rs
+  s_89a704cfae63f5::t_3d4abf81f93d8b 1097-1099,1104-1111,1118,1162-1167,1184-1186,1191-1192,1195,1197-1198,1206-1210,1213-1220,1263,1291,1311-1355,1944-2012
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "51c0226c6324f4b80e1f30ab3fbdf981a1c962c7",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
