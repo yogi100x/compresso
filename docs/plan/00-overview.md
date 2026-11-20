@@ -91,4 +91,4 @@ Roles from build-doc §27, used as `owner` on tickets. Solo mode: all roles = ow
 
 ## Audit-r2 planning baseline
 
-The authoritative post-audit backlog is 241 tickets: 58 slice and 183 post-slice (including E17), totaling 611 gross engineer-days before contingency (plus the 8-ticket, 16.5-day PB lane: 249 tickets and 627.5 days in the `05-tickets.md` rollup). E16 closes every full-product deliverable previously present only in `compresso-build.md`. Role aliases are `PO` (product owner) and `LEGAL` (qualified external counsel); they are advisory/approval owners, not engineering implementers.
+The authoritative post-audit backlog is 242 tickets: 58 slice and 184 post-slice (including E17), totaling 613 gross engineer-days before contingency (plus the 8-ticket, 16.5-day PB lane: 250 tickets and 629.5 days in the `05-tickets.md` rollup). E16 closes every full-product deliverable previously present only in `compresso-build.md`. Role aliases are `PO` (product owner) and `LEGAL` (qualified external counsel); they are advisory/approval owners, not engineering implementers.
