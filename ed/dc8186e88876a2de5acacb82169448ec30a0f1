@@ -1,0 +1,31 @@
+rust/compresso-atlas/src/declared_imports.rs
+  s_89a704cfae63f5::t_6075fb324755a4 27,65-67
+rust/compresso-atlas/src/indexer.rs
+  s_89a704cfae63f5::t_ea46022c1d35f2 434-437,1025-1033,1036-1037,1039,1055-1072,1747-1749,1751,1754,1761-1777,1795-1804,1811,1818-1839,1841-1843
+rust/compresso-atlas/src/parsers/languages.rs
+  s_89a704cfae63f5::t_26f1395fde3fe1 123-136,405-409,431-435,519-533,639
+rust/compresso-atlas/src/queries.rs
+  s_89a704cfae63f5::t_ff8c233e2062e4 401-406
+rust/compresso-atlas/src/trace.rs
+  s_89a704cfae63f5::t_5ba0553e3ba41e 21-23,585-587,604,660,683,924-928,943,945,973,976-979,1128,1137-1155,1163-1165,1209,1219,1401,1404-1406,1422,1431-1433,1437-1441,1456
+rust/compresso-atlas/tests/indexer_java_csharp.rs
+  s_89a704cfae63f5::t_bb9a8da166f8a6 694-741
+rust/compresso-store/src/symbols.rs
+  s_89a704cfae63f5::t_4617217479a0c1 517-534
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "eddc8186e88876a2de5acacb82169448ec30a0f1",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
