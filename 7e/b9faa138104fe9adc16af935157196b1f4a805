@@ -1,0 +1,28 @@
+rust/compresso-atlas/src/queries.rs
+  s_89a704cfae63f5::t_137a160d81c32d 1589-1592
+  s_89a704cfae63f5::t_1b97ccf9a07ea0 5112
+  s_89a704cfae63f5::t_14a14eadf34471 1551-1554
+  s_89a704cfae63f5::t_1df3d384b63974 5186-5193
+  s_89a704cfae63f5::t_1a4e6c83dfaf13 5173-5174
+  s_89a704cfae63f5::t_e4b8e860601ca3 5130-5137,5140
+decisions.md
+  s_89a704cfae63f5::t_d01ab3c0c50b55 110
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_a55d51f30e6ba9 3509-3510
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7eb9faa138104fe9adc16af935157196b1f4a805",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
