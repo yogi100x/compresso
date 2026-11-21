@@ -206,23 +206,28 @@ fn impact_tool(
             value
         })
         .collect::<Vec<_>>();
-    retrieval_success(
-        json!({
-            "schema_version": 1,
-            "path": report.path,
-            "dependents": dependents,
-            "total": report.total,
-            "shown": report.dependents.len(),
-            "unresolved_edges": report.unresolved_edges,
-            "ambiguous_edges": report.ambiguous_edges,
-            "complete": report.complete,
-            "truncated": report.truncated,
-            "stale": stale,
-            "reindex_hint": stale.then_some(REINDEX_HINT)
-        }),
-        "compresso_impact",
-        mode,
-    )
+    let mut result = json!({
+        "schema_version": 1,
+        "path": report.path,
+        "dependents": dependents,
+        "total": report.total,
+        "shown": report.dependents.len(),
+        "unresolved_edges": report.unresolved_edges,
+        "ambiguous_edges": report.ambiguous_edges,
+        "complete": report.complete,
+        "truncated": report.truncated,
+        "stale": stale,
+        "reindex_hint": stale.then_some(REINDEX_HINT)
+    });
+    // Java and C# (D105): why `complete` is false when package links could
+    // not be checked; absent otherwise.
+    if report.unevaluated > 0 {
+        result["unevaluated"] = json!(report.unevaluated);
+    }
+    if report.packages_limited {
+        result["packages_limited"] = json!(true);
+    }
+    retrieval_success(result, "compresso_impact", mode)
 }
 
 fn stats_tool(

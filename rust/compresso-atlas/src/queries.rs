@@ -223,6 +223,14 @@ pub struct ImpactReport {
     /// Every dependent found within `max_depth`; `dependents` holds the
     /// first `max_results` of them.
     pub total: usize,
+    /// Java and C# (D105): files of a checked file's package that might use
+    /// it but could not be checked (their call sites stopped at the per-file
+    /// bound, or the check bound was reached); when non-zero, `complete` is
+    /// false.
+    pub unevaluated: usize,
+    /// Java and C#: a file declared more packages or namespaces than are
+    /// read, so links through the rest are missing; `complete` is false.
+    pub packages_limited: bool,
     pub unresolved_edges: usize,
     pub ambiguous_edges: usize,
     pub complete: bool,
@@ -932,7 +940,7 @@ pub fn impact_with_options(
     }
 
     let packages = PackageLinks::load(store, repo)?;
-    let mut expanded = HashSet::new();
+    let mut evidence = EvidenceState::default();
     let mut discovered = BTreeMap::<String, (u8, Vec<EdgeKind>, Option<String>)>::new();
     let mut frontier = BTreeSet::from([path.to_owned()]);
     for depth in 1..=options.max_depth {
@@ -945,7 +953,7 @@ pub fn impact_with_options(
                 .map(|(importer, kinds)| (importer.clone(), kinds.clone(), None))
                 .collect::<Vec<_>>();
             if let Some(packages) = &packages {
-                packages.dependents(target, &mut expanded, &mut linked);
+                packages.dependents(store, repo, target, &mut evidence, &mut linked)?;
             }
             for (importer, kinds, package) in &linked {
                 if importer == path {
@@ -955,7 +963,12 @@ pub fn impact_with_options(
                     continue;
                 }
                 match discovered.get_mut(importer) {
-                    Some((known_depth, known_kinds, _)) if *known_depth == depth => {
+                    Some((known_depth, known_kinds, known_package)) if *known_depth == depth => {
+                        // A file edge at the same depth names the link.
+                        if package.is_none() && known_package.is_some() {
+                            *known_package = None;
+                            known_kinds.clear();
+                        }
                         for kind in kinds {
                             if !known_kinds.contains(kind) {
                                 known_kinds.push(*kind);
@@ -1002,6 +1015,8 @@ pub fn impact_with_options(
     let truncated = dependents.len() > options.max_results;
     dependents.truncate(options.max_results);
     let resolution_counts = store.edge_resolution_counts(repo)?;
+    let unevaluated = evidence.unevaluated.len();
+    let packages_limited = packages.as_ref().is_some_and(|links| links.limited);
     Ok(ImpactReport {
         path: path.to_owned(),
         dependents,
@@ -1010,121 +1025,217 @@ pub fn impact_with_options(
         ambiguous_edges: resolution_counts.ambiguous,
         complete: resolution_counts.unresolved == 0
             && resolution_counts.ambiguous == 0
-            && !truncated,
+            && !truncated
+            && unevaluated == 0
+            && !packages_limited,
         truncated,
+        unevaluated,
+        packages_limited,
     })
 }
 
 /// At most this many packages or namespaces of one file take part in
-/// package links; a hostile file declaring more keeps the first ones.
+/// package links; a hostile file declaring more keeps the first ones and
+/// the answer is incomplete.
 const MAX_PACKAGES_PER_FILE: usize = 64;
+/// At most this many files are checked for same-package use in one
+/// `impact`; past it the answer is incomplete.
+const MAX_EVIDENCE_TARGETS: usize = 256;
+
+/// What the same-package checks of one `impact` could not settle.
+#[derive(Default)]
+struct EvidenceState {
+    checked: usize,
+    /// Files that might use a checked file but could not be shown not to:
+    /// their call sites stopped at the per-file bound, or the check bound
+    /// was reached.
+    unevaluated: BTreeSet<String>,
+    truncated: Option<BTreeSet<String>>,
+    expanded: HashSet<(&'static str, String)>,
+}
 
 /// Java and C# package and namespace links (D105, owner decision
-/// 2026-11-21): which files declare each package or namespace, and which
-/// import it whole (one stored record each). A file's dependents through its
-/// package are the files importing the package and the package's other
-/// files, which reach its types without an import; in C#, files of a nested
-/// namespace too. Read once per `impact`; each package is expanded once.
+/// 2026-11-21; same-package rule by orchestrator decision of the same day,
+/// awaiting owner confirmation). A file's dependents through its package
+/// are (a) the files importing the package whole (one stored record each:
+/// they import the package that holds the file, whether or not they use
+/// it), and (b) the files of the same package (Java; the default package
+/// for a file that declares none) or of the same or a nested namespace (C#;
+/// every namespace for the global one) that have a stored call site naming
+/// something the file defines: a callee name, or a type in a qualifier.
+/// Read once per `impact`.
 struct PackageLinks {
+    /// Every Java and C# file: its language and declared packages (empty
+    /// for the default package or global namespace).
     declared: HashMap<String, (&'static str, Vec<String>)>,
-    members: BTreeMap<(&'static str, String), Vec<String>>,
     importers: HashMap<(&'static str, String), Vec<String>>,
+    /// A file declared more packages than are read.
+    limited: bool,
 }
 
 impl PackageLinks {
     fn load(store: &Store, repo: RepoId) -> Result<Option<Self>, AtlasError> {
         let languages = crate::parsers::languages::declaring_languages();
-        let rows = store.module_declarations(repo, &languages)?;
-        if rows.is_empty() {
+        let mut declared = HashMap::<String, (&'static str, Vec<String>)>::new();
+        for file in store.indexed_files(repo)? {
+            if let Some(language) = file
+                .language
+                .filter(|language| languages.contains(language))
+            {
+                declared.insert(file.path, (language.as_str(), Vec::new()));
+            }
+        }
+        if declared.is_empty() {
             return Ok(None);
         }
-        let language_of =
-            |path: &str| ParserRegistry::for_path(Path::new(path)).map(FileLanguage::as_str);
-        let mut declared = HashMap::<String, (&'static str, Vec<String>)>::new();
-        let mut members = BTreeMap::<(&'static str, String), Vec<String>>::new();
-        for (path, name) in rows {
-            let Some(language) = language_of(&path) else {
+        let mut limited = false;
+        for (path, name) in store.module_declarations(repo, &languages)? {
+            let Some(entry) = declared.get_mut(&path) else {
                 continue;
             };
-            let entry = declared
-                .entry(path.clone())
-                .or_insert_with(|| (language, Vec::new()));
-            if entry.1.len() == MAX_PACKAGES_PER_FILE || entry.1.contains(&name) {
+            if entry.1.contains(&name) {
                 continue;
             }
-            entry.1.push(name.clone());
-            if !crate::parsers::languages::is_declaration_only(&path) {
-                members.entry((language, name)).or_default().push(path);
+            if entry.1.len() == MAX_PACKAGES_PER_FILE {
+                limited = true;
+                continue;
             }
+            entry.1.push(name);
         }
         let mut importers = HashMap::<(&'static str, String), Vec<String>>::new();
         for (path, raw) in
             store.unresolved_edge_targets_with_detail(repo, compresso_store::EDGE_DETAIL_PACKAGE)?
         {
-            let Some(language) = language_of(&path) else {
+            let Some((language, _)) = declared.get(&path) else {
                 continue;
             };
             let name = raw.strip_suffix(".*").unwrap_or(&raw).to_owned();
-            importers.entry((language, name)).or_default().push(path);
+            importers.entry((*language, name)).or_default().push(path);
         }
         Ok(Some(Self {
             declared,
-            members,
             importers,
+            limited,
         }))
     }
 
-    /// Appends the files linked to `target` through each of its packages
-    /// not expanded yet.
+    /// The packages a file declares, the default one (`""`) when none.
+    fn packages_of(&self, path: &str) -> Option<(&'static str, Vec<&str>)> {
+        let (language, packages) = self.declared.get(path)?;
+        let names = if packages.is_empty() {
+            vec![""]
+        } else {
+            packages.iter().map(String::as_str).collect()
+        };
+        Some((language, names))
+    }
+
+    /// The target package a file of `language` and `theirs` packages shares
+    /// with a target of `ours`: the same package, or for C# a nested or the
+    /// global namespace.
+    fn shared<'a>(ours: &[&'a str], theirs: &[&str], nested: bool) -> Option<&'a str> {
+        ours.iter().copied().find(|ours| {
+            theirs.iter().any(|theirs| {
+                theirs == ours
+                    || (nested
+                        && (ours.is_empty()
+                            || theirs
+                                .strip_prefix(*ours)
+                                .is_some_and(|rest| rest.starts_with('.'))))
+            })
+        })
+    }
+
+    /// Appends the files linked to `target` through its packages.
     fn dependents(
         &self,
+        store: &Store,
+        repo: RepoId,
         target: &str,
-        expanded: &mut HashSet<(&'static str, String)>,
+        state: &mut EvidenceState,
         linked: &mut Vec<(String, Vec<EdgeKind>, Option<String>)>,
-    ) {
+    ) -> Result<(), AtlasError> {
         if crate::parsers::languages::is_declaration_only(target) {
-            return;
+            return Ok(());
         }
-        let Some((language, packages)) = self.declared.get(target) else {
-            return;
+        let Some((language, packages)) = self.packages_of(target) else {
+            return Ok(());
         };
         let nested = matches!(
             crate::parsers::languages::call_rules(target),
             crate::parsers::languages::CallRules::DeclaredPackages(rules)
                 if rules.enclosing_namespaces
         );
-        for package in packages {
-            if !expanded.insert((language, package.clone())) {
+        for package in &packages {
+            if package.is_empty() || !state.expanded.insert((language, (*package).to_owned())) {
                 continue;
             }
-            let key = (*language, package.clone());
-            for importer in self.importers.get(&key).into_iter().flatten() {
+            for importer in self
+                .importers
+                .get(&(language, (*package).to_owned()))
+                .into_iter()
+                .flatten()
+            {
                 linked.push((
                     importer.clone(),
                     vec![EdgeKind::Imports],
-                    Some(package.clone()),
+                    Some((*package).to_owned()),
                 ));
             }
-            let below = format!("{package}.");
-            let nested_files = self
-                .members
-                .range((*language, below.clone())..)
-                .take_while(|((found, name), _)| {
-                    nested && found == language && name.starts_with(&below)
-                })
-                .map(|(_, files)| files);
-            for files in self.members.get(&key).into_iter().chain(nested_files) {
-                for file in files {
-                    if file != target {
-                        linked.push((
-                            file.clone(),
-                            vec![EdgeKind::References],
-                            Some(package.clone()),
-                        ));
-                    }
+        }
+        let mate = |path: &str| {
+            let (theirs_language, theirs) = self.packages_of(path)?;
+            (theirs_language == language && path != target)
+                .then(|| Self::shared(&packages, &theirs, nested))
+                .flatten()
+        };
+        if state.checked == MAX_EVIDENCE_TARGETS {
+            state.unevaluated.insert(target.to_owned());
+            return Ok(());
+        }
+        state.checked += 1;
+        let mut names = Vec::new();
+        let mut types = Vec::new();
+        for symbol in store.symbols_in_file(repo, target)? {
+            match symbol.kind {
+                SymbolKind::Module => {}
+                SymbolKind::Class
+                | SymbolKind::Struct
+                | SymbolKind::Interface
+                | SymbolKind::Enum
+                | SymbolKind::Type
+                | SymbolKind::Trait => {
+                    names.push(symbol.name.clone());
+                    types.push(symbol.name);
                 }
+                _ => names.push(symbol.name),
             }
         }
+        names.sort();
+        names.dedup();
+        types.sort();
+        types.dedup();
+        let users = store.files_with_call_sites_naming(repo, &names, &types)?;
+        for user in &users {
+            if let Some(package) = mate(user) {
+                linked.push((
+                    user.clone(),
+                    vec![EdgeKind::References],
+                    Some(package.to_owned()),
+                ));
+            }
+        }
+        if state.truncated.is_none() {
+            state.truncated = Some(
+                store.files_with_call_sites_at_least(repo, crate::parsers::MAX_CALLS_PER_FILE)?,
+            );
+        }
+        for cut in state.truncated.iter().flatten() {
+            if !users.contains(cut) && mate(cut).is_some() {
+                state.unevaluated.insert(cut.clone());
+            }
+        }
+        Ok(())
     }
 }
 

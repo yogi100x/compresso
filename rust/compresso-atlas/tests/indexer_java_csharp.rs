@@ -377,18 +377,12 @@ fn test_java_imports_are_package_records_and_type_edges_expanded_by_impact() {
     );
     assert_eq!(
         linked_dependents(&store, repo, "legacy/Sorter.java"),
-        [
-            (
-                job_store.to_owned(),
-                "imports",
-                Some("com.acme.util".to_owned())
-            ),
-            (
-                "src/main/java/com/acme/util/Strings.java".to_owned(),
-                "references",
-                Some("com.acme.util".to_owned())
-            ),
-        ]
+        // `Strings.java` shares the package but calls nothing of `Sorter`.
+        [(
+            job_store.to_owned(),
+            "imports",
+            Some("com.acme.util".to_owned())
+        )]
     );
     assert!(
         linked_dependents(
@@ -427,20 +421,99 @@ fn test_csharp_usings_are_namespace_records_and_impact_lists_namespace_mates() {
         importers_of(&store, repo, "lib/Util/More.cs"),
         ["src/Acme.Jobs/JobStore.cs"]
     );
-    let keys = linked_dependents(&store, repo, "src/Acme.Jobs/Keys.cs");
-    assert!(
-        keys.contains(&(
+    // Round 3: a namespace mate is a dependent only with evidence, a call
+    // site naming what the file defines; `JobStore.Validation.cs` calls
+    // nothing of `Keys.cs`.
+    assert_eq!(
+        linked_dependents(&store, repo, "src/Acme.Jobs/Keys.cs"),
+        [(
             "src/Acme.Jobs/JobStore.cs".to_owned(),
             "references",
             Some("Acme.Jobs".to_owned())
-        )),
-        "{keys:?}"
+        )]
     );
     assert!(
         impact(&store, repo, "src/Acme.Jobs/Keys.cs")
             .expect("impact")
             .complete
     );
+}
+
+/// Round 3 MF2: files of the default package (Java) or the global namespace
+/// (C#, which every namespace sees) depend on a file there when they use
+/// it, with no import.
+#[test]
+fn test_default_package_and_global_namespace_dependents_need_no_import() {
+    let (_temp, store, repo) = index_files(&[
+        (
+            "Util.cs",
+            "public static class Util { public static void Run() { } }\n",
+        ),
+        (
+            "App/Main.cs",
+            "namespace App;\n\npublic class Main { void Go() { Util.Run(); } }\n",
+        ),
+        ("App/Idle.cs", "namespace App;\n\npublic class Idle { }\n"),
+        (
+            "Tool.java",
+            "public class Tool {\n    static void run() {}\n}\n",
+        ),
+        (
+            "Main.java",
+            "class Main {\n    void go() { Tool.run(); }\n}\n",
+        ),
+        ("Idle.java", "class Idle {}\n"),
+    ]);
+    assert_eq!(
+        linked_dependents(&store, repo, "Util.cs"),
+        [("App/Main.cs".to_owned(), "references", Some(String::new()))]
+    );
+    assert_eq!(
+        linked_dependents(&store, repo, "Tool.java"),
+        [("Main.java".to_owned(), "references", Some(String::new()))]
+    );
+    assert!(impact(&store, repo, "Util.cs").expect("impact").complete);
+}
+
+/// Round 3: a namespace mate whose call sites stopped at the per-file bound
+/// cannot show it does not use a file: the answer is incomplete.
+#[test]
+fn test_a_mate_with_cut_call_sites_makes_impact_incomplete() {
+    let mut calls = String::new();
+    for index in 0..4_200 {
+        calls.push_str(&format!("A{index}(); "));
+    }
+    let busy = format!("namespace N;\n\npublic class Busy {{ void Run() {{ {calls} }} }}\n");
+    let (_temp, store, repo) = index_files(&[
+        ("n/Target.cs", "namespace N;\n\npublic class Target { }\n"),
+        ("n/Busy.cs", busy.as_str()),
+    ]);
+    let report = impact(&store, repo, "n/Target.cs").expect("impact");
+    assert!(report.dependents.is_empty());
+    assert_eq!(report.unevaluated, 1);
+    assert!(!report.complete);
+}
+
+/// Round 3 SF4: a file declaring more namespaces than are read can hide
+/// links: `impact` and `trace` then say so instead of claiming completeness.
+#[test]
+fn test_too_many_namespaces_in_one_file_clear_complete() {
+    let mut many = String::new();
+    for index in 0..70 {
+        many.push_str(&format!("namespace N{index} {{ public class T{index} {{ }} }}\n"));
+    }
+    let (_temp, store, repo) = index_files(&[
+        ("lib/Many.cs", many.as_str()),
+        (
+            "app/Main.cs",
+            "namespace App;\n\npublic class Main { void Go() { Help(); } void Help() { } }\n",
+        ),
+    ]);
+    let report = impact(&store, repo, "app/Main.cs").expect("impact");
+    assert!(report.packages_limited && !report.complete);
+    let traced = trace(&store, repo, Some("Main::Go"), None, TraceOptions::default())
+        .expect("trace");
+    assert!(!traced.complete);
 }
 
 /// `impact` bounds what it lists, not what it counts: totals are exact.
@@ -450,10 +523,14 @@ fn test_impact_over_a_large_namespace_reports_exact_totals() {
         "app/Main.cs".to_owned(),
         "using Big;\n\nnamespace App;\n\npublic class Main { }\n".to_owned(),
     )];
-    for index in 0..600 {
+    files.push((
+        "big/F0.cs".to_owned(),
+        "namespace Big;\n\npublic class F0 { public static void Make() { } }\n".to_owned(),
+    ));
+    for index in 1..600 {
         files.push((
             format!("big/F{index}.cs"),
-            format!("namespace Big;\n\npublic class F{index} {{ }}\n"),
+            format!("namespace Big;\n\npublic class F{index} {{ void Run() {{ F0.Make(); }} }}\n"),
         ));
     }
     let borrowed = files
@@ -472,7 +549,10 @@ fn test_impact_over_a_large_namespace_reports_exact_totals() {
         },
     )
     .expect("impact");
-    assert_eq!(report.total, 600, "599 namespace mates and one importer");
+    assert_eq!(
+        report.total, 600,
+        "599 namespace mates that call it and one importer"
+    );
     assert_eq!(report.dependents.len(), 50);
     assert!(report.truncated && !report.complete);
     assert_eq!(

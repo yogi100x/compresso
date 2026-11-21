@@ -45,6 +45,8 @@ fn test_impact_depth_two() {
             ambiguous_edges: 0,
             complete: true,
             truncated: false,
+            unevaluated: 0,
+            packages_limited: false,
         }
     );
     assert!(!first.dependents.iter().any(|entry| entry.path == "d.rs"));

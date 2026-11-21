@@ -314,7 +314,13 @@ fn trace_with_row_budget(
         (None, Some(to)) => walk.callers(&mut resolver, &to)?,
         (None, None) => unreachable!("validated: at least one end is named"),
     };
-    Ok(walk.report(result, max_depth))
+    let mut report = walk.report(result, max_depth);
+    // A file declaring more packages than are read can hide a same-package
+    // or imported candidate (Java, C#): the answer cannot be complete.
+    if resolver.packages_limited {
+        report.complete = false;
+    }
+    Ok(report)
 }
 
 fn validate_options(
@@ -583,6 +589,8 @@ struct Resolver<'a> {
     declared_external_names: Option<HashMap<String, HashSet<String>>>,
     /// Java and C# only: the packages or namespaces each file declares.
     file_packages: Option<HashMap<String, Vec<String>>>,
+    /// A file declared more packages than are read.
+    packages_limited: bool,
     /// Java and C# only: per file, the packages or namespaces it imports
     /// whole (one record each, owner decision 2026-11-21).
     package_imports: Option<HashMap<String, HashSet<String>>>,
@@ -602,6 +610,7 @@ impl<'a> Resolver<'a> {
             external_names: None,
             declared_external_names: None,
             file_packages: None,
+            packages_limited: false,
             package_imports: None,
             no_names: HashSet::new(),
             symbols: HashMap::new(),
@@ -1264,6 +1273,8 @@ impl<'a> Resolver<'a> {
                 let names = packages.entry(path).or_default();
                 if names.len() < MAX_PACKAGES_PER_FILE {
                     names.push(name);
+                } else {
+                    self.packages_limited = true;
                 }
             }
             self.file_packages = Some(packages);
