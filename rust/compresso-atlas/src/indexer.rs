@@ -29,7 +29,7 @@ use write_batch::{BatchLimits, BatchWriter};
 const INDEX_SCHEMA_VERSION: u32 = 1;
 pub(crate) const DEFAULT_PARSER_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
-    "+atlas-shell-text-v1+rust-imports-v2+java-csharp-v1+go-v1+calls-v1"
+    "+atlas-shell-text-v1+rust-imports-v2+sql-v1+java-csharp-v1+go-v1+calls-v1"
 );
 /// Marks an index whose parser recorded call sites (D89). Every version this
 /// indexer stamps carries it, including one set with
@@ -66,6 +66,9 @@ pub struct IndexReport {
     pub call_sites: usize,
     /// Files whose call extraction stopped at a per-file bound.
     pub call_site_files_truncated: usize,
+    /// Files whose symbol extraction stopped at a per-file bound (SQL,
+    /// E17-42): later definitions of those files are not symbols.
+    pub symbol_files_truncated: usize,
     /// Files whose call sites the store would reject: the file is indexed
     /// with its symbols and imports, without call sites.
     pub call_site_files_rejected: usize,
@@ -422,6 +425,7 @@ impl<'a> Indexer<'a> {
             imports_unresolved: tally.imports_unresolved,
             call_sites: tally.call_sites,
             call_site_files_truncated: tally.call_site_files_truncated,
+            symbol_files_truncated: tally.symbol_files_truncated,
             call_site_files_rejected: tally.call_site_files_rejected,
             duration_ms: elapsed_millis(started),
             stale,
@@ -772,6 +776,7 @@ struct PreparedFile {
     edges: Vec<EdgeRecord>,
     calls: Vec<CallSiteRecord>,
     calls_truncated: bool,
+    symbols_truncated: bool,
     parsed: bool,
     imports_resolved: usize,
     imports_unresolved: usize,
@@ -830,6 +835,7 @@ fn prepare_file(
     let mut edges = Vec::new();
     let mut calls = Vec::new();
     let mut calls_truncated = false;
+    let mut symbols_truncated = false;
     let mut imports_resolved = 0_usize;
     let mut imports_unresolved = 0_usize;
 
@@ -851,6 +857,7 @@ fn prepare_file(
         symbols = extraction.symbols;
         calls = extraction.calls;
         calls_truncated = extraction.calls_truncated;
+        symbols_truncated = extraction.symbols_truncated;
         estimate_symbol_tokens(&source, relative, &mut symbols, context.counter)
             .map_err(PrepareFailure::during_parse)?;
         for import in extraction.imports {
@@ -885,6 +892,7 @@ fn prepare_file(
         edges,
         calls,
         calls_truncated,
+        symbols_truncated,
         parsed: language.is_some(),
         imports_resolved,
         imports_unresolved,
@@ -983,8 +991,10 @@ where
         let outcome = (|| {
             while next_commit < candidates.len() {
                 while next_dispatch < candidates.len() {
-                    let cost_bytes = fs::metadata(root.join(&candidates[next_dispatch]))
-                        .map_or(0, |metadata| metadata.len());
+                    let cost_bytes = read_ahead_cost(
+                        fs::metadata(root.join(&candidates[next_dispatch]))
+                            .map_or(0, |metadata| metadata.len()),
+                    );
                     if !read_ahead.try_admit(cost_bytes) {
                         break;
                     }
@@ -1323,6 +1333,22 @@ fn resolve_candidate(root: &Path, relative: &Path) -> Result<PathBuf, AtlasError
     Ok(resolved)
 }
 
+/// How much of the read-ahead budget a file of `bytes` is charged. A file
+/// above the default per-file ceiling (a SQL file up to 4 MiB, E17-42) is
+/// charged [`LARGE_FILE_CHARGE`] times its size: preparing it holds its
+/// line starts, symbols, references, and token counts at once, several
+/// times the source, so at most a few such files are prepared together.
+fn read_ahead_cost(bytes: u64) -> u64 {
+    if bytes > DEFAULT_MAX_FILE_BYTES {
+        bytes.saturating_mul(LARGE_FILE_CHARGE)
+    } else {
+        bytes
+    }
+}
+
+/// See [`read_ahead_cost`].
+const LARGE_FILE_CHARGE: u64 = 8;
+
 fn estimate_symbol_tokens(
     source: &str,
     path: &Path,
@@ -1453,6 +1479,7 @@ mod tests {
             edges: Vec::new(),
             calls,
             calls_truncated: false,
+            symbols_truncated: false,
             parsed: true,
             imports_resolved: 0,
             imports_unresolved: 0,
@@ -1662,6 +1689,7 @@ mod tests {
             edges,
             calls: Vec::new(),
             calls_truncated: false,
+            symbols_truncated: false,
             parsed: true,
             imports_resolved: 0,
             imports_unresolved: 1,

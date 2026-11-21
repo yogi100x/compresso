@@ -402,6 +402,9 @@ fn lookup(store: &Store, repo: RepoId, spec: &str) -> Result<Lookup, AtlasError>
         candidates.retain(|candidate| {
             candidate.symbol.qualified_name == qualified
                 || (owner_base(&candidate.symbol.qualified_name) == wanted && wanted.is_some())
+                // A SQL name is stored as written, `public.users` (E17-42).
+                || (candidate.language == Some(FileLanguage::Sql)
+                    && candidate.symbol.qualified_name == symbol)
         });
     }
     if candidates.len() > 1

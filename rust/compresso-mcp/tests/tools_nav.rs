@@ -447,6 +447,118 @@ async fn test_unfold_unique() {
     harness.close().await;
 }
 
+/// E17-42 (D107): a SQL definition found by unfold lists the other
+/// definitions of its name in path order, last first, in `candidates`.
+#[tokio::test]
+async fn test_unfold_of_a_sql_definition_lists_its_other_definitions_last_first() {
+    let function =
+        "CREATE OR REPLACE FUNCTION touch_row() RETURNS int AS $$ SELECT 1 $$ LANGUAGE sql;\n";
+    let fixture = IndexedFixture::new(&[
+        ("db/0001_init.sql", function),
+        ("db/0002_again.sql", &format!("-- again\n{function}")),
+        ("db/0003_more.sql", function),
+    ]);
+    let mut harness = Harness::start(fixture.store.clone()).await;
+    let mut arguments = fixture.arguments();
+    arguments.insert("path".to_owned(), json!("db/0002_again.sql"));
+    arguments.insert("qualified_name".to_owned(), json!("touch_row"));
+
+    let result = successful_json(
+        harness
+            .call("compresso_unfold", Value::Object(arguments))
+            .await,
+    );
+
+    assert_eq!(result["status"], "found");
+    assert_eq!(result["symbol"]["start_line"], 2);
+    let others = result["candidates"]
+        .as_array()
+        .expect("candidates")
+        .iter()
+        .map(|candidate| candidate["path"].as_str().unwrap_or_default().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(others, ["db/0003_more.sql", "db/0001_init.sql"]);
+    harness.close().await;
+}
+
+/// Review: other SQL definitions are listed only within the token budget,
+/// so a small budget never fails or overruns.
+#[tokio::test]
+async fn test_unfold_of_a_large_sql_definition_keeps_its_candidates_within_budget() {
+    let body = format!(
+        "CREATE OR REPLACE FUNCTION touch_row() RETURNS int AS $$ SELECT {} $$ LANGUAGE sql;\n",
+        "1 + ".repeat(2_000)
+    );
+    let fixture = IndexedFixture::new(&[
+        ("db/0001.sql", &body),
+        ("db/0002.sql", &body),
+        ("db/0003.sql", &body),
+    ]);
+    for max_tokens in [100, 200] {
+        let mut harness = Harness::start(fixture.store.clone()).await;
+        let mut arguments = fixture.arguments();
+        arguments.insert("path".to_owned(), json!("db/0002.sql"));
+        arguments.insert("qualified_name".to_owned(), json!("touch_row"));
+        arguments.insert("max_tokens".to_owned(), json!(max_tokens));
+        let result = successful_json(
+            harness
+                .call("compresso_unfold", Value::Object(arguments))
+                .await,
+        );
+        assert_eq!(result["status"], "found");
+        assert!(
+            result["tokens_used"]
+                .as_u64()
+                .is_some_and(|used| used <= max_tokens),
+            "{result}"
+        );
+        // The content alone fills the budget: no candidate is listed past it.
+        assert_eq!(result["truncated"], true);
+        assert!(
+            result["candidates"].as_array().is_some_and(Vec::is_empty),
+            "{result}"
+        );
+        harness.close().await;
+    }
+}
+
+/// Review S9: a cut list of other SQL definitions is named with its total
+/// in `elision`, and `truncated` stays false while the content is whole.
+#[tokio::test]
+async fn test_unfold_names_how_many_other_sql_definitions_it_lists() {
+    let function =
+        "CREATE OR REPLACE FUNCTION touch_row() RETURNS int AS $$ SELECT 1 $$ LANGUAGE sql;\n";
+    let paths = (1..=25)
+        .map(|index| format!("db/{index:04}.sql"))
+        .collect::<Vec<_>>();
+    let files = paths
+        .iter()
+        .map(|path| (path.as_str(), function))
+        .collect::<Vec<_>>();
+    let fixture = IndexedFixture::new(&files);
+    let mut harness = Harness::start(fixture.store.clone()).await;
+    let mut arguments = fixture.arguments();
+    arguments.insert("path".to_owned(), json!("db/0001.sql"));
+    arguments.insert("qualified_name".to_owned(), json!("touch_row"));
+    arguments.insert("max_tokens".to_owned(), json!(20_000));
+    let result = successful_json(
+        harness
+            .call("compresso_unfold", Value::Object(arguments))
+            .await,
+    );
+    assert_eq!(result["truncated"], false, "{result}");
+    assert_eq!(
+        result["candidates"].as_array().map(Vec::len),
+        Some(20),
+        "{result}"
+    );
+    assert_eq!(
+        result["elision"],
+        "[24 other definitions in path order, last first; 20 shown]"
+    );
+    harness.close().await;
+}
+
 #[tokio::test]
 async fn test_unfold_ambiguous_candidates() {
     let fixture = overload_fixture();

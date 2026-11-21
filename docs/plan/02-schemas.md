@@ -205,7 +205,7 @@ CREATE TABLE files (
   repo_id INTEGER NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
   path TEXT NOT NULL,                   -- repo-relative, forward slashes
   hash TEXT NOT NULL,                   -- blake3 hex
-  language TEXT,                        -- rust|typescript|tsx|javascript|python|go|java|csharp|shell|text|NULL (go: E17-37; java, csharp: E17-40)
+  language TEXT,                        -- rust|typescript|tsx|javascript|python|go|java|csharp|sql|shell|text|NULL (go: E17-37; java, csharp: E17-40; sql: E17-42)
   size_bytes INTEGER NOT NULL,
   token_estimate INTEGER NOT NULL,
   indexed_at INTEGER NOT NULL,

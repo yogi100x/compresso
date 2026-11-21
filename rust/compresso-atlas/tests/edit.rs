@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use compresso_atlas::{
     EDIT_MAX_OPERATIONS, EDIT_MAX_SITES, EDIT_MAX_TEXT_BYTES, EditBound, EditError, EditOperation,
     EditReport, EditRequest, IndexState, Indexer, InsertPosition, LineEnding, Refusal, apply_edits,
-    search,
+    outline, search,
 };
 use compresso_core::{TokenProvider, counter_for};
 use compresso_store::Store;
@@ -1405,4 +1405,32 @@ fn test_the_outside_scope_count_never_reads_excluded_files() {
     let outcome = report.operations[0].rename.as_ref().expect("outcome");
     assert_eq!(outcome.outside_whole_total, 0, "{outcome:?}");
     assert!(outcome.complete, "{outcome:?}");
+}
+
+/// E17-42 (owner decision 2026-11-21): a SQL file above 1 MB is indexed
+/// under SQL's own ceiling, but the edit limit does not rise: editing it is
+/// refused for its size.
+#[test]
+fn test_a_sql_file_above_one_megabyte_is_indexed_but_not_editable() {
+    let mut source = String::from("CREATE TABLE big_table (x int);\n");
+    while source.len() <= 1_200_000 {
+        source.push_str("COMMENT ON TABLE big_table IS 'padding padding padding';\n");
+    }
+    let fixture = Fixture::new(&[("db/dump.sql", source.as_bytes())]);
+    let symbols = outline(&fixture.store, fixture.repo(), "db/dump.sql").expect("indexed");
+    assert!(
+        symbols
+            .symbols
+            .iter()
+            .any(|symbol| symbol.qualified_name == "big_table")
+    );
+    let error = fixture
+        .apply(vec![replace(
+            "db/dump.sql",
+            "big_table (x int)",
+            "big_table (y int)",
+            1,
+        )])
+        .expect_err("too large to edit");
+    assert_eq!(refusal(error), Refusal::TooLarge);
 }

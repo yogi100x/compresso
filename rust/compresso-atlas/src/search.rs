@@ -31,6 +31,9 @@ pub enum SearchDiagnosticCode {
     QueryTooShort,
     /// The path scope was applied to a capped ranked window.
     PathScopeWindowCapped,
+    /// A SQL object found has several definitions or a later `DROP`; its
+    /// hits are listed in path order, last first (E17-42, D107).
+    SqlDefinitions,
 }
 
 impl SearchDiagnosticCode {
@@ -39,6 +42,7 @@ impl SearchDiagnosticCode {
             Self::PathNotFound => "path_not_found",
             Self::QueryTooShort => "query_too_short",
             Self::PathScopeWindowCapped => "path_scope_window_capped",
+            Self::SqlDefinitions => "sql_definitions",
         }
     }
 }
@@ -138,6 +142,7 @@ pub fn search_with_diagnostics(
         }
     }
     hits.truncate(options.limit);
+    crate::sql_definitions::annotate_search(store, repo, scope, &mut hits, &mut diagnostics)?;
 
     if hits.is_empty() && query.chars().count() < SEARCH_MIN_QUERY_CHARS {
         diagnostics.push(SearchDiagnostic {

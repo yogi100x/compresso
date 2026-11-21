@@ -26,13 +26,42 @@ const PARALLEL_INSPECTION_MIN_FILES: usize = 16;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ScanOptions {
     pub max_file_bytes: u64,
+    /// Whether a language's own larger ceiling (SQL, E17-42) applies. A
+    /// ceiling the user configured is [`ScanOptions::configured`]: it caps
+    /// every language.
+    pub language_ceilings: bool,
 }
 
 impl Default for ScanOptions {
     fn default() -> Self {
         Self {
             max_file_bytes: DEFAULT_MAX_FILE_BYTES,
+            language_ceilings: true,
         }
+    }
+}
+
+impl ScanOptions {
+    /// A ceiling the user configured: it applies to every file, SQL too.
+    pub const fn configured(max_file_bytes: u64) -> Self {
+        Self {
+            max_file_bytes,
+            language_ceilings: false,
+        }
+    }
+
+    /// The size ceiling for one repository path: a language's own larger
+    /// ceiling (SQL, E17-42) unless the ceiling was configured.
+    pub fn max_bytes_for(&self, relative: &str) -> u64 {
+        if !self.language_ceilings {
+            return self.max_file_bytes;
+        }
+        relative
+            .rsplit_once('.')
+            .and_then(|(_, extension)| crate::parsers::languages::for_extension(extension))
+            .map_or(self.max_file_bytes, |spec| {
+                spec.max_file_bytes.max(self.max_file_bytes)
+            })
     }
 }
 
@@ -221,7 +250,7 @@ where
             // A crash can leave an edit's temporary file behind; it is
             // never repository content.
             Some(SkipReason::UnsupportedFileType)
-        } else if entry.metadata.len() > options.max_file_bytes {
+        } else if entry.metadata.len() > options.max_bytes_for(&relative) {
             Some(SkipReason::TooLarge)
         } else {
             None
@@ -239,20 +268,14 @@ where
     } else {
         concurrency.workers_for(pending.len(), INSPECTION_WORKER_BYTES)
     };
-    let outcomes = inspect_candidates(
-        &canonical_root,
-        &pending,
-        options.max_file_bytes,
-        workers,
-        inspector,
-    );
+    let outcomes = inspect_candidates(&canonical_root, &pending, options, workers, inspector);
     for ((relative, absolute), outcome) in pending.into_iter().zip(outcomes) {
         let inspection = match outcome {
             Some(inspection) => inspection,
             None => inspect_candidate(
                 &canonical_root,
                 &absolute,
-                options.max_file_bytes,
+                options.max_bytes_for(&relative),
                 inspector,
             ),
         }?;
@@ -338,7 +361,7 @@ where
 fn inspect_candidates<I>(
     canonical_root: &Path,
     pending: &[(String, PathBuf)],
-    max_file_bytes: u64,
+    options: ScanOptions,
     workers: usize,
     inspector: &I,
 ) -> Vec<Option<Result<FileInspection, AtlasError>>>
@@ -348,8 +371,13 @@ where
     let mut outcomes = Vec::new();
     outcomes.resize_with(pending.len(), || None);
     if workers <= 1 {
-        for (slot, (_, absolute)) in outcomes.iter_mut().zip(pending) {
-            let outcome = inspect_candidate(canonical_root, absolute, max_file_bytes, inspector);
+        for (slot, (relative, absolute)) in outcomes.iter_mut().zip(pending) {
+            let outcome = inspect_candidate(
+                canonical_root,
+                absolute,
+                options.max_bytes_for(relative),
+                inspector,
+            );
             let failed = outcome.is_err();
             *slot = Some(outcome);
             if failed {
@@ -376,7 +404,7 @@ where
                         let outcome = inspect_candidate(
                             canonical_root,
                             &pending[index].1,
-                            max_file_bytes,
+                            options.max_bytes_for(&pending[index].0),
                             inspector,
                         );
                         if outcome.is_err() {
@@ -1670,9 +1698,7 @@ mod tests {
             &fixture.store,
             fixture.repo,
             &fixture.root,
-            ScanOptions {
-                max_file_bytes: 1_000_000,
-            },
+            ScanOptions::configured(1_000_000),
             Concurrency::default(),
             None,
             &move |path, max_file_bytes| {

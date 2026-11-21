@@ -29,6 +29,7 @@ fn test_for_path_extension_map() {
         ("foo.go", Some(Language::Go)),
         ("foo.java", Some(Language::Java)),
         ("Foo.cs", Some(Language::CSharp)),
+        ("0001_init.sql", Some(Language::Sql)),
         ("foo.kt", None),
         ("config.toml", None),
         ("secrets.yaml", None),

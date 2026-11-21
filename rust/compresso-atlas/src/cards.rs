@@ -404,6 +404,7 @@ fn purpose_of(root: &Path, file: &FileRecord) -> Option<String> {
         ModuleDoc::Go => go_package_doc(&text),
         ModuleDoc::Java => java_package_doc(&text),
         ModuleDoc::CSharp => csharp_type_doc(&text),
+        ModuleDoc::Sql => sql_module_doc(&text),
         ModuleDoc::None => None,
     }?;
     first_sentence(&doc)
@@ -641,6 +642,27 @@ fn declares_type(line: &str) -> bool {
     false
 }
 
+/// Leading `--` lines, or a leading `/* */` block (E17-42, D107); license
+/// headers are not purposes.
+fn sql_module_doc(text: &str) -> Option<String> {
+    let trimmed = text.trim_start();
+    let doc = if let Some(body) = trimmed.strip_prefix("/*") {
+        block_comment_text(&body[..body.find("*/")?])
+    } else {
+        trimmed
+            .lines()
+            .map(str::trim)
+            .map_while(|line| line.strip_prefix("--"))
+            .map(|line| line.trim_start_matches('-').trim())
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let lowered = doc.to_ascii_lowercase();
+    (!doc.is_empty() && !lowered.contains("copyright") && !lowered.contains("license"))
+        .then_some(doc)
+}
+
 fn block_comment_text(body: &str) -> String {
     body.lines()
         .map(|line| line.trim().trim_start_matches('*').trim())
@@ -689,7 +711,9 @@ fn first_sentence(doc: &str) -> Option<String> {
 /// leading underscore. Shell: every top-level function. Go: a top-level name
 /// that starts with an uppercase letter. Java and C#: a top-level type whose
 /// modifiers include `public` (package-private and `internal` types are
-/// not). Text headings are never public symbols.
+/// not). SQL: every definition neither named by its table nor a module
+/// (E17-42). Text
+/// headings are never public symbols.
 fn is_public(symbol: &SymbolRecord, language: Option<FileLanguage>) -> bool {
     let top_level = symbol.qualified_name == symbol.name;
     let signature = symbol.signature.as_deref().unwrap_or_default();
@@ -708,6 +732,9 @@ fn is_public(symbol: &SymbolRecord, language: Option<FileLanguage>) -> bool {
         }
         Visibility::PublicModifier => {
             top_level && signature_modifiers(Some(signature)).contains(&"public")
+        }
+        Visibility::NotTableMember => {
+            !symbol.qualified_name.contains("::") && symbol.kind != SymbolKind::Module
         }
         Visibility::Never => false,
     }

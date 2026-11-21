@@ -88,6 +88,9 @@ pub(crate) enum ModuleDoc {
     Java,
     /// The `///` XML documentation above the first type declaration.
     CSharp,
+    /// Leading `--` lines or a leading `/* */` block that is not a license
+    /// header.
+    Sql,
 }
 
 /// The signature heuristic that marks a top-level symbol public; the store
@@ -107,6 +110,10 @@ pub(crate) enum Visibility {
     Capitalized,
     /// The signature's modifiers include `public` (Java, C#).
     PublicModifier,
+    /// Every definition that is neither named by its table (`users::policy`)
+    /// nor a module (the file's `script`, schemas, extensions): SQL tables,
+    /// views, routines, and types, schema-qualified or not.
+    NotTableMember,
 }
 
 /// Which rule set resolves a language's calls at query time (`trace`).
@@ -163,6 +170,10 @@ impl CommentSyntax {
         line: &["#"],
         block: None,
     };
+    const SQL: Self = Self {
+        line: &["--"],
+        block: Some(("/*", "*/")),
+    };
 }
 
 /// One indexed language.
@@ -204,7 +215,19 @@ pub struct LanguageSpec {
     /// Comment syntax for grep row selection (E17-39, D104). Python
     /// docstrings, Markdown, and other text count as code.
     pub comments: CommentSyntax,
+    /// The largest file of this language the scanner indexes when no other
+    /// ceiling is configured ([`crate::scanner::ScanOptions::max_bytes_for`]).
+    pub max_file_bytes: u64,
 }
+
+/// The default per-file ceiling of every language but SQL.
+const DEFAULT_FILE_BYTES: u64 = crate::scanner::DEFAULT_MAX_FILE_BYTES;
+
+/// SQL's per-file ceiling (E17-42, owner decision of 2026-11-21: "yes raise
+/// the limit" for SQL only). Schema dumps and squashed migrations are single
+/// large files; the scanner is one linear pass with bounded state, and the
+/// symbol, covered-byte, and reference caps bound what one file yields.
+pub const SQL_MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
 impl LanguageSpec {
     /// Whether this language is parsed by a tree-sitter grammar.
@@ -273,6 +296,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         declarations: None,
         declaration_only_files: &[],
         comments: CommentSyntax::C_LIKE,
+        max_file_bytes: DEFAULT_FILE_BYTES,
     },
     LanguageSpec {
         language: FileLanguage::TypeScript,
@@ -297,6 +321,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         declarations: None,
         declaration_only_files: &[],
         comments: CommentSyntax::C_LIKE,
+        max_file_bytes: DEFAULT_FILE_BYTES,
     },
     LanguageSpec {
         language: FileLanguage::Tsx,
@@ -321,6 +346,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         declarations: None,
         declaration_only_files: &[],
         comments: CommentSyntax::C_LIKE,
+        max_file_bytes: DEFAULT_FILE_BYTES,
     },
     LanguageSpec {
         language: FileLanguage::JavaScript,
@@ -345,6 +371,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         declarations: None,
         declaration_only_files: &[],
         comments: CommentSyntax::C_LIKE,
+        max_file_bytes: DEFAULT_FILE_BYTES,
     },
     LanguageSpec {
         language: FileLanguage::Python,
@@ -369,6 +396,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         declarations: None,
         declaration_only_files: &[],
         comments: CommentSyntax::HASH,
+        max_file_bytes: DEFAULT_FILE_BYTES,
     },
     LanguageSpec {
         language: FileLanguage::Go,
@@ -393,6 +421,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         declarations: None,
         declaration_only_files: &[],
         comments: CommentSyntax::C_LIKE,
+        max_file_bytes: DEFAULT_FILE_BYTES,
     },
     LanguageSpec {
         language: FileLanguage::Java,
@@ -420,6 +449,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         declarations: Some(super::java::declarations),
         declaration_only_files: &["package-info.java", "module-info.java"],
         comments: CommentSyntax::C_LIKE,
+        max_file_bytes: DEFAULT_FILE_BYTES,
     },
     LanguageSpec {
         language: FileLanguage::CSharp,
@@ -447,6 +477,29 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         declarations: Some(super::csharp::declarations),
         declaration_only_files: &[],
         comments: CommentSyntax::C_LIKE,
+        max_file_bytes: DEFAULT_FILE_BYTES,
+    },
+    LanguageSpec {
+        language: FileLanguage::Sql,
+        name: "SQL",
+        extensions: &["sql"],
+        smoke_sample: "CREATE TABLE check_table (id integer);\n",
+        extractor: Extractor::Custom(super::sql::extract),
+        imports: ImportStyle::None,
+        // References to tables, views, and routines are stored as plain
+        // calls and resolved by name among SQL definitions only (D107).
+        call_family: Some(6),
+        module_doc: ModuleDoc::Sql,
+        visibility: Visibility::NotTableMember,
+        entry_files: &[],
+        test_file_suffix: None,
+        package_is_directory: false,
+        call_rules: CallRules::ByName,
+        entry_method: None,
+        declarations: None,
+        declaration_only_files: &[],
+        comments: CommentSyntax::SQL,
+        max_file_bytes: SQL_MAX_FILE_BYTES,
     },
     LanguageSpec {
         language: FileLanguage::Shell,
@@ -466,6 +519,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         declarations: None,
         declaration_only_files: &[],
         comments: CommentSyntax::HASH,
+        max_file_bytes: DEFAULT_FILE_BYTES,
     },
     LanguageSpec {
         language: FileLanguage::Text,
@@ -485,6 +539,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         declarations: None,
         declaration_only_files: &[],
         comments: CommentSyntax::NONE,
+        max_file_bytes: DEFAULT_FILE_BYTES,
     },
 ];
 
@@ -575,8 +630,9 @@ mod tests {
             FileLanguage::Go => 5,
             FileLanguage::Java => 6,
             FileLanguage::CSharp => 7,
-            FileLanguage::Shell => 8,
-            FileLanguage::Text => 9,
+            FileLanguage::Sql => 8,
+            FileLanguage::Shell => 9,
+            FileLanguage::Text => 10,
         }
     }
 
@@ -591,6 +647,7 @@ mod tests {
             FileLanguage::Go,
             FileLanguage::Java,
             FileLanguage::CSharp,
+            FileLanguage::Sql,
             FileLanguage::Shell,
             FileLanguage::Text,
         ];
@@ -630,6 +687,9 @@ mod tests {
             assert_eq!(spec(language).comments.block, None);
         }
         assert_eq!(spec(FileLanguage::Text).comments, CommentSyntax::NONE);
+        // E17-42 (D107): SQL comments are `--` lines and `/* */` blocks.
+        assert_eq!(spec(FileLanguage::Sql).comments.line, &["--"]);
+        assert_eq!(spec(FileLanguage::Sql).comments.block, Some(("/*", "*/")));
     }
 
     #[test]
@@ -644,6 +704,55 @@ mod tests {
         // tests are test code through D99's directory rule only.
         assert!(!is_test_file("src/test/java/a/StoreTest.java"));
         assert!(!is_test_file("Acme.Tests/StoreTests.cs"));
+        // E17-42 (D107): SQL reserves no file name either.
+        assert!(!is_test_file("db/tests/users_test.sql"));
+    }
+
+    /// E17-42: only SQL raises the per-file ceiling; every other language
+    /// keeps the scanner default.
+    #[test]
+    fn test_only_sql_raises_the_per_file_ceiling() {
+        for spec in LANGUAGES {
+            let expected = if spec.language == FileLanguage::Sql {
+                SQL_MAX_FILE_BYTES
+            } else {
+                crate::scanner::DEFAULT_MAX_FILE_BYTES
+            };
+            assert_eq!(spec.max_file_bytes, expected, "{:?}", spec.language);
+        }
+        let options = crate::scanner::ScanOptions::default();
+        assert_eq!(options.max_bytes_for("db/0001.sql"), SQL_MAX_FILE_BYTES);
+        assert_eq!(options.max_bytes_for("src/lib.rs"), 1_000_000);
+        assert_eq!(options.max_bytes_for("data.csv"), 1_000_000);
+        // A configured ceiling caps every language, also at the default
+        // value (review: an explicit user limit must apply to SQL too).
+        for bytes in [2_000, 1_000_000] {
+            let configured = crate::scanner::ScanOptions::configured(bytes);
+            assert_eq!(configured.max_bytes_for("db/0001.sql"), bytes);
+        }
+    }
+
+    /// E17-42 (D107): SQL is a hand-written extractor with no imports and
+    /// no entry files; its references resolve in their own call family.
+    #[test]
+    fn test_sql_is_a_hand_written_extractor_without_imports_or_entry_files() {
+        let sql = spec(FileLanguage::Sql);
+        assert!(!sql.has_grammar());
+        assert_eq!(sql.extensions, &["sql"]);
+        assert_eq!(sql.imports, ImportStyle::None);
+        let family = sql.call_family.expect("SQL records references");
+        assert_eq!(
+            LANGUAGES
+                .iter()
+                .filter(|spec| spec.call_family == Some(family))
+                .count(),
+            1
+        );
+        assert!(sql.entry_files.is_empty());
+        assert_eq!(
+            for_extension("sql").map(|spec| spec.language),
+            Some(FileLanguage::Sql)
+        );
     }
 
     /// E17-40 (D105): Java and C# resolve calls by declared packages, never

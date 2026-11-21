@@ -11,6 +11,7 @@ mod go;
 mod java;
 pub mod languages;
 mod shell;
+pub(crate) mod sql;
 mod text;
 
 use calls::CallSyntax;
@@ -72,6 +73,9 @@ pub struct Extraction {
     /// A per-file call bound ([`MAX_CALLS_PER_FILE`] kept or
     /// [`MAX_CALL_NODES_PER_FILE`] examined) stopped call extraction early.
     pub calls_truncated: bool,
+    /// A per-file symbol bound stopped symbol extraction early (SQL,
+    /// E17-42); later definitions of the file are not symbols.
+    pub symbols_truncated: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -189,6 +193,7 @@ fn extract_with_query(
         imports: Vec::new(),
         calls: Vec::new(),
         calls_truncated: false,
+        symbols_truncated: false,
     };
     // The byte range of each symbol's node, when its recorded lines are the
     // node's lines, so call attribution can tell apart functions that share
@@ -239,6 +244,7 @@ fn extract_with_walk(
         imports: Vec::new(),
         calls: Vec::new(),
         calls_truncated: false,
+        symbols_truncated: false,
     };
     let mut symbol_bytes = Vec::new();
     walk(tree.root_node(), source, &mut extraction, &mut symbol_bytes);

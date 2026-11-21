@@ -1,6 +1,6 @@
 use compresso_atlas::{
     AtlasError, CardOptions, DEFAULT_MAX_CARDS, QueryError, UnfoldResult, module_cards,
-    outline_current, repo_map_focused, repository_stale, unfold,
+    other_sql_definitions, outline_current, repo_map_focused, repository_stale, unfold,
 };
 use compresso_core::{TokenCounter, operation_identity};
 use compresso_store::{Store, SymbolKind, SymbolSelector};
@@ -251,7 +251,40 @@ fn unfold_tool(
         } => {
             let (content, tokens_used, truncated) =
                 bound_text(&content, form.content_budget(max_tokens), counter);
-            json!({
+            // E17-42 (D107): a SQL definition lists the other definitions of
+            // its name in path order, last first; every other language lists
+            // none.
+            // They are listed only within what the token budget leaves after
+            // the content, so they never push a result past `max_tokens`;
+            // `truncated` speaks for the content only, and `elision` says
+            // how many of the other definitions are listed.
+            let mut tokens_used = tokens_used;
+            let mut others = Vec::new();
+            let (definitions, total) = other_sql_definitions(store, repository.id, &path, &symbol)
+                .map_err(map_atlas_error)?;
+            for candidate in definitions {
+                let row = json!({
+                    "path": candidate.path,
+                    "qualified_name": candidate.qualified_name,
+                    "kind": symbol_kind_name(candidate.kind),
+                    "signature_hash": candidate.signature_hash,
+                    "start_line": candidate.start_line,
+                    "end_line": candidate.end_line
+                });
+                let cost = counter.count(&row.to_string());
+                if tokens_used.saturating_add(cost) > max_tokens {
+                    break;
+                }
+                tokens_used += cost;
+                others.push(row);
+            }
+            let elision = (others.len() < total).then(|| {
+                format!(
+                    "[{total} other definitions in path order, last first; {} shown]",
+                    others.len()
+                )
+            });
+            let mut payload = json!({
                 "schema_version": 1,
                 "operation_id": operation_id,
                 "status": "found",
@@ -261,11 +294,15 @@ fn unfold_tool(
                 "content": content,
                 "stale": stale,
                 "reindex_hint": reindex_hint,
-                "candidates": [],
+                "candidates": others,
                 "tokens_used": tokens_used,
                 "token_provider": counter.provider(),
                 "truncated": truncated
-            })
+            });
+            if let Some(elision) = elision {
+                payload["elision"] = json!(elision);
+            }
+            payload
         }
         UnfoldResult::Ambiguous {
             candidates,
