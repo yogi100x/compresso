@@ -1,0 +1,64 @@
+rust/compresso-atlas/tests/indexer_write_path.rs
+  s_89a704cfae63f5::t_390cf4ad89fd1d 1-73
+  s_89a704cfae63f5::t_394fafa6ee8744 74-358
+  s_89a704cfae63f5::t_cceca6061f7e81 359-361
+  s_30eeb8275caa42::t_409a4c02e08523 362-363
+rust/compresso-atlas/src/indexer.rs
+  s_89a704cfae63f5::t_cda16bfed808fd 1012-1019,1160
+  s_89a704cfae63f5::t_c0696cda9801c9 13,23-26,127,138,1020,1031,1143-1159,1161-1185,1187-1195,1197-1239,1241-1323,1478-1484,1490-1493
+  s_89a704cfae63f5::t_32b3d8a5e0a3ad 342,367,1240
+  s_89a704cfae63f5::t_1f7c58a27bec6d 297-306,313-320,322-341,343-357,364-366,372,374-380,1186,1196
+rust/compresso-store/src/lib.rs
+  s_89a704cfae63f5::t_6138e53ded8df4 5,34-35
+  s_89a704cfae63f5::t_55bbdcff836683 24
+rust/compresso-store/src/calls.rs
+  s_89a704cfae63f5::t_e2b1613cb2cb20 267
+rust/compresso-atlas/src/indexer/write_batch.rs
+  s_89a704cfae63f5::t_86c0853e3ecd59 1-2,10-13,15-38,40-67,69-87,89-95,99,101-175,181-224
+  s_89a704cfae63f5::t_a57c72280b41ea 176-180
+  s_89a704cfae63f5::t_e4e1a195413dfd 225
+  s_89a704cfae63f5::t_f699db8dc049d1 3-9,14,39,68,88,96-98,100
+rust/compresso-store/src/symbols.rs
+  s_89a704cfae63f5::t_808842ce37efd2 282-288,290-292,294-296,298
+  s_89a704cfae63f5::t_666389e69609d0 173-231
+  s_89a704cfae63f5::t_39bf0b7e516f14 647
+rust/compresso-store/src/index_write.rs
+  s_89a704cfae63f5::t_8cdedbd5000bf1 1,3-25,99,102-106,117-126,152-154,158,161-163,177-178,180-182,187-194,202,252-253
+  s_89a704cfae63f5::t_56809b0d82891f 195-201,204-205,223-228,249-251,254-257
+  s_89a704cfae63f5::t_472482dbf61010 258-592,594-603,628
+  s_89a704cfae63f5::t_66e5b58c7f75f6 2,26-98,100-101,107-116,127-151,155-157,159-160,164-176,179,183-186,203,206-222,229-248,593,604-627
+decisions.md
+  s_89a704cfae63f5::t_814aa7cec7d3db 110
+docs/plan/03-interfaces.md
+  s_89a704cfae63f5::t_592c8d3b71a73f 214-218,283
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_19918c911ce08e 2702,3427-3443,3459,3490-3492
+rust/compresso-store/src/files.rs
+  s_89a704cfae63f5::t_0320ab60eb09c7 169-172
+rust/compresso-store/src/repos.rs
+  s_89a704cfae63f5::t_5c159a89d747c5 302-304
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e3c29ef11469a2bacf41cffb5c8709eb3cd128b3",
+  "prompts": {},
+  "sessions": {
+    "s_30eeb8275caa42": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ae6a923488050139e",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
