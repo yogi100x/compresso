@@ -228,6 +228,13 @@ pub struct ImpactReport {
     /// bound, or the check bound was reached); when non-zero, `complete` is
     /// false.
     pub unevaluated: usize,
+    /// Java and C# (D105): files in scope of a checked file's package (its
+    /// package or namespace, the default package or global namespace, a
+    /// `global using` of it) with no recorded call naming one of its types.
+    /// They may use it in ways calls do not show (a type in a field or
+    /// parameter, a call through an interface, a constant read); when
+    /// non-zero, `complete` is false.
+    pub unproven: usize,
     /// Java and C#: a file declared more packages or namespaces than are
     /// read, so links through the rest are missing; `complete` is false.
     pub packages_limited: bool,
@@ -408,14 +415,14 @@ pub fn repo_map_focused(
             .or_default()
             .insert(edge.from_path);
     }
-    for (importer, member) in package_import_pairs(store, repo)? {
-        importers.entry(member).or_default().insert(importer);
-    }
+    // Java and C# whole-package imports count per file of the package.
+    let package_in_degree = package_import_counts(store, repo)?.file_in_degree;
 
     let mut ranked = files
         .iter()
         .map(|file| {
-            let in_degree = importers.get(&file.path).map_or(0, BTreeSet::len);
+            let in_degree = importers.get(&file.path).map_or(0, BTreeSet::len)
+                + package_in_degree.get(&file.path).copied().unwrap_or(0);
             let mut symbols = store.symbols_in_file(repo, &file.path)?;
             // A Java package or C# namespace names the file's place, not
             // its content: the map lists the file's types and members.
@@ -991,6 +998,12 @@ pub fn impact_with_options(
         frontier = next;
     }
 
+    // A file found as a dependent is neither unevaluated nor unproven; the
+    // file asked about is neither.
+    let mut found = discovered.keys().cloned().collect::<BTreeSet<_>>();
+    found.insert(path.to_owned());
+    let unevaluated = evidence.unevaluated.difference(&found).count();
+    let unproven = evidence.unproven.difference(&found).count();
     let mut dependents = discovered
         .into_iter()
         .map(|(path, (depth, kinds, package))| ImpactEntry {
@@ -1018,7 +1031,6 @@ pub fn impact_with_options(
     let truncated = dependents.len() > options.max_results;
     dependents.truncate(options.max_results);
     let resolution_counts = store.edge_resolution_counts(repo)?;
-    let unevaluated = evidence.unevaluated.len();
     let packages_limited = packages.as_ref().is_some_and(|links| links.limited);
     Ok(ImpactReport {
         path: path.to_owned(),
@@ -1030,33 +1042,44 @@ pub fn impact_with_options(
             && resolution_counts.ambiguous == 0
             && !truncated
             && unevaluated == 0
+            && unproven == 0
             && !packages_limited,
         truncated,
         unevaluated,
+        unproven,
         packages_limited,
     })
 }
 
-/// At most this many (importer, file) pairs are read from whole-package
-/// imports for rankings and module cards.
-const MAX_PACKAGE_LINK_PAIRS: usize = 200_000;
-
 /// Java and C# whole-package imports (D105, one stored record each) as
-/// (importer, file of the package) pairs, so rankings and module cards
-/// count them as they count file edges. At most
-/// [`MAX_PACKAGE_LINK_PAIRS`]; a `global using` (every file of the
-/// language) and files that declare no type are left out.
-pub(crate) fn package_import_pairs(
+/// counts, so rankings and module cards count them as they count file edges
+/// without building a pair per importer and file: for each file, how many
+/// files import one of its packages whole; for each (importer directory,
+/// package directory) pair, how many records link them. `global using`
+/// records and files that declare no type are left out. Cost: linear in
+/// package records and declared packages, plus the distinct directory pairs
+/// of each package.
+pub(crate) struct PackageImportCounts {
+    pub(crate) file_in_degree: HashMap<String, usize>,
+    pub(crate) directory_links: BTreeMap<(String, String), usize>,
+}
+
+pub(crate) fn package_import_counts(
     store: &Store,
     repo: RepoId,
-) -> Result<Vec<(String, String)>, AtlasError> {
+) -> Result<PackageImportCounts, AtlasError> {
+    let mut counts = PackageImportCounts {
+        file_in_degree: HashMap::new(),
+        directory_links: BTreeMap::new(),
+    };
     let records =
         store.unresolved_edge_targets_with_detail(repo, compresso_store::EDGE_DETAIL_PACKAGE)?;
     if records.is_empty() {
-        return Ok(Vec::new());
+        return Ok(counts);
     }
     let language_of =
         |path: &str| ParserRegistry::for_path(Path::new(path)).map(FileLanguage::as_str);
+    let directory_of = |path: &str| path.rsplit_once('/').map_or("", |(dir, _)| dir).to_owned();
     let mut members = HashMap::<(&'static str, String), Vec<String>>::new();
     for (path, name) in
         store.module_declarations(repo, &crate::parsers::languages::declaring_languages())?
@@ -1068,7 +1091,8 @@ pub(crate) fn package_import_pairs(
             members.entry((language, name)).or_default().push(path);
         }
     }
-    let mut pairs = Vec::new();
+    // Importer files and directories per package.
+    let mut importers = HashMap::<(&'static str, String), (usize, BTreeMap<String, usize>)>::new();
     for (importer, raw) in records {
         if raw.starts_with(crate::declared_imports::GLOBAL_IMPORT_PREFIX)
             || is_secret_path(Path::new(&importer))
@@ -1079,16 +1103,31 @@ pub(crate) fn package_import_pairs(
             continue;
         };
         let name = raw.strip_suffix(".*").unwrap_or(&raw).to_owned();
-        for member in members.get(&(language, name)).into_iter().flatten() {
-            if pairs.len() == MAX_PACKAGE_LINK_PAIRS {
-                return Ok(pairs);
-            }
-            if *member != importer {
-                pairs.push((importer.clone(), member.clone()));
+        let entry = importers.entry((language, name)).or_default();
+        entry.0 += 1;
+        *entry.1.entry(directory_of(&importer)).or_default() += 1;
+    }
+    for (key, (files, directories)) in importers {
+        let Some(declaring) = members.get(&key) else {
+            continue;
+        };
+        let mut member_directories = BTreeSet::new();
+        for member in declaring {
+            *counts.file_in_degree.entry(member.clone()).or_default() += files;
+            member_directories.insert(directory_of(member));
+        }
+        for (from, links) in &directories {
+            for to in &member_directories {
+                if from != to {
+                    *counts
+                        .directory_links
+                        .entry((from.clone(), to.clone()))
+                        .or_default() += links;
+                }
             }
         }
     }
-    Ok(pairs)
+    Ok(counts)
 }
 
 /// At most this many packages or namespaces of one file take part in
@@ -1098,58 +1137,99 @@ const MAX_PACKAGES_PER_FILE: usize = 64;
 /// At most this many files are checked for same-package use in one
 /// `impact`; past it the answer is incomplete.
 const MAX_EVIDENCE_TARGETS: usize = 64;
-/// At most this many member names of one file are tested for being its own.
-const MAX_EVIDENCE_MEMBERS: usize = 512;
+/// At most this many type names of one file are looked for in call sites;
+/// a file declaring more is unevaluated.
+const MAX_EVIDENCE_TYPES: usize = 64;
 
-/// What the same-package checks of one `impact` could not settle.
+/// What the same-package checks of one `impact` found and could not settle.
 #[derive(Default)]
 struct EvidenceState {
     checked: usize,
-    /// Files that might use a checked file but could not be shown not to:
-    /// their call sites stopped at the per-file bound, or the check bound
-    /// was reached.
+    /// Files in scope that might use a checked file but whose use could not
+    /// be checked: their call extraction was cut, or a check bound was hit.
     unevaluated: BTreeSet<String>,
-    truncated: Option<BTreeSet<String>>,
+    /// Files in scope with no recorded call naming a checked file's types:
+    /// they may still use it (a type in a field or parameter, a call through
+    /// an interface, a constant read), which calls cannot show.
+    unproven: BTreeSet<String>,
+    cut: Option<BTreeSet<String>>,
     expanded: HashSet<(&'static str, String)>,
 }
 
-/// Java and C# package and namespace links (D105, owner decision
-/// 2026-11-21; same-package rule by orchestrator decision of the same day,
-/// awaiting owner confirmation). A file's dependents through its package
-/// are (a) the files importing the package whole (one stored record each:
-/// they import the package that holds the file, whether or not they use
-/// it), and (b) the files of the same package (Java; the default package
-/// for a file that declares none) or of the same or a nested namespace (C#;
-/// every namespace for the global one) that have a stored call site naming
-/// something the file defines: a callee name, or a type in a qualifier.
-/// Read once per `impact`.
+/// Java and C# package and namespace links (D105). A file's dependents
+/// through its package are (a) the files importing the package whole (one
+/// stored record each: they import the package that holds the file, listed
+/// whether or not they use it), and (b) the files in scope of its package
+/// without an import: the same package (Java; the default package for a
+/// file that declares none), the same, a nested, or (for a file in the
+/// global namespace) any namespace (C#), and the files of the project a
+/// `global using` of the package reaches. Of (b), a file with a stored call
+/// naming one of the file's types is listed (`references`); a file whose
+/// calls were cut is `unevaluated`; every other one is `unproven`. Both
+/// make `complete` false. Read once per `impact`.
 struct PackageLinks {
     /// Every Java and C# file: its language and declared packages (empty
     /// for the default package or global namespace).
     declared: HashMap<String, (&'static str, Vec<String>)>,
     importers: HashMap<(&'static str, String), Vec<String>>,
-    /// Namespaces a C# `global using` imports into every file of the
-    /// language: a file using the target through one is an importer.
-    global: HashSet<(&'static str, String)>,
+    /// `global using` records: (language, name), with the directory whose
+    /// files they reach (`""` for the whole repository).
+    global: Vec<(&'static str, String, String)>,
     /// A file declared more packages than are read.
     limited: bool,
+}
+
+/// The directory a C# `global using` in `path` reaches: the nearest
+/// ancestor directory holding an indexed `.csproj` file (its project), or
+/// the whole repository (`""`) when none does.
+pub(crate) fn global_using_scope(path: &str, projects: &BTreeSet<String>) -> String {
+    let mut directory = path.rsplit_once('/').map_or("", |(dir, _)| dir);
+    loop {
+        if projects.contains(directory) {
+            return directory.to_owned();
+        }
+        match directory.rsplit_once('/') {
+            Some((parent, _)) => directory = parent,
+            None if !directory.is_empty() => directory = "",
+            None => return String::new(),
+        }
+    }
+}
+
+/// Whether `path` lies in directory `scope` (`""` is the whole repository).
+pub(crate) fn in_scope(path: &str, scope: &str) -> bool {
+    scope.is_empty()
+        || path
+            .strip_prefix(scope)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// The directories of indexed `.csproj` files.
+pub(crate) fn project_directories(paths: impl Iterator<Item = String>) -> BTreeSet<String> {
+    paths
+        .filter(|path| path.ends_with(".csproj"))
+        .map(|path| path.rsplit_once('/').map_or("", |(dir, _)| dir).to_owned())
+        .collect()
 }
 
 impl PackageLinks {
     fn load(store: &Store, repo: RepoId) -> Result<Option<Self>, AtlasError> {
         let languages = crate::parsers::languages::declaring_languages();
         let mut declared = HashMap::<String, (&'static str, Vec<String>)>::new();
+        let mut all_paths = Vec::new();
         for file in store.indexed_files(repo)? {
             if let Some(language) = file
                 .language
                 .filter(|language| languages.contains(language))
             {
-                declared.insert(file.path, (language.as_str(), Vec::new()));
+                declared.insert(file.path.clone(), (language.as_str(), Vec::new()));
             }
+            all_paths.push(file.path);
         }
         if declared.is_empty() {
             return Ok(None);
         }
+        let projects = project_directories(all_paths.into_iter());
         let mut limited = false;
         for (path, name) in store.module_declarations(repo, &languages)? {
             let Some(entry) = declared.get_mut(&path) else {
@@ -1165,7 +1245,7 @@ impl PackageLinks {
             entry.1.push(name);
         }
         let mut importers = HashMap::<(&'static str, String), Vec<String>>::new();
-        let mut global = HashSet::<(&'static str, String)>::new();
+        let mut global = Vec::new();
         for (path, raw) in
             store.unresolved_edge_targets_with_detail(repo, compresso_store::EDGE_DETAIL_PACKAGE)?
         {
@@ -1173,7 +1253,11 @@ impl PackageLinks {
                 continue;
             };
             if let Some(name) = raw.strip_prefix(crate::declared_imports::GLOBAL_IMPORT_PREFIX) {
-                global.insert((*language, name.to_owned()));
+                global.push((
+                    *language,
+                    name.to_owned(),
+                    global_using_scope(&path, &projects),
+                ));
                 continue;
             }
             let name = raw.strip_suffix(".*").unwrap_or(&raw).to_owned();
@@ -1198,9 +1282,8 @@ impl PackageLinks {
         Some((language, names))
     }
 
-    /// The target package a file of `language` and `theirs` packages shares
-    /// with a target of `ours`: the same package, or for C# a nested or the
-    /// global namespace.
+    /// The target package a file with `theirs` packages shares with a target
+    /// of `ours`: the same package, or for C# a nested or the global one.
     fn shared<'a>(ours: &[&'a str], theirs: &[&str], nested: bool) -> Option<&'a str> {
         ours.iter().copied().find(|ours| {
             theirs.iter().any(|theirs| {
@@ -1214,7 +1297,8 @@ impl PackageLinks {
         })
     }
 
-    /// Appends the files linked to `target` through its packages.
+    /// Appends the files linked to `target` through its packages and notes
+    /// the files in scope that could not be shown to use it.
     fn dependents(
         &self,
         store: &Store,
@@ -1251,84 +1335,104 @@ impl PackageLinks {
                 ));
             }
         }
-        let mate = |path: &str| {
-            let (theirs_language, theirs) = self.packages_of(path)?;
-            (theirs_language == language && path != target)
-                .then(|| Self::shared(&packages, &theirs, nested))
-                .flatten()
-        };
-        if state.checked == MAX_EVIDENCE_TARGETS {
-            state.unevaluated.insert(target.to_owned());
+        // The files in scope without an import: package mates, and the
+        // files a `global using` of one of the packages reaches.
+        let stem = target.rsplit('/').next().unwrap_or(target);
+        let stem = stem.split('.').next().unwrap_or(stem);
+        let globals = self
+            .global
+            .iter()
+            .filter(|(global_language, name, _)| {
+                *global_language == language
+                    && packages.iter().any(|package| {
+                        !package.is_empty()
+                            && (name == package || *name == format!("{package}.{stem}"))
+                    })
+            })
+            .collect::<Vec<_>>();
+        let mut scope = Vec::new();
+        for (path, (theirs_language, _)) in &self.declared {
+            if *theirs_language != language
+                || path == target
+                || crate::parsers::languages::is_declaration_only(path)
+            {
+                continue;
+            }
+            let theirs = self
+                .packages_of(path)
+                .map(|(_, names)| names)
+                .unwrap_or_default();
+            if let Some(package) = Self::shared(&packages, &theirs, nested) {
+                scope.push((path.clone(), EdgeKind::References, package.to_owned()));
+            } else if let Some((_, name, _)) = globals
+                .iter()
+                .find(|(_, _, directory)| in_scope(path, directory))
+            {
+                let package = name
+                    .rsplit_once('.')
+                    .filter(|_| !packages.contains(&name.as_str()));
+                let package = package.map_or(name.as_str(), |(package, _)| package);
+                scope.push((path.clone(), EdgeKind::Imports, package.to_owned()));
+            }
+        }
+        if scope.is_empty() {
+            return Ok(());
+        }
+        self.evidence(store, repo, target, scope, state, linked)
+    }
+
+    /// Lists the files of `scope` with a stored call naming one of
+    /// `target`'s types; counts the others as `unevaluated` (calls cut, or a
+    /// bound reached) or `unproven`.
+    fn evidence(
+        &self,
+        store: &Store,
+        repo: RepoId,
+        target: &str,
+        scope: Vec<(String, EdgeKind, String)>,
+        state: &mut EvidenceState,
+        linked: &mut Vec<(String, Vec<EdgeKind>, Option<String>)>,
+    ) -> Result<(), AtlasError> {
+        let mut types = store
+            .symbols_in_file(repo, target)?
+            .into_iter()
+            .filter(|symbol| {
+                matches!(
+                    symbol.kind,
+                    SymbolKind::Class
+                        | SymbolKind::Struct
+                        | SymbolKind::Interface
+                        | SymbolKind::Enum
+                        | SymbolKind::Type
+                )
+            })
+            .map(|symbol| symbol.name)
+            .collect::<Vec<_>>();
+        types.sort();
+        types.dedup();
+        if state.checked == MAX_EVIDENCE_TARGETS || types.len() > MAX_EVIDENCE_TYPES {
+            state
+                .unevaluated
+                .extend(scope.into_iter().map(|(path, _, _)| path));
             return Ok(());
         }
         state.checked += 1;
-        // Evidence of use: a call naming one of the file's types (`new T()`,
-        // `T.m()`, `a.b.T.m()`), or a call to a member name no other file
-        // defines; a member name shared with other files (`get`, `Make`)
-        // is not evidence, since the call may mean any of them.
-        let mut members = Vec::new();
-        let mut types = Vec::new();
-        for symbol in store.symbols_in_file(repo, target)? {
-            match symbol.kind {
-                SymbolKind::Module => {}
-                SymbolKind::Class
-                | SymbolKind::Struct
-                | SymbolKind::Interface
-                | SymbolKind::Enum
-                | SymbolKind::Type
-                | SymbolKind::Trait => types.push(symbol.name),
-                _ => members.push(symbol.name),
-            }
+        let users = if types.is_empty() {
+            BTreeSet::new()
+        } else {
+            store.files_with_call_sites_naming(repo, &types, &types)?
+        };
+        if state.cut.is_none() {
+            state.cut = Some(store.files_with_cut_call_sites(repo)?);
         }
-        types.sort();
-        types.dedup();
-        members.sort();
-        members.dedup();
-        if members.len() > MAX_EVIDENCE_MEMBERS {
-            members.truncate(MAX_EVIDENCE_MEMBERS);
-            state.unevaluated.insert(target.to_owned());
-        }
-        let defined = store.files_defining_names(repo, &members)?;
-        let mut names = types.clone();
-        names.extend(
-            members
-                .into_iter()
-                .filter(|name| defined.get(name).copied().unwrap_or(0) <= 1),
-        );
-        let users = store.files_with_call_sites_naming(repo, &names, &types)?;
-        let global = packages.iter().copied().find(|package| {
-            !package.is_empty() && self.global.contains(&(language, (*package).to_owned()))
-        });
-        for user in &users {
-            if let Some(package) = mate(user) {
-                linked.push((
-                    user.clone(),
-                    vec![EdgeKind::References],
-                    Some(package.to_owned()),
-                ));
-            } else if let Some(package) = global
-                && user != target
-                && self
-                    .declared
-                    .get(user)
-                    .is_some_and(|(theirs, _)| *theirs == language)
-            {
-                // Imports the namespace through a `global using`.
-                linked.push((
-                    user.clone(),
-                    vec![EdgeKind::Imports],
-                    Some(package.to_owned()),
-                ));
-            }
-        }
-        if state.truncated.is_none() {
-            state.truncated = Some(
-                store.files_with_call_sites_at_least(repo, crate::parsers::MAX_CALLS_PER_FILE)?,
-            );
-        }
-        for cut in state.truncated.iter().flatten() {
-            if !users.contains(cut) && mate(cut).is_some() {
-                state.unevaluated.insert(cut.clone());
+        let cut = state.cut.as_ref().expect("loaded above");
+        for (path, kind, package) in scope {
+            if users.contains(&path) {
+                linked.push((path, vec![kind], Some(package)));
+            } else if cut.contains(&path) {
+                state.unevaluated.insert(path);
+            } else {
+                state.unproven.insert(path);
             }
         }
         Ok(())

@@ -310,6 +310,22 @@ fn signature_prefix(text: &str) -> &str {
     &text[..end]
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Bytes of signature text built once per declared name, on this thread
+    /// (tests only): pins that a long shared prefix is cut before it is
+    /// copied per name (review rounds 3 and 4).
+    static PER_NAME_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Signature text built for one of several names of a declaration; counted
+/// in test builds.
+fn per_name_text(text: String) -> String {
+    #[cfg(test)]
+    PER_NAME_BYTES.with(|bytes| bytes.set(bytes.get() + text.len()));
+    text
+}
+
 /// Whether [`signature_prefix`] cuts `text`.
 fn is_cut(text: &str) -> bool {
     text.len() > MAX_SIGNATURE_BYTES + 8
@@ -1054,6 +1070,42 @@ mod tests {
         let signature = bounded_signature(&format!("{prefix} name")).expect("signature");
         assert!(signature.len() <= MAX_SIGNATURE_BYTES && signature.ends_with('…'));
         assert_eq!(signature_prefix("short"), "short");
+    }
+
+    /// Rounds 3 and 4 (review M1, S4): 2,000 names behind a 330 KB (Java,
+    /// C#) or 500 KB (Go) type copy at most a bounded prefix per name; with
+    /// the prefix copied whole they would copy 660 MB or more. Counted, not
+    /// timed, so it cannot flake on a slow machine.
+    #[test]
+    fn test_per_name_signatures_copy_a_bounded_prefix() {
+        use super::PER_NAME_BYTES;
+        let names = vec!["a"; 2_000].join(",");
+        let java_type = format!("List<{}A>", "A,".repeat(165_000));
+        let go_type = format!("struct{{ {} int }}", "x".repeat(500_000));
+        for (language, source) in [
+            (
+                Language::Java,
+                format!("class A {{\n  {java_type} {names};\n}}\n"),
+            ),
+            (
+                Language::CSharp,
+                format!("class A {{\n  {java_type} {names};\n}}\n"),
+            ),
+            (
+                Language::Go,
+                format!("package p\n\nvar {} {go_type}\n", names.replace(',', ", ")),
+            ),
+        ] {
+            PER_NAME_BYTES.with(|bytes| bytes.set(0));
+            let extraction = ParserRegistry::extract(language, &source).expect("extracts");
+            assert!(extraction.symbols.len() >= 2_000, "{language:?}");
+            let copied = PER_NAME_BYTES.with(std::cell::Cell::get);
+            assert!(copied > 0, "{language:?}");
+            assert!(
+                copied <= 2_000 * (MAX_SIGNATURE_BYTES + 64),
+                "{language:?} copied {copied} bytes"
+            );
+        }
     }
 
     /// Round 3 nit: a cut kept part that ends in spaces still gives the

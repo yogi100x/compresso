@@ -39,6 +39,8 @@ pub(crate) const GLOBAL_IMPORT_PREFIX: &str = "global:";
 pub(crate) struct DeclaredPackages {
     /// (language, package or namespace) to how many files declare it.
     packages: HashMap<Key, usize>,
+    /// The same names, ordered, for prefix lookups.
+    names: std::collections::BTreeSet<Key>,
     /// (language, package, file name up to its first `.`) to those files,
     /// sorted: the files one type import can name.
     types: HashMap<(&'static str, String, String), Vec<String>>,
@@ -70,7 +72,12 @@ impl DeclaredPackages {
                 (key, paths)
             })
             .collect();
-        Self { packages, types }
+        let names = packages.keys().cloned().collect();
+        Self {
+            packages,
+            names,
+            types,
+        }
     }
 
     /// One package record, the type files an import names (never the
@@ -133,24 +140,61 @@ impl DeclaredPackages {
                 while let Some(enclosing) = outer.filter(|enclosing| !enclosing.is_empty()) {
                     let full = format!("{enclosing}.{raw}");
                     let found = self.resolve(importer, language, &full);
-                    let matched = found.iter().any(|(path, resolution)| {
-                        path.is_some()
-                            || *resolution
-                                == ImportResolution::Unresolved(EDGE_DETAIL_PACKAGE.to_owned())
-                    });
-                    if matched {
+                    if Self::matched(&found) {
                         return (full, found);
+                    }
+                    // A namespace the repository declares only through its
+                    // children: one record naming it, holding no file.
+                    if self.has_children(language, &full) {
+                        return (
+                            full,
+                            vec![(
+                                None,
+                                ImportResolution::Unresolved(EDGE_DETAIL_PACKAGE.to_owned()),
+                            )],
+                        );
                     }
                     outer = enclosing.rfind('.').map(|dot| &enclosing[..dot]);
                 }
                 (raw.to_owned(), self.resolve(importer, language, raw))
             }
-            ImportContext::Global => (
-                format!("{GLOBAL_IMPORT_PREFIX}{raw}"),
-                self.resolve(importer, language, raw),
-            ),
+            // A `global using` (also `global using static N.T;`) is one
+            // record naming what it imports, read by queries for the files
+            // of its project.
+            ImportContext::Global => {
+                let found = self.resolve(importer, language, raw);
+                let stored = format!("{GLOBAL_IMPORT_PREFIX}{raw}");
+                if Self::matched(&found) {
+                    (
+                        stored,
+                        vec![(
+                            None,
+                            ImportResolution::Unresolved(EDGE_DETAIL_PACKAGE.to_owned()),
+                        )],
+                    )
+                } else {
+                    (stored, found)
+                }
+            }
             _ => (raw.to_owned(), self.resolve(importer, language, raw)),
         }
+    }
+
+    /// A package record or a resolved file.
+    fn matched(found: &[(Option<String>, ImportResolution)]) -> bool {
+        found.iter().any(|(path, resolution)| {
+            path.is_some()
+                || *resolution == ImportResolution::Unresolved(EDGE_DETAIL_PACKAGE.to_owned())
+        })
+    }
+
+    /// Whether a declared package of `language` lies below `name`.
+    fn has_children(&self, language: FileLanguage, name: &str) -> bool {
+        let below = format!("{name}.");
+        self.names
+            .range((language.as_str(), below.clone())..)
+            .next()
+            .is_some_and(|(found, next)| *found == language.as_str() && next.starts_with(&below))
     }
 
     fn is_package(&self, language: FileLanguage, name: &str) -> bool {

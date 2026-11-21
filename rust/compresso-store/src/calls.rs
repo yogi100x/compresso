@@ -93,6 +93,12 @@ pub struct StoredCallSite {
 
 const SYMBOL_COLUMNS: &str = "s.id, s.name, s.qualified_name, s.kind, s.signature, s.start_line, s.end_line, s.token_estimate, f.path, f.language";
 /// A total order over call rows, so a `LIMIT` always keeps the same rows.
+/// The callee name of one marker row a file holds when its call extraction
+/// stopped at a per-file bound (E17-40, D105): not a call, and never an
+/// identifier the extractors write. Every reader of call sites leaves it
+/// out except [`Store::files_with_cut_call_sites`].
+pub const CALL_SITES_CUT_MARKER: &str = "<call sites cut>";
+
 const CALL_ORDER: &str = "f.path ASC, c.line ASC, c.caller_symbol_id ASC, c.callee_name ASC, c.call_form ASC, c.callee_qualifier ASC, c.id ASC";
 const CALL_COLUMNS: &str = "c.caller_symbol_id, caller.qualified_name, f.path, c.callee_name, c.callee_qualifier, c.call_form, c.line";
 
@@ -169,7 +175,7 @@ impl Store {
             }
             let placeholders = placeholders(chunk.len());
             let mut statement = connection.prepare(&format!(
-                "SELECT {CALL_COLUMNS} FROM call_sites AS c JOIN symbols AS caller ON caller.id = c.caller_symbol_id JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 AND c.caller_symbol_id IN ({placeholders}) ORDER BY {CALL_ORDER} LIMIT {}",
+                "SELECT {CALL_COLUMNS} FROM call_sites AS c JOIN symbols AS caller ON caller.id = c.caller_symbol_id JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 AND c.caller_symbol_id IN ({placeholders}) AND c.callee_name != '{CALL_SITES_CUT_MARKER}' ORDER BY {CALL_ORDER} LIMIT {}",
                 sqlite_limit(remaining)
             ))?;
             let parameters = std::iter::once(repo).chain(chunk.iter().copied());
@@ -195,7 +201,7 @@ impl Store {
         let connection = self.connection()?;
         ensure_repo_exists(&connection, repo)?;
         let mut statement = connection.prepare_cached(&format!(
-            "SELECT {CALL_COLUMNS} FROM call_sites AS c JOIN symbols AS caller ON caller.id = c.caller_symbol_id JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 AND c.callee_name = ?2 ORDER BY {CALL_ORDER} LIMIT ?3"
+            "SELECT {CALL_COLUMNS} FROM call_sites AS c JOIN symbols AS caller ON caller.id = c.caller_symbol_id JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 AND c.callee_name = ?2 AND c.callee_name != '{CALL_SITES_CUT_MARKER}' ORDER BY {CALL_ORDER} LIMIT ?3"
         ))?;
         let raw = statement
             .query_map(params![repo, callee_name, sqlite_limit(limit)], call_row)?
@@ -266,50 +272,20 @@ impl Store {
         Ok(paths)
     }
 
-    /// For each of `names`, how many indexed files define a symbol of that
-    /// name (through the `symbols(name)` index, in chunks of 400).
-    pub fn files_defining_names(
+    /// The paths of files holding the [`CALL_SITES_CUT_MARKER`] row: files
+    /// whose call extraction stopped at a per-file bound, so their stored
+    /// call sites may miss calls written later in the file.
+    pub fn files_with_cut_call_sites(
         &self,
         repo: RepoId,
-        names: &[String],
-    ) -> Result<std::collections::HashMap<String, usize>, StoreError> {
-        let connection = self.connection()?;
-        ensure_repo_exists(&connection, repo)?;
-        let mut counts = std::collections::HashMap::new();
-        for chunk in names.chunks(ID_CHUNK) {
-            let mut statement = connection.prepare(&format!(
-                "SELECT s.name, COUNT(DISTINCT s.file_id) FROM symbols AS s JOIN files AS f ON f.id = s.file_id WHERE f.repo_id = ?1 AND s.name IN ({}) GROUP BY s.name",
-                placeholders(chunk.len())
-            ))?;
-            let parameters = std::iter::once(rusqlite::types::Value::from(repo)).chain(
-                chunk
-                    .iter()
-                    .map(|name| rusqlite::types::Value::from(name.clone())),
-            );
-            for row in statement.query_map(params_from_iter(parameters), |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-            })? {
-                let (name, count) = row?;
-                counts.insert(name, usize::try_from(count).unwrap_or(usize::MAX));
-            }
-        }
-        Ok(counts)
-    }
-
-    /// The paths of files holding at least `count` stored call sites: files
-    /// whose call extraction may have stopped at its per-file bound.
-    pub fn files_with_call_sites_at_least(
-        &self,
-        repo: RepoId,
-        count: usize,
     ) -> Result<std::collections::BTreeSet<String>, StoreError> {
         let connection = self.connection()?;
         ensure_repo_exists(&connection, repo)?;
         let mut statement = connection.prepare(
-            "SELECT f.path FROM call_sites AS c JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 GROUP BY c.from_file_id HAVING COUNT(*) >= ?2",
+            "SELECT DISTINCT f.path FROM call_sites AS c JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 AND c.callee_name = ?2",
         )?;
         let rows = statement
-            .query_map(params![repo, sqlite_limit(count)], |row| {
+            .query_map(params![repo, CALL_SITES_CUT_MARKER], |row| {
                 row.get::<_, String>(0)
             })?
             .collect::<Result<_, _>>()?;
@@ -321,7 +297,9 @@ impl Store {
         let connection = self.connection()?;
         ensure_repo_exists(&connection, repo)?;
         let count: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM call_sites WHERE repo_id = ?1",
+            &format!(
+                "SELECT COUNT(*) FROM call_sites WHERE repo_id = ?1 AND callee_name != '{CALL_SITES_CUT_MARKER}'"
+            ),
             [repo],
             |row| row.get(0),
         )?;

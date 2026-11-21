@@ -535,6 +535,49 @@ impl Indexer<'_> {
             .filter(|package| !after.contains(*package))
             .cloned()
             .collect::<HashSet<_>>();
+        // A C# `using` written inside a namespace is stored by the name it
+        // resolved to, so a namespace that appears or disappears can change
+        // what it means (`Util` in `Acme.Web` becomes `Acme.Web.Util`):
+        // every C# file with an import is re-resolved then (review round 4).
+        let before = stored
+            .iter()
+            .filter_map(|(path, names)| declaring_language(path).map(|language| (language, names)))
+            .flat_map(|(language, names)| {
+                names
+                    .iter()
+                    .map(move |name| (language.as_str(), name.clone()))
+            })
+            .collect::<HashSet<_>>();
+        let relative_languages = moved
+            .iter()
+            .filter(|package| !before.contains(*package) || !after.contains(*package))
+            .map(|(language, _)| *language)
+            .filter(|language| {
+                languages::LANGUAGES.iter().any(|spec| {
+                    spec.language.as_str() == *language && spec.imports == ImportStyle::CSharp
+                })
+            })
+            .collect::<HashSet<_>>();
+        if !relative_languages.is_empty() {
+            let resolved = self
+                .store
+                .resolved_edges(repo)?
+                .into_iter()
+                .map(|edge| edge.from_path);
+            let unresolved = self
+                .store
+                .unresolved_edge_targets(repo)?
+                .into_iter()
+                .map(|(from, _, _)| from);
+            for from in resolved.chain(unresolved) {
+                if !removed.contains(&from)
+                    && declaring_language(&from)
+                        .is_some_and(|language| relative_languages.contains(language.as_str()))
+                {
+                    candidates.insert(PathBuf::from(from));
+                }
+            }
+        }
         // A type import names every file of its package named after the
         // type (`Store.cs`, `Store.Part.cs`): a file added under, or moved to
         // or from, such a name re-resolves the importers of its namesakes.
@@ -690,13 +733,31 @@ fn write_prepared(
 ) -> Result<bool, AtlasError> {
     let rejected =
         compresso_store::validate_call_sites(&prepared.calls, prepared.symbols.len()).is_err();
-    let calls: &[CallSiteRecord] = if rejected { &[] } else { &prepared.calls };
+    let mut calls = if rejected {
+        Vec::new()
+    } else {
+        prepared.calls.clone()
+    };
+    // Java and C# (D105): a file whose call sites are cut or dropped holds
+    // one marker row, so `impact` can tell that its calls may be missing.
+    if (prepared.calls_truncated || rejected)
+        && !prepared.symbols.is_empty()
+        && declaring_language(&prepared.record.path).is_some()
+    {
+        calls.push(CallSiteRecord {
+            caller: 0,
+            callee_name: compresso_store::CALL_SITES_CUT_MARKER.to_owned(),
+            qualifier: None,
+            form: compresso_store::CallForm::Plain,
+            line: 1,
+        });
+    }
     store.replace_indexed_file_with_calls(
         repo,
         &prepared.record,
         &prepared.symbols,
         &prepared.edges,
-        calls,
+        &calls,
     )?;
     Ok(rejected)
 }

@@ -2827,7 +2827,9 @@ async fn test_impact_result_names_totals_and_the_linking_package() {
     let value: Value = serde_json::from_str(&text).expect("JSON result");
     assert_eq!(value["total"], 2);
     assert_eq!(value["shown"], 2);
-    assert_eq!(value["complete"], true);
+    // `Idle.cs` shares the namespace and shows no use: unproven.
+    assert_eq!(value["unproven"], 1);
+    assert_eq!(value["complete"], false);
     assert_eq!(
         value["dependents"][1],
         json!({ "path": "lib/User.cs", "depth": 1, "edge_kinds": ["references"], "package": "Lib" })

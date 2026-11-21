@@ -46,6 +46,7 @@ fn test_impact_depth_two() {
             complete: true,
             truncated: false,
             unevaluated: 0,
+            unproven: 0,
             packages_limited: false,
         }
     );

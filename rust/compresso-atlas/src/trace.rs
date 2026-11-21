@@ -25,6 +25,7 @@ use crate::parsers::languages::{
 };
 use crate::parsers::signature_modifiers as modifiers;
 use crate::queries::QueryError;
+use crate::queries::{global_using_scope, in_scope, project_directories};
 use crate::scanner::is_secret_path;
 
 /// Deepest call path or neighbour expansion a trace follows.
@@ -588,15 +589,19 @@ struct Resolver<'a> {
     /// Java and C# only: the simple names (last part) of each file's
     /// external imports.
     declared_external_names: Option<HashMap<String, HashSet<String>>>,
+    /// The directories of indexed `.csproj` files.
+    projects: Option<BTreeSet<String>>,
     /// Java and C# only: the packages or namespaces each file declares.
     file_packages: Option<HashMap<String, Vec<String>>>,
     /// C# `global using` records: (language, namespace) every file of the
     /// language imports.
-    global_imports: HashSet<(&'static str, String)>,
+    global_imports: Vec<(&'static str, String, String)>,
+    /// External `global using` names with the directory they reach.
+    global_external: Vec<(String, String)>,
     /// A file declared more packages than are read.
     packages_limited: bool,
     /// Every declared Java or C# package or namespace name.
-    known_packages: HashSet<String>,
+    known_packages: HashSet<(&'static str, String)>,
     /// Java and C# only: per file, the packages or namespaces it imports
     /// whole (one record each, owner decision 2026-11-21).
     package_imports: Option<HashMap<String, HashSet<String>>>,
@@ -615,9 +620,11 @@ impl<'a> Resolver<'a> {
             imports: None,
             external_names: None,
             declared_external_names: None,
+            projects: None,
             file_packages: None,
             packages_limited: false,
-            global_imports: HashSet::new(),
+            global_imports: Vec::new(),
+            global_external: Vec::new(),
             known_packages: HashSet::new(),
             package_imports: None,
             no_names: HashSet::new(),
@@ -985,7 +992,12 @@ impl<'a> Resolver<'a> {
         let mut qualifier_is_member = false;
         if form == CallForm::Path {
             let names = self.declared_external_names(from)?.clone();
-            let global = self.declared_external_names(GLOBAL_IMPORT_PREFIX)?;
+            let global = self
+                .global_external
+                .iter()
+                .filter(|(_, scope)| in_scope(from, scope))
+                .map(|(name, _)| name.as_str())
+                .collect::<HashSet<_>>();
             // Any dotted prefix: `Collections`, `System.Console`.
             external = qualifier
                 .match_indices('.')
@@ -1007,6 +1019,8 @@ impl<'a> Resolver<'a> {
         let caller_is_test = is_test_code(from);
         let packages = self.file_packages.as_ref().expect("loaded above");
         let known_packages = &self.known_packages;
+        let caller_language =
+            ParserRegistry::for_path(Path::new(from)).map_or("", FileLanguage::as_str);
         let scope = DeclaredScope {
             from,
             rules,
@@ -1133,16 +1147,26 @@ impl<'a> Resolver<'a> {
                     .match_indices('.')
                     .map(|(dot, _)| dot)
                     .rev()
-                    .find(|dot| known_packages.contains(&qualifier[..*dot]))
+                    .find(|dot| {
+                        known_packages.contains(&(caller_language, qualifier[..*dot].to_owned()))
+                    })
                     .map(|dot| (&qualifier[..dot], &qualifier[dot + 1..]));
                 let type_path = package_split
                     .map_or(qualifier, |(_, rest)| rest)
                     .replace('.', "::");
+                // A package-qualified type matches only that type of that
+                // package; any other qualifier may name a nested type.
                 let names_type = |candidate: &&IndexedSymbol| {
                     candidate.symbol.kind == SymbolKind::Method
-                        && owner_path(candidate).is_some_and(|owner| {
-                            owner == type_path || owner.ends_with(&format!("::{type_path}"))
-                        })
+                        && match package_split {
+                            Some((package, _)) => {
+                                owner_path(candidate).as_deref() == Some(type_path.as_str())
+                                    && packages_of(packages, &candidate.path).contains(&package)
+                            }
+                            None => owner_path(candidate).is_some_and(|owner| {
+                                owner == type_path || owner.ends_with(&format!("::{type_path}"))
+                            }),
+                        }
                 };
                 let typed = candidates
                     .iter()
@@ -1305,9 +1329,13 @@ impl<'a> Resolver<'a> {
             {
                 // A hostile file declaring many namespaces keeps the first
                 // ones, so package checks stay bounded (review S5).
+                let language = ParserRegistry::for_path(Path::new(&path));
                 let names = packages.entry(path).or_default();
                 if names.len() < MAX_PACKAGES_PER_FILE {
-                    self.known_packages.insert(name.clone());
+                    if let Some(language) = language {
+                        self.known_packages
+                            .insert((language.as_str(), name.clone()));
+                    }
                     names.push(name);
                 } else {
                     self.packages_limited = true;
@@ -1323,17 +1351,20 @@ impl<'a> Resolver<'a> {
     /// trace.
     fn load_package_imports(&mut self) -> Result<(), AtlasError> {
         if self.package_imports.is_none() {
+            self.load_projects()?;
             let mut capped = HashMap::<String, HashSet<String>>::new();
             for (path, raw) in self.store.unresolved_edge_targets_with_detail(
                 self.repo,
                 compresso_store::EDGE_DETAIL_PACKAGE,
             )? {
                 if matches!(call_rules(&path), CallRules::DeclaredPackages(_)) {
-                    // A `global using` applies to every file of its language.
+                    // A `global using` reaches the files of its project.
                     if let Some(name) = raw.strip_prefix(GLOBAL_IMPORT_PREFIX) {
                         if let Some(language) = ParserRegistry::for_path(Path::new(&path)) {
+                            let scope =
+                                global_using_scope(&path, self.projects.as_ref().expect("loaded"));
                             self.global_imports
-                                .insert((language.as_str(), name.to_owned()));
+                                .push((language.as_str(), name.to_owned(), scope));
                         }
                         continue;
                     }
@@ -1346,11 +1377,25 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
+    /// The directories of indexed `.csproj` files, once per trace.
+    fn load_projects(&mut self) -> Result<(), AtlasError> {
+        if self.projects.is_none() {
+            self.projects = Some(project_directories(
+                self.store
+                    .indexed_files(self.repo)?
+                    .into_iter()
+                    .map(|file| file.path),
+            ));
+        }
+        Ok(())
+    }
+
     /// The names of the imports `from` records as external: whole, and for
     /// a Java type import by its last part (`java.util.Collections` and
     /// `Collections`; `System` for `using System;`), loaded once per trace.
     fn declared_external_names(&mut self, from: &str) -> Result<&HashSet<String>, AtlasError> {
         if self.declared_external_names.is_none() {
+            self.load_projects()?;
             let mut names = HashMap::<String, HashSet<String>>::new();
             for (path, import) in self.store.external_edges(self.repo)? {
                 if !matches!(call_rules(&path), CallRules::DeclaredPackages(_))
@@ -1365,13 +1410,14 @@ impl<'a> Resolver<'a> {
                     ParserRegistry::for_path(Path::new(&path)).is_some_and(|language| {
                         crate::parsers::languages::spec(language).imports == ImportStyle::Java
                     });
-                // A `global using` of an external namespace holds for every
-                // file of the language.
-                let (key, import) = match import.strip_prefix(GLOBAL_IMPORT_PREFIX) {
-                    Some(name) => (GLOBAL_IMPORT_PREFIX.to_owned(), name.to_owned()),
-                    None => (path, import),
-                };
-                let entry = names.entry(key).or_default();
+                // A `global using` of an external namespace holds for the
+                // files of its project.
+                if let Some(name) = import.strip_prefix(GLOBAL_IMPORT_PREFIX) {
+                    let scope = global_using_scope(&path, self.projects.as_ref().expect("loaded"));
+                    self.global_external.push((name.to_owned(), scope));
+                    continue;
+                }
+                let entry = names.entry(path).or_default();
                 if names_a_type {
                     entry.insert(import.rsplit('.').next().unwrap_or(&import).to_owned());
                 }
@@ -1706,7 +1752,7 @@ struct DeclaredScope<'a> {
     /// Candidates declared in an interface: public without a modifier.
     interface_members: &'a HashSet<i64>,
     /// Namespaces every file of a language imports (`global using`).
-    global_imports: &'a HashSet<(&'static str, String)>,
+    global_imports: &'a [(&'static str, String, String)],
     /// The caller's language name.
     language: &'static str,
 }
@@ -1735,14 +1781,22 @@ impl DeclaredScope<'_> {
     fn imported(&self, candidate: &IndexedSymbol) -> bool {
         self.imports
             .is_some_and(|imports| imports.contains(&candidate.path))
-            || packages_of(self.packages, &candidate.path)
-                .iter()
-                .any(|package| {
-                    !package.is_empty()
-                        && self
-                            .global_imports
-                            .contains(&(self.language, (*package).to_owned()))
-                })
+            || self.global_imports.iter().any(|(language, name, scope)| {
+                *language == self.language
+                    && in_scope(self.from, scope)
+                    && packages_of(self.packages, &candidate.path)
+                        .iter()
+                        .any(|package| {
+                            !package.is_empty() && {
+                                // `global using N;`, or `global using static N.T;`
+                                // naming the file `T.cs`.
+                                let stem =
+                                    candidate.path.rsplit('/').next().unwrap_or(&candidate.path);
+                                let stem = stem.split('.').next().unwrap_or(stem);
+                                name == package || *name == format!("{package}.{stem}")
+                            }
+                        })
+            })
             || self.package_imports.is_some_and(|capped| {
                 packages_of(self.packages, &candidate.path)
                     .iter()

@@ -166,16 +166,11 @@ pub fn module_cards(
         }
         entry.files.push(file);
     }
-    // File edges, then Java and C# whole-package imports (D105), which
-    // are stored as one record per import and count as edges to each file
-    // of the package.
-    let package_pairs = crate::queries::package_import_pairs(store, repo)?;
     let links = store
         .resolved_edges(repo)?
         .into_iter()
         .filter(|edge| edge.kind == EdgeKind::Imports)
         .map(|edge| (edge.from_path, edge.to_path))
-        .chain(package_pairs.iter().cloned())
         .collect::<Vec<_>>();
     for (from_path, to_path) in &links {
         let (Some(from), Some(to)) = (file_directory.get(from_path), file_directory.get(to_path))
@@ -194,7 +189,26 @@ pub fn module_cards(
             *directory.used_by.entry(from).or_default() += 1;
         }
     }
-    let file_in_degree = file_in_degrees(&links, &file_directory);
+    // Java and C# whole-package imports (D105): one stored record per
+    // import, counted from aggregates, never one pair per file.
+    let packages = crate::queries::package_import_counts(store, repo)?;
+    for ((from, to), count) in &packages.directory_links {
+        if !directories.contains_key(from) || !directories.contains_key(to) {
+            continue;
+        }
+        if let Some(directory) = directories.get_mut(from) {
+            *directory.depends_on.entry(to.clone()).or_default() += count;
+        }
+        if let Some(directory) = directories.get_mut(to) {
+            *directory.used_by.entry(from.clone()).or_default() += count;
+        }
+    }
+    let mut file_in_degree = file_in_degrees(&links, &file_directory);
+    for (path, count) in packages.file_in_degree {
+        if file_directory.contains_key(&path) {
+            *file_in_degree.entry(path).or_default() += count;
+        }
+    }
 
     let mut ranked = directories
         .into_iter()

@@ -204,9 +204,9 @@ fn fields(declaration: Node<'_>, owner: &Owner, source: &str, found: &mut Found)
                 .as_deref()
                 .and_then(bounded_signature)
         } else {
-            prefix
-                .as_deref()
-                .and_then(|prefix| bounded_signature(&format!("{prefix} {name}")))
+            prefix.as_deref().and_then(|prefix| {
+                bounded_signature(&super::per_name_text(format!("{prefix} {name}")))
+            })
         };
         let range = if declarators.len() == 1 {
             declaration

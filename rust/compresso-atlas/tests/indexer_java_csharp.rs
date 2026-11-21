@@ -393,7 +393,10 @@ fn test_java_imports_are_package_records_and_type_edges_expanded_by_impact() {
         .is_empty()
     );
     let report = impact(&store, repo, "legacy/Sorter.java").expect("impact");
-    assert!(report.complete, "package records hide no dependent");
+    // `Strings.java` shares the package and shows no use: unproven; at
+    // depth 2, so do four files of `JobStore`'s package.
+    assert_eq!(report.unproven, 5);
+    assert!(!report.complete);
     assert_eq!(report.total, report.dependents.len());
     let external = store
         .external_edges(repo)
@@ -432,11 +435,11 @@ fn test_csharp_usings_are_namespace_records_and_impact_lists_namespace_mates() {
             Some("Acme.Jobs".to_owned())
         )]
     );
-    assert!(
-        impact(&store, repo, "src/Acme.Jobs/Keys.cs")
-            .expect("impact")
-            .complete
-    );
+    // `JobStore.Validation.cs` shows no use of `Keys`: unproven, so the
+    // answer is not complete.
+    let report = impact(&store, repo, "src/Acme.Jobs/Keys.cs").expect("impact");
+    assert_eq!(report.unproven, 1);
+    assert!(!report.complete);
 }
 
 /// Round 3 MF2: files of the default package (Java) or the global namespace
@@ -472,7 +475,10 @@ fn test_default_package_and_global_namespace_dependents_need_no_import() {
         linked_dependents(&store, repo, "Tool.java"),
         [("Main.java".to_owned(), "references", Some(String::new()))]
     );
-    assert!(impact(&store, repo, "Util.cs").expect("impact").complete);
+    // `App/Idle.cs` sees the global namespace but shows no use of it.
+    let report = impact(&store, repo, "Util.cs").expect("impact");
+    assert_eq!(report.unproven, 1);
+    assert!(!report.complete);
 }
 
 /// Round 3: a namespace mate whose call sites stopped at the per-file bound
@@ -524,10 +530,10 @@ fn test_too_many_namespaces_in_one_file_clear_complete() {
     assert!(!traced.complete);
 }
 
-/// Round 3: a call to a member name other files also define (`Make`) is no
-/// evidence of using this file; a call naming its type is.
+/// Rounds 3 and 4: only a call naming the file's type is evidence of use;
+/// a call to a member name, shared or not, is not.
 #[test]
-fn test_namespace_mates_need_a_call_naming_the_type_or_a_member_only_it_defines() {
+fn test_namespace_mates_are_listed_only_for_a_call_naming_the_type() {
     let (_temp, store, repo) = index_files(&[
         (
             "n/A.cs",
@@ -554,7 +560,144 @@ fn test_namespace_mates_need_a_call_naming_the_type_or_a_member_only_it_defines(
         .into_iter()
         .map(|(path, _, _)| path)
         .collect::<Vec<_>>();
-    assert_eq!(paths, ["n/Typed.cs", "n/Unique.cs"]);
+    // Round 4: only a call naming the type is evidence; the others may
+    // still use it, so they are unproven.
+    assert_eq!(paths, ["n/Typed.cs"]);
+    assert_eq!(impact(&store, repo, "n/A.cs").expect("impact").unproven, 3);
+}
+
+/// Round 4 M1: a file whose call extraction stopped at the examined-node
+/// bound (few rows stored, the use of the target never reached) is counted
+/// as unevaluated, not taken as evidence of no use.
+#[test]
+fn test_a_mate_cut_at_the_examined_call_bound_is_unevaluated() {
+    let calls = "Log.d(\"x\"); ".repeat(70_000);
+    let mate =
+        format!("package p;\n\nclass Mate {{\n    void run() {{ {calls} new Target(); }}\n}}\n");
+    let (_temp, store, repo) = index_files(&[
+        ("p/Target.java", "package p;\n\npublic class Target {}\n"),
+        ("p/Mate.java", mate.as_str()),
+    ]);
+    let report = impact(&store, repo, "p/Target.java").expect("impact");
+    assert!(report.dependents.is_empty());
+    assert_eq!(report.unevaluated, 1);
+    assert!(!report.complete);
+}
+
+/// Round 4 M2: a file of the package with no recorded call naming the
+/// file's types (a field type, a call through another file's method name)
+/// is `unproven`, and the answer is not complete.
+#[test]
+fn test_package_mates_without_call_evidence_are_unproven() {
+    let (_temp, store, repo) = index_files(&[
+        (
+            "p/Repo.java",
+            "package p;\n\npublic class Repo {\n    public String getName() { return \"\"; }\n}\n",
+        ),
+        (
+            "p/Other.java",
+            "package p;\n\nclass Other {\n    String getName() { return \"\"; }\n}\n",
+        ),
+        (
+            "p/Service.java",
+            "package p;\n\nclass Service {\n    Repo repo;\n    void f() { repo.getName(); }\n}\n",
+        ),
+    ]);
+    let report = impact(&store, repo, "p/Repo.java").expect("impact");
+    assert!(report.dependents.is_empty());
+    assert_eq!(report.unproven, 2, "Service and Other may use it");
+    assert!(!report.complete);
+}
+
+/// Round 4 S1: a `global using` reaches the files of its own project (the
+/// nearest directory holding a `.csproj`), not another project's.
+#[test]
+fn test_a_global_using_reaches_only_its_own_project() {
+    let (_temp, store, repo) = index_files(&[
+        ("A/A.csproj", "<Project />\n"),
+        (
+            "A/GlobalUsings.cs",
+            "global using Acme.Util;\nglobal using System.Text;\n",
+        ),
+        (
+            "A/Main.cs",
+            "namespace A;\n\npublic class Main { void Go() { Strings.Pad(\"x\"); } }\n",
+        ),
+        ("B/B.csproj", "<Project />\n"),
+        (
+            "B/Main.cs",
+            "namespace B;\n\npublic class Other { void Go() { Strings.Pad(\"y\"); Encoding.Get(); } }\n",
+        ),
+        (
+            "lib/Strings.cs",
+            "namespace Acme.Util;\n\npublic static class Strings { public static string Pad(string s) => s; }\n",
+        ),
+        (
+            "lib/Encoding.cs",
+            "namespace Acme.Util;\n\npublic static class Encoding { public static void Get() { } }\n",
+        ),
+    ]);
+    assert_eq!(
+        callees_of(&store, repo, "Main::Go"),
+        [("Strings::Pad".to_owned(), CallResolution::Import)]
+    );
+    let other = trace(
+        &store,
+        repo,
+        Some("Other::Go"),
+        None,
+        TraceOptions::default(),
+    )
+    .expect("trace");
+    assert!(
+        matches!(&other.result, TraceResult::Callees(found) if found.is_empty())
+            || matches!(other.result, TraceResult::NoPath),
+        "{:?}",
+        other.result
+    );
+    assert!(
+        !other.complete,
+        "B cannot see Acme.Util: the calls are unplaced"
+    );
+    assert_eq!(importers_of(&store, repo, "lib/Strings.cs"), ["A/Main.cs"]);
+}
+
+/// Round 4 M3: a namespace that appears beside a relative `using` changes
+/// what it means; an incremental run matches a full index.
+#[test]
+fn test_relative_usings_after_a_new_namespace_match_a_full_index() {
+    let first = [
+        (
+            "lib/Util.cs",
+            "namespace Acme.Util\n{\n    public static class Strings { public static string Trim(string s) => s; }\n}\n",
+        ),
+        (
+            "web/Page.cs",
+            "namespace Acme.Web\n{\n    using Util;\n    using static Util.Strings;\n\n    public class Page { }\n}\n",
+        ),
+    ];
+    let added = [(
+        "web/Util/Strings.cs",
+        "namespace Acme.Web.Util\n{\n    public static class Strings { public static string Trim(string s) => s; }\n}\n",
+    )];
+    let (temp, store, repo) = index_files(&first);
+    write_all(&temp.path().join("repo"), &added);
+    reindex(&store, &temp);
+    let mut all = first.to_vec();
+    all.extend(added);
+    let (_fresh_temp, fresh, fresh_repo) = index_files(&all);
+    assert_eq!(
+        package_records_from(&store, repo, "web/Page.cs"),
+        package_records_from(&fresh, fresh_repo, "web/Page.cs")
+    );
+    assert_eq!(
+        edges_from(&store, repo, "web/Page.cs"),
+        edges_from(&fresh, fresh_repo, "web/Page.cs")
+    );
+    assert_eq!(
+        package_records_from(&store, repo, "web/Page.cs"),
+        ["Acme.Web.Util"]
+    );
 }
 
 /// `impact` bounds what it lists, not what it counts: totals are exact.

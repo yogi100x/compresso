@@ -224,6 +224,9 @@ fn impact_tool(
     if report.unevaluated > 0 {
         result["unevaluated"] = json!(report.unevaluated);
     }
+    if report.unproven > 0 {
+        result["unproven"] = json!(report.unproven);
+    }
     if report.packages_limited {
         result["packages_limited"] = json!(true);
     }

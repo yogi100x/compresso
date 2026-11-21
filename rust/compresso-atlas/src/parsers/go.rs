@@ -208,10 +208,10 @@ fn values(declaration: Node<'_>, keyword: &str, source: &str, output: &mut Vec<S
             };
             let signature = whole.clone().or_else(|| {
                 super::marked_signature(
-                    &match type_text {
+                    &super::per_name_text(match type_text {
                         Some(type_text) => format!("{keyword} {name} {type_text}"),
                         None => format!("{keyword} {name}"),
-                    },
+                    }),
                     type_cut,
                 )
             });

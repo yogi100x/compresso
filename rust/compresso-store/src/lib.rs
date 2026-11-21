@@ -16,8 +16,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use thiserror::Error;
 
 pub use calls::{
-    CallForm, CallSiteRecord, IndexedSymbol, MAX_CALL_TEXT_BYTES, StoredCallSite,
-    validate_call_sites,
+    CALL_SITES_CUT_MARKER, CallForm, CallSiteRecord, IndexedSymbol, MAX_CALL_TEXT_BYTES,
+    StoredCallSite, validate_call_sites,
 };
 pub use files::{FileLanguage, FileRecord, RelativePathError};
 pub use ops::{
