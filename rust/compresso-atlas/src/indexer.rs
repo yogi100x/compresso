@@ -15,7 +15,7 @@ use compresso_store::{
 };
 
 use crate::concurrency::{Concurrency, ReadAhead};
-use crate::declared_imports::DeclaredPackages;
+use crate::declared_imports::{DeclaredPackages, NamespaceChanges, StoredImport};
 use crate::go_imports::GoModules;
 use crate::parsers::languages::{self, ImportStyle};
 use crate::parsers::{ImportContext, ImportRecord, ImportResolution, ParseError, ParserRegistry};
@@ -567,47 +567,14 @@ impl Indexer<'_> {
             .cloned()
             .collect::<HashSet<_>>();
         // A C# `using` written inside a namespace is stored by the name it
-        // resolved to, so a namespace that appears or disappears can change
-        // what it means (`Util` in `Acme.Web` becomes `Acme.Web.Util`):
-        // every C# file with an import is re-resolved then (review round 4).
-        let before = stored
-            .iter()
-            .filter_map(|(path, names)| declaring_language(path).map(|language| (language, names)))
-            .flat_map(|(language, names)| {
-                names
-                    .iter()
-                    .map(move |name| (language.as_str(), name.clone()))
-            })
-            .collect::<HashSet<_>>();
-        let relative_languages = moved
-            .iter()
-            .filter(|package| !before.contains(*package) || !after.contains(*package))
-            .map(|(language, _)| *language)
-            .filter(|language| {
-                languages::LANGUAGES.iter().any(|spec| {
-                    spec.language.as_str() == *language && spec.imports == ImportStyle::CSharp
-                })
-            })
-            .collect::<HashSet<_>>();
-        if !relative_languages.is_empty() {
-            let resolved = self
-                .store
-                .resolved_edges(repo)?
-                .into_iter()
-                .map(|edge| edge.from_path);
-            let unresolved = self
-                .store
-                .unresolved_edge_targets(repo)?
-                .into_iter()
-                .map(|(from, _, _)| from);
-            for from in resolved.chain(unresolved) {
-                if !removed.contains(&from)
-                    && declaring_language(&from)
-                        .is_some_and(|language| relative_languages.contains(language.as_str()))
-                {
-                    candidates.insert(PathBuf::from(from));
-                }
-            }
+        // resolved to, so a namespace that appears or disappears, or a type
+        // file that joins or leaves one, can change what it means (`Util` in
+        // `Acme.Web` becomes `Acme.Web.Util`): the C# files whose stored
+        // imports can bind differently are re-resolved (E17-44, D109; on
+        // main every C# file with an import was, review round 4).
+        let changes = csharp_namespace_changes(stored, read, after, removed, added);
+        if !changes.is_empty() {
+            self.add_csharp_rebinders(repo, stored, removed, &changes, candidates)?;
         }
         // A type import names every file of its package named after the
         // type (`Store.cs`, `Store.Part.cs`): a file added under, or moved to
@@ -706,6 +673,135 @@ impl Indexer<'_> {
         }
         Ok(())
     }
+}
+
+impl Indexer<'_> {
+    /// Adds to `candidates` every C# file, not removed, whose stored import
+    /// records `changes` can resolve differently (E17-44, D109).
+    fn add_csharp_rebinders(
+        &self,
+        repo: RepoId,
+        stored: &BTreeMap<String, Vec<String>>,
+        removed: &HashSet<String>,
+        changes: &NamespaceChanges,
+        candidates: &mut BTreeSet<PathBuf>,
+    ) -> Result<(), AtlasError> {
+        let is_csharp = |path: &str| {
+            !removed.contains(path)
+                && declaring_language(path).is_some_and(|language| {
+                    languages::spec(language).imports == ImportStyle::CSharp
+                })
+        };
+        let no_namespaces: &[String] = &[];
+        let namespaces_of = |path: &str| stored.get(path).map_or(no_namespaces, Vec::as_slice);
+        let resolved = self.store.resolved_edges(repo)?;
+        let unresolved = self.store.unresolved_edge_targets(repo)?;
+        let mut imports = BTreeMap::<&str, Vec<StoredImport<'_>>>::new();
+        for edge in &resolved {
+            if is_csharp(&edge.from_path) {
+                imports
+                    .entry(edge.from_path.as_str())
+                    .or_default()
+                    .push(StoredImport::File {
+                        path: &edge.to_path,
+                        namespaces: namespaces_of(&edge.to_path),
+                    });
+            }
+        }
+        for (from, to_path, detail) in &unresolved {
+            if !is_csharp(from) {
+                continue;
+            }
+            let import = match detail.as_deref() {
+                Some(
+                    compresso_store::EDGE_DETAIL_PACKAGE
+                    | compresso_store::EDGE_DETAIL_EXTERNAL
+                    | compresso_store::EDGE_DETAIL_SAME_FILE
+                    | crate::rust_imports::NOT_INDEXED,
+                ) => StoredImport::Name(to_path),
+                // A record whose target file was removed names that file.
+                Some(TARGET_DELETED) => StoredImport::File {
+                    path: to_path,
+                    namespaces: namespaces_of(to_path),
+                },
+                // A cut list (`edge_limit`) or anything else: the written
+                // names are not all known.
+                _ => StoredImport::Unknown,
+            };
+            imports.entry(from.as_str()).or_default().push(import);
+        }
+        for (from, imports) in imports {
+            if changes.may_rebind(namespaces_of(from), &imports) {
+                candidates.insert(PathBuf::from(from));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The detail of an import record whose resolved target file was removed.
+const TARGET_DELETED: &str = "target_deleted";
+
+/// What a run changes in the C# namespace map: namespaces that appear or
+/// disappear, those kept, and the type files of every C# file added,
+/// removed, or declaring other namespaces than before (E17-44, D109).
+fn csharp_namespace_changes(
+    stored: &BTreeMap<String, Vec<String>>,
+    read: &BTreeMap<String, Vec<String>>,
+    after: &HashSet<(&'static str, String)>,
+    removed: &HashSet<String>,
+    added: &HashSet<String>,
+) -> NamespaceChanges {
+    let is_csharp = |path: &str| {
+        declaring_language(path)
+            .is_some_and(|language| languages::spec(language).imports == ImportStyle::CSharp)
+    };
+    let csharp = compresso_store::FileLanguage::CSharp.as_str();
+    let before = stored
+        .iter()
+        .filter(|(path, _)| is_csharp(path))
+        .flat_map(|(_, names)| names.iter().cloned())
+        .collect::<HashSet<_>>();
+    let after = after
+        .iter()
+        .filter(|(language, _)| *language == csharp)
+        .map(|(_, name)| name.clone())
+        .collect::<HashSet<_>>();
+    let mut type_files = BTreeSet::new();
+    let stem = |path: &str| {
+        let file = path.rsplit('/').next().unwrap_or(path);
+        file.split('.').next().unwrap_or(file).to_owned()
+    };
+    let no_names: &[String] = &[];
+    let mut note = |path: &str, names: &[String]| {
+        for name in names {
+            type_files.insert((name.clone(), stem(path)));
+        }
+    };
+    for (path, now) in read {
+        if !is_csharp(path) {
+            continue;
+        }
+        let before = stored.get(path).map_or(no_names, Vec::as_slice);
+        let mut left = before.iter().collect::<Vec<_>>();
+        let mut right = now.iter().collect::<Vec<_>>();
+        left.sort();
+        right.sort();
+        if added.contains(path) || left != right {
+            note(path, before);
+            note(path, now);
+        }
+    }
+    for path in removed {
+        if is_csharp(path) {
+            note(path, stored.get(path).map_or(no_names, Vec::as_slice));
+        }
+    }
+    NamespaceChanges::new(
+        before.symmetric_difference(&after).cloned().collect(),
+        before.intersection(&after).cloned().collect(),
+        type_files,
+    )
 }
 
 /// Reads the declared packages or namespaces of `paths` on `workers`
