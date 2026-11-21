@@ -18,6 +18,7 @@ use compresso_store::{
 use crate::AtlasError;
 use crate::declared_imports::GLOBAL_IMPORT_PREFIX;
 use crate::parsers::ParserRegistry;
+use crate::parsers::calls::GO_SHADOWED_QUALIFIER;
 use crate::parsers::go_package_local_name;
 use crate::parsers::languages::{
     CallRules, DeclaredRules, ImportStyle, call_rules, declaring_languages, is_test_file,
@@ -529,6 +530,17 @@ fn one_line(signature: &str) -> Option<String> {
 }
 
 fn written_call(call: &StoredCallSite) -> String {
+    if let Some(rest) = call
+        .qualifier
+        .as_deref()
+        .and_then(|qualifier| qualifier.strip_prefix(GO_SHADOWED_QUALIFIER))
+    {
+        // A shadowed Go call (E17-46): as written, `name` or `s.name`.
+        return match rest.strip_prefix('.') {
+            Some(receiver) => format!("{receiver}.{}", call.callee_name),
+            None => call.callee_name.clone(),
+        };
+    }
     match (call.form, call.qualifier.as_deref()) {
         (CallForm::Plain | CallForm::Reference, _) => call.callee_name.clone(),
         (CallForm::SelfRef, Some("Self")) => format!("Self::{}", call.callee_name),
@@ -776,6 +788,17 @@ impl<'a> Resolver<'a> {
     /// import, then `name_only`.
     fn resolve_go(&mut self, key: &CallKey) -> Result<Resolution, AtlasError> {
         let shape = &key.shape;
+        // E17-46 (D111): the calling function binds the name (or the
+        // receiver name) itself, so the call may reach a value, not the
+        // package's declaration: reported, never followed.
+        if shape.form == CallForm::Path
+            && shape
+                .qualifier
+                .as_deref()
+                .is_some_and(|qualifier| qualifier.starts_with(GO_SHADOWED_QUALIFIER))
+        {
+            return Ok(Resolution::Unresolved("unplaced"));
+        }
         let from = key.from_path.as_str();
         let caller_directory = parent_directory(from);
         let caller_is_test = is_test_file(from);

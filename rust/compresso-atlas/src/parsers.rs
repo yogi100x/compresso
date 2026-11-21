@@ -4,7 +4,7 @@ use std::path::Path;
 use compresso_store::{CallSiteRecord, SymbolKind, SymbolRecord};
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
 
-mod calls;
+pub(crate) mod calls;
 mod csharp;
 mod declarations;
 mod go;

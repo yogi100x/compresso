@@ -672,3 +672,95 @@ fn test_a_file_edge_wins_over_a_package_link_in_either_order() {
         assert_eq!(entry.package, None, "{edge_dir}");
     }
 }
+
+/// What `trace` says about one symbol: the qualified names it lists, whether
+/// it is complete, and how many calls it could not follow (with statuses).
+fn trace_summary(
+    repo: &Repo,
+    from: Option<&str>,
+    to: Option<&str>,
+) -> (Vec<String>, bool, usize, Vec<&'static str>) {
+    let report = trace(&repo.store, repo.repo, from, to, TraceOptions::default()).expect("trace");
+    let names = match report.result {
+        TraceResult::Callees(callees) => callees
+            .into_iter()
+            .map(|callee| callee.symbol.qualified_name)
+            .collect(),
+        TraceResult::Callers(callers) => callers
+            .into_iter()
+            .map(|caller| caller.symbol.qualified_name)
+            .collect(),
+        TraceResult::NoPath => Vec::new(),
+        other => panic!("unexpected {other:?}"),
+    };
+    let statuses = report.unfollowed.iter().map(|call| call.status).collect();
+    (names, report.complete, report.unfollowed_total, statuses)
+}
+
+/// Closing pass item 1: a call to a name its function binds is not
+/// trusted, but it does not vanish either: `trace` counts it as a call it
+/// could not place, so the answer is incomplete. The same for a call on a
+/// rebound receiver name. A call where nothing binds the name resolves.
+#[test]
+fn test_a_shadowed_call_is_unplaced_in_trace() {
+    let repo = index_files(&[
+        GO_MOD,
+        (
+            "p/f.go",
+            "package p\n\nfunc helper() {}\n\nfunc f() {\n\thelper()\n\tif true {\n\t\thelper := 1\n\t\t_ = helper\n\t}\n}\n\nfunc g() {\n\thelper()\n}\n",
+        ),
+        (
+            "p/store.go",
+            "package p\n\ntype Store struct{}\n\nfunc (s *Store) flush() {}\n\nfunc (s *Store) drain(o []*Store) {\n\tfor _, s := range o {\n\t\ts.flush()\n\t}\n}\n",
+        ),
+    ]);
+    let (callees, complete, unplaced, statuses) = trace_summary(&repo, Some("f"), None);
+    assert!(callees.is_empty(), "{callees:?}");
+    assert!(!complete);
+    assert_eq!((unplaced, statuses), (1, vec!["unplaced"]));
+
+    let (callers, complete, unplaced, _) = trace_summary(&repo, None, Some("helper"));
+    assert_eq!(callers, ["g"], "the unbound control still resolves");
+    assert!(!complete);
+    assert_eq!(unplaced, 1);
+
+    let (callees, complete, unplaced, _) = trace_summary(&repo, Some("Store::drain"), None);
+    assert!(callees.is_empty(), "{callees:?}");
+    assert!(!complete);
+    assert_eq!(unplaced, 1);
+
+    let (callees, complete, _, _) = trace_summary(&repo, Some("g"), None);
+    assert_eq!(callees, ["helper"]);
+    assert!(complete);
+}
+
+/// Closing pass item 2: parameter names inside a function type or an
+/// interface method signature bind nothing, and a plain `=` in `range` or
+/// `select` binds nothing: the package's function is still called.
+#[test]
+fn test_names_in_signatures_and_plain_assignments_do_not_shadow() {
+    let repo = index_files(&[
+        GO_MOD,
+        ("p/helper.go", "package p\n\nfunc helper() {}\n"),
+        (
+            "p/typed.go",
+            "package p\n\nfunc typed(cb func(helper int)) {\n\thelper()\n}\n",
+        ),
+        (
+            "p/iface.go",
+            "package p\n\nfunc iface() {\n\ttype runner interface{ Run(helper int) }\n\tvar _ runner\n\thelper()\n}\n",
+        ),
+        (
+            "p/assign.go",
+            "package p\n\nfunc assign(xs []int, ch chan int) {\n\tvar k int\n\tfor k = range xs {\n\t}\n\tselect {\n\tcase k = <-ch:\n\t}\n\t_ = k\n\thelper()\n}\n",
+        ),
+    ]);
+    for caller in ["typed", "iface", "assign"] {
+        let (callees, complete, _, _) = trace_summary(&repo, Some(caller), None);
+        assert_eq!(callees, ["helper"], "{caller}");
+        assert!(complete, "{caller}");
+    }
+    let report = repo.impact("p/helper.go");
+    assert_eq!(report.unproven, 0, "{report:?}");
+    assert_eq!(report.dependents.len(), 3);
+}

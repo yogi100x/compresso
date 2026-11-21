@@ -396,10 +396,13 @@ fn record(
     // Every call form passes this one check, so no extraction path can hand
     // the store a name or qualifier it would reject and abort the index with.
     if !valid_name(name)
-        || callee
-            .qualifier
-            .as_deref()
-            .is_some_and(|qualifier| !valid_qualifier(qualifier))
+        || callee.qualifier.as_deref().is_some_and(|qualifier| {
+            !valid_qualifier(
+                qualifier
+                    .strip_prefix(GO_SHADOWED_QUALIFIER)
+                    .map_or(qualifier, |rest| rest.strip_prefix('.').unwrap_or("x")),
+            )
+        })
     {
         return None;
     }
@@ -841,13 +844,18 @@ fn go_callee<'tree>(
     }
     match function.kind() {
         // A name the enclosing function binds (a parameter, a result, a
-        // local, a func-literal parameter) is a value, not the package's
-        // declaration: no call to a package-level name is recorded (E17-46).
+        // local, a func-literal parameter) may be a value, not the package's
+        // declaration: it is recorded under the reserved shadow qualifier,
+        // which trace reports as unplaced and evidence never reads (E17-46).
         "identifier"
             if node_text(function, source)
                 .is_some_and(|name| receivers.binds(call.start_byte(), name)) =>
         {
-            None
+            Some(Callee {
+                name: function,
+                qualifier: Some(GO_SHADOWED_QUALIFIER.to_owned()),
+                form: CallForm::Path,
+            })
         }
         "identifier" => Some(plain(function)),
         "selector_expression" => {
@@ -860,12 +868,18 @@ fn go_callee<'tree>(
                 return Some(receiver(name));
             }
             let qualifier = node_text(operand, source)?;
-            // A receiver name rebound in the method (`for _, s := range o`)
-            // no longer names the receiver: a call on it is a path call on
-            // a variable, as on any other value.
             if receivers.at(call.start_byte()) == Some(qualifier)
-                && !receivers.binds(call.start_byte(), qualifier)
+                && receivers.binds(call.start_byte(), qualifier)
             {
+                // A receiver name rebound in the method (`for _, s := range
+                // o`) may no longer name the receiver: unplaced, as above.
+                return Some(Callee {
+                    name,
+                    qualifier: Some(format!("{GO_SHADOWED_QUALIFIER}.{qualifier}")),
+                    form: CallForm::Path,
+                });
+            }
+            if receivers.at(call.start_byte()) == Some(qualifier) {
                 return Some(Callee {
                     name,
                     qualifier: Some(qualifier.to_owned()),
@@ -905,6 +919,13 @@ struct GoReceivers<'source> {
     bindings: Vec<(usize, usize, HashSet<&'source str>)>,
 }
 
+/// The qualifier of a Go call whose name (or, after a `.`, whose receiver
+/// name) the calling function binds itself (E17-46, D111): never a package
+/// name, a variable, or an identifier. Stored as a path call, so the Go
+/// evidence (plain and self calls only) never counts it, and `trace`
+/// reports it as `unplaced`, which makes the answer incomplete.
+pub(crate) const GO_SHADOWED_QUALIFIER: &str = "<shadowed>";
+
 #[cfg(test)]
 thread_local! {
     /// Nodes visited by [`go_bindings`] on this thread (tests only): pins
@@ -928,9 +949,11 @@ const GO_BINDINGS: [(&str, &str); 10] = [
 
 /// Every name bound anywhere inside a top-level Go function or method
 /// (parameters and named results, type parameters, `:=`, `var`, `const`,
-/// `range` and `select` variables, type-switch bindings, local types,
-/// func-literal parameters), whatever the block: one iterative pass over
-/// the declaration, its receiver left out. Deliberately coarse: a binding
+/// `range` and `select` variables declared with `:=`, type-switch
+/// bindings, local types, func-literal parameters), whatever the block: one
+/// iterative pass over the declaration, its receiver left out, and the
+/// parameter names of function types and interface method signatures
+/// skipped (they bind nothing). Deliberately coarse: a binding
 /// in any block shadows the name for the whole function, which errs toward
 /// recording fewer calls.
 fn go_bindings<'source>(declaration: Node<'_>, source: &'source str) -> HashSet<&'source str> {
@@ -949,7 +972,14 @@ fn go_bindings<'source>(declaration: Node<'_>, source: &'source str) -> HashSet<
             let node = walk.node();
             #[cfg(test)]
             BINDING_NODES.with(|count| count.set(count.get() + 1));
-            if let Some((_, field)) = GO_BINDINGS.iter().find(|(kind, _)| *kind == node.kind()) {
+            // `for k = range` and `case v = <-ch` assign; only `:=` binds.
+            let assigns = matches!(node.kind(), "range_clause" | "receive_statement") && {
+                let mut tokens = node.walk();
+                !node.children(&mut tokens).any(|child| child.kind() == ":=")
+            };
+            if !assigns
+                && let Some((_, field)) = GO_BINDINGS.iter().find(|(kind, _)| *kind == node.kind())
+            {
                 let mut fields = node.walk();
                 for bound in node.children_by_field_name(field, &mut fields) {
                     if bound.kind() == "expression_list" {
@@ -965,7 +995,10 @@ fn go_bindings<'source>(declaration: Node<'_>, source: &'source str) -> HashSet<
                     }
                 }
             }
-            if walk.goto_first_child() {
+            // Parameter names in a function type (`cb func(helper int)`) or
+            // an interface method signature bind nothing in the function.
+            let signature_only = matches!(node.kind(), "function_type" | "interface_type");
+            if !signature_only && walk.goto_first_child() {
                 continue;
             }
             loop {

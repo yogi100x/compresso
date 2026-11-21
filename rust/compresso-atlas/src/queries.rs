@@ -928,6 +928,18 @@ pub fn impact_with_options(
     path: &str,
     options: ImpactOptions,
 ) -> Result<ImpactReport, AtlasError> {
+    impact_with_evidence(store, repo, path, options, EvidenceState::default())
+}
+
+/// [`impact_with_options`] with the same-package evidence bounds given
+/// (tests set smaller caps).
+fn impact_with_evidence(
+    store: &Store,
+    repo: RepoId,
+    path: &str,
+    options: ImpactOptions,
+    mut evidence: EvidenceState,
+) -> Result<ImpactReport, AtlasError> {
     if !(1..=2).contains(&options.max_depth) {
         return Err(QueryError::InvalidImpactOptions {
             reason: "max_depth must be between 1 and 2",
@@ -964,7 +976,6 @@ pub fn impact_with_options(
     }
 
     let packages = PackageLinks::load(store, repo)?;
-    let mut evidence = EvidenceState::default();
     let mut discovered = BTreeMap::<String, (u8, Vec<EdgeKind>, Option<String>)>::new();
     let mut frontier = BTreeSet::from([path.to_owned()]);
     for depth in 1..=options.max_depth {
@@ -1205,11 +1216,27 @@ struct DirectoryEvidence {
     /// Indexes into `symbols` by name.
     by_name: HashMap<String, Vec<usize>>,
     calls: Vec<compresso_store::StoredCallSite>,
+    /// Files of the directory not read (past [`MAX_DIRECTORY_FILES`], or all
+    /// of them when the row budget ran out): their use is unknown.
+    unread: HashSet<String>,
 }
 
+/// Go (E17-46): at most this many files of one directory are read per
+/// `impact`, in path order. Go packages are rarely more than a few hundred
+/// files (the largest directory of the public repository measured for D111
+/// has about 160); a generated directory past it is still bounded.
+const MAX_DIRECTORY_FILES: usize = 2_048;
+/// Go (E17-46): at most this many symbol and call-site rows are held for
+/// same-package evidence per `impact` (all directories together), about
+/// 45 times the largest directory measured for D111.
+const MAX_EVIDENCE_ROWS: usize = 250_000;
+
 /// What the same-package checks of one `impact` found and could not settle.
-#[derive(Default)]
 struct EvidenceState {
+    /// Go: files read per directory.
+    files_cap: usize,
+    /// Go: symbol and call-site rows still allowed in this `impact`.
+    rows_left: usize,
     /// Go directories already read in this `impact`.
     directories: HashMap<String, std::rc::Rc<DirectoryEvidence>>,
     checked: usize,
@@ -1227,40 +1254,100 @@ struct EvidenceState {
     expanded: HashSet<(&'static str, String)>,
 }
 
+impl Default for EvidenceState {
+    fn default() -> Self {
+        Self::with_caps(MAX_DIRECTORY_FILES, MAX_EVIDENCE_ROWS)
+    }
+}
+
 impl EvidenceState {
+    fn with_caps(files_cap: usize, rows: usize) -> Self {
+        Self {
+            files_cap,
+            rows_left: rows,
+            directories: HashMap::new(),
+            checked: 0,
+            unevaluated: BTreeSet::new(),
+            unproven: BTreeSet::new(),
+            unchecked: 0,
+            cut: None,
+            expanded: HashSet::new(),
+        }
+    }
+
     /// The evidence of a Go directory, read on first use in this `impact`.
+    /// The evidence of a Go directory whose Go files are `files` (path
+    /// order), read on first use in this `impact`: at most `files_cap` files,
+    /// and nothing once the row budget is spent.
     fn directory(
         &mut self,
         store: &Store,
         repo: RepoId,
         language: FileLanguage,
         directory: &str,
+        files: &[String],
     ) -> Result<std::rc::Rc<DirectoryEvidence>, AtlasError> {
         if let Some(evidence) = self.directories.get(directory) {
             return Ok(evidence.clone());
         }
-        let found = store.symbols_in_directory(repo, directory)?;
-        evidence_work::count_query(found.len());
-        let symbols = found
-            .into_iter()
-            .filter(|symbol| symbol.language == Some(language))
-            .map(|symbol| DirectorySymbol {
-                owner: crate::trace::owner_base(&symbol.symbol.qualified_name),
-                path: symbol.path,
-                kind: symbol.symbol.kind,
-                name: symbol.symbol.name,
-            })
-            .collect::<Vec<_>>();
+        let read = &files[..files.len().min(self.files_cap)];
+        let mut unread = files[read.len()..].iter().cloned().collect::<HashSet<_>>();
+        let mut symbols = Vec::new();
+        let mut calls = Vec::new();
+        let mut spent = false;
+        if let Some(through) = read.last() {
+            let found = store.symbols_in_directory(
+                repo,
+                directory,
+                language,
+                through,
+                self.rows_left.saturating_add(1),
+            )?;
+            evidence_work::count_query(found.len());
+            if found.len() > self.rows_left {
+                self.rows_left = 0;
+                spent = true;
+            } else {
+                self.rows_left -= found.len();
+                let found_calls = store.call_sites_in_directory(
+                    repo,
+                    directory,
+                    language,
+                    through,
+                    self.rows_left.saturating_add(1),
+                )?;
+                evidence_work::count_query(found_calls.len());
+                if found_calls.len() > self.rows_left {
+                    self.rows_left = 0;
+                    spent = true;
+                } else {
+                    self.rows_left -= found_calls.len();
+                    symbols = found
+                        .into_iter()
+                        .map(|symbol| DirectorySymbol {
+                            owner: crate::trace::owner_base(&symbol.symbol.qualified_name),
+                            path: symbol.path,
+                            kind: symbol.symbol.kind,
+                            name: symbol.symbol.name,
+                        })
+                        .collect();
+                    calls = found_calls;
+                }
+            }
+        }
+        if spent {
+            // The row budget ran out: nothing of the directory is known.
+            unread.extend(read.iter().cloned());
+        }
         let mut by_name = HashMap::<String, Vec<usize>>::new();
         for (index, symbol) in symbols.iter().enumerate() {
             by_name.entry(symbol.name.clone()).or_default().push(index);
         }
-        let calls = store.call_sites_in_directory(repo, directory)?;
-        evidence_work::count_query(calls.len());
         let evidence = std::rc::Rc::new(DirectoryEvidence {
             symbols,
             by_name,
             calls,
+            unread,
         });
         self.directories
             .insert(directory.to_owned(), evidence.clone());
@@ -1488,12 +1575,8 @@ impl PackageLinks {
             state.unchecked += 1;
             return Ok(());
         }
-        // Charged before the first store read (E17-46), as for Go: a file
-        // declaring too many types uses the budget too.
-        state.checked += 1;
-        let symbols = store.symbols_in_file(repo, target)?;
-        evidence_work::count_query(symbols.len());
-        let mut types = symbols
+        let mut types = store
+            .symbols_in_file(repo, target)?
             .into_iter()
             .filter(|symbol| {
                 matches!(
@@ -1513,6 +1596,7 @@ impl PackageLinks {
             state.unchecked += 1;
             return Ok(());
         }
+        state.checked += 1;
         // The files in scope without an import: package mates, and the
         // files a `global using` of one of the packages reaches.
         let stem = target.rsplit('/').next().unwrap_or(target);
@@ -1564,7 +1648,6 @@ impl PackageLinks {
             return Ok(());
         }
         let users = store.files_with_call_sites_naming(repo, &types, &types)?;
-        evidence_work::count_query(users.len());
         Self::sort_scope(store, repo, state, scope, &users, linked)
     }
 
@@ -1670,7 +1753,21 @@ impl PackageLinks {
         // Charged before any store read, so at most `MAX_EVIDENCE_TARGETS`
         // directories are read per `impact`, whatever the files declare.
         state.checked += 1;
-        let evidence = state.directory(store, repo, language, directory)?;
+        let evidence = state.directory(store, repo, language, directory, files)?;
+        if evidence.unread.contains(target) {
+            // Past a read cap: what the file declares is not known, so every
+            // file of its scope is unevaluated.
+            state.unevaluated.extend(
+                files
+                    .iter()
+                    .filter(|path| {
+                        path.as_str() != target
+                            && (!target_is_test || crate::parsers::languages::is_test_file(path))
+                    })
+                    .cloned(),
+            );
+            return Ok(());
+        }
         let mut functions = BTreeSet::new();
         let mut methods = BTreeSet::new();
         let mut declares = false;
@@ -1707,6 +1804,13 @@ impl PackageLinks {
             })
             .map(|path| (path.clone(), EdgeKind::References, directory.to_owned()))
             .collect::<Vec<_>>();
+        // Files past a read cap may use it: unevaluated, never "no use".
+        let (unread, scope): (Vec<_>, Vec<_>) = scope
+            .into_iter()
+            .partition(|(path, _, _)| evidence.unread.contains(path));
+        state
+            .unevaluated
+            .extend(unread.into_iter().map(|(path, _, _)| path));
         if functions.is_empty() && methods.is_empty() {
             state
                 .unproven
@@ -5181,6 +5285,15 @@ mod tests {
         files: &[(String, String)],
         target: &str,
     ) -> (usize, usize, super::ImpactReport) {
+        evidence_work_capped(files, target, None)
+    }
+
+    /// [`evidence_work`] at depth 1 with the given (files, rows) caps.
+    fn evidence_work_capped(
+        files: &[(String, String)],
+        target: &str,
+        caps: Option<(usize, usize)>,
+    ) -> (usize, usize, super::ImpactReport) {
         let directory = tempfile::tempdir().expect("temporary directory should be created");
         let root = directory.path().join("repo");
         for (path, source) in files {
@@ -5203,7 +5316,20 @@ mod tests {
             .expect("repository")
             .id;
         super::evidence_work::take();
-        let report = super::impact(&store, repo, target).expect("impact");
+        let report = match caps {
+            None => super::impact(&store, repo, target).expect("impact"),
+            Some((files_cap, rows)) => super::impact_with_evidence(
+                &store,
+                repo,
+                target,
+                super::ImpactOptions {
+                    max_depth: 1,
+                    max_results: 500,
+                },
+                super::EvidenceState::with_caps(files_cap, rows),
+            )
+            .expect("impact"),
+        };
         let (queries, rows) = super::evidence_work::take();
         (queries, rows, report)
     }
@@ -5284,29 +5410,41 @@ mod tests {
         assert_eq!(spread.unevaluated, 100 - 64);
     }
 
-    /// E17-46 review nit: Java and C# charge the check budget before the
-    /// first store read too, so files declaring more than 64 types cannot
-    /// make one `impact` read their symbols without bound.
+    /// Closing pass item 4: a directory is read up to a cap of files (in
+    /// path order) and a cap of rows per `impact`; the files not read are
+    /// `unevaluated`, never taken as showing no use.
     #[test]
-    fn test_java_evidence_budget_is_charged_before_reading_symbols() {
-        let mut files = vec![(
-            "p/Target.java".to_owned(),
-            "package p;\n\npublic class Target {}\n".to_owned(),
-        )];
-        for index in 0..100 {
-            let more = (0..65)
-                .map(|name| format!("class C{index}x{name} {{}}\n"))
-                .collect::<String>();
+    fn test_go_directory_reads_stop_at_their_caps_and_count_the_rest() {
+        let mut files = vec![
+            ("go.mod".to_owned(), "module example.com/svc\n".to_owned()),
+            (
+                "pkg/a.go".to_owned(),
+                "package pkg\n\nfunc Target() {}\n".to_owned(),
+            ),
+        ];
+        for index in 0..30 {
             files.push((
-                format!("p/U{index:03}.java"),
-                format!("package p;\n\nclass U{index:03} {{\n    void run() {{ new Target(); }}\n}}\n{more}"),
+                format!("pkg/f{index:04}.go"),
+                format!("package pkg\n\nfunc f{index:04}() {{\n\tTarget()\n}}\n"),
             ));
         }
-        let (queries, _, report) = evidence_work(&files, "p/Target.java");
-        assert_eq!(report.total, 100);
-        // The target: symbols, call evidence, cut markers; then 63 files
-        // read their symbols, find too many types, and stop.
-        assert_eq!(queries, 3 + 63);
-        assert_eq!(report.unevaluated, 100);
+        // Ten files read: the target and nine callers; 21 not read.
+        let (_, rows, report) = evidence_work_capped(&files, "pkg/a.go", Some((10, 1_000)));
+        assert_eq!(report.total, 9);
+        assert_eq!(report.unevaluated, 21);
+        assert!(!report.complete);
+        assert_eq!(rows, 10 + 9, "symbols and calls of the ten files only");
+
+        // A row budget smaller than the directory: nothing of it is known.
+        let (_, _, report) = evidence_work_capped(&files, "pkg/a.go", Some((2_048, 5)));
+        assert_eq!(report.total, 0);
+        assert_eq!(report.unevaluated, 30);
+        assert!(!report.complete);
+
+        // Within both caps every caller is listed.
+        let (_, _, report) = evidence_work_capped(&files, "pkg/a.go", Some((2_048, 1_000)));
+        assert_eq!(report.total, 30);
+        assert_eq!(report.unevaluated, 0);
+        assert!(report.complete, "{report:?}");
     }
 }
