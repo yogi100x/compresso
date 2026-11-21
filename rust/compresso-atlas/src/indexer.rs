@@ -15,7 +15,7 @@ use compresso_store::{
 };
 
 use crate::concurrency::{Concurrency, ReadAhead};
-use crate::declared_imports::DeclaredPackages;
+use crate::declared_imports::{DeclaredPackages, NamespaceChanges, StoredImport};
 use crate::go_imports::GoModules;
 use crate::parsers::languages::{self, ImportStyle};
 use crate::parsers::{ImportContext, ImportRecord, ImportResolution, ParseError, ParserRegistry};
@@ -269,25 +269,28 @@ impl<'a> Indexer<'a> {
                     .map(PathBuf::from),
             );
         }
+        // The repository's edge lists, read at most once each before this
+        // run writes anything (E17-44 review).
+        let edges = EdgeLists::new(self.store, repo);
         if !grown_packages.is_empty() {
             candidates.extend(
-                self.store
-                    .resolved_edges(repo)?
-                    .into_iter()
+                edges
+                    .resolved()?
+                    .iter()
                     .filter(|edge| grown_packages.contains(parent_path(&edge.to_path)))
                     .filter(|edge| !removed_set.contains(&edge.from_path))
-                    .map(|edge| PathBuf::from(edge.from_path)),
+                    .map(|edge| PathBuf::from(&edge.from_path)),
             );
         }
         if !removed_set.is_empty() {
             let mut affected_sources = self.store.unresolved_edge_sources(repo)?;
             affected_sources.retain(|path| declaring_language(path).is_none());
             affected_sources.extend(
-                self.store
-                    .resolved_edges(repo)?
-                    .into_iter()
+                edges
+                    .resolved()?
+                    .iter()
                     .filter(|edge| removed_set.contains(&edge.to_path))
-                    .map(|edge| edge.from_path),
+                    .map(|edge| edge.from_path.clone()),
             );
             candidates.extend(
                 affected_sources
@@ -305,7 +308,7 @@ impl<'a> Indexer<'a> {
             );
         }
         let declared = self.declared_packages(
-            repo,
+            &edges,
             &canonical_root,
             &known_paths,
             &removed_set,
@@ -451,7 +454,7 @@ impl Indexer<'_> {
     #[allow(clippy::too_many_arguments)]
     fn declared_packages(
         &self,
-        repo: RepoId,
+        edges: &EdgeLists<'_>,
         root: &Path,
         known_paths: &BTreeSet<String>,
         removed: &HashSet<String>,
@@ -469,7 +472,7 @@ impl Indexer<'_> {
         let mut stored = BTreeMap::<String, Vec<String>>::new();
         for (path, name) in self
             .store
-            .module_declarations(repo, &languages::declaring_languages())?
+            .module_declarations(edges.repo, &languages::declaring_languages())?
         {
             stored.entry(path).or_default().push(name);
         }
@@ -508,7 +511,7 @@ impl Indexer<'_> {
                 .iter()
                 .map(|(_, language, name)| (language.as_str(), name.clone()))
                 .collect::<HashSet<_>>();
-            self.re_resolve_importers(repo, &stored, &read, &after, removed, added, candidates)?;
+            self.re_resolve_importers(edges, &stored, &read, &after, removed, added, candidates)?;
         }
         Ok(DeclaredPackages::new(rows))
     }
@@ -523,7 +526,7 @@ impl Indexer<'_> {
     #[allow(clippy::too_many_arguments)]
     fn re_resolve_importers(
         &self,
-        repo: RepoId,
+        edges: &EdgeLists<'_>,
         stored: &BTreeMap<String, Vec<String>>,
         read: &BTreeMap<String, Vec<String>>,
         after: &HashSet<(&'static str, String)>,
@@ -567,47 +570,14 @@ impl Indexer<'_> {
             .cloned()
             .collect::<HashSet<_>>();
         // A C# `using` written inside a namespace is stored by the name it
-        // resolved to, so a namespace that appears or disappears can change
-        // what it means (`Util` in `Acme.Web` becomes `Acme.Web.Util`):
-        // every C# file with an import is re-resolved then (review round 4).
-        let before = stored
-            .iter()
-            .filter_map(|(path, names)| declaring_language(path).map(|language| (language, names)))
-            .flat_map(|(language, names)| {
-                names
-                    .iter()
-                    .map(move |name| (language.as_str(), name.clone()))
-            })
-            .collect::<HashSet<_>>();
-        let relative_languages = moved
-            .iter()
-            .filter(|package| !before.contains(*package) || !after.contains(*package))
-            .map(|(language, _)| *language)
-            .filter(|language| {
-                languages::LANGUAGES.iter().any(|spec| {
-                    spec.language.as_str() == *language && spec.imports == ImportStyle::CSharp
-                })
-            })
-            .collect::<HashSet<_>>();
-        if !relative_languages.is_empty() {
-            let resolved = self
-                .store
-                .resolved_edges(repo)?
-                .into_iter()
-                .map(|edge| edge.from_path);
-            let unresolved = self
-                .store
-                .unresolved_edge_targets(repo)?
-                .into_iter()
-                .map(|(from, _, _)| from);
-            for from in resolved.chain(unresolved) {
-                if !removed.contains(&from)
-                    && declaring_language(&from)
-                        .is_some_and(|language| relative_languages.contains(language.as_str()))
-                {
-                    candidates.insert(PathBuf::from(from));
-                }
-            }
+        // resolved to, so a namespace that appears or disappears, or a type
+        // file that joins or leaves one, can change what it means (`Util` in
+        // `Acme.Web` becomes `Acme.Web.Util`): the C# files whose stored
+        // imports can bind differently are re-resolved (E17-44, D109; on
+        // main every C# file with an import was, review round 4).
+        let changes = csharp_namespace_changes(stored, read, after, removed, added);
+        if !changes.is_empty() {
+            add_csharp_rebinders(edges, stored, removed, &changes, candidates)?;
         }
         // A type import names every file of its package named after the
         // type (`Store.cs`, `Store.Part.cs`): a file added under, or moved to
@@ -632,7 +602,7 @@ impl Indexer<'_> {
             }
         }
         if !joined_stems.is_empty() {
-            for edge in self.store.resolved_edges(repo)? {
+            for edge in edges.resolved()?.iter() {
                 if removed.contains(&edge.from_path)
                     || declaring_language(&edge.from_path).is_none()
                 {
@@ -658,24 +628,24 @@ impl Indexer<'_> {
                             joined.contains(&(language.as_str(), name.clone(), target_stem.clone()))
                         });
                 if namesake {
-                    candidates.insert(PathBuf::from(edge.from_path));
+                    candidates.insert(PathBuf::from(&edge.from_path));
                 }
             }
         }
-        for (from, raw, detail) in self.store.unresolved_edge_targets(repo)? {
-            if removed.contains(&from) {
+        for (from, raw, detail) in edges.unresolved_targets()?.iter() {
+            if removed.contains(from) {
                 continue;
             }
-            let Some(language) = declaring_language(&from) else {
+            let Some(language) = declaring_language(from) else {
                 continue;
             };
             let raw = raw
                 .strip_prefix(crate::declared_imports::GLOBAL_IMPORT_PREFIX)
-                .unwrap_or(&raw);
+                .unwrap_or(raw);
             let raw = raw.strip_suffix(".*").unwrap_or(raw);
             if detail.as_deref() == Some(compresso_store::EDGE_DETAIL_PACKAGE) {
                 if disappeared.contains(&(language.as_str(), raw.to_owned())) {
-                    candidates.insert(PathBuf::from(from));
+                    candidates.insert(PathBuf::from(from.as_str()));
                 }
                 continue;
             }
@@ -701,11 +671,190 @@ impl Indexer<'_> {
                 })
             };
             if names_moved || names_nested() {
-                candidates.insert(PathBuf::from(from));
+                candidates.insert(PathBuf::from(from.as_str()));
             }
         }
         Ok(())
     }
+}
+
+/// Adds to `candidates` every C# file, not removed, whose stored import
+/// records `changes` can resolve differently (E17-44, D109).
+fn add_csharp_rebinders(
+    edges: &EdgeLists<'_>,
+    stored: &BTreeMap<String, Vec<String>>,
+    removed: &HashSet<String>,
+    changes: &NamespaceChanges,
+    candidates: &mut BTreeSet<PathBuf>,
+) -> Result<(), AtlasError> {
+    let is_csharp = |path: &str| {
+        !removed.contains(path)
+            && declaring_language(path)
+                .is_some_and(|language| languages::spec(language).imports == ImportStyle::CSharp)
+    };
+    let no_namespaces: &[String] = &[];
+    let namespaces_of = |path: &str| stored.get(path).map_or(no_namespaces, Vec::as_slice);
+    let resolved = edges.resolved()?;
+    let unresolved = edges.unresolved_targets()?;
+    let mut imports = BTreeMap::<&str, Vec<StoredImport<'_>>>::new();
+    for edge in resolved.iter() {
+        if is_csharp(&edge.from_path) {
+            imports
+                .entry(edge.from_path.as_str())
+                .or_default()
+                .push(StoredImport::File {
+                    path: &edge.to_path,
+                    namespaces: namespaces_of(&edge.to_path),
+                });
+        }
+    }
+    for (from, to_path, detail) in unresolved.iter() {
+        if !is_csharp(from) {
+            continue;
+        }
+        let import = match detail.as_deref() {
+            Some(
+                compresso_store::EDGE_DETAIL_PACKAGE
+                | compresso_store::EDGE_DETAIL_EXTERNAL
+                | compresso_store::EDGE_DETAIL_SAME_FILE
+                | crate::rust_imports::NOT_INDEXED,
+            ) => StoredImport::Name(to_path),
+            // A record whose target file was removed names that file.
+            Some(TARGET_DELETED) => StoredImport::File {
+                path: to_path,
+                namespaces: namespaces_of(to_path),
+            },
+            // A cut list (`edge_limit`) or anything else: the written
+            // names are not all known.
+            _ => StoredImport::Unknown,
+        };
+        imports.entry(from.as_str()).or_default().push(import);
+    }
+    for (from, imports) in imports {
+        if changes.may_rebind(namespaces_of(from), &imports) {
+            candidates.insert(PathBuf::from(from));
+        }
+    }
+    Ok(())
+}
+
+/// The repository's resolved import edges and unresolved import targets as
+/// stored before a run writes anything, each read at most once per run.
+struct EdgeLists<'s> {
+    store: &'s Store,
+    repo: RepoId,
+    resolved: RefCell<Option<std::rc::Rc<Vec<compresso_store::ResolvedEdgeRecord>>>>,
+    unresolved_targets: RefCell<Option<std::rc::Rc<Vec<UnresolvedTarget>>>>,
+}
+
+/// `(from path, stored target, detail)` of one unresolved import edge.
+type UnresolvedTarget = (String, String, Option<String>);
+
+impl<'s> EdgeLists<'s> {
+    fn new(store: &'s Store, repo: RepoId) -> Self {
+        Self {
+            store,
+            repo,
+            resolved: RefCell::new(None),
+            unresolved_targets: RefCell::new(None),
+        }
+    }
+
+    fn resolved(
+        &self,
+    ) -> Result<std::rc::Rc<Vec<compresso_store::ResolvedEdgeRecord>>, AtlasError> {
+        if let Some(edges) = self.resolved.borrow().as_ref() {
+            return Ok(std::rc::Rc::clone(edges));
+        }
+        #[cfg(test)]
+        EDGE_LIST_READS.with(|reads| reads.set((reads.get().0 + 1, reads.get().1)));
+        let edges = std::rc::Rc::new(self.store.resolved_edges(self.repo)?);
+        *self.resolved.borrow_mut() = Some(std::rc::Rc::clone(&edges));
+        Ok(edges)
+    }
+
+    fn unresolved_targets(&self) -> Result<std::rc::Rc<Vec<UnresolvedTarget>>, AtlasError> {
+        if let Some(targets) = self.unresolved_targets.borrow().as_ref() {
+            return Ok(std::rc::Rc::clone(targets));
+        }
+        #[cfg(test)]
+        EDGE_LIST_READS.with(|reads| reads.set((reads.get().0, reads.get().1 + 1)));
+        let targets = std::rc::Rc::new(self.store.unresolved_edge_targets(self.repo)?);
+        *self.unresolved_targets.borrow_mut() = Some(std::rc::Rc::clone(&targets));
+        Ok(targets)
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// (resolved edge lists, unresolved target lists) read from the store
+    /// by index runs on this thread (tests only).
+    static EDGE_LIST_READS: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// The detail of an import record whose resolved target file was removed.
+const TARGET_DELETED: &str = "target_deleted";
+
+/// What a run changes in the C# namespace map: namespaces that appear or
+/// disappear, those kept, and the type files of every C# file added,
+/// removed, or declaring other namespaces than before (E17-44, D109).
+fn csharp_namespace_changes(
+    stored: &BTreeMap<String, Vec<String>>,
+    read: &BTreeMap<String, Vec<String>>,
+    after: &HashSet<(&'static str, String)>,
+    removed: &HashSet<String>,
+    added: &HashSet<String>,
+) -> NamespaceChanges {
+    let is_csharp = |path: &str| {
+        declaring_language(path)
+            .is_some_and(|language| languages::spec(language).imports == ImportStyle::CSharp)
+    };
+    let csharp = compresso_store::FileLanguage::CSharp.as_str();
+    let before = stored
+        .iter()
+        .filter(|(path, _)| is_csharp(path))
+        .flat_map(|(_, names)| names.iter().cloned())
+        .collect::<HashSet<_>>();
+    let after = after
+        .iter()
+        .filter(|(language, _)| *language == csharp)
+        .map(|(_, name)| name.clone())
+        .collect::<HashSet<_>>();
+    let mut type_files = BTreeSet::new();
+    let stem = |path: &str| {
+        let file = path.rsplit('/').next().unwrap_or(path);
+        file.split('.').next().unwrap_or(file).to_owned()
+    };
+    let no_names: &[String] = &[];
+    let mut note = |path: &str, names: &[String]| {
+        for name in names {
+            type_files.insert((name.clone(), stem(path)));
+        }
+    };
+    for (path, now) in read {
+        if !is_csharp(path) {
+            continue;
+        }
+        let before = stored.get(path).map_or(no_names, Vec::as_slice);
+        let mut left = before.iter().collect::<Vec<_>>();
+        let mut right = now.iter().collect::<Vec<_>>();
+        left.sort();
+        right.sort();
+        if added.contains(path) || left != right {
+            note(path, before);
+            note(path, now);
+        }
+    }
+    for path in removed {
+        if is_csharp(path) {
+            note(path, stored.get(path).map_or(no_names, Vec::as_slice));
+        }
+    }
+    NamespaceChanges::new(
+        before.symmetric_difference(&after).cloned().collect(),
+        before.intersection(&after).cloned().collect(),
+        type_files,
+    )
 }
 
 /// Reads the declared packages or namespaces of `paths` on `workers`
@@ -2250,5 +2399,60 @@ mod tests {
             ImportResolution::Unresolved("not_indexed".to_owned())
         );
         assert!(imports[1].resolved_path.is_none());
+    }
+
+    /// E17-44 review: one index run reads the repository's resolved edges
+    /// and its unresolved import targets at most once each, however many
+    /// rules need them (a removed file, a grown Go package, a C# namespace
+    /// that appears, a type file that joins one).
+    #[test]
+    fn test_an_index_run_reads_each_edge_list_at_most_once() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let root = directory.path().join("repo");
+        let files = [
+            ("go.mod", "module example.com/m\n\ngo 1.22\n"),
+            ("p/a.go", "package p\n\nfunc A() {}\n"),
+            (
+                "main.go",
+                "package main\n\nimport \"example.com/m/p\"\n\nfunc main() { p.A() }\n",
+            ),
+            (
+                "util/Strings.cs",
+                "namespace Util\n{\n    public static class Strings { }\n}\n",
+            ),
+            (
+                "web/Page.cs",
+                "namespace Acme.Web\n{\n    using Util;\n    using static Util.Strings;\n    public class Page { }\n}\n",
+            ),
+            (
+                "web/Old.cs",
+                "namespace Acme.Old\n{\n    public class Old { }\n}\n",
+            ),
+        ];
+        for (path, source) in files {
+            let file = root.join(path);
+            fs::create_dir_all(file.parent().expect("parent")).expect("directory");
+            fs::write(file, source).expect("file");
+        }
+        let store = Store::open(&directory.path().join("compresso.db")).expect("store should open");
+        let counter = counter_for(TokenProvider::Heuristic);
+        Indexer::new(&store, counter)
+            .index(&root, |_| {})
+            .expect("index");
+
+        fs::write(root.join("p/b.go"), "package p\n\nfunc B() {}\n").expect("file");
+        fs::create_dir_all(root.join("web/Util")).expect("directory");
+        fs::write(
+            root.join("web/Util/Strings.cs"),
+            "namespace Acme.Web.Util\n{\n    public static class Strings { }\n}\n",
+        )
+        .expect("file");
+        fs::remove_file(root.join("web/Old.cs")).expect("remove");
+        EDGE_LIST_READS.with(|reads| reads.set((0, 0)));
+        Indexer::new(&store, counter)
+            .index(&root, |_| {})
+            .expect("reindex");
+        let (resolved, unresolved) = EDGE_LIST_READS.with(std::cell::Cell::get);
+        assert_eq!((resolved, unresolved), (1, 1));
     }
 }

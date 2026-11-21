@@ -291,6 +291,79 @@ fn test_repository_stale_trusts_an_untouched_file_and_rechecks_a_touched_one() {
     );
 }
 
+/// E17-45 (D110): on a repository large enough for the staleness check to
+/// use several threads, an untouched index is fresh and any one file edited,
+/// deleted, or replaced by a directory, first, in the middle, or last in
+/// store order, is reported, exactly as the one-thread walk reported it.
+#[test]
+fn test_repository_stale_holds_on_the_parallel_path() {
+    use std::time::{Duration, SystemTime};
+
+    let temp = TempDir::new().expect("temp dir should be created");
+    let root = temp.path().join("repo");
+    let paths = (0..600)
+        .map(|index| format!("src/m{index:03}.rs"))
+        .collect::<Vec<_>>();
+    fs::create_dir_all(root.join("src")).expect("source directory should be created");
+    let old = SystemTime::now() - Duration::from_secs(3_600);
+    for (index, path) in paths.iter().enumerate() {
+        let file = root.join(path);
+        fs::write(&file, format!("pub fn f{index}() {{}}\n")).expect("source should be written");
+        fs::File::options()
+            .write(true)
+            .open(&file)
+            .expect("source should open")
+            .set_modified(old)
+            .expect("modification time should be set");
+    }
+    let store = Store::open(&temp.path().join("compresso.db")).expect("store should open");
+    compresso_atlas::Indexer::new(
+        &store,
+        counter_for(compresso_core::TokenProvider::Heuristic),
+    )
+    .index(&root, |_| {})
+    .expect("repository should index");
+    let canonical = fs::canonicalize(&root).expect("root should canonicalize");
+    let repo = store
+        .repo_by_root(&canonical)
+        .expect("lookup should work")
+        .expect("repository should exist")
+        .id;
+    assert!(!repository_stale(&store, repo).expect("fresh repository should inspect"));
+
+    for path in [&paths[0], &paths[300], &paths[599]] {
+        let file = root.join(path);
+        let original = fs::read_to_string(&file).expect("source should read");
+        fs::write(&file, original.replace("pub fn", "pub fn x")).expect("source should change");
+        assert!(
+            repository_stale(&store, repo).expect("edit should inspect"),
+            "{path}"
+        );
+        fs::remove_file(&file).expect("source should delete");
+        assert!(
+            repository_stale(&store, repo).expect("deletion should inspect"),
+            "{path}"
+        );
+        fs::create_dir(&file).expect("directory should be created");
+        assert!(
+            repository_stale(&store, repo).expect("directory should inspect"),
+            "{path}"
+        );
+        fs::remove_dir(&file).expect("directory should be removed");
+        fs::write(&file, &original).expect("source should restore");
+        fs::File::options()
+            .write(true)
+            .open(&file)
+            .expect("source should open")
+            .set_modified(old)
+            .expect("modification time should be set");
+        assert!(
+            !repository_stale(&store, repo).expect("restored repository should inspect"),
+            "{path}"
+        );
+    }
+}
+
 #[test]
 fn test_repository_stale_detects_changed_and_deleted_file() {
     let fixture = Fixture::new();

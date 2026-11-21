@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::{LazyLock, OnceLock};
 
 use compresso_store::{CallSiteRecord, SymbolKind, SymbolRecord};
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
@@ -112,7 +113,15 @@ impl ParserRegistry {
                 query,
                 calls,
                 process,
-            } => extract_with_query(grammar(), spec.name, query, source, calls, process),
+            } => extract_with_query(
+                query_slot(lang),
+                grammar(),
+                spec.name,
+                query,
+                source,
+                calls,
+                process,
+            ),
             Extractor::Walk {
                 grammar,
                 calls,
@@ -121,6 +130,15 @@ impl ParserRegistry {
             Extractor::Custom(extract) => Ok(extract(source)),
         }
     }
+}
+
+/// The compiled-query slot of `language`'s table entry.
+fn query_slot(language: Language) -> &'static QuerySlot {
+    let index = LANGUAGES
+        .iter()
+        .position(|spec| spec.language == language)
+        .unwrap_or_else(|| unreachable!("every FileLanguage has a table entry"));
+    &COMPILED_QUERIES[index]
 }
 
 #[derive(Clone, Copy)]
@@ -139,7 +157,47 @@ pub(crate) struct Candidate<'tree> {
     kind: CaptureKind,
 }
 
+/// A language's extraction query with the kind of each capture, compiled
+/// once per process and shared by every thread (`Query` is `Send + Sync`;
+/// cursors and parsers stay per call) (E17-43, D108).
+struct CompiledQuery {
+    query: Query,
+    kinds: Vec<Option<CaptureKind>>,
+}
+
+/// One slot per table language; only query-based languages fill theirs. A
+/// failed compilation is kept as its message and returned on every call.
+type QuerySlot = OnceLock<Result<CompiledQuery, String>>;
+
+static COMPILED_QUERIES: LazyLock<Vec<QuerySlot>> =
+    LazyLock::new(|| LANGUAGES.iter().map(|_| OnceLock::new()).collect());
+
+fn compiled_query<'slot>(
+    slot: &'slot QuerySlot,
+    language: &tree_sitter::Language,
+    language_name: &'static str,
+    query_source: &str,
+) -> Result<&'slot CompiledQuery, ParseError> {
+    slot.get_or_init(|| {
+        #[cfg(test)]
+        count_query_compilation(language_name);
+        let query = Query::new(language, query_source).map_err(|error| error.to_string())?;
+        let kinds = query
+            .capture_names()
+            .iter()
+            .map(|name| capture_kind(name))
+            .collect();
+        Ok(CompiledQuery { query, kinds })
+    })
+    .as_ref()
+    .map_err(|message| ParseError::Query {
+        language: language_name,
+        message: message.clone(),
+    })
+}
+
 fn extract_with_query(
+    slot: &QuerySlot,
     language: tree_sitter::Language,
     language_name: &'static str,
     query_source: &str,
@@ -155,18 +213,16 @@ fn extract_with_query(
             message: error.to_string(),
         })?;
     let tree = parser.parse(source, None).ok_or(ParseError::ParseFailed)?;
-    let query = Query::new(&language, query_source).map_err(|error| ParseError::Query {
-        language: language_name,
-        message: error.to_string(),
-    })?;
-    let capture_names = query.capture_names();
+    // Compiled on the first parse that needs it, as before, so a query that
+    // does not compile fails the same call it failed on main, every time.
+    let compiled = compiled_query(slot, &language, language_name, query_source)?;
     let mut cursor = QueryCursor::new();
-    let mut query_matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
+    let mut query_matches = cursor.matches(&compiled.query, tree.root_node(), source.as_bytes());
     let mut candidates = Vec::new();
 
     while let Some(query_match) = query_matches.next() {
         for capture in query_match.captures {
-            let Some(kind) = capture_kind(capture_names[capture.index as usize]) else {
+            let Some(kind) = compiled.kinds[capture.index as usize] else {
                 continue;
             };
             candidates.push(Candidate {
@@ -314,6 +370,33 @@ fn signature_prefix(text: &str) -> &str {
         end -= 1;
     }
     &text[..end]
+}
+
+/// Extraction queries compiled so far in this process, per language name
+/// (tests only; process-wide, since workers compile on their own threads).
+#[cfg(test)]
+static QUERY_COMPILATIONS: std::sync::Mutex<Vec<(&'static str, usize)>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn count_query_compilation(language_name: &'static str) {
+    let mut counts = QUERY_COMPILATIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match counts.iter_mut().find(|(name, _)| *name == language_name) {
+        Some((_, count)) => *count += 1,
+        None => counts.push((language_name, 1)),
+    }
+}
+
+#[cfg(test)]
+fn query_compilations(language_name: &str) -> usize {
+    QUERY_COMPILATIONS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(name, _)| *name == language_name)
+        .map_or(0, |(_, count)| *count)
 }
 
 #[cfg(test)]
@@ -1065,6 +1148,74 @@ mod tests {
         Language, MAX_SIGNATURE_BYTES, ParserRegistry, bounded_signature, is_cut, marked_signature,
         signature_prefix,
     };
+
+    /// E17-43 (D108): each query-based language compiles its extraction
+    /// query once per process, however many files and threads extract with
+    /// it; on main it was compiled again for every file (about a fifth of a
+    /// worker's time in a sampled profile). Counted, not timed.
+    #[test]
+    fn test_each_language_query_is_compiled_once_per_process() {
+        let samples = [
+            (Language::Rust, "Rust", "fn a() { b(); }\n"),
+            (
+                Language::TypeScript,
+                "TypeScript",
+                "export function a() { b(); }\n",
+            ),
+            (Language::Tsx, "TSX", "export const A = () => <div />;\n"),
+            (
+                Language::JavaScript,
+                "JavaScript",
+                "function a() { b(); }\n",
+            ),
+            (Language::Python, "Python", "def a():\n    b()\n"),
+            (Language::Go, "Go", "package a\nfunc A() { b() }\n"),
+        ];
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for (language, _, source) in samples {
+                        for _ in 0..3 {
+                            ParserRegistry::extract(language, source).expect("extracts");
+                        }
+                    }
+                });
+            }
+        });
+        for (language, name, _) in samples {
+            assert_eq!(
+                super::languages::spec(language).name,
+                name,
+                "{language:?} is named as its table entry"
+            );
+            assert_eq!(
+                super::query_compilations(name),
+                1,
+                "{name} query compiled once"
+            );
+        }
+    }
+
+    /// E17-43 (D108): a query that does not compile fails every call with
+    /// the same `ParseError::Query` it gave when compiled per file, and is
+    /// not compiled again.
+    #[test]
+    fn test_a_query_that_fails_to_compile_fails_every_call_the_same_way() {
+        let slot = super::QuerySlot::new();
+        let grammar: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        let name = "Broken query (test)";
+        let errors = (0..3)
+            .map(
+                |_| match super::compiled_query(&slot, &grammar, name, "(no_such_node) @x") {
+                    Err(error) => error.to_string(),
+                    Ok(_) => panic!("an invalid query compiles"),
+                },
+            )
+            .collect::<Vec<_>>();
+        assert!(errors[0].starts_with("invalid Broken query (test) extraction query: "));
+        assert!(errors.iter().all(|error| *error == errors[0]));
+        assert_eq!(super::query_compilations(name), 1);
+    }
 
     /// Review M1: text reused per name is cut once, just past the bound, so
     /// the bound still marks a signature cut.
