@@ -1,0 +1,21 @@
+rust/compresso-atlas/src/indexer.rs
+  s_89a704cfae63f5::t_c5bc7ed2b47dc2 589-591,596,603,618
+rust/compresso-atlas/tests/indexer_java_csharp.rs
+  s_89a704cfae63f5::t_a119cba3b8eec6 703-706,708,727-735
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "15483d67e3233df9cedd3f285bec077c265fe815",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
