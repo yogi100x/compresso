@@ -1,0 +1,21 @@
+rust/compresso-cli/tests/cli_retrieval.rs
+  s_89a704cfae63f5::t_9cc822d24e5dff 135-197
+rust/compresso-mcp/tests/result_format.rs
+  s_89a704cfae63f5::t_24983c81c6ffb2 2783-2836
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4f0c608fc727054dbea19c7226269c1850e78e78",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
