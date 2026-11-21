@@ -2780,3 +2780,57 @@ async fn test_text_results_name_java_and_csharp_symbols_and_rank_doc_rows_last()
     assert!(text.contains("starts there: Steps::step"), "{text}");
     lean.close().await;
 }
+
+/// E17-40 round 3 SF6: the impact result carries exact `total` and `shown`
+/// and names the package that links a Java or C# dependent.
+#[tokio::test]
+async fn test_impact_result_names_totals_and_the_linking_package() {
+    let fixture = fixture_with(&[
+        (
+            "lib/Widget.cs",
+            "namespace Lib;\n\npublic static class Widget { public static void Make() { } }\n",
+        ),
+        (
+            "app/Main.cs",
+            "using Lib;\n\nnamespace App;\n\npublic class Main { }\n",
+        ),
+        (
+            "lib/User.cs",
+            "namespace Lib;\n\npublic class User { void Run() { Widget.Make(); } }\n",
+        ),
+        ("lib/Idle.cs", "namespace Lib;\n\npublic class Idle { }\n"),
+    ]);
+    let mut full = Harness::start(
+        &fixture,
+        options_with(&fixture, McpToolProfile::Full, McpResultFormat::Json),
+    )
+    .await;
+    let (text, is_error) = full
+        .call(
+            "compresso_impact",
+            &json!({ "path": "lib/Widget.cs", "max_results": 1 }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    let value: Value = serde_json::from_str(&text).expect("JSON result");
+    assert_eq!(value["total"], 2, "{value}");
+    assert_eq!(value["shown"], 1);
+    assert_eq!(value["truncated"], true);
+    assert_eq!(value["complete"], false);
+    assert_eq!(
+        value["dependents"],
+        json!([{ "path": "app/Main.cs", "depth": 1, "edge_kinds": ["imports"], "package": "Lib" }])
+    );
+    let (text, _) = full
+        .call("compresso_impact", &json!({ "path": "lib/Widget.cs" }))
+        .await;
+    let value: Value = serde_json::from_str(&text).expect("JSON result");
+    assert_eq!(value["total"], 2);
+    assert_eq!(value["shown"], 2);
+    assert_eq!(value["complete"], true);
+    assert_eq!(
+        value["dependents"][1],
+        json!({ "path": "lib/User.cs", "depth": 1, "edge_kinds": ["references"], "package": "Lib" })
+    );
+    full.close().await;
+}
