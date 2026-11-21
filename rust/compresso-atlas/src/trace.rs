@@ -447,7 +447,7 @@ const fn is_callable(kind: SymbolKind) -> bool {
 
 /// The last owner segment of a qualified name, without generic arguments:
 /// `Store<T>::open` gives `Store`; a name without an owner gives `None`.
-fn owner_base(qualified: &str) -> Option<String> {
+pub(crate) fn owner_base(qualified: &str) -> Option<String> {
     let (owner, _) = qualified.rsplit_once("::")?;
     let owner = strip_generics(owner);
     let base = owner.rsplit("::").next().unwrap_or(&owner).trim();
@@ -468,7 +468,7 @@ fn strip_generics(text: &str) -> String {
     output
 }
 
-fn parent_directory(path: &str) -> &str {
+pub(crate) fn parent_directory(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(parent, _)| parent)
 }
 

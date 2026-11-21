@@ -273,6 +273,93 @@ impl Store {
         Ok(paths)
     }
 
+    /// The plain and self call sites in files directly inside `directory`
+    /// (`""` is the repository root; files of subdirectories are left out)
+    /// whose callee is one of `names`, in path, line, and name order: what a
+    /// file of a package that is a directory (Go) calls among the names
+    /// another file of it defines (E17-46, D111). Names are matched in chunks
+    /// of 400 through the callee index, so the rows read are the call sites
+    /// of the repository naming them; the directory is filtered after.
+    pub fn call_sites_in_directory_naming(
+        &self,
+        repo: RepoId,
+        directory: &str,
+        names: &[String],
+    ) -> Result<Vec<StoredCallSite>, StoreError> {
+        let connection = self.connection()?;
+        ensure_repo_exists(&connection, repo)?;
+        let prefix = directory_prefix(directory);
+        let mut output = Vec::new();
+        for chunk in names.chunks(ID_CHUNK) {
+            let mut statement = connection.prepare(&format!(
+                "SELECT {CALL_COLUMNS} FROM call_sites AS c JOIN symbols AS caller ON caller.id = c.caller_symbol_id JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 AND c.call_form IN ('plain', 'self') AND c.callee_name IN ({}) AND {}",
+                placeholders(chunk.len()),
+                directory_condition(chunk.len() + 2),
+            ))?;
+            let parameters = std::iter::once(rusqlite::types::Value::from(repo))
+                .chain(
+                    chunk
+                        .iter()
+                        .map(|name| rusqlite::types::Value::from(name.clone())),
+                )
+                .chain(std::iter::once(rusqlite::types::Value::from(
+                    prefix.clone(),
+                )));
+            let raw = statement
+                .query_map(params_from_iter(parameters), call_row)?
+                .collect::<Result<Vec<_>, _>>()?;
+            for call in raw {
+                output.push(decode_call(call)?);
+            }
+        }
+        sort_calls(&mut output);
+        Ok(output)
+    }
+
+    /// The symbols named one of `names` in files directly inside
+    /// `directory` (`""` is the repository root), with their paths, in path
+    /// and line order (E17-46, D111). Read through the name index.
+    pub fn symbols_in_directory_named(
+        &self,
+        repo: RepoId,
+        directory: &str,
+        names: &[String],
+    ) -> Result<Vec<IndexedSymbol>, StoreError> {
+        let connection = self.connection()?;
+        ensure_repo_exists(&connection, repo)?;
+        let prefix = directory_prefix(directory);
+        let mut output = Vec::new();
+        for chunk in names.chunks(ID_CHUNK) {
+            let mut statement = connection.prepare(&format!(
+                "SELECT {SYMBOL_COLUMNS} FROM symbols AS s JOIN files AS f ON f.id = s.file_id WHERE f.repo_id = ?1 AND s.name IN ({}) AND {} ORDER BY f.path ASC, s.start_line ASC, s.end_line ASC, s.qualified_name ASC, s.id ASC",
+                placeholders(chunk.len()),
+                directory_condition(chunk.len() + 2),
+            ))?;
+            let parameters = std::iter::once(rusqlite::types::Value::from(repo))
+                .chain(
+                    chunk
+                        .iter()
+                        .map(|name| rusqlite::types::Value::from(name.clone())),
+                )
+                .chain(std::iter::once(rusqlite::types::Value::from(
+                    prefix.clone(),
+                )));
+            let raw = statement
+                .query_map(params_from_iter(parameters), indexed_symbol_row)?
+                .collect::<Result<Vec<_>, _>>()?;
+            for symbol in raw {
+                output.push(decode_indexed_symbol(symbol)?);
+            }
+        }
+        output.sort_by(|left, right| {
+            left.path
+                .cmp(&right.path)
+                .then_with(|| left.symbol.start_line.cmp(&right.symbol.start_line))
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(output)
+    }
+
     /// The paths of files holding the [`CALL_SITES_CUT_MARKER`] row: files
     /// whose call extraction stopped at a per-file bound, so their stored
     /// call sites may miss calls written later in the file.
@@ -387,6 +474,23 @@ pub(crate) fn insert_call_sites(
 /// A row limit SQLite accepts; larger limits mean "every row".
 fn sqlite_limit(limit: usize) -> i64 {
     i64::try_from(limit).unwrap_or(i64::MAX)
+}
+
+/// The path prefix of the files directly inside `directory`.
+fn directory_prefix(directory: &str) -> String {
+    if directory.is_empty() {
+        String::new()
+    } else {
+        format!("{directory}/")
+    }
+}
+
+/// An SQL condition on `f.path`: the file sits directly under the prefix
+/// bound as parameter `index` (no further `/` after it).
+fn directory_condition(index: usize) -> String {
+    format!(
+        "substr(f.path, 1, length(?{index})) = ?{index} AND instr(substr(f.path, length(?{index}) + 1), '/') = 0"
+    )
 }
 
 fn placeholders(count: usize) -> String {

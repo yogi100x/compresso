@@ -766,8 +766,9 @@ fn execute_impact(
     let unresolved_sources = store
         .incomplete_edge_sources(repository.id)
         .map_err(map_store_error)?;
-    // Java and C# (D105): files of the package scope that could not be
-    // shown to use the file make the answer incomplete, as in the MCP result.
+    // Java and C# (D105) and Go (D111): files of the package scope that
+    // could not be shown to use the file make the answer incomplete, as in
+    // the MCP result.
     let complete = unresolved_sources.is_empty()
         && !truncated
         && report.unproven == 0

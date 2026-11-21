@@ -243,6 +243,59 @@ fn test_impact_complete_agrees_with_the_query_on_unproven_files() {
     assert_eq!(output["data"]["unproven"], 1);
 }
 
+/// E17-46 (D111): for Go the CLI also agrees with the query on `complete`:
+/// a file of the package calling the target is listed (`references`, its
+/// directory as `package`), one with no call is unproven.
+#[test]
+fn test_go_impact_complete_agrees_with_the_query_on_package_files() {
+    let temp = tempfile::tempdir().expect("temporary directory should be created");
+    let root = temp.path().join("repo");
+    fs::create_dir_all(root.join("store")).expect("directory");
+    for (path, source) in [
+        ("go.mod", "module example.com/svc\n"),
+        ("store/parse.go", "package store\n\nfunc Parse() {}\n"),
+        (
+            "store/load.go",
+            "package store\n\nfunc Load() {\n\tParse()\n}\n",
+        ),
+        ("store/idle.go", "package store\n\nfunc idle() {}\n"),
+    ] {
+        fs::write(root.join(path), source).expect("file");
+    }
+    let store = Store::open(&temp.path().join("compresso.db")).expect("store should open");
+    Indexer::new(&store, counter_for(TokenProvider::OpenAiO200k))
+        .index(&root, |_| {})
+        .expect("fixture should index");
+    let canonical = fs::canonicalize(&root).expect("root should canonicalize");
+    let repo = store
+        .repo_by_root(&canonical)
+        .expect("lookup")
+        .expect("repository")
+        .id;
+    let query = compresso_atlas::impact(&store, repo, "store/parse.go").expect("impact");
+    assert_eq!(query.unproven, 1);
+    let fixture = Fixture {
+        _temp: temp,
+        root: canonical,
+        store,
+    };
+    let (exit, output, _) = fixture.run_json(&[
+        "impact",
+        "store/parse.go",
+        "--root",
+        fixture.root_str(),
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success);
+    assert_eq!(output["data"]["complete"], json!(query.complete));
+    assert_eq!(output["data"]["complete"], false);
+    assert_eq!(output["data"]["unproven"], 1);
+    assert_eq!(
+        output["data"]["dependents"],
+        json!([{ "path": "store/load.go", "depth": 1, "edge_kinds": ["references"], "package": "store" }])
+    );
+}
+
 #[test]
 fn test_search_and_read_json_snapshots_are_versioned_and_bounded() {
     let fixture = Fixture::new();
