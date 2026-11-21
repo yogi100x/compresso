@@ -4513,6 +4513,91 @@ mod tests {
         content_matches_index, line_spells_word, read_utf8_capped, resolve_under_root,
     };
 
+    /// E17-45 review: on real indexed files, with four workers whatever the
+    /// machine's CPU count, the earlier of two decisive files in store order
+    /// decides, also when the later one is found first: two stale files, and
+    /// a file replaced by a directory (whatever that gives on this platform,
+    /// as the one-thread walk computes it) before a stale one.
+    #[test]
+    fn test_parallel_staleness_on_real_files_reports_the_earlier_file() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Duration, SystemTime};
+
+        let temp = tempfile::tempdir().expect("temporary directory");
+        let root = temp.path().join("repo");
+        fs::create_dir_all(root.join("src")).expect("directory");
+        let old = SystemTime::now() - Duration::from_secs(3_600);
+        for index in 0..320 {
+            let file = root.join(format!("src/m{index:03}.rs"));
+            fs::write(&file, format!("pub fn f{index}() {{}}\n")).expect("file");
+            fs::File::options()
+                .write(true)
+                .open(&file)
+                .expect("open")
+                .set_modified(old)
+                .expect("modification time");
+        }
+        let store = compresso_store::Store::open(&temp.path().join("compresso.db")).expect("store");
+        crate::Indexer::new(
+            &store,
+            compresso_core::counter_for(compresso_core::TokenProvider::Heuristic),
+        )
+        .index(&root, |_| {})
+        .expect("index");
+        let canonical = fs::canonicalize(&root).expect("canonical root");
+        let repo = store
+            .repo_by_root(&canonical)
+            .expect("lookup")
+            .expect("repository")
+            .id;
+        let files = store.indexed_files(repo).expect("files");
+        assert_eq!(files.len(), 320);
+        let (earlier, later) = (&files[90].path, &files[260].path);
+
+        // Each decisive file names itself, so the test sees which decided;
+        // the earlier one is held until the later one has been checked.
+        let walk = |workers: usize| {
+            let later_seen = AtomicBool::new(false);
+            super::first_not_fresh(&files, workers, |indexed| {
+                if workers > 1 && indexed.path == *earlier {
+                    while !later_seen.load(Ordering::Acquire) {
+                        std::thread::yield_now();
+                    }
+                }
+                let outcome = super::indexed_file_stale(&canonical, indexed);
+                if indexed.path == *later {
+                    later_seen.store(true, Ordering::Release);
+                }
+                match outcome {
+                    Ok(false) => Ok(false),
+                    Ok(true) => Err(format!("stale {}", indexed.path)),
+                    Err(error) => Err(format!("error {}: {error}", indexed.path)),
+                }
+            })
+        };
+
+        // (a) Two stale files.
+        for path in [earlier, later] {
+            fs::write(canonical.join(path), "pub fn changed_size() {}\n").expect("edit");
+        }
+        let serial = walk(1);
+        assert_eq!(serial, Err(format!("stale {earlier}")));
+        assert_eq!(walk(4), serial);
+
+        // (b) The earlier file replaced by a directory, the later one stale.
+        fs::remove_file(canonical.join(earlier)).expect("remove");
+        fs::create_dir(canonical.join(earlier)).expect("directory");
+        let serial = walk(1);
+        assert!(
+            serial
+                .as_ref()
+                .is_err_and(|outcome| outcome.ends_with(earlier.as_str())
+                    || outcome.contains(&format!("{earlier}:"))),
+            "{serial:?}"
+        );
+        assert_eq!(walk(4), serial);
+    }
+
     /// E17-45 (D110): the parallel staleness walk returns exactly what the
     /// one-thread walk returns: the outcome of the first item in order that
     /// is stale or fails, whichever thread finds it first.
