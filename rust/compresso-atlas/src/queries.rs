@@ -1548,8 +1548,10 @@ impl PackageLinks {
     ///
     /// Bounds are D105's: at most [`MAX_EVIDENCE_TARGETS`] files checked per
     /// `impact` and [`MAX_EVIDENCE_TYPES`] names (functions, struct types,
-    /// and methods) per file; past either the file is counted unchecked.
-    /// Each checked file costs three store queries: its symbols, the
+    /// and methods) per file; past either the file is counted unchecked. A
+    /// file is charged to the first bound before its first store read, so a
+    /// file past the name bound or declaring nothing uses it up too. Each
+    /// checked file costs at most three store queries: its symbols, the
     /// definitions in its directory of its names, and the plain and self
     /// calls in its directory naming them.
     fn directory_dependents(
@@ -1584,6 +1586,10 @@ impl PackageLinks {
             state.unchecked += 1;
             return Ok(());
         }
+        // Charged before any store read, so every read below happens at
+        // most `MAX_EVIDENCE_TARGETS` times per `impact`, whatever the files
+        // turn out to declare.
+        state.checked += 1;
         let symbols = store.symbols_in_file(repo, target)?;
         evidence_work::count_query(symbols.len());
         if symbols.is_empty() {
@@ -1608,7 +1614,6 @@ impl PackageLinks {
             state.unchecked += 1;
             return Ok(());
         }
-        state.checked += 1;
         let scope = files
             .iter()
             .filter(|path| {
@@ -5104,7 +5109,7 @@ mod tests {
     /// Indexes one Go package of `size` files, each calling `Target`, beside
     /// another package of `size` files calling a `Target` of their own, and
     /// returns what one `impact` on the first package's target counted.
-    fn go_package_evidence_work(size: usize) -> (usize, usize, super::ImpactReport) {
+    fn go_package_evidence_work(size: usize, wide: bool) -> (usize, usize, super::ImpactReport) {
         let directory = tempfile::tempdir().expect("temporary directory should be created");
         let root = directory.path().join("repo");
         fs::create_dir_all(root.join("pkg")).expect("directory");
@@ -5122,9 +5127,17 @@ mod tests {
         .expect("file");
         for index in 0..size {
             for package in ["pkg", "other"] {
+                // A wide file declares 65 functions: past the name bound.
+                let extra = if wide {
+                    (1..65)
+                        .map(|name| format!("func f{index:04}x{name}() {{}}\n"))
+                        .collect::<String>()
+                } else {
+                    String::new()
+                };
                 fs::write(
                     root.join(format!("{package}/f{index:04}.go")),
-                    format!("package {package}\n\nfunc f{index:04}() {{\n\tTarget()\n}}\n"),
+                    format!("package {package}\n\nfunc f{index:04}() {{\n\tTarget()\n}}\n{extra}"),
                 )
                 .expect("file");
             }
@@ -5157,8 +5170,8 @@ mod tests {
     /// naming them; a package of the same names elsewhere adds none.
     #[test]
     fn test_go_package_evidence_work_is_bounded_by_the_check_bounds() {
-        let (small_queries, small_rows, small) = go_package_evidence_work(100);
-        let (large_queries, large_rows, large) = go_package_evidence_work(200);
+        let (small_queries, small_rows, small) = go_package_evidence_work(100, false);
+        let (large_queries, large_rows, large) = go_package_evidence_work(200, false);
         assert_eq!(small.total, 100);
         assert_eq!(large.total, 200);
         let bound = 3 * super::MAX_EVIDENCE_TARGETS + 1;
@@ -5170,5 +5183,13 @@ mod tests {
         assert_eq!(small_rows, 1 + 1 + 100 + 63 * 2);
         assert_eq!(large_rows, 1 + 1 + 200 + 63 * 2);
         assert_eq!(large.unevaluated, 200 - 63);
+
+        // Files past the name bound use up the budget too: 63 of them read
+        // their symbols (65 each) and stop; the rest read nothing.
+        let (wide_queries, wide_rows, wide) = go_package_evidence_work(100, true);
+        assert_eq!(wide.total, 100);
+        assert_eq!(wide_queries, 3 + 63 + 1);
+        assert_eq!(wide_rows, 1 + 1 + 100 + 63 * 65);
+        assert_eq!(wide.unevaluated, 100);
     }
 }
