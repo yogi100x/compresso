@@ -6,13 +6,13 @@
 //! `var` names (both stored as `const`: the store has no variable kind), and
 //! import paths. Declarations inside function bodies, interface method
 //! elements, struct fields, and the blank identifier `_` are not symbols.
-//! Signatures are capped at [`MAX_GO_SIGNATURE_BYTES`].
+//! Signatures are capped at [`super::MAX_SIGNATURE_BYTES`].
 
 use compresso_store::{SymbolKind, SymbolRecord};
 use tree_sitter::Node;
 
 use super::{
-    Candidate, CaptureKind, Extraction, ImportKind, line_number, node_text, trimmed_signature,
+    Candidate, CaptureKind, Extraction, ImportKind, bounded_signature, line_number, node_text,
     unresolved_import,
 };
 
@@ -200,15 +200,20 @@ fn values(declaration: Node<'_>, keyword: &str, source: &str, output: &mut Vec<S
         let type_text = spec
             .child_by_field_name("type")
             .and_then(|kind| node_text(kind, source));
+        let type_cut = type_text.is_some_and(super::is_cut);
+        let type_text = type_text.map(super::signature_prefix);
         for name in names {
             let Some(name) = symbol_name(name, source) else {
                 continue;
             };
             let signature = whole.clone().or_else(|| {
-                bounded_signature(&match type_text {
-                    Some(type_text) => format!("{keyword} {name} {type_text}"),
-                    None => format!("{keyword} {name}"),
-                })
+                super::marked_signature(
+                    &super::per_name_text(match type_text {
+                        Some(type_text) => format!("{keyword} {name} {type_text}"),
+                        None => format!("{keyword} {name}"),
+                    }),
+                    type_cut,
+                )
             });
             output.push(record(
                 name.clone(),
@@ -219,22 +224,6 @@ fn values(declaration: Node<'_>, keyword: &str, source: &str, output: &mut Vec<S
             ));
         }
     }
-}
-
-/// Largest Go signature kept, as for shell and text headings; a longer one
-/// is cut at a character boundary and marked with `…`.
-const MAX_GO_SIGNATURE_BYTES: usize = 1_024;
-
-fn bounded_signature(text: &str) -> Option<String> {
-    let signature = trimmed_signature(text)?;
-    if signature.len() <= MAX_GO_SIGNATURE_BYTES {
-        return Some(signature);
-    }
-    let mut end = MAX_GO_SIGNATURE_BYTES - '…'.len_utf8();
-    while !signature.is_char_boundary(end) {
-        end -= 1;
-    }
-    Some(format!("{}…", &signature[..end]))
 }
 
 fn body_signature(node: Node<'_>, source: &str) -> Option<String> {

@@ -5,13 +5,17 @@ use compresso_store::{CallSiteRecord, SymbolKind, SymbolRecord};
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
 
 mod calls;
+mod csharp;
+mod declarations;
 mod go;
+mod java;
 pub mod languages;
 mod shell;
 mod text;
 
 use calls::CallSyntax;
 pub use calls::{MAX_CALL_NODES_PER_FILE, MAX_CALLS_PER_FILE};
+pub(crate) use declarations::modifiers as signature_modifiers;
 pub(crate) use go::package_local_name as go_package_local_name;
 use languages::Extractor;
 pub use languages::{LANGUAGES, LanguageSpec};
@@ -36,12 +40,26 @@ pub enum ImportResolution {
     Unresolved(String),
 }
 
+/// Where an import is written, when that changes what it names (C#).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum ImportContext {
+    #[default]
+    None,
+    /// A `using` inside this namespace: its name is looked up relative to
+    /// the enclosing namespaces first (`using Util;` in `Acme` may mean
+    /// `Acme.Util`).
+    Namespace(String),
+    /// A `global using`: it applies to every file of the language.
+    Global,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ImportRecord {
     pub raw: String,
     pub kind: ImportKind,
     pub resolved_path: Option<String>,
     pub resolution: ImportResolution,
+    pub context: ImportContext,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -91,6 +109,11 @@ impl ParserRegistry {
                 calls,
                 process,
             } => extract_with_query(grammar(), spec.name, query, source, calls, process),
+            Extractor::Walk {
+                grammar,
+                calls,
+                walk,
+            } => extract_with_walk(grammar(), spec.name, source, calls, walk),
             Extractor::Custom(extract) => Ok(extract(source)),
         }
     }
@@ -198,6 +221,142 @@ fn extract_with_query(
     extraction.calls_truncated = calls.truncated;
 
     Ok(extraction)
+}
+
+/// Parses `source` and hands its tree to a hand-written declaration walk
+/// (Java, C#), then records call sites inside the walked functions and
+/// methods exactly as the query-based extractors do.
+fn extract_with_walk(
+    language: tree_sitter::Language,
+    language_name: &'static str,
+    source: &str,
+    call_syntax: CallSyntax,
+    walk: languages::Walk,
+) -> Result<Extraction, ParseError> {
+    let tree = parse_tree(&language, language_name, source)?;
+    let mut extraction = Extraction {
+        symbols: Vec::new(),
+        imports: Vec::new(),
+        calls: Vec::new(),
+        calls_truncated: false,
+    };
+    let mut symbol_bytes = Vec::new();
+    walk(tree.root_node(), source, &mut extraction, &mut symbol_bytes);
+    debug_assert_eq!(symbol_bytes.len(), extraction.symbols.len());
+    extraction
+        .imports
+        .retain(|import| !import.raw.trim().is_empty());
+    let calls = calls::extract(
+        call_syntax,
+        tree.root_node(),
+        source,
+        &extraction.symbols,
+        &symbol_bytes,
+    );
+    extraction.calls = calls.calls;
+    extraction.calls_truncated = calls.truncated;
+    Ok(extraction)
+}
+
+fn parse_tree(
+    language: &tree_sitter::Language,
+    language_name: &'static str,
+    source: &str,
+) -> Result<tree_sitter::Tree, ParseError> {
+    let mut parser = Parser::new();
+    parser
+        .set_language(language)
+        .map_err(|error| ParseError::Language {
+            language: language_name,
+            message: error.to_string(),
+        })?;
+    parser.parse(source, None).ok_or(ParseError::ParseFailed)
+}
+
+/// The packages (Java) or namespaces (C#) a source file declares, read the
+/// same way extraction records them as `module` symbols, so the import map
+/// built before a run agrees with what the run stores (E17-40, D105). Empty
+/// for every other language and for a source the grammar cannot parse.
+pub(crate) fn declared_packages(language: Language, source: &str) -> Vec<String> {
+    let spec = languages::spec(language);
+    let Some(declarations) = spec.declarations else {
+        return Vec::new();
+    };
+    let Extractor::Walk { grammar, .. } = spec.extractor else {
+        return Vec::new();
+    };
+    parse_tree(&grammar(), spec.name, source)
+        .map(|tree| declarations(tree.root_node(), source))
+        .unwrap_or_default()
+}
+
+/// Largest signature kept for Go, Java, and C# (as for shell and text
+/// headings); a longer one is cut at a character boundary and marked `…`.
+pub(crate) const MAX_SIGNATURE_BYTES: usize = 1_024;
+
+/// `text` cut a little past [`MAX_SIGNATURE_BYTES`] at a character
+/// boundary, so [`bounded_signature`] still sees it was longer and marks it:
+/// text reused in a signature per name is cut once, before it is copied, so
+/// a declaration of many names never copies a long prefix per name.
+fn signature_prefix(text: &str) -> &str {
+    const KEPT: usize = MAX_SIGNATURE_BYTES + 8;
+    if text.len() <= KEPT {
+        return text;
+    }
+    let mut end = KEPT;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Bytes of signature text built once per declared name, on this thread
+    /// (tests only): pins that a long shared prefix is cut before it is
+    /// copied per name (review rounds 3 and 4).
+    static PER_NAME_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Signature text built for one of several names of a declaration; counted
+/// in test builds.
+fn per_name_text(text: String) -> String {
+    #[cfg(test)]
+    PER_NAME_BYTES.with(|bytes| bytes.set(bytes.get() + text.len()));
+    text
+}
+
+/// Whether [`signature_prefix`] cuts `text`.
+fn is_cut(text: &str) -> bool {
+    text.len() > MAX_SIGNATURE_BYTES + 8
+}
+
+/// [`bounded_signature`] of text built from a prefix [`signature_prefix`]
+/// cut (`cut`): marked as cut whatever its kept part ends with, exactly as
+/// the whole text would have been, so a kept part ending in spaces or `;`
+/// never loses the mark.
+fn marked_signature(text: &str, cut: bool) -> Option<String> {
+    if !cut {
+        return bounded_signature(text);
+    }
+    let text = text.trim_start();
+    let mut end = (MAX_SIGNATURE_BYTES - '…'.len_utf8()).min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(format!("{}…", &text[..end]))
+}
+
+fn bounded_signature(text: &str) -> Option<String> {
+    let signature = trimmed_signature(text)?;
+    if signature.len() <= MAX_SIGNATURE_BYTES {
+        return Some(signature);
+    }
+    let mut end = MAX_SIGNATURE_BYTES - '…'.len_utf8();
+    while !signature.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(format!("{}…", &signature[..end]))
 }
 
 fn capture_kind(name: &str) -> Option<CaptureKind> {
@@ -496,6 +655,7 @@ fn unresolved_import(raw: String, kind: ImportKind) -> ImportRecord {
         kind,
         resolved_path: None,
         resolution: ImportResolution::Unresolved(NOT_INDEXED.to_owned()),
+        context: ImportContext::None,
     }
 }
 
@@ -681,6 +841,7 @@ fn script_import(node: Node<'_>, kind: ImportKind, source: &str) -> Option<Impor
         kind,
         resolved_path: None,
         resolution: ImportResolution::Unresolved(NOT_INDEXED.to_owned()),
+        context: ImportContext::None,
     })
 }
 
@@ -790,6 +951,7 @@ fn rust_imports(node: Node<'_>, source: &str) -> Vec<ImportRecord> {
             kind: ImportKind::Use,
             resolved_path: None,
             resolution: ImportResolution::Unresolved(NOT_INDEXED.to_owned()),
+            context: ImportContext::None,
         })
         .collect()
 }
@@ -889,4 +1051,89 @@ fn line_number(zero_based_row: usize) -> u32 {
     u32::try_from(zero_based_row)
         .unwrap_or(u32::MAX - 1)
         .saturating_add(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        Language, MAX_SIGNATURE_BYTES, ParserRegistry, bounded_signature, is_cut, marked_signature,
+        signature_prefix,
+    };
+
+    /// Review M1: text reused per name is cut once, just past the bound, so
+    /// the bound still marks a signature cut.
+    #[test]
+    fn test_signature_prefix_cuts_once_just_past_the_bound() {
+        let long = "é".repeat(5_000);
+        let prefix = signature_prefix(&long);
+        assert!(prefix.len() > MAX_SIGNATURE_BYTES && prefix.len() <= MAX_SIGNATURE_BYTES + 8);
+        let signature = bounded_signature(&format!("{prefix} name")).expect("signature");
+        assert!(signature.len() <= MAX_SIGNATURE_BYTES && signature.ends_with('…'));
+        assert_eq!(signature_prefix("short"), "short");
+    }
+
+    /// Rounds 3 and 4 (review M1, S4): 2,000 names behind a 330 KB (Java,
+    /// C#) or 500 KB (Go) type copy at most a bounded prefix per name; with
+    /// the prefix copied whole they would copy 660 MB or more. Counted, not
+    /// timed, so it cannot flake on a slow machine.
+    #[test]
+    fn test_per_name_signatures_copy_a_bounded_prefix() {
+        use super::PER_NAME_BYTES;
+        let names = vec!["a"; 2_000].join(",");
+        let java_type = format!("List<{}A>", "A,".repeat(165_000));
+        let go_type = format!("struct{{ {} int }}", "x".repeat(500_000));
+        for (language, source) in [
+            (
+                Language::Java,
+                format!("class A {{\n  {java_type} {names};\n}}\n"),
+            ),
+            (
+                Language::CSharp,
+                format!("class A {{\n  {java_type} {names};\n}}\n"),
+            ),
+            (
+                Language::Go,
+                format!("package p\n\nvar {} {go_type}\n", names.replace(',', ", ")),
+            ),
+        ] {
+            PER_NAME_BYTES.with(|bytes| bytes.set(0));
+            let extraction = ParserRegistry::extract(language, &source).expect("extracts");
+            assert!(extraction.symbols.len() >= 2_000, "{language:?}");
+            let copied = PER_NAME_BYTES.with(std::cell::Cell::get);
+            assert!(copied > 0, "{language:?}");
+            assert!(
+                copied <= 2_000 * (MAX_SIGNATURE_BYTES + 64),
+                "{language:?} copied {copied} bytes"
+            );
+        }
+    }
+
+    /// Round 3 nit: a cut kept part that ends in spaces still gives the
+    /// signature the whole text would have given (Go's output unchanged),
+    /// and a Java or C# signature built from one keeps its mark.
+    #[test]
+    fn test_a_cut_ending_in_spaces_keeps_the_whole_texts_signature_and_mark() {
+        let kind = format!("{}{}{}", "x".repeat(1_028), " ".repeat(60), "y".repeat(100));
+        let whole = bounded_signature(&format!("var a {kind}"));
+        let kept = signature_prefix(&kind);
+        assert!(is_cut(&kind));
+        assert_eq!(marked_signature(&format!("var a {kept}"), true), whole);
+
+        let java = format!(
+            "class A {{\n  List<{}{}A> a;\n}}\n",
+            "A,".repeat(514),
+            " ".repeat(60)
+        );
+        let extraction = ParserRegistry::extract(Language::Java, &java).expect("extracts");
+        let field = extraction
+            .symbols
+            .iter()
+            .find(|symbol| symbol.qualified_name == "A::a")
+            .and_then(|symbol| symbol.signature.as_deref())
+            .expect("field signature");
+        assert!(
+            field.len() <= MAX_SIGNATURE_BYTES && field.ends_with('…'),
+            "{field}"
+        );
+    }
 }

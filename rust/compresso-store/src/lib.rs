@@ -16,8 +16,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use thiserror::Error;
 
 pub use calls::{
-    CallForm, CallSiteRecord, IndexedSymbol, MAX_CALL_TEXT_BYTES, StoredCallSite,
-    validate_call_sites,
+    CALL_SITES_CUT_MARKER, CallForm, CallSiteRecord, IndexedSymbol, MAX_CALL_TEXT_BYTES,
+    StoredCallSite, validate_call_sites,
 };
 pub use files::{FileLanguage, FileRecord, RelativePathError};
 pub use ops::{
@@ -28,8 +28,9 @@ pub use ops::{
 pub use receipts::{ReceiptId, ReceiptRecord};
 pub use repos::{FileId, IndexVersionRecord, RepoId, RepoRecord, RepoRemovalPreview};
 pub use symbols::{
-    EDGE_DETAIL_EXTERNAL, EDGE_DETAIL_SAME_FILE, EdgeKind, EdgeRecord, EdgeResolution,
-    EdgeResolutionCounts, ResolvedEdgeRecord, SymbolHit, SymbolKind, SymbolRecord, SymbolSelector,
+    EDGE_DETAIL_EXTERNAL, EDGE_DETAIL_PACKAGE, EDGE_DETAIL_SAME_FILE, EdgeKind, EdgeRecord,
+    EdgeResolution, EdgeResolutionCounts, ResolvedEdgeRecord, SymbolHit, SymbolKind, SymbolRecord,
+    SymbolSelector,
 };
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);

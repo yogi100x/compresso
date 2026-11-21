@@ -93,6 +93,12 @@ pub struct StoredCallSite {
 
 const SYMBOL_COLUMNS: &str = "s.id, s.name, s.qualified_name, s.kind, s.signature, s.start_line, s.end_line, s.token_estimate, f.path, f.language";
 /// A total order over call rows, so a `LIMIT` always keeps the same rows.
+/// The callee name of one marker row a file holds when its call extraction
+/// stopped at a per-file bound (E17-40, D105): not a call, and never an
+/// identifier the extractors write. Every reader of call sites leaves it
+/// out except [`Store::files_with_cut_call_sites`].
+pub const CALL_SITES_CUT_MARKER: &str = "<call sites cut>";
+
 const CALL_ORDER: &str = "f.path ASC, c.line ASC, c.caller_symbol_id ASC, c.callee_name ASC, c.call_form ASC, c.callee_qualifier ASC, c.id ASC";
 const CALL_COLUMNS: &str = "c.caller_symbol_id, caller.qualified_name, f.path, c.callee_name, c.callee_qualifier, c.call_form, c.line";
 
@@ -169,7 +175,7 @@ impl Store {
             }
             let placeholders = placeholders(chunk.len());
             let mut statement = connection.prepare(&format!(
-                "SELECT {CALL_COLUMNS} FROM call_sites AS c JOIN symbols AS caller ON caller.id = c.caller_symbol_id JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 AND c.caller_symbol_id IN ({placeholders}) ORDER BY {CALL_ORDER} LIMIT {}",
+                "SELECT {CALL_COLUMNS} FROM call_sites AS c JOIN symbols AS caller ON caller.id = c.caller_symbol_id JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 AND c.caller_symbol_id IN ({placeholders}) AND c.callee_name != '{CALL_SITES_CUT_MARKER}' ORDER BY {CALL_ORDER} LIMIT {}",
                 sqlite_limit(remaining)
             ))?;
             let parameters = std::iter::once(repo).chain(chunk.iter().copied());
@@ -195,7 +201,7 @@ impl Store {
         let connection = self.connection()?;
         ensure_repo_exists(&connection, repo)?;
         let mut statement = connection.prepare_cached(&format!(
-            "SELECT {CALL_COLUMNS} FROM call_sites AS c JOIN symbols AS caller ON caller.id = c.caller_symbol_id JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 AND c.callee_name = ?2 ORDER BY {CALL_ORDER} LIMIT ?3"
+            "SELECT {CALL_COLUMNS} FROM call_sites AS c JOIN symbols AS caller ON caller.id = c.caller_symbol_id JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 AND c.callee_name = ?2 AND c.callee_name != '{CALL_SITES_CUT_MARKER}' ORDER BY {CALL_ORDER} LIMIT ?3"
         ))?;
         let raw = statement
             .query_map(params![repo, callee_name, sqlite_limit(limit)], call_row)?
@@ -208,12 +214,93 @@ impl Store {
         Ok(output)
     }
 
+    /// The paths of files with a stored plain call (`new T()`, `T(...)`)
+    /// whose callee is one of `names`, or a call whose qualifier is, starts
+    /// with, or ends with one of `types` as a dotted part (`Keys`,
+    /// `Keys.Inner`, `a.b.Keys`), in path order: evidence that a file uses a
+    /// type another file defines (E17-40, D105). Names are matched in chunks
+    /// of 400 through the callee index; each chunk of types reads the
+    /// repository's call sites once.
+    pub fn files_with_call_sites_naming(
+        &self,
+        repo: RepoId,
+        names: &[String],
+        types: &[String],
+    ) -> Result<std::collections::BTreeSet<String>, StoreError> {
+        let connection = self.connection()?;
+        ensure_repo_exists(&connection, repo)?;
+        let mut paths = std::collections::BTreeSet::new();
+        for chunk in names.chunks(ID_CHUNK) {
+            let mut statement = connection.prepare(&format!(
+                "SELECT DISTINCT f.path FROM call_sites AS c JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 AND c.call_form = 'plain' AND c.callee_name IN ({})",
+                placeholders(chunk.len())
+            ))?;
+            let parameters = std::iter::once(rusqlite::types::Value::from(repo)).chain(
+                chunk
+                    .iter()
+                    .map(|name| rusqlite::types::Value::from(name.clone())),
+            );
+            for path in
+                statement.query_map(params_from_iter(parameters), |row| row.get::<_, String>(0))?
+            {
+                paths.insert(path?);
+            }
+        }
+        for chunk in types.chunks(ID_CHUNK / 4) {
+            let conditions = (0..chunk.len())
+                .map(|index| {
+                    let parameter = index + 2;
+                    format!(
+                        "c.callee_qualifier = ?{parameter} OR substr(c.callee_qualifier, 1, length(?{parameter}) + 1) = ?{parameter} || '.' OR substr(c.callee_qualifier, -length(?{parameter}) - 1) = '.' || ?{parameter}"
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" OR ");
+            let mut statement = connection.prepare(&format!(
+                "SELECT DISTINCT f.path FROM call_sites AS c JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 AND c.callee_qualifier IS NOT NULL AND ({conditions})"
+            ))?;
+            let parameters = std::iter::once(rusqlite::types::Value::from(repo)).chain(
+                chunk
+                    .iter()
+                    .map(|name| rusqlite::types::Value::from(name.clone())),
+            );
+            for path in
+                statement.query_map(params_from_iter(parameters), |row| row.get::<_, String>(0))?
+            {
+                paths.insert(path?);
+            }
+        }
+        Ok(paths)
+    }
+
+    /// The paths of files holding the [`CALL_SITES_CUT_MARKER`] row: files
+    /// whose call extraction stopped at a per-file bound, so their stored
+    /// call sites may miss calls written later in the file.
+    pub fn files_with_cut_call_sites(
+        &self,
+        repo: RepoId,
+    ) -> Result<std::collections::BTreeSet<String>, StoreError> {
+        let connection = self.connection()?;
+        ensure_repo_exists(&connection, repo)?;
+        let mut statement = connection.prepare(
+            "SELECT DISTINCT f.path FROM call_sites AS c JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 AND c.callee_name = ?2",
+        )?;
+        let rows = statement
+            .query_map(params![repo, CALL_SITES_CUT_MARKER], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<_, _>>()?;
+        Ok(rows)
+    }
+
     /// Counts the repository's stored call sites.
     pub fn call_site_count(&self, repo: RepoId) -> Result<usize, StoreError> {
         let connection = self.connection()?;
         ensure_repo_exists(&connection, repo)?;
         let count: i64 = connection.query_row(
-            "SELECT COUNT(*) FROM call_sites WHERE repo_id = ?1",
+            &format!(
+                "SELECT COUNT(*) FROM call_sites WHERE repo_id = ?1 AND callee_name != '{CALL_SITES_CUT_MARKER}'"
+            ),
             [repo],
             |row| row.get(0),
         )?;

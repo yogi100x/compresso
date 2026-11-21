@@ -3,10 +3,10 @@ use std::path::{Path, PathBuf};
 
 use clap::{Args, ValueEnum};
 use compresso_atlas::{
-    AtlasError, BoundedRead, CardOptions, ContextPlan, DEFAULT_MAX_CARDS, GrepOptions, MAX_CARDS,
-    ModuleCard, QueryError, SearchOptions, UnfoldResult, file_line_count, grep, impact,
-    module_cards, outline, plan_context, read_bounded, repo_map, repository_stale,
-    search_with_diagnostics, unfold,
+    AtlasError, BoundedRead, CardOptions, ContextPlan, DEFAULT_MAX_CARDS, GrepOptions,
+    ImpactOptions, MAX_CARDS, ModuleCard, QueryError, SearchOptions, UnfoldResult, file_line_count,
+    grep, impact_with_options, module_cards, outline, plan_context, read_bounded, repo_map,
+    repository_stale, search_with_diagnostics, unfold,
 };
 use compresso_core::{TokenProvider, counter_for};
 use compresso_store::{
@@ -731,35 +731,64 @@ fn execute_impact(
     }
     let repository = resolve_repository(store, arguments.repository.root.as_deref(), cwd)?;
     validate_file_boundary(&repository, &arguments.path)?;
-    let report = impact(store, repository.id, &arguments.path).map_err(map_atlas_error)?;
+    let report = impact_with_options(
+        store,
+        repository.id,
+        &arguments.path,
+        ImpactOptions {
+            max_depth: arguments.max_depth,
+            max_results: arguments.max_results,
+        },
+    )
+    .map_err(map_atlas_error)?;
     let mut dependents = report
         .dependents
         .into_iter()
         .filter(|entry| entry.depth <= arguments.max_depth)
         .collect::<Vec<_>>();
-    let truncated = dependents.len() > arguments.max_results;
+    // The query keeps its own first results; a cut there is a cut here.
+    let truncated = report.truncated || dependents.len() > arguments.max_results;
     dependents.truncate(arguments.max_results);
     let dependents = dependents
         .into_iter()
         .map(|entry| {
-            json!({
+            let mut value = json!({
                 "path": entry.path,
                 "depth": entry.depth,
                 "edge_kinds": entry.edge_kinds.into_iter().map(edge_kind_name).collect::<Vec<_>>(),
-            })
+            });
+            if let Some(package) = entry.package {
+                value["package"] = json!(package);
+            }
+            value
         })
         .collect::<Vec<_>>();
     let unresolved_sources = store
         .incomplete_edge_sources(repository.id)
         .map_err(map_store_error)?;
-    let complete = unresolved_sources.is_empty() && !truncated;
-    let data = json!({
+    // Java and C# (D105): files of the package scope that could not be
+    // shown to use the file make the answer incomplete, as in the MCP result.
+    let complete = unresolved_sources.is_empty()
+        && !truncated
+        && report.unproven == 0
+        && report.unevaluated == 0
+        && !report.packages_limited;
+    let mut data = json!({
         "path": report.path,
         "dependents": dependents,
         "complete": complete,
         "unresolved_or_ambiguous_sources": unresolved_sources,
         "truncated": truncated,
     });
+    if report.unproven > 0 {
+        data["unproven"] = json!(report.unproven);
+    }
+    if report.unevaluated > 0 {
+        data["unevaluated"] = json!(report.unevaluated);
+    }
+    if report.packages_limited {
+        data["packages_limited"] = json!(true);
+    }
     Ok(rendered_pretty(data))
 }
 

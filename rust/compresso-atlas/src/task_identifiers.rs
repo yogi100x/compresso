@@ -118,9 +118,9 @@ pub(crate) enum TaskIdentifier {
 }
 
 /// File extensions that make a dotted word a file name.
-const PATH_EXTENSIONS: [&str; 15] = [
-    "rs", "ts", "tsx", "js", "jsx", "mjs", "py", "go", "sh", "md", "toml", "json", "yaml", "yml",
-    "sql",
+const PATH_EXTENSIONS: [&str; 17] = [
+    "rs", "ts", "tsx", "js", "jsx", "mjs", "py", "go", "java", "cs", "sh", "md", "toml", "json",
+    "yaml", "yml", "sql",
 ];
 
 /// Identifiers in task order, without repeats, at most
@@ -278,6 +278,19 @@ mod tests {
         assert_eq!(
             symbols("Why does server.go retry when store/db.go fails?"),
             ["path:server.go", "path:store/db.go"]
+        );
+    }
+
+    /// E17-40 (D105): Java and C# file names are paths, not symbols.
+    #[test]
+    fn test_java_and_csharp_file_names_are_paths() {
+        assert_eq!(
+            symbols("Why does JobStore.java call Keys.cs from src/Acme.Jobs/Program.cs?"),
+            [
+                "path:JobStore.java",
+                "path:Keys.cs",
+                "path:src/Acme.Jobs/Program.cs"
+            ]
         );
     }
 

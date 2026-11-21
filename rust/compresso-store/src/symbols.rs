@@ -69,10 +69,16 @@ pub struct ResolvedEdgeRecord {
 pub const EDGE_DETAIL_EXTERNAL: &str = "external";
 /// Detail of an unresolved edge that names the importing file itself.
 pub const EDGE_DETAIL_SAME_FILE: &str = "same_file";
+/// Detail of an edge that names a whole Java package (`a.b.*`) or C#
+/// namespace (`using N;`) the repository declares: one record per import,
+/// expanded to the package's files when a query reads it (E17-40, D105).
+/// Stored with the `unresolved` status because no single file is its
+/// target; it hides no dependent.
+pub const EDGE_DETAIL_PACKAGE: &str = "package";
 
 /// Unresolved edges with these details cannot change which repository files
 /// depend on each other, so they do not make a dependency answer incomplete.
-const CLOSURE_NEUTRAL_UNRESOLVED: &str = "(resolution_status = 'unresolved' AND COALESCE(resolution_detail, '') IN ('external', 'same_file'))";
+const CLOSURE_NEUTRAL_UNRESOLVED: &str = "(resolution_status = 'unresolved' AND COALESCE(resolution_detail, '') IN ('external', 'same_file', 'package'))";
 
 /// Counts unresolved and ambiguous dependency edges for completeness reporting.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -460,6 +466,74 @@ impl Store {
             .query_map(params![repo, EDGE_DETAIL_EXTERNAL], |row| {
                 Ok((row.get(0)?, row.get(1)?))
             })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    /// Lists `(path, qualified name)` of every `module` symbol in the files of
+    /// `languages`, in path and line order: the declared Java packages and C#
+    /// namespaces of the indexed files (E17-40, D105).
+    pub fn module_declarations(
+        &self,
+        repo: RepoId,
+        languages: &[FileLanguage],
+    ) -> Result<Vec<(String, String)>, StoreError> {
+        let connection = self.connection()?;
+        ensure_repo_exists(&connection, repo)?;
+        let mut statement = connection.prepare(
+            "SELECT f.path, f.language, s.qualified_name FROM symbols AS s JOIN files AS f ON f.id = s.file_id WHERE f.repo_id = ?1 AND s.kind = 'module' AND f.language IS NOT NULL ORDER BY f.path ASC, s.start_line ASC, s.id ASC",
+        )?;
+        let rows = statement
+            .query_map([repo], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows
+            .into_iter()
+            .filter(|(_, language, _)| {
+                languages
+                    .iter()
+                    .any(|wanted| wanted.as_db() == language.as_str())
+            })
+            .map(|(path, _, name)| (path, name))
+            .collect())
+    }
+
+    /// Lists `(source path, import as written, detail)` for every edge not
+    /// resolved to one file, in path order.
+    pub fn unresolved_edge_targets(
+        &self,
+        repo: RepoId,
+    ) -> Result<Vec<(String, String, Option<String>)>, StoreError> {
+        let connection = self.connection()?;
+        ensure_repo_exists(&connection, repo)?;
+        let mut statement = connection.prepare(
+            "SELECT source.path, e.to_path, e.resolution_detail FROM edges AS e JOIN files AS source ON source.id = e.from_file_id WHERE e.repo_id = ?1 AND e.resolution_status != 'resolved' ORDER BY source.path ASC, e.to_path ASC, e.id ASC",
+        )?;
+        statement
+            .query_map([repo], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(StoreError::from)
+    }
+
+    /// Lists `(source path, import as written)` for every unresolved edge
+    /// whose detail is `detail`, in path order.
+    pub fn unresolved_edge_targets_with_detail(
+        &self,
+        repo: RepoId,
+        detail: &str,
+    ) -> Result<Vec<(String, String)>, StoreError> {
+        let connection = self.connection()?;
+        ensure_repo_exists(&connection, repo)?;
+        let mut statement = connection.prepare(
+            "SELECT source.path, e.to_path FROM edges AS e JOIN files AS source ON source.id = e.from_file_id WHERE e.repo_id = ?1 AND e.resolution_status = 'unresolved' AND e.resolution_detail = ?2 ORDER BY source.path ASC, e.to_path ASC, e.id ASC",
+        )?;
+        statement
+            .query_map(params![repo, detail], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
     }

@@ -21,6 +21,8 @@ Versions are floors, pinned by `Cargo.lock` at first build.
 | tree-sitter-javascript | 0.23 | atlas | JS grammar |
 | tree-sitter-python | 0.23 | atlas | Python grammar |
 | tree-sitter-go | 0.25 | atlas | Go grammar (E17-37, D102) |
+| tree-sitter-java | 0.23.5 | atlas | Java grammar (E17-40, D105) |
+| tree-sitter-c-sharp | 0.23.5 | atlas | C# grammar (E17-40, D105) |
 | blake3 | 1.5 | atlas, updater | Content hashing |
 | ignore | 0.4 | atlas | gitignore-aware walking |
 | toml | 0.8 | core, integrations | Config + Codex config edit |
