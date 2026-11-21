@@ -1,0 +1,24 @@
+rust/compresso-atlas/tests/queries_map_outline.rs
+  s_89a704cfae63f5::t_f4f94312060a77 294-352
+  s_89a704cfae63f5::t_06d3758b8ff44a 353-366
+rust/compresso-atlas/src/queries.rs
+  s_89a704cfae63f5::t_c090bf0f049838 565-569,573-617,619-651
+  s_89a704cfae63f5::t_ffb645a5bac456 652,4579-4580
+  s_89a704cfae63f5::t_e52f8d59a5ff92 4516-4578
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "08a628623d4368e304bcd96d78be8281ae3ba116",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "unknown"
+      },
+      "human_author": null
+    }
+  }
+}
