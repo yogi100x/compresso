@@ -192,6 +192,7 @@ pub fn module_cards(
     // Java and C# whole-package imports (D105): one stored record per
     // import, counted from aggregates, never one pair per file.
     let packages = crate::queries::package_import_counts(store, repo)?;
+    let package_links_cut = packages.directory_links_truncated;
     for ((from, to), count) in &packages.directory_links {
         if !directories.contains_key(from) || !directories.contains_key(to) {
             continue;
@@ -226,7 +227,8 @@ pub fn module_cards(
 
     let mut cards = Vec::new();
     let mut tokens_used = 0_usize;
-    let mut truncated = false;
+    // Directory links through package imports cut at their bound count as a cut.
+    let mut truncated = package_links_cut;
     for (path, directory) in ranked {
         if cards.len() == max_cards {
             truncated = true;

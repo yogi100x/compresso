@@ -700,6 +700,221 @@ fn test_relative_usings_after_a_new_namespace_match_a_full_index() {
     );
 }
 
+/// Closing pass F1: a file in another package that calls the target's type
+/// by its package-qualified name, with no import, is listed; a fully
+/// qualified `new a.b.C()` or `extends a.b.C` is not a qualified call and
+/// stays a documented gap.
+#[test]
+fn test_a_package_qualified_call_from_another_package_is_a_dependent() {
+    let (_temp, store, repo) = index_files(&[
+        (
+            "a/b/C.java",
+            "package a.b;\n\npublic class C {\n    public static void m() {}\n}\n",
+        ),
+        (
+            "x/User.java",
+            "package x;\n\nclass User {\n    void run() { a.b.C.m(); }\n}\n",
+        ),
+        (
+            "Util/Strings.cs",
+            "namespace Acme.Util;\n\npublic static class Strings { public static string Pad(string s) => s; }\n",
+        ),
+        (
+            "App/Main.cs",
+            "namespace App;\n\npublic class Main { void Go() { Acme.Util.Strings.Pad(\"x\"); } }\n",
+        ),
+    ]);
+    assert_eq!(
+        linked_dependents(&store, repo, "a/b/C.java"),
+        [(
+            "x/User.java".to_owned(),
+            "references",
+            Some("a.b".to_owned())
+        )]
+    );
+    assert_eq!(
+        linked_dependents(&store, repo, "Util/Strings.cs"),
+        [(
+            "App/Main.cs".to_owned(),
+            "references",
+            Some("Acme.Util".to_owned())
+        )]
+    );
+}
+
+/// Closing pass SF5: a call naming the type is evidence only in a form that
+/// can name a type: `new T()` or `T(...)`, and `T.m()`; `writer.Format(x)`
+/// does not make a file a dependent of `Format.cs`.
+#[test]
+fn test_a_method_named_like_a_type_is_not_evidence() {
+    let (_temp, store, repo) = index_files(&[
+        ("n/Format.cs", "namespace N;\n\npublic class Format { }\n"),
+        (
+            "n/Writer.cs",
+            "namespace N;\n\npublic class Writer { void Run(dynamic writer) { writer.Format(1); } }\n",
+        ),
+        (
+            "n/Maker.cs",
+            "namespace N;\n\npublic class Maker { void Run() { new Format(); } }\n",
+        ),
+    ]);
+    let report = impact(&store, repo, "n/Format.cs").expect("impact");
+    let paths = report
+        .dependents
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(paths, ["n/Maker.cs"]);
+    assert_eq!(report.unproven, 1);
+}
+
+/// Closing pass: the per-call bounds of the same-package check (64 files,
+/// 64 types per file) count what they skip as unevaluated.
+#[test]
+fn test_the_evidence_bounds_count_what_they_skip_as_unevaluated() {
+    let mut files = vec![(
+        "p/A.java".to_owned(),
+        "package p;\n\npublic class A {}\n".to_owned(),
+    )];
+    for index in 0..70 {
+        files.push((
+            format!("p/B{index}.java"),
+            format!("package p;\n\nclass B{index} {{\n    void run() {{ new A(); }}\n}}\n"),
+        ));
+    }
+    let mut many_types = String::from("package q;\n\npublic class Many {\n");
+    for index in 0..70 {
+        many_types.push_str(&format!("    static class T{index} {{}}\n"));
+    }
+    many_types.push_str("}\n");
+    files.push(("q/Many.java".to_owned(), many_types));
+    files.push((
+        "q/Mate.java".to_owned(),
+        "package q;\n\nclass Mate {}\n".to_owned(),
+    ));
+    let borrowed = files
+        .iter()
+        .map(|(path, source)| (path.as_str(), source.as_str()))
+        .collect::<Vec<_>>();
+    let (_temp, store, repo) = index_files(&borrowed);
+    // Depth 2 checks the 70 dependents of `A`: past 64 they are unchecked.
+    let report = impact(&store, repo, "p/A.java").expect("impact");
+    assert_eq!(report.total, 70);
+    assert!(report.unevaluated >= 6, "{}", report.unevaluated);
+    assert!(!report.complete);
+    // A file declaring more than 64 types is not checked.
+    let report = impact(&store, repo, "q/Many.java").expect("impact");
+    assert_eq!(report.unevaluated, 1);
+    assert!(!report.complete);
+}
+
+/// Closing pass: with no `.csproj` in the repository, a `global using`
+/// reaches the whole repository (the documented fallback).
+#[test]
+fn test_a_global_using_without_a_project_file_reaches_the_whole_repository() {
+    let (_temp, store, repo) = index_files(&[
+        ("a/GlobalUsings.cs", "global using Acme.Util;\n"),
+        (
+            "b/Main.cs",
+            "namespace B;\n\npublic class Main { void Go() { Strings.Pad(\"x\"); } }\n",
+        ),
+        (
+            "lib/Strings.cs",
+            "namespace Acme.Util;\n\npublic static class Strings { public static string Pad(string s) => s; }\n",
+        ),
+    ]);
+    assert_eq!(
+        callees_of(&store, repo, "Main::Go"),
+        [("Strings::Pad".to_owned(), CallResolution::Import)]
+    );
+    assert_eq!(importers_of(&store, repo, "lib/Strings.cs"), ["b/Main.cs"]);
+}
+
+/// Closing pass: the cut-call-sites marker row never reaches `trace` or the
+/// call-site count.
+#[test]
+fn test_the_cut_marker_is_invisible_to_trace_and_counts() {
+    let mut calls = String::new();
+    for index in 0..4_200 {
+        calls.push_str(&format!("A{index}(); "));
+    }
+    let busy = format!("namespace N;\n\npublic class Busy {{ void Run() {{ {calls} }} }}\n");
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let root = temp.path().join("repo");
+    write_all(&root, &[("n/Busy.cs", busy.as_str())]);
+    let store = Store::open(&temp.path().join("compresso.db")).expect("store opens");
+    let report = Indexer::new(&store, counter_for(TokenProvider::Heuristic))
+        .index(&root, |_| {})
+        .expect("index");
+    let repo = repo_of(&store, &root);
+    assert_eq!(
+        store.call_site_count(repo).expect("count"),
+        report.call_sites
+    );
+    assert_eq!(
+        store
+            .files_with_cut_call_sites(repo)
+            .expect("cut")
+            .into_iter()
+            .collect::<Vec<_>>(),
+        ["n/Busy.cs"]
+    );
+    let traced = trace(
+        &store,
+        repo,
+        Some("Busy::Run"),
+        None,
+        TraceOptions::default(),
+    )
+    .expect("trace");
+    assert!(
+        traced
+            .unfollowed
+            .iter()
+            .all(|call| !call.callee.contains("call sites cut")),
+        "{:?}",
+        traced.unfollowed
+    );
+}
+
+/// Closing pass SF1: a namesake file in another namespace can change what a
+/// relative `using static` binds to; incremental equals a full index.
+#[test]
+fn test_a_relative_using_static_namesake_matches_a_full_index() {
+    let first = [
+        (
+            "lib/Strings.cs",
+            "namespace Acme.Util;\n\npublic static class Strings { }\n",
+        ),
+        (
+            "web/Util/Other.cs",
+            "namespace Acme.Web.Util;\n\npublic class Other { }\n",
+        ),
+        (
+            "web/Page.cs",
+            "namespace Acme.Web\n{\n    using static Util.Strings;\n\n    public class Page { }\n}\n",
+        ),
+    ];
+    let added = [(
+        "web/Util/Strings.cs",
+        "namespace Acme.Web.Util;\n\npublic static class Strings { }\n",
+    )];
+    let (temp, store, repo) = index_files(&first);
+    write_all(&temp.path().join("repo"), &added);
+    reindex(&store, &temp);
+    let mut all = first.to_vec();
+    all.extend(added);
+    let (_fresh_temp, fresh, fresh_repo) = index_files(&all);
+    assert_eq!(
+        edges_from(&store, repo, "web/Page.cs"),
+        edges_from(&fresh, fresh_repo, "web/Page.cs")
+    );
+    assert_eq!(
+        edges_from(&store, repo, "web/Page.cs"),
+        ["web/Util/Strings.cs"]
+    );
+}
+
 /// `impact` bounds what it lists, not what it counts: totals are exact.
 #[test]
 fn test_impact_over_a_large_namespace_reports_exact_totals() {

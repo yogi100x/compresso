@@ -1002,7 +1002,7 @@ pub fn impact_with_options(
     // file asked about is neither.
     let mut found = discovered.keys().cloned().collect::<BTreeSet<_>>();
     found.insert(path.to_owned());
-    let unevaluated = evidence.unevaluated.difference(&found).count();
+    let unevaluated = evidence.unevaluated.difference(&found).count() + evidence.unchecked;
     let unproven = evidence.unproven.difference(&found).count();
     let mut dependents = discovered
         .into_iter()
@@ -1062,7 +1062,14 @@ pub fn impact_with_options(
 pub(crate) struct PackageImportCounts {
     pub(crate) file_in_degree: HashMap<String, usize>,
     pub(crate) directory_links: BTreeMap<(String, String), usize>,
+    /// [`MAX_PACKAGE_DIRECTORY_LINKS`] was reached: later directory pairs
+    /// were not counted.
+    pub(crate) directory_links_truncated: bool,
 }
+
+/// At most this many (importer directory, package directory) pairs are
+/// counted for module cards per call; past it the cards say they are cut.
+const MAX_PACKAGE_DIRECTORY_LINKS: usize = 100_000;
 
 pub(crate) fn package_import_counts(
     store: &Store,
@@ -1071,6 +1078,7 @@ pub(crate) fn package_import_counts(
     let mut counts = PackageImportCounts {
         file_in_degree: HashMap::new(),
         directory_links: BTreeMap::new(),
+        directory_links_truncated: false,
     };
     let records =
         store.unresolved_edge_targets_with_detail(repo, compresso_store::EDGE_DETAIL_PACKAGE)?;
@@ -1092,7 +1100,8 @@ pub(crate) fn package_import_counts(
         }
     }
     // Importer files and directories per package.
-    let mut importers = HashMap::<(&'static str, String), (usize, BTreeMap<String, usize>)>::new();
+    let mut importers =
+        HashMap::<(&'static str, String), (HashSet<String>, BTreeMap<String, usize>)>::new();
     for (importer, raw) in records {
         if raw.starts_with(crate::declared_imports::GLOBAL_IMPORT_PREFIX)
             || is_secret_path(Path::new(&importer))
@@ -1104,8 +1113,8 @@ pub(crate) fn package_import_counts(
         };
         let name = raw.strip_suffix(".*").unwrap_or(&raw).to_owned();
         let entry = importers.entry((language, name)).or_default();
-        entry.0 += 1;
         *entry.1.entry(directory_of(&importer)).or_default() += 1;
+        entry.0.insert(importer);
     }
     for (key, (files, directories)) in importers {
         let Some(declaring) = members.get(&key) else {
@@ -1113,17 +1122,24 @@ pub(crate) fn package_import_counts(
         };
         let mut member_directories = BTreeSet::new();
         for member in declaring {
-            *counts.file_in_degree.entry(member.clone()).or_default() += files;
+            // A file importing its own package does not count for itself.
+            let from_others = files.len() - usize::from(files.contains(member));
+            *counts.file_in_degree.entry(member.clone()).or_default() += from_others;
             member_directories.insert(directory_of(member));
         }
         for (from, links) in &directories {
             for to in &member_directories {
-                if from != to {
-                    *counts
-                        .directory_links
-                        .entry((from.clone(), to.clone()))
-                        .or_default() += links;
+                if from == to {
+                    continue;
                 }
+                let key = (from.clone(), to.clone());
+                if counts.directory_links.len() == MAX_PACKAGE_DIRECTORY_LINKS
+                    && !counts.directory_links.contains_key(&key)
+                {
+                    counts.directory_links_truncated = true;
+                    continue;
+                }
+                *counts.directory_links.entry(key).or_default() += links;
             }
         }
     }
@@ -1152,6 +1168,9 @@ struct EvidenceState {
     /// they may still use it (a type in a field or parameter, a call through
     /// an interface, a constant read), which calls cannot show.
     unproven: BTreeSet<String>,
+    /// Files found whose own same-package dependents were not checked: a
+    /// check bound was reached, or they declare too many types.
+    unchecked: usize,
     cut: Option<BTreeSet<String>>,
     expanded: HashSet<(&'static str, String)>,
 }
@@ -1335,6 +1354,34 @@ impl PackageLinks {
                 ));
             }
         }
+        // Bounded before any walk: past the bounds the file's own
+        // dependents are not checked, and it is counted as unchecked.
+        if state.checked == MAX_EVIDENCE_TARGETS {
+            state.unchecked += 1;
+            return Ok(());
+        }
+        let mut types = store
+            .symbols_in_file(repo, target)?
+            .into_iter()
+            .filter(|symbol| {
+                matches!(
+                    symbol.kind,
+                    SymbolKind::Class
+                        | SymbolKind::Struct
+                        | SymbolKind::Interface
+                        | SymbolKind::Enum
+                        | SymbolKind::Type
+                )
+            })
+            .map(|symbol| symbol.name)
+            .collect::<Vec<_>>();
+        types.sort();
+        types.dedup();
+        if types.len() > MAX_EVIDENCE_TYPES {
+            state.unchecked += 1;
+            return Ok(());
+        }
+        state.checked += 1;
         // The files in scope without an import: package mates, and the
         // files a `global using` of one of the packages reaches.
         let stem = target.rsplit('/').next().unwrap_or(target);
@@ -1355,6 +1402,7 @@ impl PackageLinks {
             if *theirs_language != language
                 || path == target
                 || crate::parsers::languages::is_declaration_only(path)
+                || is_secret_path(Path::new(path))
             {
                 continue;
             }
@@ -1375,53 +1423,49 @@ impl PackageLinks {
                 scope.push((path.clone(), EdgeKind::Imports, package.to_owned()));
             }
         }
-        if scope.is_empty() {
-            return Ok(());
-        }
-        self.evidence(store, repo, target, scope, state, linked)
-    }
-
-    /// Lists the files of `scope` with a stored call naming one of
-    /// `target`'s types; counts the others as `unevaluated` (calls cut, or a
-    /// bound reached) or `unproven`.
-    fn evidence(
-        &self,
-        store: &Store,
-        repo: RepoId,
-        target: &str,
-        scope: Vec<(String, EdgeKind, String)>,
-        state: &mut EvidenceState,
-        linked: &mut Vec<(String, Vec<EdgeKind>, Option<String>)>,
-    ) -> Result<(), AtlasError> {
-        let mut types = store
-            .symbols_in_file(repo, target)?
-            .into_iter()
-            .filter(|symbol| {
-                matches!(
-                    symbol.kind,
-                    SymbolKind::Class
-                        | SymbolKind::Struct
-                        | SymbolKind::Interface
-                        | SymbolKind::Enum
-                        | SymbolKind::Type
-                )
-            })
-            .map(|symbol| symbol.name)
-            .collect::<Vec<_>>();
-        types.sort();
-        types.dedup();
-        if state.checked == MAX_EVIDENCE_TARGETS || types.len() > MAX_EVIDENCE_TYPES {
+        if types.is_empty() {
             state
-                .unevaluated
+                .unproven
                 .extend(scope.into_iter().map(|(path, _, _)| path));
             return Ok(());
         }
-        state.checked += 1;
-        let users = if types.is_empty() {
-            BTreeSet::new()
-        } else {
-            store.files_with_call_sites_naming(repo, &types, &types)?
-        };
+        // A file anywhere that calls a type by its package-qualified name
+        // (`a.b.C.m()`) uses it without an import.
+        let qualified = packages
+            .iter()
+            .filter(|package| !package.is_empty())
+            .flat_map(|package| {
+                types
+                    .iter()
+                    .map(move |kind| (package, format!("{package}.{kind}")))
+            })
+            .collect::<Vec<_>>();
+        let names = qualified
+            .iter()
+            .map(|(_, name)| name.clone())
+            .collect::<Vec<_>>();
+        for user in store.files_with_call_qualifiers(repo, &names)? {
+            let same_language = self
+                .declared
+                .get(&user)
+                .is_some_and(|(theirs, _)| *theirs == language);
+            if user != target
+                && same_language
+                && !is_secret_path(Path::new(&user))
+                && !scope.iter().any(|(path, _, _)| *path == user)
+                && let Some((package, _)) = qualified.first()
+            {
+                linked.push((
+                    user,
+                    vec![EdgeKind::References],
+                    Some((*package).to_string()),
+                ));
+            }
+        }
+        if scope.is_empty() {
+            return Ok(());
+        }
+        let users = store.files_with_call_sites_naming(repo, &types, &types)?;
         if state.cut.is_none() {
             state.cut = Some(store.files_with_cut_call_sites(repo)?);
         }

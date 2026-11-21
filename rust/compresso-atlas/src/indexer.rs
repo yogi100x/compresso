@@ -607,7 +607,15 @@ impl Indexer<'_> {
                     continue;
                 };
                 let target_stem = stem(&edge.to_path);
-                let namesake = relocated.contains(edge.to_path.as_str())
+                // C# type imports may be relative (`using static Util.T;`
+                // in `Acme.Web`): a namesake in any namespace can change what
+                // they bind to, so C# matches by file name alone.
+                let relative = languages::spec(language).imports == ImportStyle::CSharp
+                    && joined.iter().any(|(joined_language, _, joined_stem)| {
+                        *joined_language == language.as_str() && *joined_stem == target_stem
+                    });
+                let namesake = relative
+                    || relocated.contains(edge.to_path.as_str())
                     || stored
                         .get(&edge.to_path)
                         .into_iter()

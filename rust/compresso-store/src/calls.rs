@@ -214,12 +214,13 @@ impl Store {
         Ok(output)
     }
 
-    /// The paths of files with a stored call site whose callee is one of
-    /// `names`, or whose qualifier is, starts with, or ends with one of
-    /// `types` as a dotted part (`Keys`, `Keys.Inner`, `a.b.Keys`), in path
-    /// order: evidence that a file uses what another file defines (E17-40,
-    /// D105). Names are matched in chunks of 400 through the callee index;
-    /// each chunk of types reads the repository's call sites once.
+    /// The paths of files with a stored plain call (`new T()`, `T(...)`)
+    /// whose callee is one of `names`, or a call whose qualifier is, starts
+    /// with, or ends with one of `types` as a dotted part (`Keys`,
+    /// `Keys.Inner`, `a.b.Keys`), in path order: evidence that a file uses a
+    /// type another file defines (E17-40, D105). Names are matched in chunks
+    /// of 400 through the callee index; each chunk of types reads the
+    /// repository's call sites once.
     pub fn files_with_call_sites_naming(
         &self,
         repo: RepoId,
@@ -231,7 +232,7 @@ impl Store {
         let mut paths = std::collections::BTreeSet::new();
         for chunk in names.chunks(ID_CHUNK) {
             let mut statement = connection.prepare(&format!(
-                "SELECT DISTINCT f.path FROM call_sites AS c JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 AND c.callee_name IN ({})",
+                "SELECT DISTINCT f.path FROM call_sites AS c JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 AND c.call_form = 'plain' AND c.callee_name IN ({})",
                 placeholders(chunk.len())
             ))?;
             let parameters = std::iter::once(rusqlite::types::Value::from(repo)).chain(
@@ -257,6 +258,35 @@ impl Store {
                 .join(" OR ");
             let mut statement = connection.prepare(&format!(
                 "SELECT DISTINCT f.path FROM call_sites AS c JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 AND c.callee_qualifier IS NOT NULL AND ({conditions})"
+            ))?;
+            let parameters = std::iter::once(rusqlite::types::Value::from(repo)).chain(
+                chunk
+                    .iter()
+                    .map(|name| rusqlite::types::Value::from(name.clone())),
+            );
+            for path in
+                statement.query_map(params_from_iter(parameters), |row| row.get::<_, String>(0))?
+            {
+                paths.insert(path?);
+            }
+        }
+        Ok(paths)
+    }
+
+    /// The paths of files with a stored call whose qualifier is exactly one of
+    /// `qualifiers` (`a.b.C` in `a.b.C.m()`), in path order.
+    pub fn files_with_call_qualifiers(
+        &self,
+        repo: RepoId,
+        qualifiers: &[String],
+    ) -> Result<std::collections::BTreeSet<String>, StoreError> {
+        let connection = self.connection()?;
+        ensure_repo_exists(&connection, repo)?;
+        let mut paths = std::collections::BTreeSet::new();
+        for chunk in qualifiers.chunks(ID_CHUNK) {
+            let mut statement = connection.prepare(&format!(
+                "SELECT DISTINCT f.path FROM call_sites AS c JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 AND c.callee_qualifier IN ({})",
+                placeholders(chunk.len())
             ))?;
             let parameters = std::iter::once(rusqlite::types::Value::from(repo)).chain(
                 chunk
