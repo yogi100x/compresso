@@ -1229,6 +1229,18 @@ impl<'a> Resolver<'a> {
             if language_family(candidate.language) != Some(family) {
                 continue;
             }
+            // Only a member without an access modifier needs its owner's kind.
+            let has_access = modifiers(candidate.symbol.signature.as_deref())
+                .iter()
+                .any(|word| {
+                    matches!(
+                        *word,
+                        "public" | "private" | "protected" | "internal" | "file"
+                    )
+                });
+            if has_access {
+                continue;
+            }
             if let Some((owner, _)) = candidate.symbol.qualified_name.rsplit_once("::") {
                 owners.push((*id, candidate.path.clone(), owner.to_owned()));
             }

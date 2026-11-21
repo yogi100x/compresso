@@ -524,6 +524,24 @@ fn test_too_many_namespaces_in_one_file_clear_complete() {
     assert!(!traced.complete);
 }
 
+/// Round 3: a call to a member name other files also define (`Make`) is no
+/// evidence of using this file; a call naming its type is.
+#[test]
+fn test_namespace_mates_need_a_call_naming_the_type_or_a_member_only_it_defines() {
+    let (_temp, store, repo) = index_files(&[
+        ("n/A.cs", "namespace N;\n\npublic class A { public static void Make() { } public static void Only() { } }\n"),
+        ("n/B.cs", "namespace N;\n\npublic class B { public static void Make() { } }\n"),
+        ("n/Shared.cs", "namespace N;\n\npublic class Shared { void Run(dynamic o) { o.Make(); } }\n"),
+        ("n/Typed.cs", "namespace N;\n\npublic class Typed { void Run() { A.Make(); } }\n"),
+        ("n/Unique.cs", "namespace N;\n\npublic class Unique { void Run(dynamic o) { o.Only(); } }\n"),
+    ]);
+    let paths = linked_dependents(&store, repo, "n/A.cs")
+        .into_iter()
+        .map(|(path, _, _)| path)
+        .collect::<Vec<_>>();
+    assert_eq!(paths, ["n/Typed.cs", "n/Unique.cs"]);
+}
+
 /// `impact` bounds what it lists, not what it counts: totals are exact.
 #[test]
 fn test_impact_over_a_large_namespace_reports_exact_totals() {

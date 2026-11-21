@@ -266,6 +266,36 @@ impl Store {
         Ok(paths)
     }
 
+    /// For each of `names`, how many indexed files define a symbol of that
+    /// name (through the `symbols(name)` index, in chunks of 400).
+    pub fn files_defining_names(
+        &self,
+        repo: RepoId,
+        names: &[String],
+    ) -> Result<std::collections::HashMap<String, usize>, StoreError> {
+        let connection = self.connection()?;
+        ensure_repo_exists(&connection, repo)?;
+        let mut counts = std::collections::HashMap::new();
+        for chunk in names.chunks(ID_CHUNK) {
+            let mut statement = connection.prepare(&format!(
+                "SELECT s.name, COUNT(DISTINCT s.file_id) FROM symbols AS s JOIN files AS f ON f.id = s.file_id WHERE f.repo_id = ?1 AND s.name IN ({}) GROUP BY s.name",
+                placeholders(chunk.len())
+            ))?;
+            let parameters = std::iter::once(rusqlite::types::Value::from(repo)).chain(
+                chunk
+                    .iter()
+                    .map(|name| rusqlite::types::Value::from(name.clone())),
+            );
+            for row in statement.query_map(params_from_iter(parameters), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })? {
+                let (name, count) = row?;
+                counts.insert(name, usize::try_from(count).unwrap_or(usize::MAX));
+            }
+        }
+        Ok(counts)
+    }
+
     /// The paths of files holding at least `count` stored call sites: files
     /// whose call extraction may have stopped at its per-file bound.
     pub fn files_with_call_sites_at_least(

@@ -1097,7 +1097,9 @@ pub(crate) fn package_import_pairs(
 const MAX_PACKAGES_PER_FILE: usize = 64;
 /// At most this many files are checked for same-package use in one
 /// `impact`; past it the answer is incomplete.
-const MAX_EVIDENCE_TARGETS: usize = 256;
+const MAX_EVIDENCE_TARGETS: usize = 64;
+/// At most this many member names of one file are tested for being its own.
+const MAX_EVIDENCE_MEMBERS: usize = 512;
 
 /// What the same-package checks of one `impact` could not settle.
 #[derive(Default)]
@@ -1260,7 +1262,11 @@ impl PackageLinks {
             return Ok(());
         }
         state.checked += 1;
-        let mut names = Vec::new();
+        // Evidence of use: a call naming one of the file's types (`new T()`,
+        // `T.m()`, `a.b.T.m()`), or a call to a member name no other file
+        // defines; a member name shared with other files (`get`, `Make`)
+        // is not evidence, since the call may mean any of them.
+        let mut members = Vec::new();
         let mut types = Vec::new();
         for symbol in store.symbols_in_file(repo, target)? {
             match symbol.kind {
@@ -1270,17 +1276,25 @@ impl PackageLinks {
                 | SymbolKind::Interface
                 | SymbolKind::Enum
                 | SymbolKind::Type
-                | SymbolKind::Trait => {
-                    names.push(symbol.name.clone());
-                    types.push(symbol.name);
-                }
-                _ => names.push(symbol.name),
+                | SymbolKind::Trait => types.push(symbol.name),
+                _ => members.push(symbol.name),
             }
         }
-        names.sort();
-        names.dedup();
         types.sort();
         types.dedup();
+        members.sort();
+        members.dedup();
+        if members.len() > MAX_EVIDENCE_MEMBERS {
+            members.truncate(MAX_EVIDENCE_MEMBERS);
+            state.unevaluated.insert(target.to_owned());
+        }
+        let defined = store.files_defining_names(repo, &members)?;
+        let mut names = types.clone();
+        names.extend(
+            members
+                .into_iter()
+                .filter(|name| defined.get(name).copied().unwrap_or(0) <= 1),
+        );
         let users = store.files_with_call_sites_naming(repo, &names, &types)?;
         let global = packages.iter().copied().find(|package| {
             !package.is_empty() && self.global.contains(&(language, (*package).to_owned()))
