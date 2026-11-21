@@ -529,11 +529,26 @@ fn test_too_many_namespaces_in_one_file_clear_complete() {
 #[test]
 fn test_namespace_mates_need_a_call_naming_the_type_or_a_member_only_it_defines() {
     let (_temp, store, repo) = index_files(&[
-        ("n/A.cs", "namespace N;\n\npublic class A { public static void Make() { } public static void Only() { } }\n"),
-        ("n/B.cs", "namespace N;\n\npublic class B { public static void Make() { } }\n"),
-        ("n/Shared.cs", "namespace N;\n\npublic class Shared { void Run(dynamic o) { o.Make(); } }\n"),
-        ("n/Typed.cs", "namespace N;\n\npublic class Typed { void Run() { A.Make(); } }\n"),
-        ("n/Unique.cs", "namespace N;\n\npublic class Unique { void Run(dynamic o) { o.Only(); } }\n"),
+        (
+            "n/A.cs",
+            "namespace N;\n\npublic class A { public static void Make() { } public static void Only() { } }\n",
+        ),
+        (
+            "n/B.cs",
+            "namespace N;\n\npublic class B { public static void Make() { } }\n",
+        ),
+        (
+            "n/Shared.cs",
+            "namespace N;\n\npublic class Shared { void Run(dynamic o) { o.Make(); } }\n",
+        ),
+        (
+            "n/Typed.cs",
+            "namespace N;\n\npublic class Typed { void Run() { A.Make(); } }\n",
+        ),
+        (
+            "n/Unique.cs",
+            "namespace N;\n\npublic class Unique { void Run(dynamic o) { o.Only(); } }\n",
+        ),
     ]);
     let paths = linked_dependents(&store, repo, "n/A.cs")
         .into_iter()
