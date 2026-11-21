@@ -1,0 +1,19 @@
+rust/compresso-atlas/tests/indexer_sql.rs
+  s_89a704cfae63f5::t_821eda277371d4 498-500
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "965a8b3ab41290c8050b9ed660f809bc947482ce",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
