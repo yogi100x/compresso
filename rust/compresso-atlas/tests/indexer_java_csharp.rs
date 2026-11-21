@@ -1052,6 +1052,32 @@ fn test_cards_and_map_ranking_count_package_imports() {
     );
 }
 
+/// Round 3 nit: a whole-package record names repository files, so the index
+/// report counts it with resolved imports, not unresolved ones.
+#[test]
+fn test_the_index_report_counts_package_records_as_resolved() {
+    let temp = tempfile::tempdir().expect("temporary directory");
+    let root = temp.path().join("repo");
+    write_all(
+        &root,
+        &[
+            (
+                "app/Main.cs",
+                "using Lib;\nusing System;\n\nnamespace App;\n\npublic class Main { }\n",
+            ),
+            (
+                "lib/Widget.cs",
+                "namespace Lib;\n\npublic class Widget { }\n",
+            ),
+        ],
+    );
+    let store = Store::open(&temp.path().join("compresso.db")).expect("store opens");
+    let report = Indexer::new(&store, counter_for(TokenProvider::Heuristic))
+        .index(&root, |_| {})
+        .expect("index");
+    assert_eq!((report.imports_resolved, report.imports_unresolved), (1, 1));
+}
+
 #[test]
 fn test_java_and_csharp_calls_never_cross_languages() {
     let (_temp, store, repo) = index_files(&[

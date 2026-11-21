@@ -802,7 +802,15 @@ fn prepare_file(
             .map_err(PrepareFailure::during_parse)?;
         for import in extraction.imports {
             match &import.resolution {
+                // A whole-package record (Java, C#; D105) names repository
+                // files: it counts as resolved, so the unresolved count
+                // keeps meaning "may hide a dependent or names no file".
                 ImportResolution::Resolved => imports_resolved += 1,
+                ImportResolution::Unresolved(detail)
+                    if detail == compresso_store::EDGE_DETAIL_PACKAGE =>
+                {
+                    imports_resolved += 1;
+                }
                 ImportResolution::Ambiguous(_) | ImportResolution::Unresolved(_) => {
                     imports_unresolved += 1;
                 }
