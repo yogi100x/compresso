@@ -1,0 +1,25 @@
+decisions.md
+  s_89a704cfae63f5::t_92b3876218b3b7 110
+docs/plan/03-interfaces.md
+  s_89a704cfae63f5::t_007ab85dec4f31 233-235,313
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_10915d4f9e93ac 500
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_e3c6969128acf8 3429,3448
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "527b80741a55b358cc168d7e310f32d6ed9dc337",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
