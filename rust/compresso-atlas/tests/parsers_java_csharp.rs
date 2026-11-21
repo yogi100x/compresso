@@ -614,6 +614,38 @@ fn test_csharp_deep_namespace_nesting_is_bounded() {
     assert!(elapsed < BOUND, "took {elapsed:?}");
 }
 
+/// Review M1: one field declaration of 250,000 names behind a 500 KB
+/// annotation or attribute (a 1 MB file) copies its prefix once, not once
+/// per name.
+#[test]
+fn test_java_and_csharp_many_field_names_behind_a_huge_annotation_are_linear() {
+    let annotation = "x".repeat(500_000);
+    let names = vec!["a"; 250_000].join(",");
+    for (language, source) in [
+        (
+            Language::Java,
+            format!("class A {{\n  @X(\"{annotation}\") int {names};\n}}\n"),
+        ),
+        (
+            Language::CSharp,
+            format!("class A {{\n  [X(\"{annotation}\")] int {names};\n}}\n"),
+        ),
+    ] {
+        let started = Instant::now();
+        let extraction = ParserRegistry::extract(language, &source).expect("extracts");
+        let elapsed = started.elapsed();
+        eprintln!("{language:?}: 250,000 field names behind 500 KB in {elapsed:?}");
+        assert_eq!(extraction.symbols.len(), 250_001, "{language:?}");
+        assert!(extraction.symbols.iter().all(|symbol| {
+            symbol
+                .signature
+                .as_deref()
+                .is_none_or(|text| text.len() <= 1_024)
+        }));
+        assert!(elapsed < BOUND, "{language:?} took {elapsed:?}");
+    }
+}
+
 /// E17-40 bounds: one chained call of 100,000 links and one deeply nested
 /// argument list extract iteratively and within the per-file bounds.
 #[test]

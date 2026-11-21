@@ -198,6 +198,9 @@ pub struct LanguageSpec {
     /// Reads the declared packages or namespaces from a parsed file, for the
     /// import map built before a run (Java, C#).
     pub(crate) declarations: Option<Declarations>,
+    /// File names that declare a package but no type (`package-info.java`):
+    /// no other file depends on them through their package.
+    pub(crate) declaration_only_files: &'static [&'static str],
     /// Comment syntax for grep row selection (E17-39, D104). Python
     /// docstrings, Markdown, and other text count as code.
     pub comments: CommentSyntax,
@@ -268,6 +271,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         call_rules: CallRules::ByName,
         entry_method: None,
         declarations: None,
+        declaration_only_files: &[],
         comments: CommentSyntax::C_LIKE,
     },
     LanguageSpec {
@@ -291,6 +295,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         call_rules: CallRules::ByName,
         entry_method: None,
         declarations: None,
+        declaration_only_files: &[],
         comments: CommentSyntax::C_LIKE,
     },
     LanguageSpec {
@@ -314,6 +319,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         call_rules: CallRules::ByName,
         entry_method: None,
         declarations: None,
+        declaration_only_files: &[],
         comments: CommentSyntax::C_LIKE,
     },
     LanguageSpec {
@@ -337,6 +343,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         call_rules: CallRules::ByName,
         entry_method: None,
         declarations: None,
+        declaration_only_files: &[],
         comments: CommentSyntax::C_LIKE,
     },
     LanguageSpec {
@@ -360,6 +367,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         call_rules: CallRules::ByName,
         entry_method: None,
         declarations: None,
+        declaration_only_files: &[],
         comments: CommentSyntax::HASH,
     },
     LanguageSpec {
@@ -383,6 +391,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         call_rules: CallRules::GoPackages,
         entry_method: None,
         declarations: None,
+        declaration_only_files: &[],
         comments: CommentSyntax::C_LIKE,
     },
     LanguageSpec {
@@ -409,6 +418,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         }),
         entry_method: Some("main"),
         declarations: Some(super::java::declarations),
+        declaration_only_files: &["package-info.java", "module-info.java"],
         comments: CommentSyntax::C_LIKE,
     },
     LanguageSpec {
@@ -435,6 +445,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         }),
         entry_method: Some("Main"),
         declarations: Some(super::csharp::declarations),
+        declaration_only_files: &[],
         comments: CommentSyntax::C_LIKE,
     },
     LanguageSpec {
@@ -453,6 +464,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         call_rules: CallRules::ByName,
         entry_method: None,
         declarations: None,
+        declaration_only_files: &[],
         comments: CommentSyntax::HASH,
     },
     LanguageSpec {
@@ -471,6 +483,7 @@ pub static LANGUAGES: &[LanguageSpec] = &[
         call_rules: CallRules::ByName,
         entry_method: None,
         declarations: None,
+        declaration_only_files: &[],
         comments: CommentSyntax::NONE,
     },
 ];
@@ -523,6 +536,14 @@ pub(crate) fn declaring_languages() -> Vec<FileLanguage> {
         .filter(|spec| spec.declarations.is_some())
         .map(|spec| spec.language)
         .collect()
+}
+
+/// Whether a repository path is a file that declares a package but no type.
+pub(crate) fn is_declaration_only(path: &str) -> bool {
+    let file_name = path.rsplit('/').next().unwrap_or(path);
+    path.rsplit_once('.')
+        .and_then(|(_, extension)| for_extension(extension))
+        .is_some_and(|spec| spec.declaration_only_files.contains(&file_name))
 }
 
 /// Whether `language` declares packages or namespaces, stored as `module`

@@ -7,11 +7,11 @@ use std::fs;
 use std::path::Path;
 
 use compresso_atlas::{
-    CallResolution, CardOptions, Indexer, TraceOptions, TraceResult, impact, module_cards,
-    repo_map, trace,
+    CallResolution, CardOptions, ImpactOptions, Indexer, TraceOptions, TraceResult, impact,
+    impact_with_options, module_cards, repo_map, trace,
 };
 use compresso_core::{TokenProvider, counter_for};
-use compresso_store::{FileLanguage, RepoId, Store, SymbolKind};
+use compresso_store::{EdgeKind, FileLanguage, RepoId, Store, SymbolKind};
 use tempfile::TempDir;
 
 const JAVA: [(&str, &str); 9] = [
@@ -265,12 +265,51 @@ fn edges_from(store: &Store, repo: RepoId, from: &str) -> Vec<String> {
     edges
 }
 
-fn dependents_of(store: &Store, repo: RepoId, path: &str) -> Vec<String> {
-    impact(store, repo, path)
-        .expect("impact")
-        .dependents
+/// Direct dependents with how they are linked: `imports` (an import edge
+/// or an import of the package), `references` (another file of the same
+/// package or namespace), and the package that links them, if any.
+fn linked_dependents(
+    store: &Store,
+    repo: RepoId,
+    path: &str,
+) -> Vec<(String, &'static str, Option<String>)> {
+    impact_with_options(
+        store,
+        repo,
+        path,
+        ImpactOptions {
+            max_depth: 1,
+            max_results: 500,
+        },
+    )
+    .expect("impact")
+    .dependents
+    .into_iter()
+    .map(|entry| {
+        let kind = match entry.edge_kinds.first() {
+            Some(EdgeKind::References) => "references",
+            _ => "imports",
+        };
+        (entry.path, kind, entry.package)
+    })
+    .collect()
+}
+
+fn importers_of(store: &Store, repo: RepoId, path: &str) -> Vec<String> {
+    linked_dependents(store, repo, path)
         .into_iter()
-        .map(|entry| entry.path)
+        .filter(|(_, kind, _)| *kind == "imports")
+        .map(|(path, _, _)| path)
+        .collect()
+}
+
+fn package_records_from(store: &Store, repo: RepoId, from: &str) -> Vec<String> {
+    store
+        .unresolved_edge_targets_with_detail(repo, compresso_store::EDGE_DETAIL_PACKAGE)
+        .expect("records")
+        .into_iter()
+        .filter(|(path, _)| path == from)
+        .map(|(_, raw)| raw)
         .collect()
 }
 
@@ -318,46 +357,127 @@ fn test_java_and_csharp_files_are_indexed_with_language_and_symbols() {
     assert_eq!(file.language, Some(FileLanguage::CSharp));
 }
 
-/// An import names a package by its declaration, not by its directory:
-/// `legacy/Sorter.java` declares `com.acme.util`, so the wildcard import
-/// reaches it; `a.b.C` reaches the file `C.java` of package `a.b` only.
+/// Owner decision 2026-11-21: a wildcard import is one record naming its
+/// package, and `impact` finds the package's files when it reads it, by
+/// declaration, not directory (`legacy/Sorter.java` declares
+/// `com.acme.util`); `a.b.C` is one edge to `C.java`; files of the same
+/// package depend on each other without an import (`references`); a
+/// `package-info.java` declares no type and gains no dependent.
 #[test]
-fn test_java_imports_resolve_through_declared_packages_and_file_names() {
+fn test_java_imports_are_package_records_and_type_edges_expanded_by_impact() {
     let (_temp, store, repo) = index_files(&JAVA);
+    let job_store = "src/main/java/com/acme/store/JobStore.java";
     assert_eq!(
-        edges_from(&store, repo, "src/main/java/com/acme/store/JobStore.java"),
+        edges_from(&store, repo, job_store),
+        ["src/main/java/com/acme/util/Strings.java"]
+    );
+    assert_eq!(
+        package_records_from(&store, repo, job_store),
+        ["com.acme.util.*"]
+    );
+    assert_eq!(
+        linked_dependents(&store, repo, "legacy/Sorter.java"),
         [
-            "legacy/Sorter.java",
-            "src/main/java/com/acme/util/Strings.java",
-            "src/main/java/com/acme/util/package-info.java",
-        ],
-        "java.util is external; each file counts once"
+            (
+                job_store.to_owned(),
+                "imports",
+                Some("com.acme.util".to_owned())
+            ),
+            (
+                "src/main/java/com/acme/util/Strings.java".to_owned(),
+                "references",
+                Some("com.acme.util".to_owned())
+            ),
+        ]
     );
-    assert_eq!(
-        dependents_of(&store, repo, "legacy/Sorter.java"),
-        ["src/main/java/com/acme/store/JobStore.java"]
+    assert!(
+        linked_dependents(
+            &store,
+            repo,
+            "src/main/java/com/acme/util/package-info.java"
+        )
+        .is_empty()
     );
+    let report = impact(&store, repo, "legacy/Sorter.java").expect("impact");
+    assert!(report.complete, "package records hide no dependent");
+    assert_eq!(report.total, report.dependents.len());
     let external = store
         .external_edges(repo)
         .expect("external")
         .into_iter()
-        .filter(|(from, _)| from == "src/main/java/com/acme/store/JobStore.java")
+        .filter(|(from, _)| from == job_store)
         .map(|(_, raw)| raw)
         .collect::<Vec<_>>();
     assert_eq!(external, ["java.util.Collections", "java.util.List"]);
 }
 
+/// A `using` is one namespace record; `impact` lists its importers and the
+/// files of the same namespace (C# also sees enclosing namespaces), so a
+/// same-namespace caller with no `using` is a dependent (review M4).
 #[test]
-fn test_csharp_usings_resolve_to_every_file_declaring_the_namespace() {
+fn test_csharp_usings_are_namespace_records_and_impact_lists_namespace_mates() {
     let (_temp, store, repo) = index_files(&CSHARP);
+    assert!(edges_from(&store, repo, "src/Acme.Jobs/JobStore.cs").is_empty());
     assert_eq!(
-        edges_from(&store, repo, "src/Acme.Jobs/JobStore.cs"),
-        ["lib/Util/More.cs", "lib/Util/Strings.cs"],
-        "System is external; Acme.Jobs needs no using"
+        package_records_from(&store, repo, "src/Acme.Jobs/JobStore.cs"),
+        ["Acme.Util"],
+        "System is external"
     );
     assert_eq!(
-        dependents_of(&store, repo, "lib/Util/More.cs"),
+        importers_of(&store, repo, "lib/Util/More.cs"),
         ["src/Acme.Jobs/JobStore.cs"]
+    );
+    let keys = linked_dependents(&store, repo, "src/Acme.Jobs/Keys.cs");
+    assert!(
+        keys.contains(&(
+            "src/Acme.Jobs/JobStore.cs".to_owned(),
+            "references",
+            Some("Acme.Jobs".to_owned())
+        )),
+        "{keys:?}"
+    );
+    assert!(
+        impact(&store, repo, "src/Acme.Jobs/Keys.cs")
+            .expect("impact")
+            .complete
+    );
+}
+
+/// `impact` bounds what it lists, not what it counts: totals are exact.
+#[test]
+fn test_impact_over_a_large_namespace_reports_exact_totals() {
+    let mut files = vec![(
+        "app/Main.cs".to_owned(),
+        "using Big;\n\nnamespace App;\n\npublic class Main { }\n".to_owned(),
+    )];
+    for index in 0..600 {
+        files.push((
+            format!("big/F{index}.cs"),
+            format!("namespace Big;\n\npublic class F{index} {{ }}\n"),
+        ));
+    }
+    let borrowed = files
+        .iter()
+        .map(|(path, source)| (path.as_str(), source.as_str()))
+        .collect::<Vec<_>>();
+    let (_temp, store, repo) = index_files(&borrowed);
+    assert_eq!(package_records_from(&store, repo, "app/Main.cs"), ["Big"]);
+    let report = impact_with_options(
+        &store,
+        repo,
+        "big/F0.cs",
+        ImpactOptions {
+            max_depth: 1,
+            max_results: 50,
+        },
+    )
+    .expect("impact");
+    assert_eq!(report.total, 600, "599 namespace mates and one importer");
+    assert_eq!(report.dependents.len(), 50);
+    assert!(report.truncated && !report.complete);
+    assert_eq!(
+        report.dependents[0].path, "app/Main.cs",
+        "importers sort first"
     );
 }
 
@@ -513,6 +633,183 @@ fn test_the_map_lists_types_not_package_or_namespace_symbols() {
     );
     assert!(!map.rendered.contains("com.acme.store"), "{}", map.rendered);
     assert!(!map.rendered.contains("Acme.Keys"), "{}", map.rendered);
+}
+
+/// Review M2(a): interface members without a modifier are public in both
+/// languages, so callers in other packages reach them.
+#[test]
+fn test_interface_members_without_modifiers_are_public() {
+    let (_temp, store, repo) = index_files(&[
+        (
+            "a/Codec.java",
+            "package a;\n\npublic interface Codec {\n    static Codec of() { return null; }\n    void encode();\n}\n",
+        ),
+        (
+            "b/Use.java",
+            "package b;\n\nimport a.Codec;\n\nclass Use {\n    void run(Codec codec) {\n        Codec.of();\n        codec.encode();\n    }\n}\n",
+        ),
+        (
+            "A/IJobStore.cs",
+            "namespace A;\n\npublic interface IJobStore\n{\n    void Save();\n}\n",
+        ),
+        (
+            "B/Runner.cs",
+            "using A;\n\nnamespace B;\n\npublic class Runner\n{\n    public void Run(IJobStore store) { store.Save(); }\n}\n",
+        ),
+    ]);
+    let mut java = callees_of(&store, repo, "Use::run");
+    java.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(
+        java,
+        [
+            ("Codec::encode".to_owned(), CallResolution::NameOnly),
+            ("Codec::of".to_owned(), CallResolution::Import),
+        ]
+    );
+    assert_eq!(
+        callees_of(&store, repo, "Runner::Run"),
+        [("IJobStore::Save".to_owned(), CallResolution::NameOnly)]
+    );
+}
+
+/// Review M2(b), M2(c), M3: a Java subclass in another package reaches its
+/// base's `protected` members; inherited methods are found up the declared
+/// chain (a grandparent's); and an owner is matched by its full path, so
+/// `Foo::Builder` never reaches `Bar::Builder::reset`.
+#[test]
+fn test_inherited_and_protected_members_resolve_through_the_supertype_chain() {
+    let (_temp, store, repo) = index_files(&[
+        (
+            "a/GrandBase.java",
+            "package a;\n\npublic class GrandBase {\n    public void reset() {}\n}\n",
+        ),
+        (
+            "a/Base.java",
+            "package a;\n\npublic class Base extends GrandBase {\n    protected void helper() {}\n}\n",
+        ),
+        (
+            "b/Child.java",
+            "package b;\n\nimport a.Base;\n\nclass Child extends Base {\n    void run() {\n        helper();\n        reset();\n    }\n}\n",
+        ),
+        (
+            "c/Foo.java",
+            "package c;\n\nclass Foo {\n    static class Builder extends Reset {\n        void build() { reset(); }\n    }\n}\n",
+        ),
+        (
+            "c/Bar.java",
+            "package c;\n\nclass Bar {\n    static class Builder {\n        void reset() {}\n    }\n}\n",
+        ),
+        (
+            "c/Reset.java",
+            "package c;\n\nclass Reset {\n    void reset() {}\n}\n",
+        ),
+    ]);
+    let mut found = callees_of(&store, repo, "Child::run");
+    found.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(
+        found,
+        [
+            ("Base::helper".to_owned(), CallResolution::Import),
+            ("GrandBase::reset".to_owned(), CallResolution::UniqueName),
+        ]
+    );
+    assert_eq!(
+        callees_of(&store, repo, "Foo::Builder::build"),
+        [("Reset::reset".to_owned(), CallResolution::SamePackage)]
+    );
+}
+
+/// Review M2: a call the rules cannot place, with repository methods of
+/// that name and a supertype outside the repository, makes the answer
+/// incomplete instead of silently complete.
+#[test]
+fn test_a_call_that_may_be_inherited_from_a_library_type_is_unplaced() {
+    let (_temp, store, repo) = index_files(&[
+        (
+            "a/Items.java",
+            "package a;\n\nimport java.util.ArrayList;\n\nclass Items extends ArrayList<String> {\n    void fill() { add(\"x\"); }\n}\n",
+        ),
+        (
+            "a/Cart.java",
+            "package a;\n\nclass Cart {\n    void add(String item) {}\n}\n",
+        ),
+    ]);
+    let report = trace(
+        &store,
+        repo,
+        Some("Items::fill"),
+        None,
+        TraceOptions::default(),
+    )
+    .expect("trace");
+    assert!(!report.complete);
+    assert_eq!(report.unfollowed.len(), 1);
+    assert_eq!(report.unfollowed[0].status, "unplaced");
+}
+
+/// Review S3: a capitalized qualifier that is a member of the caller's type
+/// (a C# property, a Java constant field) is a value of unknown type, not
+/// a library type: its call falls back to `name_only`.
+#[test]
+fn test_capitalized_member_qualifiers_are_values_not_library_types() {
+    let (_temp, store, repo) = index_files(&[
+        (
+            "A/Cart.cs",
+            "namespace A;\n\npublic class Cart\n{\n    public Ledger Items { get; }\n    public void Fill() { Items.Post(1); }\n}\n",
+        ),
+        (
+            "A/Ledger.cs",
+            "namespace A;\n\npublic class Ledger\n{\n    public void Post(int x) { }\n}\n",
+        ),
+        (
+            "a/Job.java",
+            "package a;\n\nclass Job {\n    static final Runner INSTANCE = new Runner();\n    void go() { INSTANCE.start(); }\n}\n",
+        ),
+        (
+            "a/Runner.java",
+            "package a;\n\nclass Runner {\n    void start() {}\n}\n",
+        ),
+    ]);
+    assert_eq!(
+        callees_of(&store, repo, "Cart::Fill"),
+        [("Ledger::Post".to_owned(), CallResolution::NameOnly)]
+    );
+    assert_eq!(
+        callees_of(&store, repo, "Job::go"),
+        [("Runner::start".to_owned(), CallResolution::NameOnly)]
+    );
+}
+
+/// Review S4: an annotation longer than the signature bound never hides
+/// `public` from the visibility rules.
+#[test]
+fn test_a_long_annotation_never_hides_the_public_modifier() {
+    let long = "x".repeat(2_000);
+    let util = format!(
+        "package a;\n\npublic class Util {{\n    @Doc(\"{long}\")\n    public static void util() {{}}\n}}\n"
+    );
+    let (_temp, store, repo) = index_files(&[
+        ("a/Util.java", util.as_str()),
+        (
+            "b/Use.java",
+            "package b;\n\nimport a.Util;\n\nclass Use {\n    void run() { Util.util(); }\n}\n",
+        ),
+    ]);
+    assert_eq!(
+        callees_of(&store, repo, "Use::run"),
+        [("Util::util".to_owned(), CallResolution::Import)]
+    );
+    let signature = store
+        .symbols_in_file(repo, "a/Util.java")
+        .expect("symbols")
+        .into_iter()
+        .find(|symbol| symbol.qualified_name == "Util::util")
+        .and_then(|symbol| symbol.signature)
+        .expect("signature");
+    assert!(
+        signature.starts_with("public static void util()"),
+        "{signature}"
+    );
 }
 
 #[test]
@@ -695,7 +992,7 @@ fn test_a_file_added_to_an_imported_package_or_namespace_gains_its_importers() {
     );
     reindex(&store, &temp);
     assert_eq!(
-        dependents_of(&store, repo, "src/main/java/com/acme/util/Dates.java"),
+        importers_of(&store, repo, "src/main/java/com/acme/util/Dates.java"),
         ["src/main/java/com/acme/store/JobStore.java"]
     );
 
@@ -710,47 +1007,47 @@ fn test_a_file_added_to_an_imported_package_or_namespace_gains_its_importers() {
     );
     reindex(&store, &temp);
     assert_eq!(
-        dependents_of(&store, repo, "other/Dates.cs"),
+        importers_of(&store, repo, "other/Dates.cs"),
         ["src/Acme.Jobs/JobStore.cs"]
     );
 }
 
-/// An importer whose every import resolves (no unresolved edge to be
-/// retried when any file is added) still gains a file added to a package
-/// it imports with a wildcard.
+/// Adding a file to a package changes no stored row of its importers: the
+/// package record is expanded when read.
 #[test]
-fn test_a_file_added_to_a_package_reaches_an_importer_with_no_unresolved_imports() {
+fn test_a_file_added_to_a_package_reaches_its_wildcard_importers_without_reparsing_them() {
     let (temp, store, repo) = index_files(&[
         (
             "app/Main.java",
-            "package app;\n\nimport lib.*;\n\nclass Main {}\n",
+            "package app;\n\nimport lib.*;\nimport java.util.List;\n\nclass Main {}\n",
+        ),
+        (
+            "app/Other.java",
+            "package app;\n\nimport java.util.Map;\n\nclass Other {}\n",
         ),
         ("lib/One.java", "package lib;\n\npublic class One {}\n"),
     ]);
-    assert!(
-        store
-            .unresolved_edge_targets(repo)
-            .expect("unresolved")
-            .is_empty()
-    );
     write_all(
         &temp.path().join("repo"),
         &[("lib/Two.java", "package lib;\n\npublic class Two {}\n")],
     );
-    reindex(&store, &temp);
+    let report = Indexer::new(&store, counter_for(TokenProvider::Heuristic))
+        .index(&temp.path().join("repo"), |_| {})
+        .expect("reindex");
     assert_eq!(
-        edges_from(&store, repo, "app/Main.java"),
-        ["lib/One.java", "lib/Two.java"]
+        report.files_indexed, 1,
+        "only the new file is parsed (review S1)"
+    );
+    assert_eq!(
+        importers_of(&store, repo, "lib/Two.java"),
+        ["app/Main.java"]
     );
 }
 
-/// A namespace of more files than one import may name records no file
-/// edge, only an `edge_limit` marker: `impact` then reports incomplete
-/// results, and a call into the namespace still resolves as an import. A
-/// file added or removed across the bound re-resolves the importer either
-/// way.
+/// A namespace of any size is one record: the importer is reached from
+/// every file of it, and calls into it resolve as imports.
 #[test]
-fn test_a_namespace_over_the_import_bound_is_marked_and_still_traced() {
+fn test_a_large_namespace_import_is_one_record_and_still_traced() {
     let mut files = vec![(
         "app/Main.cs".to_owned(),
         "using Big;\n\nnamespace App;\n\npublic class Main\n{\n    public void Run() { Tools.Make(); }\n}\n"
@@ -761,7 +1058,7 @@ fn test_a_namespace_over_the_import_bound_is_marked_and_still_traced() {
         "namespace Big;\n\npublic static class Tools { public static void Make() { } }\n"
             .to_owned(),
     ));
-    for index in 1..128 {
+    for index in 1..500 {
         files.push((
             format!("big/F{index}.cs"),
             format!("namespace Big;\n\npublic class F{index} {{ }}\n"),
@@ -771,29 +1068,20 @@ fn test_a_namespace_over_the_import_bound_is_marked_and_still_traced() {
         .iter()
         .map(|(path, source)| (path.as_str(), source.as_str()))
         .collect::<Vec<_>>();
-    let (temp, store, repo) = index_files(&borrowed);
-    assert_eq!(edges_from(&store, repo, "app/Main.cs").len(), 128);
-
-    write_all(
-        &temp.path().join("repo"),
-        &[("big/F128.cs", "namespace Big;\n\npublic class F128 { }\n")],
-    );
-    reindex(&store, &temp);
+    let (_temp, store, repo) = index_files(&borrowed);
     assert!(edges_from(&store, repo, "app/Main.cs").is_empty());
-    let report = impact(&store, repo, "big/Tools.cs").expect("impact");
-    assert!(report.dependents.is_empty() && !report.complete);
+    assert_eq!(package_records_from(&store, repo, "app/Main.cs"), ["Big"]);
+    assert_eq!(importers_of(&store, repo, "big/F499.cs"), ["app/Main.cs"]);
     assert_eq!(
         callees_of(&store, repo, "Main::Run"),
         [("Tools::Make".to_owned(), CallResolution::Import)]
     );
-
-    fs::remove_file(temp.path().join("repo/big/F128.cs")).expect("remove");
-    reindex(&store, &temp);
-    assert_eq!(edges_from(&store, repo, "app/Main.cs").len(), 128);
 }
 
 /// A changed file that moves into an imported namespace, with no file added
-/// or removed, is reached by its importers; one that moves out loses them.
+/// or removed, is reached by its importers; one that moves out loses them;
+/// a namespace that disappears turns its imports external, and one that
+/// appears turns an external import into a namespace record.
 #[test]
 fn test_a_changed_file_that_moves_package_re_resolves_its_importers() {
     let (temp, store, repo) = index_files(&CSHARP);
@@ -807,7 +1095,7 @@ fn test_a_changed_file_that_moves_package_re_resolves_its_importers() {
     );
     reindex(&store, &temp);
     assert_eq!(
-        dependents_of(&store, repo, "lib/Logging/Logger.cs"),
+        importers_of(&store, repo, "lib/Logging/Logger.cs"),
         ["src/Acme.Jobs/JobStore.cs"]
     );
     write_all(
@@ -818,7 +1106,30 @@ fn test_a_changed_file_that_moves_package_re_resolves_its_importers() {
         )],
     );
     reindex(&store, &temp);
-    assert!(dependents_of(&store, repo, "lib/Util/More.cs").is_empty());
+    assert!(importers_of(&store, repo, "lib/Util/More.cs").is_empty());
+
+    // Every file leaves `Acme.Util`: the import becomes external, then a
+    // namespace record again when a file declares it once more.
+    for path in ["lib/Util/Strings.cs", "lib/Logging/Logger.cs"] {
+        write_all(
+            &root,
+            &[(path, "namespace Acme.Gone\n{\n    public class X { }\n}\n")],
+        );
+    }
+    reindex(&store, &temp);
+    assert!(package_records_from(&store, repo, "src/Acme.Jobs/JobStore.cs").is_empty());
+    write_all(
+        &root,
+        &[(
+            "lib/Util/More.cs",
+            "namespace Acme.Util\n{\n    internal class More { }\n}\n",
+        )],
+    );
+    reindex(&store, &temp);
+    assert_eq!(
+        package_records_from(&store, repo, "src/Acme.Jobs/JobStore.cs"),
+        ["Acme.Util"]
+    );
 
     let (temp, store, repo) = index_files(&JAVA);
     let root = temp.path().join("repo");
@@ -831,23 +1142,47 @@ fn test_a_changed_file_that_moves_package_re_resolves_its_importers() {
     );
     reindex(&store, &temp);
     assert_eq!(
-        dependents_of(&store, repo, "src/main/java/com/acme/store/Keys.java"),
+        importers_of(&store, repo, "src/main/java/com/acme/store/Keys.java"),
         ["src/main/java/com/acme/store/JobStore.java"],
         "now in com.acme.util, which JobStore imports with a wildcard"
+    );
+    // A type import that was not indexed resolves once its file appears.
+    write_all(
+        &root,
+        &[(
+            "src/main/java/com/acme/app/Uses.java",
+            "package com.acme.app;\n\nimport com.acme.util.Later;\n\nclass Uses {}\n",
+        )],
+    );
+    reindex(&store, &temp);
+    assert!(edges_from(&store, repo, "src/main/java/com/acme/app/Uses.java").is_empty());
+    write_all(
+        &root,
+        &[(
+            "src/main/java/com/acme/util/Later.java",
+            "package com.acme.util;\n\npublic class Later {}\n",
+        )],
+    );
+    reindex(&store, &temp);
+    assert_eq!(
+        edges_from(&store, repo, "src/main/java/com/acme/app/Uses.java"),
+        ["src/main/java/com/acme/util/Later.java"]
     );
 }
 
 #[test]
 fn test_a_removed_file_leaves_its_importers_edges() {
     let (temp, store, repo) = index_files(&JAVA);
-    fs::remove_file(temp.path().join("repo/legacy/Sorter.java")).expect("remove");
+    fs::remove_file(
+        temp.path()
+            .join("repo/src/main/java/com/acme/util/Strings.java"),
+    )
+    .expect("remove");
     reindex(&store, &temp);
+    assert!(edges_from(&store, repo, "src/main/java/com/acme/store/JobStore.java").is_empty());
     assert_eq!(
-        edges_from(&store, repo, "src/main/java/com/acme/store/JobStore.java"),
-        [
-            "src/main/java/com/acme/util/Strings.java",
-            "src/main/java/com/acme/util/package-info.java",
-        ]
+        package_records_from(&store, repo, "src/main/java/com/acme/store/JobStore.java"),
+        ["com.acme.util.*"]
     );
 }
 

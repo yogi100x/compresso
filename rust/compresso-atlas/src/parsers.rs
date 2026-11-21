@@ -280,6 +280,22 @@ pub(crate) fn declared_packages(language: Language, source: &str) -> Vec<String>
 /// headings); a longer one is cut at a character boundary and marked `…`.
 pub(crate) const MAX_SIGNATURE_BYTES: usize = 1_024;
 
+/// `text` cut a little past [`MAX_SIGNATURE_BYTES`] at a character
+/// boundary, so [`bounded_signature`] still sees it was longer and marks it:
+/// text reused in a signature per name is cut once, before it is copied, so
+/// a declaration of many names never copies a long prefix per name.
+fn signature_prefix(text: &str) -> &str {
+    const KEPT: usize = MAX_SIGNATURE_BYTES + 8;
+    if text.len() <= KEPT {
+        return text;
+    }
+    let mut end = KEPT;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
 fn bounded_signature(text: &str) -> Option<String> {
     let signature = trimmed_signature(text)?;
     if signature.len() <= MAX_SIGNATURE_BYTES {
@@ -981,4 +997,21 @@ fn line_number(zero_based_row: usize) -> u32 {
     u32::try_from(zero_based_row)
         .unwrap_or(u32::MAX - 1)
         .saturating_add(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_SIGNATURE_BYTES, bounded_signature, signature_prefix};
+
+    /// Review M1: text reused per name is cut once, just past the bound, so
+    /// the bound still marks a signature cut.
+    #[test]
+    fn test_signature_prefix_cuts_once_just_past_the_bound() {
+        let long = "é".repeat(5_000);
+        let prefix = signature_prefix(&long);
+        assert!(prefix.len() > MAX_SIGNATURE_BYTES && prefix.len() <= MAX_SIGNATURE_BYTES + 8);
+        let signature = bounded_signature(&format!("{prefix} name")).expect("signature");
+        assert!(signature.len() <= MAX_SIGNATURE_BYTES && signature.ends_with('…'));
+        assert_eq!(signature_prefix("short"), "short");
+    }
 }

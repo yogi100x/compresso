@@ -199,7 +199,8 @@ fn values(declaration: Node<'_>, keyword: &str, source: &str, output: &mut Vec<S
         };
         let type_text = spec
             .child_by_field_name("type")
-            .and_then(|kind| node_text(kind, source));
+            .and_then(|kind| node_text(kind, source))
+            .map(super::signature_prefix);
         for name in names {
             let Some(name) = symbol_name(name, source) else {
                 continue;

@@ -23,7 +23,7 @@ use std::rc::Rc;
 use compresso_store::SymbolKind;
 use tree_sitter::Node;
 
-use super::declarations::{Found, Owner, dotted_text, is_identifier};
+use super::declarations::{Found, Owner, declaration_text, dotted_text, is_identifier};
 use super::{Extraction, ImportKind, bounded_signature, node_text, unresolved_import};
 
 /// Where a declaration sits: the namespace around it and, inside a type, its
@@ -138,8 +138,8 @@ pub(super) fn walk(
                         .child_by_field_name("accessors")
                         .or_else(|| child.child_by_field_name("value"))
                         .map_or(child.end_byte(), |body| body.start_byte());
-                    let signature = source
-                        .get(child.start_byte()..end)
+                    let signature = signature_text(child, end, source)
+                        .as_deref()
                         .and_then(bounded_signature);
                     found.member(child, SymbolKind::Const, &name, owner, signature);
                 }
@@ -259,7 +259,23 @@ fn has_token(node: Node<'_>, token: &str) -> bool {
 
 fn signature_before(node: Node<'_>, body: Option<Node<'_>>, source: &str) -> Option<String> {
     let end = body.map_or(node.end_byte(), |body| body.start_byte());
-    bounded_signature(source.get(node.start_byte()..end)?)
+    bounded_signature(&signature_text(node, end, source)?)
+}
+
+/// The modifiers and attribute lists of a C# declaration.
+fn prefix_nodes(node: Node<'_>) -> Vec<Node<'_>> {
+    let mut cursor = node.walk();
+    node.children(&mut cursor)
+        .filter(|child| matches!(child.kind(), "modifier" | "attribute_list"))
+        .collect()
+}
+
+fn is_annotation(node: &Node<'_>) -> bool {
+    node.kind() == "attribute_list"
+}
+
+fn signature_text(node: Node<'_>, end: usize, source: &str) -> Option<String> {
+    declaration_text(node, end, &prefix_nodes(node), is_annotation, source)
 }
 
 /// One `const` per declarator, signatures as for Java fields.
@@ -278,15 +294,19 @@ fn fields(declaration: Node<'_>, owner: &Owner, source: &str, found: &mut Found)
         .collect::<Vec<_>>();
     let prefix = variables
         .child_by_field_name("type")
-        .and_then(|kind| source.get(declaration.start_byte()..kind.end_byte()));
+        .and_then(|kind| signature_text(declaration, kind.end_byte(), source));
     for declarator in &declarators {
         let Some(name) = declared_name(*declarator, source) else {
             continue;
         };
         let signature = if declarators.len() == 1 {
-            node_text(declaration, source).and_then(bounded_signature)
+            signature_text(declaration, declaration.end_byte(), source)
+                .as_deref()
+                .and_then(bounded_signature)
         } else {
-            prefix.and_then(|prefix| bounded_signature(&format!("{} {name}", prefix.trim())))
+            prefix
+                .as_deref()
+                .and_then(|prefix| bounded_signature(&format!("{prefix} {name}")))
         };
         let range = if declarators.len() == 1 {
             declaration

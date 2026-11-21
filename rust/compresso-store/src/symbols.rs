@@ -69,10 +69,16 @@ pub struct ResolvedEdgeRecord {
 pub const EDGE_DETAIL_EXTERNAL: &str = "external";
 /// Detail of an unresolved edge that names the importing file itself.
 pub const EDGE_DETAIL_SAME_FILE: &str = "same_file";
+/// Detail of an edge that names a whole Java package (`a.b.*`) or C#
+/// namespace (`using N;`) the repository declares: one record per import,
+/// expanded to the package's files when a query reads it (E17-40, D105).
+/// Stored with the `unresolved` status because no single file is its
+/// target; it hides no dependent.
+pub const EDGE_DETAIL_PACKAGE: &str = "package";
 
 /// Unresolved edges with these details cannot change which repository files
 /// depend on each other, so they do not make a dependency answer incomplete.
-const CLOSURE_NEUTRAL_UNRESOLVED: &str = "(resolution_status = 'unresolved' AND COALESCE(resolution_detail, '') IN ('external', 'same_file'))";
+const CLOSURE_NEUTRAL_UNRESOLVED: &str = "(resolution_status = 'unresolved' AND COALESCE(resolution_detail, '') IN ('external', 'same_file', 'package'))";
 
 /// Counts unresolved and ambiguous dependency edges for completeness reporting.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -497,19 +503,19 @@ impl Store {
             .collect())
     }
 
-    /// Lists `(source path, import as written)` for every unresolved edge,
-    /// external or not, in path order.
+    /// Lists `(source path, import as written, detail)` for every edge not
+    /// resolved to one file, in path order.
     pub fn unresolved_edge_targets(
         &self,
         repo: RepoId,
-    ) -> Result<Vec<(String, String)>, StoreError> {
+    ) -> Result<Vec<(String, String, Option<String>)>, StoreError> {
         let connection = self.connection()?;
         ensure_repo_exists(&connection, repo)?;
         let mut statement = connection.prepare(
-            "SELECT source.path, e.to_path FROM edges AS e JOIN files AS source ON source.id = e.from_file_id WHERE e.repo_id = ?1 AND e.resolution_status != 'resolved' ORDER BY source.path ASC, e.to_path ASC, e.id ASC",
+            "SELECT source.path, e.to_path, e.resolution_detail FROM edges AS e JOIN files AS source ON source.id = e.from_file_id WHERE e.repo_id = ?1 AND e.resolution_status != 'resolved' ORDER BY source.path ASC, e.to_path ASC, e.id ASC",
         )?;
         statement
-            .query_map([repo], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .query_map([repo], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::from)
     }

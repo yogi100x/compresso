@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
 use std::fs;
 use std::io;
@@ -193,6 +193,10 @@ pub struct ImpactEntry {
     pub path: String,
     pub depth: u8,
     pub edge_kinds: Vec<EdgeKind>,
+    /// Java and C# (D105): the package or namespace that links this file to
+    /// the one before it, when no file edge does: `imports` for a file that
+    /// imports the whole package, `references` for another file of it.
+    pub package: Option<String>,
 }
 
 /// Caller-supplied bounds for reverse-dependency traversal.
@@ -216,6 +220,9 @@ impl Default for ImpactOptions {
 pub struct ImpactReport {
     pub path: String,
     pub dependents: Vec<ImpactEntry>,
+    /// Every dependent found within `max_depth`; `dependents` holds the
+    /// first `max_results` of them.
+    pub total: usize,
     pub unresolved_edges: usize,
     pub ambiguous_edges: usize,
     pub complete: bool,
@@ -924,20 +931,31 @@ pub fn impact_with_options(
         }
     }
 
-    let mut discovered = BTreeMap::<String, (u8, Vec<EdgeKind>)>::new();
+    let packages = PackageLinks::load(store, repo)?;
+    let mut expanded = HashSet::new();
+    let mut discovered = BTreeMap::<String, (u8, Vec<EdgeKind>, Option<String>)>::new();
     let mut frontier = BTreeSet::from([path.to_owned()]);
     for depth in 1..=options.max_depth {
         let mut next = BTreeSet::new();
         for target in &frontier {
-            let Some(importers) = incoming.get(target) else {
-                continue;
-            };
-            for (importer, kinds) in importers {
+            let mut linked = incoming
+                .get(target)
+                .into_iter()
+                .flatten()
+                .map(|(importer, kinds)| (importer.clone(), kinds.clone(), None))
+                .collect::<Vec<_>>();
+            if let Some(packages) = &packages {
+                packages.dependents(target, &mut expanded, &mut linked);
+            }
+            for (importer, kinds, package) in &linked {
                 if importer == path {
                     continue;
                 }
+                if is_secret_path(Path::new(importer)) {
+                    continue;
+                }
                 match discovered.get_mut(importer) {
-                    Some((known_depth, known_kinds)) if *known_depth == depth => {
+                    Some((known_depth, known_kinds, _)) if *known_depth == depth => {
                         for kind in kinds {
                             if !known_kinds.contains(kind) {
                                 known_kinds.push(*kind);
@@ -947,7 +965,8 @@ pub fn impact_with_options(
                     }
                     Some(_) => {}
                     None => {
-                        discovered.insert(importer.clone(), (depth, kinds.clone()));
+                        discovered
+                            .insert(importer.clone(), (depth, kinds.clone(), package.clone()));
                         next.insert(importer.clone());
                     }
                 }
@@ -958,23 +977,35 @@ pub fn impact_with_options(
 
     let mut dependents = discovered
         .into_iter()
-        .map(|(path, (depth, kinds))| ImpactEntry {
+        .map(|(path, (depth, kinds, package))| ImpactEntry {
             path,
             depth,
             edge_kinds: kinds,
+            package,
         })
         .collect::<Vec<_>>();
+    // File edges, then package importers, then files that only share a
+    // package (Java and C#); every other language has file edges only, so
+    // its order is by depth and path as before.
     dependents.sort_by(|left, right| {
+        let rank = |entry: &ImpactEntry| match (&entry.package, entry.edge_kinds.first()) {
+            (None, _) => 0,
+            (Some(_), Some(EdgeKind::References)) => 2,
+            (Some(_), _) => 1,
+        };
         left.depth
             .cmp(&right.depth)
+            .then_with(|| rank(left).cmp(&rank(right)))
             .then_with(|| left.path.cmp(&right.path))
     });
+    let total = dependents.len();
     let truncated = dependents.len() > options.max_results;
     dependents.truncate(options.max_results);
     let resolution_counts = store.edge_resolution_counts(repo)?;
     Ok(ImpactReport {
         path: path.to_owned(),
         dependents,
+        total,
         unresolved_edges: resolution_counts.unresolved,
         ambiguous_edges: resolution_counts.ambiguous,
         complete: resolution_counts.unresolved == 0
@@ -982,6 +1013,119 @@ pub fn impact_with_options(
             && !truncated,
         truncated,
     })
+}
+
+/// At most this many packages or namespaces of one file take part in
+/// package links; a hostile file declaring more keeps the first ones.
+const MAX_PACKAGES_PER_FILE: usize = 64;
+
+/// Java and C# package and namespace links (D105, owner decision
+/// 2026-11-21): which files declare each package or namespace, and which
+/// import it whole (one stored record each). A file's dependents through its
+/// package are the files importing the package and the package's other
+/// files, which reach its types without an import; in C#, files of a nested
+/// namespace too. Read once per `impact`; each package is expanded once.
+struct PackageLinks {
+    declared: HashMap<String, (&'static str, Vec<String>)>,
+    members: BTreeMap<(&'static str, String), Vec<String>>,
+    importers: HashMap<(&'static str, String), Vec<String>>,
+}
+
+impl PackageLinks {
+    fn load(store: &Store, repo: RepoId) -> Result<Option<Self>, AtlasError> {
+        let languages = crate::parsers::languages::declaring_languages();
+        let rows = store.module_declarations(repo, &languages)?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        let language_of =
+            |path: &str| ParserRegistry::for_path(Path::new(path)).map(FileLanguage::as_str);
+        let mut declared = HashMap::<String, (&'static str, Vec<String>)>::new();
+        let mut members = BTreeMap::<(&'static str, String), Vec<String>>::new();
+        for (path, name) in rows {
+            let Some(language) = language_of(&path) else {
+                continue;
+            };
+            let entry = declared
+                .entry(path.clone())
+                .or_insert_with(|| (language, Vec::new()));
+            if entry.1.len() == MAX_PACKAGES_PER_FILE || entry.1.contains(&name) {
+                continue;
+            }
+            entry.1.push(name.clone());
+            if !crate::parsers::languages::is_declaration_only(&path) {
+                members.entry((language, name)).or_default().push(path);
+            }
+        }
+        let mut importers = HashMap::<(&'static str, String), Vec<String>>::new();
+        for (path, raw) in
+            store.unresolved_edge_targets_with_detail(repo, compresso_store::EDGE_DETAIL_PACKAGE)?
+        {
+            let Some(language) = language_of(&path) else {
+                continue;
+            };
+            let name = raw.strip_suffix(".*").unwrap_or(&raw).to_owned();
+            importers.entry((language, name)).or_default().push(path);
+        }
+        Ok(Some(Self {
+            declared,
+            members,
+            importers,
+        }))
+    }
+
+    /// Appends the files linked to `target` through each of its packages
+    /// not expanded yet.
+    fn dependents(
+        &self,
+        target: &str,
+        expanded: &mut HashSet<(&'static str, String)>,
+        linked: &mut Vec<(String, Vec<EdgeKind>, Option<String>)>,
+    ) {
+        if crate::parsers::languages::is_declaration_only(target) {
+            return;
+        }
+        let Some((language, packages)) = self.declared.get(target) else {
+            return;
+        };
+        let nested = matches!(
+            crate::parsers::languages::call_rules(target),
+            crate::parsers::languages::CallRules::DeclaredPackages(rules)
+                if rules.enclosing_namespaces
+        );
+        for package in packages {
+            if !expanded.insert((language, package.clone())) {
+                continue;
+            }
+            let key = (*language, package.clone());
+            for importer in self.importers.get(&key).into_iter().flatten() {
+                linked.push((
+                    importer.clone(),
+                    vec![EdgeKind::Imports],
+                    Some(package.clone()),
+                ));
+            }
+            let below = format!("{package}.");
+            let nested_files = self
+                .members
+                .range((*language, below.clone())..)
+                .take_while(|((found, name), _)| {
+                    nested && found == language && name.starts_with(&below)
+                })
+                .map(|(_, files)| files);
+            for files in self.members.get(&key).into_iter().chain(nested_files) {
+                for file in files {
+                    if file != target {
+                        linked.push((
+                            file.clone(),
+                            vec![EdgeKind::References],
+                            Some(package.clone()),
+                        ));
+                    }
+                }
+            }
+        }
+    }
 }
 
 const fn edge_kind_order(kind: EdgeKind) -> u8 {

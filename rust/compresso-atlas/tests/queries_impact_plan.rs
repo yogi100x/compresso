@@ -31,13 +31,16 @@ fn test_impact_depth_two() {
                     path: "b.rs".to_owned(),
                     depth: 1,
                     edge_kinds: vec![EdgeKind::Imports],
+                    package: None,
                 },
                 ImpactEntry {
                     path: "a.rs".to_owned(),
                     depth: 2,
                     edge_kinds: vec![EdgeKind::Imports],
+                    package: None,
                 },
             ],
+            total: 2,
             unresolved_edges: 0,
             ambiguous_edges: 0,
             complete: true,
@@ -160,6 +163,7 @@ fn test_impact_edge_kinds_reported() {
             path: "tests/a_test.rs".to_owned(),
             depth: 1,
             edge_kinds: vec![EdgeKind::Tests],
+            package: None,
         }]
     );
 }

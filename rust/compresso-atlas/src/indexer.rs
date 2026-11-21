@@ -233,12 +233,16 @@ impl<'a> Indexer<'a> {
             .into_iter()
             .chain(scan.changed)
             .collect::<BTreeSet<_>>();
+        // Java and C# importers are re-resolved by the packages a run
+        // changes (`re_resolve_importers`), not because any file appeared:
+        // nearly every one of them has an external import (D105).
         if paths_expanded {
             candidates.extend(
                 self.store
                     .unresolved_edge_sources(repo)?
                     .into_iter()
                     .filter(|path| !removed_set.contains(path))
+                    .filter(|path| declaring_language(path).is_none())
                     .map(PathBuf::from),
             );
         }
@@ -262,6 +266,7 @@ impl<'a> Indexer<'a> {
         }
         if !removed_set.is_empty() {
             let mut affected_sources = self.store.unresolved_edge_sources(repo)?;
+            affected_sources.retain(|path| declaring_language(path).is_none());
             affected_sources.extend(
                 self.store
                     .resolved_edges(repo)?
@@ -468,23 +473,35 @@ impl Indexer<'_> {
             }
         }
         if !stale {
-            self.re_resolve_importers(repo, &stored, &read, removed, added, candidates)?;
+            let after = rows
+                .iter()
+                .map(|(_, language, name)| (language.as_str(), name.clone()))
+                .collect::<HashSet<_>>();
+            self.re_resolve_importers(repo, &stored, &read, &after, removed, added, candidates)?;
         }
         Ok(DeclaredPackages::new(rows))
     }
 
-    /// Adds to `candidates` the files whose imports named a package or
-    /// namespace that a file joined or left in this run.
+    /// Adds to `candidates` the Java and C# files whose stored imports a
+    /// run's changes can alter (D105): an import of one type whose file now
+    /// declares another package or is gone; an import not resolved before
+    /// (external or `not_indexed`) under a package a file joined or left;
+    /// and a whole-package record whose package no file declares any more.
+    /// A file joining a package its importers already import changes no
+    /// stored row of theirs: the record is expanded when read.
+    #[allow(clippy::too_many_arguments)]
     fn re_resolve_importers(
         &self,
         repo: RepoId,
         stored: &BTreeMap<String, Vec<String>>,
         read: &BTreeMap<String, Vec<String>>,
+        after: &HashSet<(&'static str, String)>,
         removed: &HashSet<String>,
         added: &HashSet<String>,
         candidates: &mut BTreeSet<PathBuf>,
     ) -> Result<(), AtlasError> {
         let mut moved = HashSet::<(&'static str, String)>::new();
+        let mut relocated = HashSet::<&str>::new();
         let mut note = |path: &str, names: &[String]| {
             if let Some(language) = declaring_language(path) {
                 moved.extend(names.iter().map(|name| (language.as_str(), name.clone())));
@@ -499,6 +516,9 @@ impl Indexer<'_> {
                 right.sort();
                 left == right
             };
+            if !unchanged {
+                relocated.insert(path.as_str());
+            }
             if added.contains(path) || !unchanged {
                 note(path, before);
                 note(path, now);
@@ -510,22 +530,22 @@ impl Indexer<'_> {
         if moved.is_empty() {
             return Ok(());
         }
-        let touches = |path: &str| {
-            declaring_language(path).is_some_and(|language| {
-                stored
-                    .get(path)
-                    .into_iter()
-                    .chain(read.get(path))
-                    .flatten()
-                    .any(|name| moved.contains(&(language.as_str(), name.clone())))
-            })
-        };
-        for edge in self.store.resolved_edges(repo)? {
-            if !removed.contains(&edge.from_path) && touches(&edge.to_path) {
-                candidates.insert(PathBuf::from(edge.from_path));
+        let disappeared = moved
+            .iter()
+            .filter(|package| !after.contains(*package))
+            .cloned()
+            .collect::<HashSet<_>>();
+        if !relocated.is_empty() {
+            for edge in self.store.resolved_edges(repo)? {
+                if !removed.contains(&edge.from_path)
+                    && declaring_language(&edge.from_path).is_some()
+                    && relocated.contains(edge.to_path.as_str())
+                {
+                    candidates.insert(PathBuf::from(edge.from_path));
+                }
             }
         }
-        for (from, raw) in self.store.unresolved_edge_targets(repo)? {
+        for (from, raw, detail) in self.store.unresolved_edge_targets(repo)? {
             if removed.contains(&from) {
                 continue;
             }
@@ -533,6 +553,12 @@ impl Indexer<'_> {
                 continue;
             };
             let raw = raw.strip_suffix(".*").unwrap_or(&raw);
+            if detail.as_deref() == Some(compresso_store::EDGE_DETAIL_PACKAGE) {
+                if disappeared.contains(&(language.as_str(), raw.to_owned())) {
+                    candidates.insert(PathBuf::from(from));
+                }
+                continue;
+            }
             // Every dotted prefix of the import, `a.b.C` then `a.b` then `a`.
             let mut end = raw.len();
             let names_moved = loop {
@@ -1022,21 +1048,13 @@ fn resolve_go_imports(
     output
 }
 
-/// Files one Java wildcard import or C# `using` may name as edges. An import
-/// naming more files records none of them and one unresolved
-/// [`GO_EDGE_LIMIT`] edge instead, all or nothing, so no file of a large
-/// package or namespace looks unimported while its neighbours have edges;
-/// `trace` still reaches the package through that marker. Every importer of
-/// a namespace gets one edge per file, so the edges of a repository grow as
-/// importers times namespace size.
-pub(crate) const MAX_DECLARED_IMPORT_FILES: usize = 128;
-
-/// A Java import or C# `using` names files by their declared package or
-/// namespace (D105): one edge per file. A file reached by several imports
-/// counts once, a repeated import counts once, an import naming more than
-/// [`MAX_DECLARED_IMPORT_FILES`] files is cut whole, and at most
-/// [`MAX_GO_IMPORT_EDGES_PER_FILE`] resolved edges are kept per file, with an
-/// unresolved [`GO_EDGE_LIMIT`] edge for each import a bound cut.
+/// A Java import or C# `using` (D105, owner decision 2026-11-21): a whole
+/// package or namespace is one record naming it, expanded to its files by
+/// queries; a type import is an edge to the type's file. A repeated import
+/// counts once and a file reached twice once. At most
+/// [`MAX_GO_IMPORT_EDGES_PER_FILE`] records are kept per file, a bound on
+/// hostile input only; one unresolved [`GO_EDGE_LIMIT`] record, naming the
+/// first import cut, marks the cut.
 fn resolve_declared_imports(
     importer: &str,
     language: compresso_store::FileLanguage,
@@ -1045,58 +1063,31 @@ fn resolve_declared_imports(
 ) -> Vec<ImportRecord> {
     let mut seen = HashSet::new();
     let mut reached = HashSet::new();
-    let mut resolved_edges = 0_usize;
     let mut output = Vec::new();
     for import in imports {
         if !seen.insert(import.raw.clone()) {
             continue;
         }
-        let mut cut = false;
-        let targets = declared.resolve(importer, language, &import.raw);
-        let fresh = targets
-            .iter()
-            .filter(|(path, resolution)| {
-                *resolution == ImportResolution::Resolved
-                    && path.as_deref().is_some_and(|path| !reached.contains(path))
-            })
-            .count();
-        if fresh > MAX_DECLARED_IMPORT_FILES {
-            output.push(ImportRecord {
-                raw: import.raw,
-                kind: import.kind,
-                resolved_path: None,
-                resolution: ImportResolution::Unresolved(GO_EDGE_LIMIT.to_owned()),
-            });
-            continue;
-        }
-        for (resolved_path, resolution) in targets {
-            if resolution == ImportResolution::Resolved {
-                let Some(path) = resolved_path.as_deref() else {
-                    continue;
-                };
-                if reached.contains(path) {
-                    continue;
-                }
-                if resolved_edges == MAX_GO_IMPORT_EDGES_PER_FILE {
-                    cut = true;
-                    continue;
-                }
-                reached.insert(path.to_owned());
-                resolved_edges += 1;
+        for (resolved_path, resolution) in declared.resolve(importer, language, &import.raw) {
+            if let Some(path) = resolved_path.as_deref()
+                && !reached.insert(path.to_owned())
+            {
+                continue;
+            }
+            if output.len() == MAX_GO_IMPORT_EDGES_PER_FILE {
+                output.push(ImportRecord {
+                    raw: import.raw,
+                    kind: import.kind,
+                    resolved_path: None,
+                    resolution: ImportResolution::Unresolved(GO_EDGE_LIMIT.to_owned()),
+                });
+                return output;
             }
             output.push(ImportRecord {
                 raw: import.raw.clone(),
                 kind: import.kind,
                 resolved_path,
                 resolution,
-            });
-        }
-        if cut {
-            output.push(ImportRecord {
-                raw: import.raw,
-                kind: import.kind,
-                resolved_path: None,
-                resolution: ImportResolution::Unresolved(GO_EDGE_LIMIT.to_owned()),
             });
         }
     }
@@ -1744,36 +1735,20 @@ mod tests {
         assert_eq!(cut, ["m/p", "m/q"]);
     }
 
-    /// E17-40 (D105): an import naming more files than the per-import bound
-    /// records none of them and one `edge_limit` edge; a file reached twice
-    /// counts once; the per-file bound still cuts after 4,096 edges.
+    /// E17-40 (D105, owner decision 2026-11-21): a namespace import is one
+    /// record however many files declare the namespace; a repeated import or
+    /// a file reached twice counts once; a file keeps at most 4,096 import
+    /// records, and one `edge_limit` record marks the cut.
     #[test]
-    fn test_declared_imports_are_deduplicated_and_capped_per_import_and_file() {
-        use compresso_store::FileLanguage;
+    fn test_declared_imports_are_one_record_per_package_and_capped_per_file() {
+        use compresso_store::{EDGE_DETAIL_PACKAGE, FileLanguage};
         let mut rows = Vec::new();
-        for index in 0..=MAX_DECLARED_IMPORT_FILES {
+        for index in 0..5_000 {
             rows.push((
                 format!("big/F{index}.cs"),
                 FileLanguage::CSharp,
                 "Big".to_owned(),
             ));
-        }
-        for index in 0..MAX_DECLARED_IMPORT_FILES {
-            rows.push((
-                format!("fits/F{index}.cs"),
-                FileLanguage::CSharp,
-                "Fits".to_owned(),
-            ));
-        }
-        // Namespaces of 128 files each, 40 of them: 5,120 files in all.
-        for namespace in 0..40 {
-            for index in 0..MAX_DECLARED_IMPORT_FILES {
-                rows.push((
-                    format!("n{namespace}/F{index}.cs"),
-                    FileLanguage::CSharp,
-                    format!("N{namespace}"),
-                ));
-            }
         }
         rows.push((
             "small/Only.cs".to_owned(),
@@ -1802,45 +1777,50 @@ mod tests {
                 &declared,
             );
         };
+        let rows_of = |imports: &[ImportRecord]| {
+            imports
+                .iter()
+                .map(|import| {
+                    let detail = match &import.resolution {
+                        ImportResolution::Unresolved(detail) => detail.clone(),
+                        ImportResolution::Resolved => "resolved".to_owned(),
+                        ImportResolution::Ambiguous(_) => "ambiguous".to_owned(),
+                    };
+                    (import.raw.clone(), import.resolved_path.clone(), detail)
+                })
+                .collect::<Vec<_>>()
+        };
         let mut imports = vec![
-            import("Small"),
-            import("Small.Inner"),
-            import("Small"),
+            import("Big"),
+            import("Small.Only"),
+            import("Big"),
+            import("Small.Only"),
             import("System"),
         ];
         resolve(&mut imports);
-        let rows = imports
-            .iter()
-            .map(|import| (import.raw.as_str(), import.resolved_path.as_deref()))
-            .collect::<Vec<_>>();
-        assert_eq!(rows, [("Small", Some("small/Only.cs")), ("System", None)]);
+        assert_eq!(
+            rows_of(&imports),
+            [
+                ("Big".to_owned(), None, EDGE_DETAIL_PACKAGE.to_owned()),
+                (
+                    "Small.Only".to_owned(),
+                    Some("small/Only.cs".to_owned()),
+                    "resolved".to_owned()
+                ),
+                ("System".to_owned(), None, "external".to_owned()),
+            ]
+        );
 
-        let mut imports = vec![import("Big"), import("Fits")];
-        resolve(&mut imports);
-        let resolved = |imports: &[ImportRecord]| {
-            imports
-                .iter()
-                .filter(|import| import.resolution == ImportResolution::Resolved)
-                .count()
-        };
-        let cut = |imports: &[ImportRecord]| {
-            imports
-                .iter()
-                .filter(|import| {
-                    import.resolution == ImportResolution::Unresolved(GO_EDGE_LIMIT.to_owned())
-                })
-                .map(|import| import.raw.clone())
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(resolved(&imports), MAX_DECLARED_IMPORT_FILES);
-        assert_eq!(cut(&imports), ["Big"]);
-
-        let mut imports = (0..40)
-            .map(|namespace| import(&format!("N{namespace}")))
+        let mut imports = (0..5_000)
+            .map(|index| import(&format!("Vendor.N{index}")))
             .collect::<Vec<_>>();
         resolve(&mut imports);
-        assert_eq!(resolved(&imports), MAX_GO_IMPORT_EDGES_PER_FILE);
-        assert_eq!(cut(&imports).len(), 8, "the last 1,024 files of 5,120");
+        assert_eq!(imports.len(), MAX_GO_IMPORT_EDGES_PER_FILE + 1);
+        let last = rows_of(&imports).pop().expect("marker");
+        assert_eq!(
+            last,
+            ("Vendor.N4096".to_owned(), None, GO_EDGE_LIMIT.to_owned())
+        );
     }
 
     #[test]

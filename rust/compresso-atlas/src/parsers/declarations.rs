@@ -117,6 +117,52 @@ impl Found {
     }
 }
 
+/// The declaration text from `node`'s start to `end` (review S4). When it
+/// exceeds the signature bound and `prefix` (the declaration's modifier and
+/// annotation or attribute nodes) holds annotations, they are left out and
+/// the modifier keywords kept, then the rest of the text, so a long
+/// annotation never pushes `public` or `static` past the bound that
+/// visibility is read from. Each part is cut to the bound before it is
+/// copied.
+pub(super) fn declaration_text(
+    node: Node<'_>,
+    end: usize,
+    prefix: &[Node<'_>],
+    is_annotation: fn(&Node<'_>) -> bool,
+    source: &str,
+) -> Option<String> {
+    let text = source.get(node.start_byte()..end)?;
+    if text.trim().len() <= super::MAX_SIGNATURE_BYTES || !prefix.iter().any(is_annotation) {
+        return Some(super::signature_prefix(text.trim()).to_owned());
+    }
+    let mut keywords = String::new();
+    for word in prefix
+        .iter()
+        .filter(|child| !is_annotation(child))
+        .filter_map(|child| node_text(*child, source))
+    {
+        if keywords.len() + word.len() > super::MAX_SIGNATURE_BYTES {
+            break;
+        }
+        if !keywords.is_empty() {
+            keywords.push(' ');
+        }
+        keywords.push_str(word.trim());
+    }
+    let after = prefix
+        .iter()
+        .map(|child| child.end_byte())
+        .max()
+        .unwrap_or(node.start_byte())
+        .min(end);
+    let rest = super::signature_prefix(source.get(after..end)?.trim());
+    Some(if keywords.is_empty() {
+        rest.to_owned()
+    } else {
+        format!("{keywords} {rest}")
+    })
+}
+
 /// The `module` symbols a walk records, without repeats, in source order.
 pub(super) fn module_names(
     walk: super::languages::Walk,
