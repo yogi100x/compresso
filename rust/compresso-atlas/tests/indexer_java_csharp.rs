@@ -993,6 +993,65 @@ fn test_relative_and_global_usings_resolve_like_the_compiler() {
     );
 }
 
+/// Round 3 SF3: module cards and map ranking count whole-package imports,
+/// which are records, not file edges.
+#[test]
+fn test_cards_and_map_ranking_count_package_imports() {
+    let (temp, store, repo) = index_files(&[
+        (
+            "app/Main.cs",
+            "using Lib;\n\nnamespace App;\n\npublic class Main { }\n",
+        ),
+        (
+            "lib/Widget.cs",
+            "namespace Lib;\n\npublic class Widget { }\n",
+        ),
+    ]);
+    let root = fs::canonicalize(temp.path().join("repo")).expect("root canonicalizes");
+    let cards = module_cards(
+        &store,
+        repo,
+        &root,
+        CardOptions {
+            path: None,
+            max_cards: 10,
+            budget_tokens: 4_000,
+        },
+    )
+    .expect("cards");
+    let app = cards
+        .cards
+        .iter()
+        .find(|card| card.path == "app")
+        .expect("app card");
+    assert_eq!(app.depends_on, ["lib"]);
+    let lib = cards
+        .cards
+        .iter()
+        .find(|card| card.path == "lib")
+        .expect("lib card");
+    assert_eq!(lib.used_by, ["app"]);
+    assert_eq!(
+        cards.cards[0].path, "lib",
+        "the imported directory ranks first"
+    );
+    // A map with room for one file keeps the imported one.
+    let one_file = (1..200)
+        .map(|budget| repo_map(&store, repo, budget).expect("map"))
+        .find(|map| map.files_shown == 1)
+        .expect("a budget that fits one file");
+    assert!(
+        one_file.rendered.contains("Widget.cs"),
+        "{}",
+        one_file.rendered
+    );
+    assert!(
+        !one_file.rendered.contains("Main.cs"),
+        "{}",
+        one_file.rendered
+    );
+}
+
 #[test]
 fn test_java_and_csharp_calls_never_cross_languages() {
     let (_temp, store, repo) = index_files(&[

@@ -166,14 +166,20 @@ pub fn module_cards(
         }
         entry.files.push(file);
     }
-    for edge in store.resolved_edges(repo)? {
-        if edge.kind != EdgeKind::Imports {
-            continue;
-        }
-        let (Some(from), Some(to)) = (
-            file_directory.get(&edge.from_path),
-            file_directory.get(&edge.to_path),
-        ) else {
+    // File edges, then Java and C# whole-package imports (D105), which
+    // are stored as one record per import and count as edges to each file
+    // of the package.
+    let package_pairs = crate::queries::package_import_pairs(store, repo)?;
+    let links = store
+        .resolved_edges(repo)?
+        .into_iter()
+        .filter(|edge| edge.kind == EdgeKind::Imports)
+        .map(|edge| (edge.from_path, edge.to_path))
+        .chain(package_pairs.iter().cloned())
+        .collect::<Vec<_>>();
+    for (from_path, to_path) in &links {
+        let (Some(from), Some(to)) = (file_directory.get(from_path), file_directory.get(to_path))
+        else {
             // Either end is a secret path or no longer indexed.
             continue;
         };
@@ -188,7 +194,7 @@ pub fn module_cards(
             *directory.used_by.entry(from).or_default() += 1;
         }
     }
-    let file_in_degree = file_in_degrees(store, repo, &file_directory)?;
+    let file_in_degree = file_in_degrees(&links, &file_directory);
 
     let mut ranked = directories
         .into_iter()
@@ -231,28 +237,22 @@ pub fn module_cards(
     })
 }
 
-/// Number of distinct files outside each file's directory that import it.
+/// Number of distinct files that import each file (file edges and
+/// whole-package imports), among indexed, non-secret files.
 fn file_in_degrees(
-    store: &Store,
-    repo: RepoId,
+    links: &[(String, String)],
     file_directory: &BTreeMap<String, String>,
-) -> Result<BTreeMap<String, usize>, AtlasError> {
-    let mut importers = BTreeMap::<String, BTreeSet<String>>::new();
-    for edge in store.resolved_edges(repo)? {
-        if edge.kind == EdgeKind::Imports
-            && file_directory.contains_key(&edge.from_path)
-            && file_directory.contains_key(&edge.to_path)
-        {
-            importers
-                .entry(edge.to_path)
-                .or_default()
-                .insert(edge.from_path);
+) -> BTreeMap<String, usize> {
+    let mut importers = BTreeMap::<&str, BTreeSet<&str>>::new();
+    for (from, to) in links {
+        if file_directory.contains_key(from) && file_directory.contains_key(to) {
+            importers.entry(to).or_default().insert(from);
         }
     }
-    Ok(importers
+    importers
         .into_iter()
-        .map(|(path, from)| (path, from.len()))
-        .collect())
+        .map(|(path, from)| (path.to_owned(), from.len()))
+        .collect()
 }
 
 fn build_card(

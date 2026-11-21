@@ -408,6 +408,9 @@ pub fn repo_map_focused(
             .or_default()
             .insert(edge.from_path);
     }
+    for (importer, member) in package_import_pairs(store, repo)? {
+        importers.entry(member).or_default().insert(importer);
+    }
 
     let mut ranked = files
         .iter()
@@ -1032,6 +1035,60 @@ pub fn impact_with_options(
         unevaluated,
         packages_limited,
     })
+}
+
+/// At most this many (importer, file) pairs are read from whole-package
+/// imports for rankings and module cards.
+const MAX_PACKAGE_LINK_PAIRS: usize = 200_000;
+
+/// Java and C# whole-package imports (D105, one stored record each) as
+/// (importer, file of the package) pairs, so rankings and module cards
+/// count them as they count file edges. At most
+/// [`MAX_PACKAGE_LINK_PAIRS`]; a `global using` (every file of the
+/// language) and files that declare no type are left out.
+pub(crate) fn package_import_pairs(
+    store: &Store,
+    repo: RepoId,
+) -> Result<Vec<(String, String)>, AtlasError> {
+    let records =
+        store.unresolved_edge_targets_with_detail(repo, compresso_store::EDGE_DETAIL_PACKAGE)?;
+    if records.is_empty() {
+        return Ok(Vec::new());
+    }
+    let language_of =
+        |path: &str| ParserRegistry::for_path(Path::new(path)).map(FileLanguage::as_str);
+    let mut members = HashMap::<(&'static str, String), Vec<String>>::new();
+    for (path, name) in
+        store.module_declarations(repo, &crate::parsers::languages::declaring_languages())?
+    {
+        if let Some(language) = language_of(&path)
+            && !crate::parsers::languages::is_declaration_only(&path)
+            && !is_secret_path(Path::new(&path))
+        {
+            members.entry((language, name)).or_default().push(path);
+        }
+    }
+    let mut pairs = Vec::new();
+    for (importer, raw) in records {
+        if raw.starts_with(crate::declared_imports::GLOBAL_IMPORT_PREFIX)
+            || is_secret_path(Path::new(&importer))
+        {
+            continue;
+        }
+        let Some(language) = language_of(&importer) else {
+            continue;
+        };
+        let name = raw.strip_suffix(".*").unwrap_or(&raw).to_owned();
+        for member in members.get(&(language, name)).into_iter().flatten() {
+            if pairs.len() == MAX_PACKAGE_LINK_PAIRS {
+                return Ok(pairs);
+            }
+            if *member != importer {
+                pairs.push((importer.clone(), member.clone()));
+            }
+        }
+    }
+    Ok(pairs)
 }
 
 /// At most this many packages or namespaces of one file take part in
