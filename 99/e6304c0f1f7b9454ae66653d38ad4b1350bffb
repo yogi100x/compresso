@@ -1,0 +1,22 @@
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_3c841dbbf4c3c8 2702,3549,3580-3582
+  s_89a704cfae63f5::t_684288b89f5c68 3494-3533
+decisions.md
+  s_89a704cfae63f5::t_3232e4281729ea 110-112,114-115
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "99e6304c0f1f7b9454ae66653d38ad4b1350bffb",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "unknown"
+      },
+      "human_author": null
+    }
+  }
+}
