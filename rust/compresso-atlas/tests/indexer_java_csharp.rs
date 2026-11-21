@@ -932,6 +932,67 @@ fn test_package_qualified_calls_reach_their_type() {
     );
 }
 
+/// Round 3 SF2: a `using` inside a namespace names a namespace relative to
+/// the enclosing ones first; a `global using` applies to every C# file,
+/// and `impact` lists the files that use the namespace through it.
+#[test]
+fn test_relative_and_global_usings_resolve_like_the_compiler() {
+    let (temp, store, repo) = index_files(&[
+        (
+            "lib/Strings.cs",
+            "namespace Acme.Util\n{\n    public static class Strings { public static string Trim(string s) => s; }\n}\n",
+        ),
+        (
+            "app/Main.cs",
+            "namespace Acme\n{\n    using Util;\n\n    public class Main { void Go() { Strings.Trim(\"x\"); } }\n}\n",
+        ),
+        ("app/GlobalUsings.cs", "global using Acme.Util;\n"),
+        (
+            "app/Other.cs",
+            "namespace App;\n\npublic class Other { void Run() { Strings.Trim(\"y\"); } }\n",
+        ),
+        ("app/Idle.cs", "namespace App;\n\npublic class Idle { }\n"),
+        (
+            "app/Later.cs",
+            "namespace Acme\n{\n    using Tools;\n\n    public class Later { }\n}\n",
+        ),
+    ]);
+    assert_eq!(
+        package_records_from(&store, repo, "app/Main.cs"),
+        ["Acme.Util"]
+    );
+    assert_eq!(
+        callees_of(&store, repo, "Main::Go"),
+        [("Strings::Trim".to_owned(), CallResolution::Import)]
+    );
+    assert_eq!(
+        callees_of(&store, repo, "Other::Run"),
+        [("Strings::Trim".to_owned(), CallResolution::Import)]
+    );
+    let importers = importers_of(&store, repo, "lib/Strings.cs");
+    assert!(
+        importers.contains(&"app/Other.cs".to_owned()),
+        "{importers:?}"
+    );
+    assert!(
+        !importers.contains(&"app/Idle.cs".to_owned()),
+        "{importers:?}"
+    );
+    // A relative namespace that appears later is found by the importer.
+    write_all(
+        &temp.path().join("repo"),
+        &[(
+            "lib/Tools.cs",
+            "namespace Acme.Tools;\n\npublic class Tool { }\n",
+        )],
+    );
+    reindex(&store, &temp);
+    assert_eq!(
+        package_records_from(&store, repo, "app/Later.cs"),
+        ["Acme.Tools"]
+    );
+}
+
 #[test]
 fn test_java_and_csharp_calls_never_cross_languages() {
     let (_temp, store, repo) = index_files(&[

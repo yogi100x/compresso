@@ -24,11 +24,15 @@ use std::collections::{BTreeMap, HashMap};
 
 use compresso_store::{EDGE_DETAIL_PACKAGE, FileLanguage};
 
-use crate::parsers::ImportResolution;
 use crate::parsers::languages::{ImportStyle, spec};
+use crate::parsers::{ImportContext, ImportResolution};
 use crate::rust_imports::{EXTERNAL, NOT_INDEXED};
 
 type Key = (&'static str, String);
+
+/// Marks a stored C# `global using` record, which applies to every C# file
+/// of the repository: `global:Acme.Util`.
+pub(crate) const GLOBAL_IMPORT_PREFIX: &str = "global:";
 
 /// Declared packages and namespaces of one repository, built once per run.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -105,6 +109,47 @@ impl DeclaredPackages {
             unresolved(NOT_INDEXED)
         } else {
             files
+        }
+    }
+
+    /// [`Self::resolve`] for an import written in `context`, with the name
+    /// stored for it: a C# `using` inside a namespace names a namespace or
+    /// type relative to the enclosing namespaces first, innermost first,
+    /// and is stored by the full name it resolved to (as written when none
+    /// matched); a `global using` is stored with [`GLOBAL_IMPORT_PREFIX`],
+    /// as it applies to every C# file.
+    pub(crate) fn resolve_in(
+        &self,
+        importer: &str,
+        language: FileLanguage,
+        raw: &str,
+        context: &ImportContext,
+    ) -> (String, Vec<(Option<String>, ImportResolution)>) {
+        match context {
+            ImportContext::Namespace(namespace)
+                if spec(language).imports == ImportStyle::CSharp =>
+            {
+                let mut outer = Some(namespace.as_str());
+                while let Some(enclosing) = outer.filter(|enclosing| !enclosing.is_empty()) {
+                    let full = format!("{enclosing}.{raw}");
+                    let found = self.resolve(importer, language, &full);
+                    let matched = found.iter().any(|(path, resolution)| {
+                        path.is_some()
+                            || *resolution
+                                == ImportResolution::Unresolved(EDGE_DETAIL_PACKAGE.to_owned())
+                    });
+                    if matched {
+                        return (full, found);
+                    }
+                    outer = enclosing.rfind('.').map(|dot| &enclosing[..dot]);
+                }
+                (raw.to_owned(), self.resolve(importer, language, raw))
+            }
+            ImportContext::Global => (
+                format!("{GLOBAL_IMPORT_PREFIX}{raw}"),
+                self.resolve(importer, language, raw),
+            ),
+            _ => (raw.to_owned(), self.resolve(importer, language, raw)),
         }
     }
 

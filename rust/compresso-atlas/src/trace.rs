@@ -16,6 +16,7 @@ use compresso_store::{
 };
 
 use crate::AtlasError;
+use crate::declared_imports::GLOBAL_IMPORT_PREFIX;
 use crate::parsers::ParserRegistry;
 use crate::parsers::go_package_local_name;
 use crate::parsers::languages::{
@@ -589,6 +590,9 @@ struct Resolver<'a> {
     declared_external_names: Option<HashMap<String, HashSet<String>>>,
     /// Java and C# only: the packages or namespaces each file declares.
     file_packages: Option<HashMap<String, Vec<String>>>,
+    /// C# `global using` records: (language, namespace) every file of the
+    /// language imports.
+    global_imports: HashSet<(&'static str, String)>,
     /// A file declared more packages than are read.
     packages_limited: bool,
     /// Every declared Java or C# package or namespace name.
@@ -613,6 +617,7 @@ impl<'a> Resolver<'a> {
             declared_external_names: None,
             file_packages: None,
             packages_limited: false,
+            global_imports: HashSet::new(),
             known_packages: HashSet::new(),
             package_imports: None,
             no_names: HashSet::new(),
@@ -979,13 +984,14 @@ impl<'a> Resolver<'a> {
         let mut type_segment_is_repository_type = None;
         let mut qualifier_is_member = false;
         if form == CallForm::Path {
-            let names = self.declared_external_names(from)?;
+            let names = self.declared_external_names(from)?.clone();
+            let global = self.declared_external_names(GLOBAL_IMPORT_PREFIX)?;
             // Any dotted prefix: `Collections`, `System.Console`.
             external = qualifier
                 .match_indices('.')
                 .map(|(dot, _)| &qualifier[..dot])
                 .chain([qualifier])
-                .any(|prefix| names.contains(prefix));
+                .any(|prefix| names.contains(prefix) || global.contains(prefix));
             let first = qualifier.split('.').next().unwrap_or(qualifier);
             let mut owners_seen = own_paths.clone();
             owners_seen.extend(chain.levels.iter().flatten().cloned());
@@ -1013,6 +1019,8 @@ impl<'a> Resolver<'a> {
             packages,
             owners: &owners,
             interface_members: &interface_members,
+            global_imports: &self.global_imports,
+            language: ParserRegistry::for_path(Path::new(from)).map_or("", FileLanguage::as_str),
         };
         let named = ids
             .iter()
@@ -1309,6 +1317,14 @@ impl<'a> Resolver<'a> {
                 compresso_store::EDGE_DETAIL_PACKAGE,
             )? {
                 if matches!(call_rules(&path), CallRules::DeclaredPackages(_)) {
+                    // A `global using` applies to every file of its language.
+                    if let Some(name) = raw.strip_prefix(GLOBAL_IMPORT_PREFIX) {
+                        if let Some(language) = ParserRegistry::for_path(Path::new(&path)) {
+                            self.global_imports
+                                .insert((language.as_str(), name.to_owned()));
+                        }
+                        continue;
+                    }
                     let name = raw.strip_suffix(".*").unwrap_or(&raw).to_owned();
                     capped.entry(path).or_default().insert(name);
                 }
@@ -1337,7 +1353,13 @@ impl<'a> Resolver<'a> {
                     ParserRegistry::for_path(Path::new(&path)).is_some_and(|language| {
                         crate::parsers::languages::spec(language).imports == ImportStyle::Java
                     });
-                let entry = names.entry(path).or_default();
+                // A `global using` of an external namespace holds for every
+                // file of the language.
+                let (key, import) = match import.strip_prefix(GLOBAL_IMPORT_PREFIX) {
+                    Some(name) => (GLOBAL_IMPORT_PREFIX.to_owned(), name.to_owned()),
+                    None => (path, import),
+                };
+                let entry = names.entry(key).or_default();
                 if names_a_type {
                     entry.insert(import.rsplit('.').next().unwrap_or(&import).to_owned());
                 }
@@ -1671,6 +1693,10 @@ struct DeclaredScope<'a> {
     owners: &'a [String],
     /// Candidates declared in an interface: public without a modifier.
     interface_members: &'a HashSet<i64>,
+    /// Namespaces every file of a language imports (`global using`).
+    global_imports: &'a HashSet<(&'static str, String)>,
+    /// The caller's language name.
+    language: &'static str,
 }
 
 impl DeclaredScope<'_> {
@@ -1697,6 +1723,14 @@ impl DeclaredScope<'_> {
     fn imported(&self, candidate: &IndexedSymbol) -> bool {
         self.imports
             .is_some_and(|imports| imports.contains(&candidate.path))
+            || packages_of(self.packages, &candidate.path)
+                .iter()
+                .any(|package| {
+                    !package.is_empty()
+                        && self
+                            .global_imports
+                            .contains(&(self.language, (*package).to_owned()))
+                })
             || self.package_imports.is_some_and(|capped| {
                 packages_of(self.packages, &candidate.path)
                     .iter()

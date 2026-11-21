@@ -1069,6 +1069,9 @@ struct PackageLinks {
     /// for the default package or global namespace).
     declared: HashMap<String, (&'static str, Vec<String>)>,
     importers: HashMap<(&'static str, String), Vec<String>>,
+    /// Namespaces a C# `global using` imports into every file of the
+    /// language: a file using the target through one is an importer.
+    global: HashSet<(&'static str, String)>,
     /// A file declared more packages than are read.
     limited: bool,
 }
@@ -1103,18 +1106,24 @@ impl PackageLinks {
             entry.1.push(name);
         }
         let mut importers = HashMap::<(&'static str, String), Vec<String>>::new();
+        let mut global = HashSet::<(&'static str, String)>::new();
         for (path, raw) in
             store.unresolved_edge_targets_with_detail(repo, compresso_store::EDGE_DETAIL_PACKAGE)?
         {
             let Some((language, _)) = declared.get(&path) else {
                 continue;
             };
+            if let Some(name) = raw.strip_prefix(crate::declared_imports::GLOBAL_IMPORT_PREFIX) {
+                global.insert((*language, name.to_owned()));
+                continue;
+            }
             let name = raw.strip_suffix(".*").unwrap_or(&raw).to_owned();
             importers.entry((*language, name)).or_default().push(path);
         }
         Ok(Some(Self {
             declared,
             importers,
+            global,
             limited,
         }))
     }
@@ -1216,11 +1225,27 @@ impl PackageLinks {
         types.sort();
         types.dedup();
         let users = store.files_with_call_sites_naming(repo, &names, &types)?;
+        let global = packages.iter().copied().find(|package| {
+            !package.is_empty() && self.global.contains(&(language, (*package).to_owned()))
+        });
         for user in &users {
             if let Some(package) = mate(user) {
                 linked.push((
                     user.clone(),
                     vec![EdgeKind::References],
+                    Some(package.to_owned()),
+                ));
+            } else if let Some(package) = global
+                && user != target
+                && self
+                    .declared
+                    .get(user)
+                    .is_some_and(|(theirs, _)| *theirs == language)
+            {
+                // Imports the namespace through a `global using`.
+                linked.push((
+                    user.clone(),
+                    vec![EdgeKind::Imports],
                     Some(package.to_owned()),
                 ));
             }

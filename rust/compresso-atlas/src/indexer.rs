@@ -17,7 +17,7 @@ use crate::concurrency::{Concurrency, ReadAhead};
 use crate::declared_imports::DeclaredPackages;
 use crate::go_imports::GoModules;
 use crate::parsers::languages::{self, ImportStyle};
-use crate::parsers::{ImportRecord, ImportResolution, ParseError, ParserRegistry};
+use crate::parsers::{ImportContext, ImportRecord, ImportResolution, ParseError, ParserRegistry};
 use crate::rust_imports::{self, RustWorkspace};
 use crate::scanner::{AtlasError, DEFAULT_MAX_FILE_BYTES, ScanOptions, scan_with_concurrency};
 
@@ -585,7 +585,10 @@ impl Indexer<'_> {
             let Some(language) = declaring_language(&from) else {
                 continue;
             };
-            let raw = raw.strip_suffix(".*").unwrap_or(&raw);
+            let raw = raw
+                .strip_prefix(crate::declared_imports::GLOBAL_IMPORT_PREFIX)
+                .unwrap_or(&raw);
+            let raw = raw.strip_suffix(".*").unwrap_or(raw);
             if detail.as_deref() == Some(compresso_store::EDGE_DETAIL_PACKAGE) {
                 if disappeared.contains(&(language.as_str(), raw.to_owned())) {
                     candidates.insert(PathBuf::from(from));
@@ -603,7 +606,17 @@ impl Indexer<'_> {
                     None => break false,
                 }
             };
-            if names_moved {
+            // A C# `using` written inside a namespace may name a namespace
+            // nested in an enclosing one: `Util` for `Acme.Util`.
+            let names_nested = || {
+                moved.iter().any(|(moved_language, name)| {
+                    *moved_language == language.as_str()
+                        && name
+                            .strip_suffix(raw)
+                            .is_some_and(|outer| outer.ends_with('.'))
+                })
+            };
+            if names_moved || names_nested() {
                 candidates.insert(PathBuf::from(from));
             }
         }
@@ -1067,6 +1080,7 @@ fn resolve_go_imports(
                 kind: import.kind,
                 resolved_path,
                 resolution,
+                context: ImportContext::None,
             });
         }
         if cut {
@@ -1075,6 +1089,7 @@ fn resolve_go_imports(
                 kind: import.kind,
                 resolved_path: None,
                 resolution: ImportResolution::Unresolved(GO_EDGE_LIMIT.to_owned()),
+                context: ImportContext::None,
             });
         }
     }
@@ -1098,10 +1113,12 @@ fn resolve_declared_imports(
     let mut reached = HashSet::new();
     let mut output = Vec::new();
     for import in imports {
-        if !seen.insert(import.raw.clone()) {
+        let (raw, targets) = declared.resolve_in(importer, language, &import.raw, &import.context);
+        if !seen.insert(raw.clone()) {
             continue;
         }
-        for (resolved_path, resolution) in declared.resolve(importer, language, &import.raw) {
+        let import = ImportRecord { raw, ..import };
+        for (resolved_path, resolution) in targets {
             if let Some(path) = resolved_path.as_deref()
                 && !reached.insert(path.to_owned())
             {
@@ -1113,6 +1130,7 @@ fn resolve_declared_imports(
                     kind: import.kind,
                     resolved_path: None,
                     resolution: ImportResolution::Unresolved(GO_EDGE_LIMIT.to_owned()),
+                    context: ImportContext::None,
                 });
                 return output;
             }
@@ -1121,6 +1139,7 @@ fn resolve_declared_imports(
                 kind: import.kind,
                 resolved_path,
                 resolution,
+                context: ImportContext::None,
             });
         }
     }
@@ -1731,6 +1750,7 @@ mod tests {
             kind: ImportKind::Import,
             resolved_path: None,
             resolution: ImportResolution::Unresolved("not_indexed".to_owned()),
+            context: ImportContext::None,
         };
         let mut imports = vec![import("m/q"), import("m/q"), import("m/q"), import("fmt")];
         resolve_repository_imports(
@@ -1799,6 +1819,7 @@ mod tests {
             kind: ImportKind::Import,
             resolved_path: None,
             resolution: ImportResolution::Unresolved("not_indexed".to_owned()),
+            context: ImportContext::None,
         };
         let resolve = |imports: &mut Vec<ImportRecord>| {
             resolve_repository_imports(
@@ -1865,12 +1886,14 @@ mod tests {
                 kind: ImportKind::Import,
                 resolved_path: None,
                 resolution: ImportResolution::Unresolved("not_indexed".to_owned()),
+                context: ImportContext::None,
             },
             ImportRecord {
                 raw: "external-package".to_owned(),
                 kind: ImportKind::Import,
                 resolved_path: None,
                 resolution: ImportResolution::Unresolved("not_indexed".to_owned()),
+                context: ImportContext::None,
             },
         ];
 
@@ -1888,6 +1911,7 @@ mod tests {
             kind: ImportKind::Import,
             resolved_path: None,
             resolution: ImportResolution::Unresolved("not_indexed".to_owned()),
+            context: ImportContext::None,
         }];
         resolve_repository_imports(
             "src/app.ts",

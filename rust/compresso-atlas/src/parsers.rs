@@ -40,12 +40,26 @@ pub enum ImportResolution {
     Unresolved(String),
 }
 
+/// Where an import is written, when that changes what it names (C#).
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum ImportContext {
+    #[default]
+    None,
+    /// A `using` inside this namespace: its name is looked up relative to
+    /// the enclosing namespaces first (`using Util;` in `Acme` may mean
+    /// `Acme.Util`).
+    Namespace(String),
+    /// A `global using`: it applies to every file of the language.
+    Global,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ImportRecord {
     pub raw: String,
     pub kind: ImportKind,
     pub resolved_path: Option<String>,
     pub resolution: ImportResolution,
+    pub context: ImportContext,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -604,6 +618,7 @@ fn unresolved_import(raw: String, kind: ImportKind) -> ImportRecord {
         kind,
         resolved_path: None,
         resolution: ImportResolution::Unresolved(NOT_INDEXED.to_owned()),
+        context: ImportContext::None,
     }
 }
 
@@ -789,6 +804,7 @@ fn script_import(node: Node<'_>, kind: ImportKind, source: &str) -> Option<Impor
         kind,
         resolved_path: None,
         resolution: ImportResolution::Unresolved(NOT_INDEXED.to_owned()),
+        context: ImportContext::None,
     })
 }
 
@@ -898,6 +914,7 @@ fn rust_imports(node: Node<'_>, source: &str) -> Vec<ImportRecord> {
             kind: ImportKind::Use,
             resolved_path: None,
             resolution: ImportResolution::Unresolved(NOT_INDEXED.to_owned()),
+            context: ImportContext::None,
         })
         .collect()
 }

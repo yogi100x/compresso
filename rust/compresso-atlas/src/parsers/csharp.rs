@@ -24,7 +24,9 @@ use compresso_store::SymbolKind;
 use tree_sitter::Node;
 
 use super::declarations::{Found, Owner, declaration_text, dotted_text, is_identifier};
-use super::{Extraction, ImportKind, bounded_signature, node_text, unresolved_import};
+use super::{
+    Extraction, ImportContext, ImportKind, bounded_signature, node_text, unresolved_import,
+};
 
 /// Where a declaration sits: the namespace around it and, inside a type, its
 /// owner.
@@ -67,9 +69,15 @@ pub(super) fn walk(
             match (kind, scope.owner.as_ref()) {
                 ("using_directive", None) => {
                     if let Some(raw) = using_name(child, source) {
-                        output
-                            .imports
-                            .push(unresolved_import(raw, ImportKind::Import));
+                        let mut import = unresolved_import(raw, ImportKind::Import);
+                        import.context = if has_token(child, "global") {
+                            ImportContext::Global
+                        } else if scope.namespace.is_empty() {
+                            ImportContext::None
+                        } else {
+                            ImportContext::Namespace(scope.namespace.to_string())
+                        };
+                        output.imports.push(import);
                     }
                 }
                 ("namespace_declaration" | "file_scoped_namespace_declaration", None) => {
