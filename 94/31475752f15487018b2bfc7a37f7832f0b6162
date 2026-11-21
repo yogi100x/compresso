@@ -1,0 +1,25 @@
+rust/compresso-atlas/src/queries.rs
+  s_89a704cfae63f5::t_d6e9ecb913c86b 1100-1102,1265-1269,1279-1280,1285-1297
+rust/compresso-atlas/src/trace.rs
+  s_89a704cfae63f5::t_93b10e72867858 1232-1243
+rust/compresso-atlas/tests/indexer_java_csharp.rs
+  s_89a704cfae63f5::t_dbbaff0da2e2df 527-544
+rust/compresso-store/src/calls.rs
+  s_89a704cfae63f5::t_33cc4b6b70fefc 269-298
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9431475752f15487018b2bfc7a37f7832f0b6162",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
