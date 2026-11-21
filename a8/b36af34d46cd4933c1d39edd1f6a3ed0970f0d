@@ -1,0 +1,19 @@
+.tmpgUvvIx/compresso/compresso.db
+  s_e2da226df94350::t_b067813487e3d1 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a8b36af34d46cd4933c1d39edd1f6a3ed0970f0d",
+  "prompts": {},
+  "sessions": {
+    "s_e2da226df94350": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1a4ace18-3be7-440c-984c-7cf6854c84ee",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
