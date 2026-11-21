@@ -646,6 +646,38 @@ fn test_java_and_csharp_many_field_names_behind_a_huge_annotation_are_linear() {
     }
 }
 
+/// Round 3 SF5: the same 250,000 names behind a 330 KB generic type cost
+/// about what they cost behind a short one, so the type text is copied once,
+/// not once per name. Timed against the short case on the same machine.
+#[test]
+fn test_java_and_csharp_many_field_names_behind_a_huge_type_cost_like_a_short_one() {
+    let huge = format!("List<{}A>", "A,".repeat(165_000));
+    let names = vec!["a"; 250_000].join(",");
+    for language in [Language::Java, Language::CSharp] {
+        let time = |kind: &str| {
+            let source = format!("class A {{\n  {kind} {names};\n}}\n");
+            let started = Instant::now();
+            let extraction = ParserRegistry::extract(language, &source).expect("extracts");
+            let elapsed = started.elapsed();
+            assert_eq!(extraction.symbols.len(), 250_001, "{language:?}");
+            assert!(extraction.symbols.iter().all(|symbol| {
+                symbol
+                    .signature
+                    .as_deref()
+                    .is_none_or(|text| text.len() <= 1_024)
+            }));
+            elapsed
+        };
+        let short = time("List<A>");
+        let long = time(&huge);
+        eprintln!("{language:?}: short type {short:?}, 330 KB type {long:?}");
+        assert!(
+            long < short * 2 + Duration::from_secs(1),
+            "{language:?}: {long:?} against {short:?}"
+        );
+    }
+}
+
 /// E17-40 bounds: one chained call of 100,000 links and one deeply nested
 /// argument list extract iteratively and within the per-file bounds.
 #[test]

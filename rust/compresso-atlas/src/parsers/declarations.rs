@@ -132,8 +132,17 @@ pub(super) fn declaration_text(
     source: &str,
 ) -> Option<String> {
     let text = source.get(node.start_byte()..end)?;
+    // A kept part that was cut ends with the mark, so the signature built
+    // from it is marked even when it trims below the bound.
+    let kept = |text: &str| {
+        let mut kept = super::signature_prefix(text).to_owned();
+        if super::is_cut(text) {
+            kept.push('…');
+        }
+        kept
+    };
     if text.trim().len() <= super::MAX_SIGNATURE_BYTES || !prefix.iter().any(is_annotation) {
-        return Some(super::signature_prefix(text.trim()).to_owned());
+        return Some(kept(text.trim()));
     }
     let mut keywords = String::new();
     for word in prefix
@@ -155,9 +164,9 @@ pub(super) fn declaration_text(
         .max()
         .unwrap_or(node.start_byte())
         .min(end);
-    let rest = super::signature_prefix(source.get(after..end)?.trim());
+    let rest = kept(source.get(after..end)?.trim());
     Some(if keywords.is_empty() {
-        rest.to_owned()
+        rest
     } else {
         format!("{keywords} {rest}")
     })

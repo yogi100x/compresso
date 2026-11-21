@@ -310,6 +310,27 @@ fn signature_prefix(text: &str) -> &str {
     &text[..end]
 }
 
+/// Whether [`signature_prefix`] cuts `text`.
+fn is_cut(text: &str) -> bool {
+    text.len() > MAX_SIGNATURE_BYTES + 8
+}
+
+/// [`bounded_signature`] of text built from a prefix [`signature_prefix`]
+/// cut (`cut`): marked as cut whatever its kept part ends with, exactly as
+/// the whole text would have been, so a kept part ending in spaces or `;`
+/// never loses the mark.
+fn marked_signature(text: &str, cut: bool) -> Option<String> {
+    if !cut {
+        return bounded_signature(text);
+    }
+    let text = text.trim_start();
+    let mut end = (MAX_SIGNATURE_BYTES - '…'.len_utf8()).min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    Some(format!("{}…", &text[..end]))
+}
+
 fn bounded_signature(text: &str) -> Option<String> {
     let signature = trimmed_signature(text)?;
     if signature.len() <= MAX_SIGNATURE_BYTES {
@@ -1018,7 +1039,10 @@ fn line_number(zero_based_row: usize) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_SIGNATURE_BYTES, bounded_signature, signature_prefix};
+    use super::{
+        Language, MAX_SIGNATURE_BYTES, ParserRegistry, bounded_signature, is_cut, marked_signature,
+        signature_prefix,
+    };
 
     /// Review M1: text reused per name is cut once, just past the bound, so
     /// the bound still marks a signature cut.
@@ -1030,5 +1054,34 @@ mod tests {
         let signature = bounded_signature(&format!("{prefix} name")).expect("signature");
         assert!(signature.len() <= MAX_SIGNATURE_BYTES && signature.ends_with('…'));
         assert_eq!(signature_prefix("short"), "short");
+    }
+
+    /// Round 3 nit: a cut kept part that ends in spaces still gives the
+    /// signature the whole text would have given (Go's output unchanged),
+    /// and a Java or C# signature built from one keeps its mark.
+    #[test]
+    fn test_a_cut_ending_in_spaces_keeps_the_whole_texts_signature_and_mark() {
+        let kind = format!("{}{}{}", "x".repeat(1_028), " ".repeat(60), "y".repeat(100));
+        let whole = bounded_signature(&format!("var a {kind}"));
+        let kept = signature_prefix(&kind);
+        assert!(is_cut(&kind));
+        assert_eq!(marked_signature(&format!("var a {kept}"), true), whole);
+
+        let java = format!(
+            "class A {{\n  List<{}{}A> a;\n}}\n",
+            "A,".repeat(514),
+            " ".repeat(60)
+        );
+        let extraction = ParserRegistry::extract(Language::Java, &java).expect("extracts");
+        let field = extraction
+            .symbols
+            .iter()
+            .find(|symbol| symbol.qualified_name == "A::a")
+            .and_then(|symbol| symbol.signature.as_deref())
+            .expect("field signature");
+        assert!(
+            field.len() <= MAX_SIGNATURE_BYTES && field.ends_with('…'),
+            "{field}"
+        );
     }
 }

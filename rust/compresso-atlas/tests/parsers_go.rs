@@ -387,3 +387,24 @@ fn test_go_many_value_names_with_a_huge_type_are_linear() {
         "took {elapsed:?}"
     );
 }
+
+/// Round 3 SF5: 250,000 names with a 500 KB type cost about what they cost
+/// with a short type: the type text is copied once, not once per name.
+#[test]
+fn test_go_many_value_names_cost_like_a_short_type() {
+    let names = vec!["a"; 250_000].join(", ");
+    let time = |kind: &str| {
+        let source = format!("package p\n\nvar {names} {kind}\n");
+        let started = std::time::Instant::now();
+        let extraction = ParserRegistry::extract(Language::Go, &source).expect("extracts");
+        assert_eq!(extraction.symbols.len(), 250_000);
+        started.elapsed()
+    };
+    let short = time("int");
+    let long = time(&format!("struct{{ {} int }}", "x".repeat(500_000)));
+    eprintln!("Go: short type {short:?}, 500 KB type {long:?}");
+    assert!(
+        long < short * 2 + std::time::Duration::from_secs(1),
+        "{long:?} against {short:?}"
+    );
+}

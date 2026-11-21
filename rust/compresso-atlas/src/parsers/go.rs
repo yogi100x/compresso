@@ -199,17 +199,21 @@ fn values(declaration: Node<'_>, keyword: &str, source: &str, output: &mut Vec<S
         };
         let type_text = spec
             .child_by_field_name("type")
-            .and_then(|kind| node_text(kind, source))
-            .map(super::signature_prefix);
+            .and_then(|kind| node_text(kind, source));
+        let type_cut = type_text.is_some_and(super::is_cut);
+        let type_text = type_text.map(super::signature_prefix);
         for name in names {
             let Some(name) = symbol_name(name, source) else {
                 continue;
             };
             let signature = whole.clone().or_else(|| {
-                bounded_signature(&match type_text {
-                    Some(type_text) => format!("{keyword} {name} {type_text}"),
-                    None => format!("{keyword} {name}"),
-                })
+                super::marked_signature(
+                    &match type_text {
+                        Some(type_text) => format!("{keyword} {name} {type_text}"),
+                        None => format!("{keyword} {name}"),
+                    },
+                    type_cut,
+                )
             });
             output.push(record(
                 name.clone(),
