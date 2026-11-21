@@ -840,6 +840,15 @@ fn go_callee<'tree>(
         };
     }
     match function.kind() {
+        // A name the enclosing function binds (a parameter, a result, a
+        // local, a func-literal parameter) is a value, not the package's
+        // declaration: no call to a package-level name is recorded (E17-46).
+        "identifier"
+            if node_text(function, source)
+                .is_some_and(|name| receivers.binds(call.start_byte(), name)) =>
+        {
+            None
+        }
         "identifier" => Some(plain(function)),
         "selector_expression" => {
             let name = function.child_by_field_name("field")?;
@@ -851,7 +860,12 @@ fn go_callee<'tree>(
                 return Some(receiver(name));
             }
             let qualifier = node_text(operand, source)?;
-            if receivers.at(call.start_byte()) == Some(qualifier) {
+            // A receiver name rebound in the method (`for _, s := range o`)
+            // no longer names the receiver: a call on it is a path call on
+            // a variable, as on any other value.
+            if receivers.at(call.start_byte()) == Some(qualifier)
+                && !receivers.binds(call.start_byte(), qualifier)
+            {
                 return Some(Callee {
                     name,
                     qualifier: Some(qualifier.to_owned()),
@@ -886,14 +900,101 @@ struct GoReceivers<'source> {
     aliases: std::collections::HashMap<&'source str, String>,
     /// C#: `using` alias to the last part of the name it stands for.
     using_aliases: std::collections::HashMap<String, String>,
+    /// Go (E17-46): (start byte, end byte, names bound inside) of each
+    /// top-level function and method, in source order.
+    bindings: Vec<(usize, usize, HashSet<&'source str>)>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Nodes visited by [`go_bindings`] on this thread (tests only): pins
+    /// that the binding scan is one pass per function, not one per call.
+    pub(crate) static BINDING_NODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Go node kinds that bind names, with the field holding them.
+const GO_BINDINGS: [(&str, &str); 10] = [
+    ("parameter_declaration", "name"),
+    ("variadic_parameter_declaration", "name"),
+    ("type_parameter_declaration", "name"),
+    ("short_var_declaration", "left"),
+    ("var_spec", "name"),
+    ("const_spec", "name"),
+    ("range_clause", "left"),
+    ("receive_statement", "left"),
+    ("type_switch_statement", "alias"),
+    ("type_spec", "name"),
+];
+
+/// Every name bound anywhere inside a top-level Go function or method
+/// (parameters and named results, type parameters, `:=`, `var`, `const`,
+/// `range` and `select` variables, type-switch bindings, local types,
+/// func-literal parameters), whatever the block: one iterative pass over
+/// the declaration, its receiver left out. Deliberately coarse: a binding
+/// in any block shadows the name for the whole function, which errs toward
+/// recording fewer calls.
+fn go_bindings<'source>(declaration: Node<'_>, source: &'source str) -> HashSet<&'source str> {
+    let mut names = HashSet::new();
+    let receiver = declaration
+        .child_by_field_name("receiver")
+        .map(|node| node.id());
+    let mut cursor = declaration.walk();
+    let parts = declaration
+        .children(&mut cursor)
+        .filter(|child| Some(child.id()) != receiver)
+        .collect::<Vec<_>>();
+    for part in parts {
+        let mut walk = part.walk();
+        'walk: loop {
+            let node = walk.node();
+            #[cfg(test)]
+            BINDING_NODES.with(|count| count.set(count.get() + 1));
+            if let Some((_, field)) = GO_BINDINGS.iter().find(|(kind, _)| *kind == node.kind()) {
+                let mut fields = node.walk();
+                for bound in node.children_by_field_name(field, &mut fields) {
+                    if bound.kind() == "expression_list" {
+                        let mut list = bound.walk();
+                        names.extend(
+                            bound
+                                .named_children(&mut list)
+                                .filter(|item| item.kind() == "identifier")
+                                .filter_map(|item| node_text(item, source)),
+                        );
+                    } else if let Some(text) = node_text(bound, source) {
+                        names.insert(text);
+                    }
+                }
+            }
+            if walk.goto_first_child() {
+                continue;
+            }
+            loop {
+                if walk.goto_next_sibling() {
+                    continue 'walk;
+                }
+                if !walk.goto_parent() || walk.node().id() == part.id() {
+                    break 'walk;
+                }
+            }
+        }
+    }
+    names
 }
 
 impl<'source> GoReceivers<'source> {
     fn new(root: Node<'_>, source: &'source str) -> Self {
         let mut methods = Vec::new();
         let mut aliases = std::collections::HashMap::new();
+        let mut bindings = Vec::new();
         let mut cursor = root.walk();
         for child in root.children(&mut cursor) {
+            if matches!(child.kind(), "function_declaration" | "method_declaration") {
+                bindings.push((
+                    child.start_byte(),
+                    child.end_byte(),
+                    go_bindings(child, source),
+                ));
+            }
             match child.kind() {
                 "method_declaration" => methods.push((
                     child.start_byte(),
@@ -935,7 +1036,22 @@ impl<'source> GoReceivers<'source> {
             methods,
             aliases,
             using_aliases: std::collections::HashMap::new(),
+            bindings,
         }
+    }
+
+    /// Whether the top-level function or method around `byte` binds `name`
+    /// anywhere inside it.
+    fn binds(&self, byte: usize, name: &str) -> bool {
+        let Some(index) = self
+            .bindings
+            .partition_point(|declaration| declaration.0 <= byte)
+            .checked_sub(1)
+        else {
+            return false;
+        };
+        let (_, end, names) = &self.bindings[index];
+        byte < *end && names.contains(name)
     }
 
     fn at(&self, byte: usize) -> Option<&'source str> {

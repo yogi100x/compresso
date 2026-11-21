@@ -230,7 +230,9 @@ fn test_go_local_declarations_and_func_literals_are_not_symbols() {
     assert_eq!(names, ["outer"]);
     let calls = call_rows(&extraction);
     assert!(calls.contains(&("outer", "inner", None, CallForm::Plain, 7)));
-    assert!(calls.contains(&("outer", "f", None, CallForm::Plain, 8)));
+    // E17-46 (D111): `f` is bound in `outer` (`f := func() ...`), so `f()`
+    // calls a local value, not a package-level `f`: it is not recorded.
+    assert!(!calls.iter().any(|call| call.1 == "f"), "{calls:?}");
 }
 
 #[test]

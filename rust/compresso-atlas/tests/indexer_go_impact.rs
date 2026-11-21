@@ -335,12 +335,13 @@ fn test_a_mate_cut_at_the_examined_call_bound_is_unevaluated() {
     assert_eq!(callers.len(), 1, "{callers:?}");
 }
 
-/// D105's bounds, reused: a file defining more than 64 names is not checked
-/// (`unevaluated`), and at most 64 files are checked per `impact`.
+/// A Go file defining more than 400 names (functions, struct types, and
+/// methods) is not checked (`unevaluated`), and at most 64 files are
+/// checked per `impact` (D105's file bound, reused).
 #[test]
 fn test_the_evidence_bounds_count_what_they_skip_as_unevaluated() {
     let mut many = String::from("package wide\n\n");
-    for index in 0..65 {
+    for index in 0..401 {
         many.push_str(&format!("func F{index}() {{}}\n"));
     }
     let repo = index_files(&[
@@ -510,4 +511,164 @@ fn test_a_store_indexed_before_go_cut_markers_reindexes() {
     );
     let report = impact(&store, repo, "store/parse.go").expect("impact");
     assert_eq!(report.unevaluated, 1);
+}
+
+/// The callees `trace` lists for a caller, by qualified name.
+fn callees(repo: &Repo, from: &str) -> Vec<String> {
+    let report = trace(
+        &repo.store,
+        repo.repo,
+        Some(from),
+        None,
+        TraceOptions::default(),
+    )
+    .expect("trace");
+    match report.result {
+        TraceResult::Callees(callees) => callees
+            .into_iter()
+            .map(|callee| callee.symbol.qualified_name)
+            .collect(),
+        TraceResult::NoPath => Vec::new(),
+        other => panic!("expected callees, got {other:?}"),
+    }
+}
+
+/// Review must-fix 1: a name bound inside the calling function (a
+/// parameter, a named result, a func-literal parameter, a local) shadows
+/// the package's declaration, so a call to it is no evidence and `trace`
+/// no longer follows it to the package function. A call to the same name
+/// where nothing binds it still counts.
+#[test]
+fn test_a_call_to_a_name_bound_in_the_function_is_not_evidence() {
+    let repo = index_files(&[
+        GO_MOD,
+        (
+            "retry/attempt.go",
+            "package retry\n\nfunc attempt() error { return nil }\n",
+        ),
+        (
+            "retry/param.go",
+            "package retry\n\nfunc withParam(attempt func() error) error {\n\treturn attempt()\n}\n",
+        ),
+        (
+            "retry/result.go",
+            "package retry\n\nfunc withResult() (attempt func() error) {\n\tattempt()\n\treturn nil\n}\n",
+        ),
+        (
+            "retry/literal.go",
+            "package retry\n\nfunc withLiteral() {\n\trun := func(attempt func() error) { attempt() }\n\trun(nil)\n}\n",
+        ),
+        (
+            "retry/local.go",
+            "package retry\n\nfunc withLocal() {\n\tif true {\n\t\tattempt := func() error { return nil }\n\t\t_ = attempt\n\t}\n\tattempt()\n}\n",
+        ),
+        (
+            "retry/plain.go",
+            "package retry\n\nfunc withPlain() error {\n\treturn attempt()\n}\n",
+        ),
+    ]);
+    let report = repo.impact("retry/attempt.go");
+    assert_eq!(listed(&report), [references("retry/plain.go", "retry")]);
+    assert_eq!(report.unproven, 4, "{report:?}");
+    assert!(!report.complete);
+    assert!(callees(&repo, "withParam").is_empty());
+    assert!(callees(&repo, "withResult").is_empty());
+    assert_eq!(callees(&repo, "withPlain"), ["attempt"]);
+}
+
+/// Review must-fix 1 (b): a receiver name rebound inside the method (a
+/// `range` variable, a func-literal parameter) no longer names the
+/// receiver, so a call on it is no self call and no evidence.
+#[test]
+fn test_a_rebound_receiver_name_is_not_a_self_call() {
+    let repo = index_files(&[
+        GO_MOD,
+        (
+            "store/store.go",
+            "package store\n\ntype Store struct{}\n\nfunc (s *Store) flush() {}\n",
+        ),
+        (
+            "store/other.go",
+            "package store\n\ntype Other struct{}\n\nfunc (o *Other) flush() {}\n",
+        ),
+        (
+            "store/drain.go",
+            "package store\n\nfunc (s *Store) drain(o []*Other) {\n\tfor _, s := range o {\n\t\ts.flush()\n\t}\n}\n",
+        ),
+        (
+            "store/spawn.go",
+            "package store\n\nfunc (s *Store) spawn() {\n\tgo func(s *Other) { s.flush() }(nil)\n}\n",
+        ),
+        (
+            "store/close.go",
+            "package store\n\nfunc (s *Store) close() {\n\ts.flush()\n}\n",
+        ),
+    ]);
+    let report = repo.impact("store/store.go");
+    assert_eq!(listed(&report), [references("store/close.go", "store")]);
+    assert_eq!(report.unproven, 3, "other.go, drain.go, spawn.go");
+}
+
+/// Review should-fix: two types of the package share a method name; a self
+/// call reaches the receiver's own type only.
+#[test]
+fn test_a_self_call_reaches_only_its_own_types_method() {
+    let repo = index_files(&[
+        GO_MOD,
+        (
+            "store/store.go",
+            "package store\n\ntype Store struct{}\n\nfunc (s *Store) flush() {}\n",
+        ),
+        (
+            "store/other.go",
+            "package store\n\ntype Other struct{}\n\nfunc (o *Other) flush() {}\n",
+        ),
+        (
+            "store/close.go",
+            "package store\n\nfunc (o *Other) close() {\n\to.flush()\n}\n",
+        ),
+    ]);
+    let report = repo.impact("store/store.go");
+    assert!(report.dependents.is_empty(), "{report:?}");
+    assert_eq!(report.unproven, 2);
+    let report = repo.impact("store/other.go");
+    assert_eq!(listed(&report), [references("store/close.go", "store")]);
+}
+
+/// Review should-fix 2: a dependent linked at one depth both by a file
+/// edge and through a package keeps the file edge's kind only (D105: a
+/// file edge at the same depth names the link), whichever link the walk
+/// meets first; renaming a directory never changes the label.
+#[test]
+fn test_a_file_edge_wins_over_a_package_link_in_either_order() {
+    for (edge_dir, mate_dir) in [("b", "c"), ("z", "c")] {
+        let importer = format!("{edge_dir}/m.go");
+        let importer_source = format!(
+            "package {edge_dir}\n\nimport \"example.com/svc/a\"\n\nfunc M() {{\n\ta.T()\n}}\n"
+        );
+        let mate = format!("{mate_dir}/n.go");
+        let mate_source = format!(
+            "package {mate_dir}\n\nimport \"example.com/svc/a\"\n\nfunc N() {{\n\ta.T()\n}}\n"
+        );
+        let user = format!("{mate_dir}/x.go");
+        let user_source = format!(
+            "package {mate_dir}\n\nimport \"example.com/svc/{edge_dir}\"\n\nfunc X() {{\n\t{edge_dir}.M()\n\tN()\n}}\n"
+        );
+        let repo = index_files(&[
+            GO_MOD,
+            ("a/t.go", "package a\n\nfunc T() {}\n"),
+            (importer.as_str(), importer_source.as_str()),
+            (mate.as_str(), mate_source.as_str()),
+            (user.as_str(), user_source.as_str()),
+        ]);
+        let report = repo.impact("a/t.go");
+        let entry = report
+            .dependents
+            .iter()
+            .find(|entry| entry.path == user)
+            .unwrap_or_else(|| panic!("{user} listed: {report:?}"));
+        assert_eq!(entry.depth, 2, "{edge_dir}");
+        assert_eq!(entry.edge_kinds, [EdgeKind::Imports], "{edge_dir}");
+        assert_eq!(entry.package, None, "{edge_dir}");
+    }
 }
