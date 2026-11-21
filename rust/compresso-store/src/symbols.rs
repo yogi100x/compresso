@@ -89,6 +89,11 @@ pub struct EdgeResolutionCounts {
     /// Unresolved edges known to point outside the repository or at the
     /// importing file; not counted in `unresolved`.
     pub external: usize,
+    /// Resolved imports whose target is not committed yet: written during an
+    /// index run before their target (D106), or left by a run that stopped
+    /// before writing it. A pending import whose target is committed counts
+    /// as resolved, as [`Store::resolved_edges`] reports it.
+    pub pending: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -176,6 +181,69 @@ pub(crate) struct RawSymbolRecord {
     token_estimate: i64,
 }
 
+/// The edges a newly written file at their `to_path` can link: a resolved
+/// import stored before its target was written (`pending_target`), and an
+/// import whose target was deleted (`target_deleted`). The per-file statement
+/// before D106 linked every `resolved` edge with no target; `pending_target`
+/// is the only such row the store writes (`delete_files` downgrades incoming
+/// edges before the `ON DELETE SET NULL` cascade can leave one), so naming it
+/// keeps the same set and links no future record with another detail.
+/// Column names are unqualified and must stay unambiguous next to `files`.
+pub(crate) const LINKABLE_EDGE: &str = "to_file_id IS NULL AND ((resolution_status = 'resolved' AND resolution_detail = 'pending_target') OR (resolution_status = 'unresolved' AND resolution_detail = 'target_deleted'))";
+
+/// One file and every row derived from it, as written by
+/// [`Store::replace_indexed_file_with_calls`] or, many per transaction, by
+/// [`Store::replace_indexed_files`].
+#[derive(Clone, Copy, Debug)]
+pub struct IndexedFileWrite<'a> {
+    pub record: &'a FileRecord,
+    pub symbols: &'a [SymbolRecord],
+    pub edges: &'a [EdgeRecord],
+    pub calls: &'a [CallSiteRecord],
+}
+
+/// Checks the fields of one file write that need no database access.
+pub(crate) fn validate_indexed_file(write: &IndexedFileWrite<'_>) -> Result<(), StoreError> {
+    validate_relative_path(&write.record.path)?;
+    for call in write.calls {
+        validate_call_site(call, write.symbols.len())?;
+    }
+    validate_nonempty("file hash", &write.record.hash)?;
+    sqlite_integer_from_u64("file size_bytes", write.record.size_bytes)?;
+    sqlite_integer_from_usize("file token_estimate", write.record.token_estimate)?;
+    Ok(())
+}
+
+/// Upserts one file and replaces its symbols, outgoing edges, and call
+/// sites inside the caller's transaction. Incoming edges are not linked.
+pub(crate) fn write_indexed_file(
+    connection: &rusqlite::Connection,
+    repo: RepoId,
+    write: &IndexedFileWrite<'_>,
+) -> Result<FileId, StoreError> {
+    let record = write.record;
+    let size_bytes = sqlite_integer_from_u64("file size_bytes", record.size_bytes)?;
+    let token_estimate = sqlite_integer_from_usize("file token_estimate", record.token_estimate)?;
+    let language = record.language.map(|language| language.as_db());
+    let file = connection.query_row(
+        "INSERT INTO files (repo_id, path, hash, language, size_bytes, token_estimate, indexed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(repo_id, path) DO UPDATE SET hash = excluded.hash, language = excluded.language, size_bytes = excluded.size_bytes, token_estimate = excluded.token_estimate, indexed_at = excluded.indexed_at RETURNING id",
+        params![
+            repo,
+            &record.path,
+            &record.hash,
+            language,
+            size_bytes,
+            token_estimate,
+            record.indexed_at,
+        ],
+        |row| row.get(0),
+    )?;
+    let symbol_ids =
+        replace_symbols_in_transaction(connection, file, repo, write.symbols, write.edges, true)?;
+    insert_call_sites(connection, repo, file, &symbol_ids, write.calls)?;
+    Ok(file)
+}
+
 struct PreparedEdge {
     to_path: String,
     to_file_id: Option<FileId>,
@@ -193,7 +261,9 @@ impl Store {
         edges: &[EdgeRecord],
     ) -> Result<(), StoreError> {
         let mut connection = self.connection()?;
-        let transaction = connection.transaction()?;
+        // Immediate: reads before it writes (D106).
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let repo = transaction
             .query_row("SELECT repo_id FROM files WHERE id = ?1", [file], |row| {
                 row.get(0)
@@ -226,36 +296,23 @@ impl Store {
         edges: &[EdgeRecord],
         calls: &[CallSiteRecord],
     ) -> Result<FileId, StoreError> {
-        validate_relative_path(&record.path)?;
-        for call in calls {
-            validate_call_site(call, symbols.len())?;
-        }
-        validate_nonempty("file hash", &record.hash)?;
-        let size_bytes = sqlite_integer_from_u64("file size_bytes", record.size_bytes)?;
-        let token_estimate =
-            sqlite_integer_from_usize("file token_estimate", record.token_estimate)?;
-        let language = record.language.map(|language| language.as_db());
+        let write = IndexedFileWrite {
+            record,
+            symbols,
+            edges,
+            calls,
+        };
+        validate_indexed_file(&write)?;
         let mut connection = self.connection()?;
-        let transaction = connection.transaction()?;
+        // Immediate, like every index write (D106).
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         ensure_repo_exists(&transaction, repo)?;
-        let file = transaction.query_row(
-            "INSERT INTO files (repo_id, path, hash, language, size_bytes, token_estimate, indexed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(repo_id, path) DO UPDATE SET hash = excluded.hash, language = excluded.language, size_bytes = excluded.size_bytes, token_estimate = excluded.token_estimate, indexed_at = excluded.indexed_at RETURNING id",
-            params![
-                repo,
-                &record.path,
-                &record.hash,
-                language,
-                size_bytes,
-                token_estimate,
-                record.indexed_at,
-            ],
-            |row| row.get(0),
-        )?;
-        let symbol_ids =
-            replace_symbols_in_transaction(&transaction, file, repo, symbols, edges, true)?;
-        insert_call_sites(&transaction, repo, file, &symbol_ids, calls)?;
+        let file = write_indexed_file(&transaction, repo, &write)?;
+        // Links only this file's pending incoming edges. The indexer writes
+        // many files per run and links once per run instead (D106).
         transaction.execute(
-            "UPDATE edges SET to_file_id = ?3, resolution_status = 'resolved', resolution_detail = NULL WHERE repo_id = ?1 AND to_path = ?2 AND to_file_id IS NULL AND (resolution_status = 'resolved' OR (resolution_status = 'unresolved' AND resolution_detail = 'target_deleted'))",
+            &format!("UPDATE edges SET to_file_id = ?3, resolution_status = 'resolved', resolution_detail = NULL WHERE repo_id = ?1 AND to_path = ?2 AND {LINKABLE_EDGE}"),
             params![repo, &record.path, file],
         )?;
         transaction.commit()?;
@@ -428,11 +485,16 @@ impl Store {
     }
 
     /// Lists fully resolved edges in deterministic path and kind order.
+    ///
+    /// An import stored `pending_target` is listed once a file exists at its
+    /// target path, before the run's link pass sets its `to_file_id` (D106),
+    /// so a reader between a batch commit and that pass, or after a run
+    /// interrupted before it, sees what a linked store shows.
     pub fn resolved_edges(&self, repo: RepoId) -> Result<Vec<ResolvedEdgeRecord>, StoreError> {
         let connection = self.connection()?;
         ensure_repo_exists(&connection, repo)?;
         let mut statement = connection.prepare(
-            "SELECT source.path, target.path, e.kind FROM edges AS e JOIN files AS source ON source.id = e.from_file_id JOIN files AS target ON target.id = e.to_file_id WHERE e.repo_id = ?1 AND e.resolution_status = 'resolved' ORDER BY source.path ASC, target.path ASC, e.kind ASC, e.id ASC",
+            "SELECT source.path, target.path, e.kind FROM edges AS e JOIN files AS source ON source.id = e.from_file_id JOIN files AS target ON target.id = COALESCE(e.to_file_id, (SELECT pending.id FROM files AS pending WHERE pending.repo_id = e.repo_id AND pending.path = e.to_path AND e.resolution_detail = 'pending_target')) WHERE e.repo_id = ?1 AND e.resolution_status = 'resolved' ORDER BY source.path ASC, target.path ASC, e.kind ASC, e.id ASC",
         )?;
         let raw = statement
             .query_map([repo], |row| {
@@ -553,7 +615,8 @@ impl Store {
 
     /// Returns the files whose imports may hide a dependent: an ambiguous
     /// edge, an unresolved edge that is not known to be external, or a
-    /// resolved edge whose target is gone.
+    /// resolved edge with no committed target (a pending import whose target
+    /// is committed is resolved, as [`Store::resolved_edges`] lists it).
     pub fn incomplete_edge_sources(&self, repo: RepoId) -> Result<Vec<String>, StoreError> {
         let connection = self.connection()?;
         ensure_repo_exists(&connection, repo)?;
@@ -561,7 +624,8 @@ impl Store {
             .replace("resolution_status", "e.resolution_status")
             .replace("resolution_detail", "e.resolution_detail");
         let mut statement = connection.prepare(&format!(
-            "SELECT DISTINCT source.path FROM edges AS e JOIN files AS source ON source.id = e.from_file_id WHERE e.repo_id = ?1 AND (e.resolution_status != 'resolved' OR e.to_file_id IS NULL) AND NOT {neutral} ORDER BY source.path ASC"
+            "SELECT DISTINCT source.path FROM edges AS e JOIN files AS source ON source.id = e.from_file_id WHERE e.repo_id = ?1 AND (e.resolution_status != 'resolved' OR (e.to_file_id IS NULL AND NOT {committed})) AND NOT {neutral} ORDER BY source.path ASC",
+            committed = pending_target_committed("e")
         ))?;
         statement
             .query_map([repo], |row| row.get(0))?
@@ -573,9 +637,10 @@ impl Store {
     pub fn edge_resolution_counts(&self, repo: RepoId) -> Result<EdgeResolutionCounts, StoreError> {
         let connection = self.connection()?;
         ensure_repo_exists(&connection, repo)?;
-        let (unresolved, ambiguous, external) = connection.query_row(
+        let (unresolved, ambiguous, external, pending) = connection.query_row(
             &format!(
-                "SELECT COALESCE(SUM(CASE WHEN resolution_status = 'unresolved' AND NOT {CLOSURE_NEUTRAL_UNRESOLVED} THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN resolution_status = 'ambiguous' THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN {CLOSURE_NEUTRAL_UNRESOLVED} THEN 1 ELSE 0 END), 0) FROM edges WHERE repo_id = ?1"
+                "SELECT COALESCE(SUM(CASE WHEN resolution_status = 'unresolved' AND NOT {CLOSURE_NEUTRAL_UNRESOLVED} THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN resolution_status = 'ambiguous' THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN {CLOSURE_NEUTRAL_UNRESOLVED} THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN resolution_status = 'resolved' AND to_file_id IS NULL AND NOT {committed} THEN 1 ELSE 0 END), 0) FROM edges WHERE repo_id = ?1",
+                committed = pending_target_committed("edges")
             ),
             [repo],
             |row| {
@@ -583,10 +648,15 @@ impl Store {
                     row.get::<_, i64>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
                 ))
             },
         )?;
         Ok(EdgeResolutionCounts {
+            pending: usize::try_from(pending).map_err(|_| StoreError::InvalidStoredValue {
+                field: "edges pending count",
+                value: pending.to_string(),
+            })?,
             external: usize::try_from(external).map_err(|_| StoreError::InvalidStoredValue {
                 field: "edges external count",
                 value: external.to_string(),
@@ -672,7 +742,7 @@ impl Store {
 }
 
 fn replace_symbols_in_transaction(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &rusqlite::Connection,
     file: FileId,
     repo: RepoId,
     symbols: &[SymbolRecord],
@@ -726,6 +796,15 @@ fn replace_symbols_in_transaction(
         }
     }
     Ok(symbol_ids)
+}
+
+/// SQL true when the edge aliased `edge` is a pending import whose target
+/// file is committed: listed by [`Store::resolved_edges`] before the link
+/// pass, and so not incomplete.
+fn pending_target_committed(edge: &str) -> String {
+    format!(
+        "({edge}.resolution_detail = 'pending_target' AND EXISTS (SELECT 1 FROM files AS committed WHERE committed.repo_id = {edge}.repo_id AND committed.path = {edge}.to_path))"
+    )
 }
 
 fn validate_symbol(symbol: &SymbolRecord) -> Result<(), StoreError> {
@@ -1508,6 +1587,7 @@ mod tests {
                 unresolved: 1,
                 ambiguous: 1,
                 external: 0,
+                pending: 0,
             }
         );
     }
@@ -1623,6 +1703,7 @@ mod tests {
                 unresolved: 1,
                 ambiguous: 0,
                 external: 3,
+                pending: 0,
             }
         );
         assert_eq!(

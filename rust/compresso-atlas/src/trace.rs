@@ -242,7 +242,14 @@ pub fn trace(
     to: Option<&str>,
     options: TraceOptions,
 ) -> Result<TraceReport, AtlasError> {
-    trace_with_row_budget(store, repo, from, to, options, TRACE_MAX_CALL_SITE_ROWS)
+    let mut report =
+        trace_with_row_budget(store, repo, from, to, options, TRACE_MAX_CALL_SITE_ROWS)?;
+    // A resolved import whose target is not committed yet (D106) hides the
+    // calls a reference through it would resolve to, so they are not found.
+    if report.complete && store.edge_resolution_counts(repo)?.pending > 0 {
+        report.complete = false;
+    }
+    Ok(report)
 }
 
 /// [`trace`] with an explicit call-site row budget.

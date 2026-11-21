@@ -2,6 +2,7 @@
 
 mod calls;
 mod files;
+mod index_write;
 mod ops;
 mod receipts;
 mod repos;
@@ -20,6 +21,7 @@ pub use calls::{
     StoredCallSite, validate_call_sites,
 };
 pub use files::{FileLanguage, FileRecord, RelativePathError};
+pub use index_write::{IndexedFilesError, PacerClock, SystemClock, WritePacer};
 pub use ops::{
     DetailedStatsSummary, ModeledCostSaved, OperationId, OperationRecord, OperationStatsSummary,
     RepositoryStatsSummary, RetrievalMetrics, SessionId, SessionRecord, StatsFilter, StatsSummary,
@@ -29,8 +31,8 @@ pub use receipts::{ReceiptId, ReceiptRecord};
 pub use repos::{FileId, IndexVersionRecord, RepoId, RepoRecord, RepoRemovalPreview};
 pub use symbols::{
     EDGE_DETAIL_EXTERNAL, EDGE_DETAIL_PACKAGE, EDGE_DETAIL_SAME_FILE, EdgeKind, EdgeRecord,
-    EdgeResolution, EdgeResolutionCounts, ResolvedEdgeRecord, SymbolHit, SymbolKind, SymbolRecord,
-    SymbolSelector,
+    EdgeResolution, EdgeResolutionCounts, IndexedFileWrite, ResolvedEdgeRecord, SymbolHit,
+    SymbolKind, SymbolRecord, SymbolSelector,
 };
 
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);

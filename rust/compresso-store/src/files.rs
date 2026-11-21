@@ -172,7 +172,10 @@ impl Store {
             validate_relative_path(path)?;
         }
         let mut connection = self.connection()?;
-        let transaction = connection.transaction()?;
+        // Immediate: a deferred transaction that reads first cannot wait for
+        // another writer's lock when it upgrades (D106).
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         ensure_repo_exists(&transaction, repo)?;
         {
             let mut downgrade_incoming = transaction.prepare(
