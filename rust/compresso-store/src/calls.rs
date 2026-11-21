@@ -264,7 +264,7 @@ pub(crate) fn validate_call_site(call: &CallSiteRecord, symbols: usize) -> Resul
 }
 
 pub(crate) fn insert_call_sites(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &rusqlite::Connection,
     repo: RepoId,
     file: FileId,
     symbol_ids: &[i64],

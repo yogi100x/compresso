@@ -299,7 +299,9 @@ impl Store {
         }
         let created_at = unix_timestamp()?;
         let mut connection = self.connection()?;
-        let transaction = connection.transaction()?;
+        // Immediate, like every index write (D106).
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         ensure_repo_exists(&transaction, repo)?;
         transaction.execute(
             "INSERT INTO index_versions (repo_id, parser_version, schema_version, created_at) VALUES (?1, ?2, ?3, ?4)",

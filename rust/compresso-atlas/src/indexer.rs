@@ -10,7 +10,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use compresso_core::TokenCounter;
 use compresso_store::{
-    CallSiteRecord, EdgeKind, EdgeRecord, EdgeResolution, FileRecord, RepoId, Store, SymbolRecord,
+    CallSiteRecord, EdgeKind, EdgeRecord, EdgeResolution, FileRecord, Store, SymbolRecord,
 };
 
 use crate::concurrency::{Concurrency, ReadAhead};
@@ -19,6 +19,10 @@ use crate::parsers::languages::{self, ImportStyle};
 use crate::parsers::{ImportRecord, ImportResolution, ParseError, ParserRegistry};
 use crate::rust_imports::{self, RustWorkspace};
 use crate::scanner::{AtlasError, DEFAULT_MAX_FILE_BYTES, ScanOptions, scan_with_concurrency};
+
+mod write_batch;
+
+use write_batch::{BatchLimits, BatchWriter};
 
 const INDEX_SCHEMA_VERSION: u32 = 1;
 pub(crate) const DEFAULT_PARSER_VERSION: &str = concat!(
@@ -34,6 +38,8 @@ pub(crate) const CALL_GRAPH_MARKER: &str = "+calls-v1";
 const PARALLEL_INDEX_MIN_CANDIDATES: usize = 8;
 /// Prepared files a worker may run ahead of the ordered commit.
 const READ_AHEAD_PER_WORKER: usize = 4;
+/// Removed files deleted per transaction (D106).
+const DELETE_CHUNK_FILES: usize = 64;
 
 /// A deterministic progress event emitted only after its corresponding action starts or commits.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -120,6 +126,7 @@ pub struct Indexer<'a> {
     parser_version: String,
     schema_version: u32,
     concurrency: Concurrency,
+    batch_limits: BatchLimits,
 }
 
 impl<'a> Indexer<'a> {
@@ -130,6 +137,7 @@ impl<'a> Indexer<'a> {
             parser_version: DEFAULT_PARSER_VERSION.to_owned(),
             schema_version: INDEX_SCHEMA_VERSION,
             concurrency: Concurrency::default(),
+            batch_limits: BatchLimits::DEFAULT,
         }
     }
 
@@ -279,15 +287,6 @@ impl<'a> Indexer<'a> {
         }
 
         let indexed_at = unix_timestamp()?;
-        let mut files_indexed = 0_usize;
-        let mut files_skipped = scan.skipped.len();
-        let mut symbols = 0_usize;
-        let mut imports_resolved = 0_usize;
-        let mut imports_unresolved = 0_usize;
-        let mut call_sites = 0_usize;
-        let mut call_site_files_truncated = 0_usize;
-        let mut call_site_files_rejected = 0_usize;
-
         let candidates = candidates.into_iter().collect::<Vec<_>>();
         let context = PrepareContext {
             root: &canonical_root,
@@ -297,115 +296,101 @@ impl<'a> Indexer<'a> {
             counter: self.counter,
             indexed_at,
         };
-        // Every Store write happens here, on the calling thread, in candidate
-        // order: one writer, one transaction per file, at any concurrency.
-        let mut commit = |relative: &Path,
-                          outcome: Result<PreparedFile, PrepareFailure>|
-         -> Result<(), AtlasError> {
-            let prepared = match outcome {
-                Ok(prepared) => prepared,
-                Err(failure) => {
-                    if failure.parsing_started {
-                        progress(IndexProgress::Parsing {
-                            path: relative.to_path_buf(),
-                        });
-                    }
-                    return Err(*failure.error);
-                }
-            };
-            if prepared.parsed {
-                progress(IndexProgress::Parsing {
-                    path: relative.to_path_buf(),
-                });
-                files_indexed += 1;
-                symbols += prepared.symbols.len();
-                imports_resolved += prepared.imports_resolved;
-                imports_unresolved += prepared.imports_unresolved;
-            } else {
-                files_skipped += 1;
-            }
-            if write_prepared(self.store, repo, &prepared)? {
-                call_site_files_rejected += 1;
-            } else if prepared.parsed {
-                call_sites += prepared.calls.len();
-                call_site_files_truncated += usize::from(prepared.calls_truncated);
-            }
-            Ok(())
-        };
-
+        // Every Store write happens on the calling thread, in candidate order,
+        // at any concurrency: files are buffered and committed several per
+        // transaction, each file atomic (D106).
+        let mut writer = BatchWriter::new(
+            self.store,
+            repo,
+            &mut progress,
+            self.batch_limits,
+            scan.skipped.len(),
+        );
         let workers = if candidates.len() < PARALLEL_INDEX_MIN_CANDIDATES {
             1
         } else {
             self.concurrency
                 .workers_for(candidates.len(), DEFAULT_MAX_FILE_BYTES)
         };
-        if workers <= 1 {
-            for (index, relative) in candidates.iter().enumerate() {
-                before_file(index, relative)?;
-                commit(relative, prepare_file(&context, relative))?;
+        let mut commit = |index: usize,
+                          relative: &Path,
+                          outcome: Result<PreparedFile, PrepareFailure>|
+         -> Result<(), AtlasError> {
+            before_file(index, relative)?;
+            match outcome {
+                Ok(prepared) => writer.push(prepared),
+                Err(failure) => Err(writer.fail(relative, failure)),
             }
-        } else {
-            prepare_in_parallel(
-                &context,
-                &candidates,
-                workers,
-                self.concurrency.memory_budget_bytes(),
-                |index, outcome| {
-                    before_file(index, &candidates[index])?;
-                    commit(&candidates[index], outcome)
-                },
-            )?;
+        };
+        // A worker panic is caught only to commit the files before it, as a
+        // per-file write had, and is then resumed.
+        let run = panic::catch_unwind(AssertUnwindSafe(|| {
+            if workers <= 1 {
+                for (index, relative) in candidates.iter().enumerate() {
+                    commit(index, relative, prepare_file(&context, relative))?;
+                }
+                Ok(())
+            } else {
+                prepare_in_parallel(
+                    &context,
+                    &candidates,
+                    workers,
+                    self.concurrency.memory_budget_bytes(),
+                    |index, outcome| commit(index, &candidates[index], outcome),
+                )
+            }
+        }));
+        let flushed = writer.flush();
+        let (progress, tally, mut pacer) = writer.into_parts();
+        let stopped = match run {
+            Ok(Ok(())) => flushed.err(),
+            // A write failure in the flush belongs to an earlier file than
+            // the one that stopped the run, so it is the one reported.
+            Ok(Err(error)) => Some(flushed.err().unwrap_or(error)),
+            Err(payload) => {
+                let _ = self.store.link_pending_edges(repo);
+                panic::resume_unwind(payload);
+            }
+        };
+        if let Some(error) = stopped {
+            // Imports of the committed files are linked even when the run
+            // stops early, as a per-file write left them.
+            let _ = self.store.link_pending_edges(repo);
+            return Err(error);
         }
 
-        self.store.delete_files(repo, &scan.removed)?;
+        // Removed files are deleted a few per transaction: one file's
+        // delete cascades through its symbols, edges, call sites, and
+        // full-text rows (about 1 to 2 ms each), so one transaction for
+        // thousands of removed files would hold the lock for seconds.
+        for removed in scan.removed.chunks(DELETE_CHUNK_FILES) {
+            pacer.write(|| self.store.delete_files(repo, removed))?;
+        }
         for path in &scan.removed {
             progress(IndexProgress::Removed { path: path.clone() });
         }
+        // Once per run, after every write and deletion: links each import
+        // whose target was written after it, and repairs the links of a run
+        // that was interrupted before this point.
+        self.store.link_pending_edges_paced(repo, &mut pacer)?;
         self.store
             .stamp_index_version(repo, &self.parser_version, self.schema_version)?;
 
         Ok(IndexReport {
-            files_indexed,
+            files_indexed: tally.files_indexed,
             files_removed: scan.removed.len(),
-            files_skipped,
-            symbols,
-            imports_resolved,
-            imports_unresolved,
-            call_sites,
-            call_site_files_truncated,
-            call_site_files_rejected,
+            files_skipped: tally.files_skipped,
+            symbols: tally.symbols,
+            imports_resolved: tally.imports_resolved,
+            imports_unresolved: tally.imports_unresolved,
+            call_sites: tally.call_sites,
+            call_site_files_truncated: tally.call_site_files_truncated,
+            call_site_files_rejected: tally.call_site_files_rejected,
             duration_ms: elapsed_millis(started),
             stale,
             git_exclude_unusable,
         })
     }
-}
-
-/// Writes one prepared file in one transaction and reports whether its call
-/// sites were dropped.
-///
-/// The call extractor already drops every call the store would refuse; this
-/// is the second line of defence. If one file's call sites still fail the
-/// store's validation, the file is written with its symbols and imports and
-/// without call sites, so a hostile or generated file can never abort the
-/// repository index (the approach of the empty-import fix). Any other store
-/// failure still stops the run.
-fn write_prepared(
-    store: &Store,
-    repo: RepoId,
-    prepared: &PreparedFile,
-) -> Result<bool, AtlasError> {
-    let rejected =
-        compresso_store::validate_call_sites(&prepared.calls, prepared.symbols.len()).is_err();
-    let calls: &[CallSiteRecord] = if rejected { &[] } else { &prepared.calls };
-    store.replace_indexed_file_with_calls(
-        repo,
-        &prepared.record,
-        &prepared.symbols,
-        &prepared.edges,
-        calls,
-    )?;
-    Ok(rejected)
 }
 
 /// Read-only inputs shared by every file preparation, on any thread.
@@ -1032,7 +1017,15 @@ mod tests {
             call(Some("Store".to_owned())),
             call(Some("A".repeat(300))),
         ]);
-        assert!(write_prepared(&store, repo, &hostile).expect("the file must still be written"));
+        // Writes one file through the batch writer; true when its call sites
+        // were dropped.
+        let write_prepared = |store: &Store, repo, prepared: PreparedFile| {
+            let mut writer = BatchWriter::new(store, repo, |_| {}, BatchLimits::DEFAULT, 0);
+            writer.push(prepared)?;
+            writer.flush()?;
+            Ok::<_, AtlasError>(writer.into_parts().1.call_site_files_rejected == 1)
+        };
+        assert!(write_prepared(&store, repo, hostile).expect("the file must still be written"));
         assert_eq!(
             store
                 .symbols_in_file(repo, "src/hostile.rs")
@@ -1043,7 +1036,7 @@ mod tests {
         assert_eq!(store.call_site_count(repo).expect("count"), 0);
 
         let valid = prepared(vec![call(Some("Store".to_owned()))]);
-        assert!(!write_prepared(&store, repo, &valid).expect("valid write"));
+        assert!(!write_prepared(&store, repo, valid).expect("valid write"));
         assert_eq!(store.call_site_count(repo).expect("count"), 1);
     }
 
@@ -1153,6 +1146,187 @@ mod tests {
                 "jobs = {jobs}, budget = {memory_budget_bytes}"
             );
         }
+    }
+
+    #[test]
+    fn test_batch_size_and_lock_hold_bound_leave_the_index_unchanged() {
+        // D106: a batch of one file with no hold budget is a per-file write;
+        // every other bound must store and report exactly the same.
+        let per_file = BatchLimits {
+            max_files: 1,
+            max_hold: std::time::Duration::ZERO,
+            ..BatchLimits::DEFAULT
+        };
+        let reference = index_generated_repository_with(Concurrency::serial(), per_file);
+        assert!(
+            reference
+                .edges
+                .iter()
+                .any(|edge| edge.starts_with("resolved"))
+        );
+        for (concurrency, limits) in [
+            (Concurrency::serial(), BatchLimits::DEFAULT),
+            (
+                Concurrency::serial(),
+                BatchLimits {
+                    max_files: 3,
+                    ..BatchLimits::DEFAULT
+                },
+            ),
+            (
+                Concurrency::exact(4, 1 << 30),
+                BatchLimits {
+                    max_files: 1000,
+                    max_hold: std::time::Duration::ZERO,
+                    ..BatchLimits::DEFAULT
+                },
+            ),
+            (
+                Concurrency::exact(4, 512),
+                BatchLimits {
+                    max_source_bytes: 100,
+                    ..BatchLimits::DEFAULT
+                },
+            ),
+        ] {
+            assert_eq!(
+                index_generated_repository_with(concurrency, limits),
+                reference,
+                "{limits:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_a_file_that_fails_to_write_keeps_the_files_before_it_in_its_batch() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let store = Store::open(&directory.path().join("compresso.db")).expect("store should open");
+        let repo = store
+            .approve_repo(directory.path())
+            .expect("repository should be approved");
+        let prepared = |path: &str, edges: Vec<EdgeRecord>| PreparedFile {
+            record: FileRecord {
+                path: path.to_owned(),
+                hash: format!("hash-{path}"),
+                language: Some(compresso_store::FileLanguage::TypeScript),
+                size_bytes: 10,
+                token_estimate: 2,
+                indexed_at: 1,
+            },
+            symbols: Vec::new(),
+            edges,
+            calls: Vec::new(),
+            calls_truncated: false,
+            parsed: true,
+            imports_resolved: 0,
+            imports_unresolved: 1,
+        };
+        // An ambiguous edge with one candidate is refused by the store after
+        // the file row is written.
+        let refused = EdgeRecord {
+            to_path: "x".to_owned(),
+            kind: EdgeKind::Imports,
+            resolution: EdgeResolution::Ambiguous(vec!["x.ts".to_owned()]),
+        };
+        let mut events = Vec::new();
+        let mut writer = BatchWriter::new(
+            &store,
+            repo,
+            |event| events.push(event),
+            BatchLimits::DEFAULT,
+            0,
+        );
+        for file in [
+            prepared("a.ts", Vec::new()),
+            prepared("b.ts", vec![refused]),
+            prepared("c.ts", Vec::new()),
+        ] {
+            writer.push(file).expect("buffered, not yet written");
+        }
+
+        let error = writer.flush().expect_err("the second file must fail");
+        let (_, tally, _) = writer.into_parts();
+
+        assert!(matches!(
+            error,
+            AtlasError::Store(compresso_store::StoreError::InvalidEdgeResolution { .. })
+        ));
+        // A per-file write announced b.ts before failing on it and never
+        // reached c.ts; the report counts only a.ts.
+        assert_eq!(
+            events,
+            [
+                IndexProgress::Parsing {
+                    path: PathBuf::from("a.ts")
+                },
+                IndexProgress::Parsing {
+                    path: PathBuf::from("b.ts")
+                }
+            ]
+        );
+        assert_eq!(tally.files_indexed, 1);
+        let mut stored = store
+            .file_hashes(repo)
+            .expect("hashes should load")
+            .into_keys()
+            .collect::<Vec<_>>();
+        stored.sort_unstable();
+        assert_eq!(stored, ["a.ts"]);
+    }
+
+    #[test]
+    fn test_a_panic_while_committing_keeps_and_links_the_files_before_it() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let root = directory.path().join("repo");
+        fs::create_dir_all(&root).expect("repository directory should be created");
+        // Each file imports the next, so every committed import is pending
+        // until the run's link pass.
+        for index in 0..10 {
+            fs::write(
+                root.join(format!("f{index}.ts")),
+                format!(
+                    "import {{ g }} from './f{}';\nexport function f{index}() {{ return g(); }}\n",
+                    index + 1
+                ),
+            )
+            .expect("source should be written");
+        }
+        let store = Store::open(&directory.path().join("compresso.db")).expect("store should open");
+        let indexer = Indexer::new(&store, counter_for(TokenProvider::Heuristic));
+
+        let run = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            indexer.index_with_hook(
+                &root,
+                |_| {},
+                |index, _| {
+                    assert!(index != 6, "injected commit-thread panic");
+                    Ok(())
+                },
+            )
+        }));
+
+        assert!(run.is_err(), "the panic must reach the caller");
+        let canonical_root = fs::canonicalize(&root).expect("root should canonicalize");
+        let repo = store
+            .repo_by_root(&canonical_root)
+            .expect("repository lookup should succeed")
+            .expect("repository should exist")
+            .id;
+        let mut stored = store
+            .file_hashes(repo)
+            .expect("hashes should load")
+            .into_keys()
+            .collect::<Vec<_>>();
+        stored.sort_unstable();
+        let mut expected = (0..10)
+            .map(|index| format!("f{index}.ts"))
+            .collect::<Vec<_>>();
+        expected.sort_unstable();
+        expected.truncate(6);
+        assert_eq!(stored, expected);
+        // f0..f4 import files that were committed; f5's target f6 was not.
+        let resolved = store.resolved_edges(repo).expect("edges should load");
+        assert_eq!(resolved.len(), 5);
     }
 
     #[test]
@@ -1309,13 +1483,22 @@ mod tests {
     }
 
     fn index_generated_repository(concurrency: Concurrency) -> IndexSnapshot {
+        index_generated_repository_with(concurrency, BatchLimits::DEFAULT)
+    }
+
+    fn index_generated_repository_with(
+        concurrency: Concurrency,
+        batch_limits: BatchLimits,
+    ) -> IndexSnapshot {
         let directory = tempfile::tempdir().expect("temporary directory should be created");
         let root = directory.path().join("repo");
         write_generated_repository(&root, 64);
         let store = Store::open(&directory.path().join("compresso.db")).expect("store should open");
         let mut progress = Vec::new();
-        let report = Indexer::new(&store, counter_for(TokenProvider::Heuristic))
-            .with_concurrency(concurrency)
+        let mut indexer = Indexer::new(&store, counter_for(TokenProvider::Heuristic))
+            .with_concurrency(concurrency);
+        indexer.batch_limits = batch_limits;
+        let report = indexer
             .index(&root, |event| progress.push(event))
             .expect("index should succeed");
         let canonical_root = fs::canonicalize(&root).expect("root should canonicalize");

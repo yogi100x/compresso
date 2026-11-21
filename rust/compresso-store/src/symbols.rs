@@ -170,6 +170,65 @@ pub(crate) struct RawSymbolRecord {
     token_estimate: i64,
 }
 
+/// The edges a newly written file at their `to_path` can link: a resolved
+/// import stored before its target was written (`pending_target`), and an
+/// import whose target was deleted (`target_deleted`). Column names are
+/// unqualified and must stay unambiguous next to `files`.
+pub(crate) const LINKABLE_EDGE: &str = "to_file_id IS NULL AND (resolution_status = 'resolved' OR (resolution_status = 'unresolved' AND resolution_detail = 'target_deleted'))";
+
+/// One file and every row derived from it, as written by
+/// [`Store::replace_indexed_file_with_calls`] or, many per transaction, by
+/// [`Store::replace_indexed_files`].
+#[derive(Clone, Copy, Debug)]
+pub struct IndexedFileWrite<'a> {
+    pub record: &'a FileRecord,
+    pub symbols: &'a [SymbolRecord],
+    pub edges: &'a [EdgeRecord],
+    pub calls: &'a [CallSiteRecord],
+}
+
+/// Checks the fields of one file write that need no database access.
+pub(crate) fn validate_indexed_file(write: &IndexedFileWrite<'_>) -> Result<(), StoreError> {
+    validate_relative_path(&write.record.path)?;
+    for call in write.calls {
+        validate_call_site(call, write.symbols.len())?;
+    }
+    validate_nonempty("file hash", &write.record.hash)?;
+    sqlite_integer_from_u64("file size_bytes", write.record.size_bytes)?;
+    sqlite_integer_from_usize("file token_estimate", write.record.token_estimate)?;
+    Ok(())
+}
+
+/// Upserts one file and replaces its symbols, outgoing edges, and call
+/// sites inside the caller's transaction. Incoming edges are not linked.
+pub(crate) fn write_indexed_file(
+    connection: &rusqlite::Connection,
+    repo: RepoId,
+    write: &IndexedFileWrite<'_>,
+) -> Result<FileId, StoreError> {
+    let record = write.record;
+    let size_bytes = sqlite_integer_from_u64("file size_bytes", record.size_bytes)?;
+    let token_estimate = sqlite_integer_from_usize("file token_estimate", record.token_estimate)?;
+    let language = record.language.map(|language| language.as_db());
+    let file = connection.query_row(
+        "INSERT INTO files (repo_id, path, hash, language, size_bytes, token_estimate, indexed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(repo_id, path) DO UPDATE SET hash = excluded.hash, language = excluded.language, size_bytes = excluded.size_bytes, token_estimate = excluded.token_estimate, indexed_at = excluded.indexed_at RETURNING id",
+        params![
+            repo,
+            &record.path,
+            &record.hash,
+            language,
+            size_bytes,
+            token_estimate,
+            record.indexed_at,
+        ],
+        |row| row.get(0),
+    )?;
+    let symbol_ids =
+        replace_symbols_in_transaction(connection, file, repo, write.symbols, write.edges, true)?;
+    insert_call_sites(connection, repo, file, &symbol_ids, write.calls)?;
+    Ok(file)
+}
+
 struct PreparedEdge {
     to_path: String,
     to_file_id: Option<FileId>,
@@ -220,36 +279,23 @@ impl Store {
         edges: &[EdgeRecord],
         calls: &[CallSiteRecord],
     ) -> Result<FileId, StoreError> {
-        validate_relative_path(&record.path)?;
-        for call in calls {
-            validate_call_site(call, symbols.len())?;
-        }
-        validate_nonempty("file hash", &record.hash)?;
-        let size_bytes = sqlite_integer_from_u64("file size_bytes", record.size_bytes)?;
-        let token_estimate =
-            sqlite_integer_from_usize("file token_estimate", record.token_estimate)?;
-        let language = record.language.map(|language| language.as_db());
+        let write = IndexedFileWrite {
+            record,
+            symbols,
+            edges,
+            calls,
+        };
+        validate_indexed_file(&write)?;
         let mut connection = self.connection()?;
-        let transaction = connection.transaction()?;
+        // Immediate, like every index write (D106).
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         ensure_repo_exists(&transaction, repo)?;
-        let file = transaction.query_row(
-            "INSERT INTO files (repo_id, path, hash, language, size_bytes, token_estimate, indexed_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT(repo_id, path) DO UPDATE SET hash = excluded.hash, language = excluded.language, size_bytes = excluded.size_bytes, token_estimate = excluded.token_estimate, indexed_at = excluded.indexed_at RETURNING id",
-            params![
-                repo,
-                &record.path,
-                &record.hash,
-                language,
-                size_bytes,
-                token_estimate,
-                record.indexed_at,
-            ],
-            |row| row.get(0),
-        )?;
-        let symbol_ids =
-            replace_symbols_in_transaction(&transaction, file, repo, symbols, edges, true)?;
-        insert_call_sites(&transaction, repo, file, &symbol_ids, calls)?;
+        let file = write_indexed_file(&transaction, repo, &write)?;
+        // Links only this file's pending incoming edges. The indexer writes
+        // many files per run and links once per run instead (D106).
         transaction.execute(
-            "UPDATE edges SET to_file_id = ?3, resolution_status = 'resolved', resolution_detail = NULL WHERE repo_id = ?1 AND to_path = ?2 AND to_file_id IS NULL AND (resolution_status = 'resolved' OR (resolution_status = 'unresolved' AND resolution_detail = 'target_deleted'))",
+            &format!("UPDATE edges SET to_file_id = ?3, resolution_status = 'resolved', resolution_detail = NULL WHERE repo_id = ?1 AND to_path = ?2 AND {LINKABLE_EDGE}"),
             params![repo, &record.path, file],
         )?;
         transaction.commit()?;
@@ -598,7 +644,7 @@ impl Store {
 }
 
 fn replace_symbols_in_transaction(
-    transaction: &rusqlite::Transaction<'_>,
+    transaction: &rusqlite::Connection,
     file: FileId,
     repo: RepoId,
     symbols: &[SymbolRecord],
