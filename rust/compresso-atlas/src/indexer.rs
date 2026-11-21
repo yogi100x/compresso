@@ -535,12 +535,45 @@ impl Indexer<'_> {
             .filter(|package| !after.contains(*package))
             .cloned()
             .collect::<HashSet<_>>();
-        if !relocated.is_empty() {
+        // A type import names every file of its package named after the
+        // type (`Store.cs`, `Store.Part.cs`): a file added under, or moved to
+        // or from, such a name re-resolves the importers of its namesakes.
+        let stem = |path: &str| {
+            let file = path.rsplit('/').next().unwrap_or(path);
+            file.split('.').next().unwrap_or(file).to_owned()
+        };
+        let mut joined = HashSet::<(&'static str, String, String)>::new();
+        for (path, now) in read {
+            if added.contains(path) || relocated.contains(path.as_str()) {
+                if let Some(language) = declaring_language(path) {
+                    let before = stored.get(path).map_or(&[][..], Vec::as_slice);
+                    for name in before.iter().chain(now) {
+                        joined.insert((language.as_str(), name.clone(), stem(path)));
+                    }
+                }
+            }
+        }
+        if !joined.is_empty() {
             for edge in self.store.resolved_edges(repo)? {
-                if !removed.contains(&edge.from_path)
-                    && declaring_language(&edge.from_path).is_some()
-                    && relocated.contains(edge.to_path.as_str())
+                if removed.contains(&edge.from_path)
+                    || declaring_language(&edge.from_path).is_none()
                 {
+                    continue;
+                }
+                let Some(language) = declaring_language(&edge.to_path) else {
+                    continue;
+                };
+                let target_stem = stem(&edge.to_path);
+                let namesake = relocated.contains(edge.to_path.as_str())
+                    || stored
+                        .get(&edge.to_path)
+                        .into_iter()
+                        .chain(read.get(&edge.to_path))
+                        .flatten()
+                        .any(|name| {
+                            joined.contains(&(language.as_str(), name.clone(), target_stem.clone()))
+                        });
+                if namesake {
                     candidates.insert(PathBuf::from(edge.from_path));
                 }
             }

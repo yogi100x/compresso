@@ -1170,6 +1170,59 @@ fn test_a_changed_file_that_moves_package_re_resolves_its_importers() {
     );
 }
 
+/// Round 3 MF1: a second file named after an imported type (`Store.Part.cs`,
+/// or `C.java` under another source root) joins an import that already
+/// resolved: an incremental run gives the same edges as a full index.
+#[test]
+fn test_a_second_file_of_an_imported_type_matches_a_full_index() {
+    let first = [
+        (
+            "app/Main.cs",
+            "using static Acme.Jobs.Store;\n\nnamespace App;\n\npublic class Main { }\n",
+        ),
+        (
+            "lib/Store.cs",
+            "namespace Acme.Jobs;\n\npublic static partial class Store { }\n",
+        ),
+        (
+            "app/Use.java",
+            "package app;\n\nimport a.b.C;\n\nclass Use {}\n",
+        ),
+        (
+            "src/main/java/a/b/C.java",
+            "package a.b;\n\npublic class C {}\n",
+        ),
+    ];
+    let added = [
+        (
+            "lib/Store.Part.cs",
+            "namespace Acme.Jobs;\n\npublic static partial class Store { }\n",
+        ),
+        ("gen/a/b/C.java", "package a.b;\n\npublic class C {}\n"),
+    ];
+    let (temp, store, repo) = index_files(&first);
+    write_all(&temp.path().join("repo"), &added);
+    reindex(&store, &temp);
+    let mut all = first.to_vec();
+    all.extend(added);
+    let (_fresh_temp, fresh, fresh_repo) = index_files(&all);
+    for from in ["app/Main.cs", "app/Use.java"] {
+        assert_eq!(
+            edges_from(&store, repo, from),
+            edges_from(&fresh, fresh_repo, from),
+            "{from}"
+        );
+    }
+    assert_eq!(
+        edges_from(&store, repo, "app/Main.cs"),
+        ["lib/Store.Part.cs", "lib/Store.cs"]
+    );
+    assert_eq!(
+        importers_of(&store, repo, "lib/Store.Part.cs"),
+        ["app/Main.cs"]
+    );
+}
+
 #[test]
 fn test_a_removed_file_leaves_its_importers_edges() {
     let (temp, store, repo) = index_files(&JAVA);
