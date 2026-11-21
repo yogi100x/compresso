@@ -117,6 +117,18 @@ impl<'a, P: FnMut(IndexProgress)> BatchWriter<'a, P> {
         Ok(())
     }
 
+    /// Writes the buffer when its oldest file has waited `max_age`; called
+    /// while the committing thread waits for the next file in order.
+    pub(super) fn flush_if_aged(&mut self) -> Result<(), AtlasError> {
+        if self
+            .oldest
+            .is_some_and(|oldest| oldest.elapsed() >= self.limits.max_age)
+        {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
     /// Handles a file whose preparation failed: every file before it is
     /// written first, then the failure is reported with the progress event a
     /// per-file run would have emitted.
@@ -188,13 +200,17 @@ impl<'a, P: FnMut(IndexProgress)> BatchWriter<'a, P> {
                     for index in start..start + error.written {
                         self.account(&pending[index], rejected[index]);
                     }
-                    let failed = &pending[start + error.written];
-                    if failed.parsed {
+                    // A per-file write announced the failing file before
+                    // writing it; a failure that belongs to no file (the
+                    // lock, the commit) announces nothing.
+                    if let Some(failed) = error.failed.map(|failed| &pending[start + failed])
+                        && failed.parsed
+                    {
                         (self.progress)(IndexProgress::Parsing {
                             path: failed.record.path.clone().into(),
                         });
                     }
-                    return Err(error.source.into());
+                    return Err((*error.source).into());
                 }
             }
         }
@@ -221,5 +237,209 @@ impl<'a, P: FnMut(IndexProgress)> BatchWriter<'a, P> {
             tally.call_sites += prepared.calls.len();
             tally.call_site_files_truncated += usize::from(prepared.calls_truncated);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use compresso_core::{TokenProvider, counter_for};
+    use compresso_store::Store;
+
+    use super::*;
+    use crate::go_imports::GoModules;
+    use crate::indexer::{Indexer, PrepareContext, prepare_file};
+    use crate::rust_imports::RustWorkspace;
+    use crate::{TraceOptions, TraceResult, impact, trace};
+
+    /// Writes one prepared file through the batch writer, as one batch,
+    /// without the run's link pass.
+    fn write_without_linking(store: &Store, repo: RepoId, root: &Path, path: &str) {
+        let known_paths = ["app/a.ts", "lib/b.ts", "lib/other.ts"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
+        let context = PrepareContext {
+            root,
+            known_paths: &known_paths,
+            rust_workspace: &RustWorkspace::default(),
+            go_modules: &GoModules::default(),
+            counter: counter_for(TokenProvider::Heuristic),
+            indexed_at: 2,
+        };
+        let prepared = prepare_file(&context, &PathBuf::from(path))
+            .unwrap_or_else(|_| panic!("{path} should prepare"));
+        let mut writer = BatchWriter::new(store, repo, |_| {}, BatchLimits::DEFAULT, 0);
+        writer.push(prepared).expect("buffered");
+        writer.flush().expect("written");
+    }
+
+    #[test]
+    fn test_readers_between_a_batch_commit_and_the_link_pass_see_dependents_or_incomplete() {
+        // An incremental run changes app/a.ts to import lib/b.ts, which it
+        // adds; a.ts sorts first, so its import is stored pending and only
+        // the run's link pass (or, after a kill, the next run's) links it.
+        // Readers in that window must find the dependent once b.ts is
+        // committed, and call the answer incomplete before that.
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let root = fs::canonicalize(directory.path())
+            .expect("root")
+            .join("repo");
+        fs::create_dir_all(root.join("app")).expect("app directory");
+        fs::create_dir_all(root.join("lib")).expect("lib directory");
+        fs::write(
+            root.join("app/a.ts"),
+            "import { other } from '../lib/other';\nexport function run(xs: number[]) { return xs.map(other); }\n",
+        )
+        .expect("a");
+        fs::write(
+            root.join("lib/other.ts"),
+            "export function other(x: number) { return x; }\n",
+        )
+        .expect("other");
+        let store = Store::open(&directory.path().join("compresso.db")).expect("store should open");
+        Indexer::new(&store, counter_for(TokenProvider::Heuristic))
+            .index(&root, |_| {})
+            .expect("initial index");
+        let repo = store
+            .repo_by_root(&root)
+            .expect("lookup")
+            .expect("repository")
+            .id;
+
+        fs::write(
+            root.join("app/a.ts"),
+            "import { double } from '../lib/b';\nexport function run(xs: number[]) { return xs.map(double); }\n",
+        )
+        .expect("a changed");
+        fs::write(
+            root.join("lib/b.ts"),
+            "export function double(x: number) { return x * 2; }\n",
+        )
+        .expect("b added");
+
+        // Window 1: a.ts committed, b.ts not yet.
+        write_without_linking(&store, repo, &root, "app/a.ts");
+        let report = impact(&store, repo, "lib/other.ts").expect("impact");
+        assert!(
+            !report.complete,
+            "a pending import must make impact incomplete"
+        );
+        assert!(
+            !store
+                .incomplete_edge_sources(repo)
+                .expect("sources")
+                .is_empty(),
+            "the CLI's completeness agrees"
+        );
+        let callers =
+            trace(&store, repo, None, Some("other"), TraceOptions::default()).expect("trace");
+        assert!(
+            !callers.complete,
+            "a pending import must make trace incomplete"
+        );
+
+        // Window 2: b.ts committed in a later batch, still not linked.
+        write_without_linking(&store, repo, &root, "lib/b.ts");
+        let report = impact(&store, repo, "lib/b.ts").expect("impact");
+        assert_eq!(
+            report
+                .dependents
+                .iter()
+                .map(|entry| entry.path.as_str())
+                .collect::<Vec<_>>(),
+            ["app/a.ts"]
+        );
+        assert!(report.complete);
+        assert!(
+            store
+                .incomplete_edge_sources(repo)
+                .expect("sources")
+                .is_empty()
+        );
+        let callers =
+            trace(&store, repo, None, Some("double"), TraceOptions::default()).expect("trace");
+        assert!(callers.complete);
+        let TraceResult::Callers(callers) = callers.result else {
+            panic!("expected callers, got {:?}", callers.result);
+        };
+        assert_eq!(callers.len(), 1, "{callers:?}");
+    }
+
+    fn synthetic(path: &str) -> PreparedFile {
+        PreparedFile {
+            record: compresso_store::FileRecord {
+                path: path.to_owned(),
+                hash: format!("hash-{path}"),
+                language: Some(compresso_store::FileLanguage::TypeScript),
+                size_bytes: 10,
+                token_estimate: 2,
+                indexed_at: 1,
+            },
+            symbols: Vec::new(),
+            edges: Vec::new(),
+            calls: Vec::new(),
+            calls_truncated: false,
+            parsed: true,
+            imports_resolved: 0,
+            imports_unresolved: 0,
+        }
+    }
+
+    #[test]
+    fn test_buffered_files_commit_while_a_later_file_is_slow_to_prepare() {
+        // The buffer's age bound must hold while the committing thread waits
+        // for the next file in order, not only when that file arrives.
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let store = Store::open(&directory.path().join("compresso.db")).expect("store should open");
+        let repo = store
+            .approve_repo(directory.path())
+            .expect("repository should be approved");
+        let limits = BatchLimits {
+            max_age: std::time::Duration::from_millis(50),
+            ..BatchLimits::DEFAULT
+        };
+        let candidates = [PathBuf::from("a.ts"), PathBuf::from("b.ts")];
+        let seen_while_waiting = std::sync::atomic::AtomicBool::new(false);
+        let writer = std::cell::RefCell::new(BatchWriter::new(&store, repo, |_| {}, limits, 0));
+
+        crate::indexer::prepare_in_parallel_with(
+            directory.path(),
+            &candidates,
+            2,
+            1 << 30,
+            |candidate| {
+                if candidate == Path::new("b.ts") {
+                    let started = std::time::Instant::now();
+                    while started.elapsed() < std::time::Duration::from_secs(2) {
+                        if store
+                            .file_hashes(repo)
+                            .expect("hashes")
+                            .contains_key("a.ts")
+                        {
+                            seen_while_waiting.store(true, std::sync::atomic::Ordering::Relaxed);
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                }
+                Ok(synthetic(candidate.to_str().expect("path")))
+            },
+            |_, outcome| {
+                let prepared = outcome.map_err(|failure| *failure.error)?;
+                writer.borrow_mut().push(prepared)
+            },
+            || writer.borrow_mut().flush_if_aged(),
+        )
+        .expect("run");
+        writer.borrow_mut().flush().expect("flush");
+
+        assert!(
+            seen_while_waiting.load(std::sync::atomic::Ordering::Relaxed),
+            "a.ts must be committed while b.ts is still being prepared"
+        );
     }
 }

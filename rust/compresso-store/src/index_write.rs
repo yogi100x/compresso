@@ -10,17 +10,22 @@ use crate::repos::ensure_repo_exists;
 use crate::symbols::{IndexedFileWrite, LINKABLE_EDGE, validate_indexed_file, write_indexed_file};
 use crate::{RepoId, Store, StoreError};
 
-/// A batch write that stopped at one file.
+/// A batch write that stopped early.
 ///
-/// The first `written` files of the batch are committed; the file at index
-/// `written` failed and is left exactly as it was before the call; no later
-/// file was attempted.
+/// The first `written` files of the batch are committed and every other file
+/// is left exactly as it was before the call. `failed` is the index of the
+/// file whose write failed, or `None` when the failure belongs to no file
+/// (the lock, the transaction, or its commit). It is `written` except in the
+/// rare case where the files before a failing file could not be written
+/// again after the rollback; then `written` is 0.
 #[derive(Debug, Error)]
-#[error("failed to write file {written} of an index batch")]
+#[error("failed to write an index batch after {written} files")]
 pub struct IndexedFilesError {
     pub written: usize,
+    pub failed: Option<usize>,
+    // Boxed: `StoreError` is large enough to trip `result_large_err`.
     #[source]
-    pub source: StoreError,
+    pub source: Box<StoreError>,
 }
 
 /// Keeps back-to-back write transactions from starving another connection
@@ -95,7 +100,11 @@ impl WritePacer {
 /// How one transaction of [`Store::replace_indexed_files`] ended early.
 enum BatchFailure {
     /// The first `written` files are committed; nothing else was kept.
-    Kept { written: usize, source: StoreError },
+    Kept {
+        written: usize,
+        failed: Option<usize>,
+        source: StoreError,
+    },
     /// The file at `failed_at` failed part-way; the whole transaction was
     /// rolled back.
     RolledBack {
@@ -132,22 +141,32 @@ impl Store {
         files: &[IndexedFileWrite<'_>],
         max_hold: Duration,
     ) -> Result<usize, IndexedFilesError> {
-        let (written, source) = match self.write_files(repo, files, Some(max_hold)) {
+        let (failed, source) = match self.write_files(repo, files, Some(max_hold)) {
             Ok(written) => return Ok(written),
-            Err(BatchFailure::Kept { written, source }) => {
-                return Err(IndexedFilesError { written, source });
+            Err(BatchFailure::Kept {
+                written,
+                failed,
+                source,
+            }) => {
+                return Err(IndexedFilesError {
+                    written,
+                    failed,
+                    source: Box::new(source),
+                });
             }
             Err(BatchFailure::RolledBack { failed_at, source }) => (failed_at, source),
         };
-        if written == 0 {
-            return Err(IndexedFilesError { written, source });
-        }
         // Writes the files before the failing one again, without it. They
         // were all written once in this call, so no hold bound applies.
-        match self.write_files(repo, &files[..written], None) {
-            Ok(rewritten) if rewritten == written => Err(IndexedFilesError { written, source }),
-            Ok(_) | Err(_) => Err(IndexedFilesError { written: 0, source }),
-        }
+        let written = match self.write_files(repo, &files[..failed], None) {
+            Ok(rewritten) if rewritten == failed => failed,
+            Ok(_) | Err(_) => 0,
+        };
+        Err(IndexedFilesError {
+            written,
+            failed: Some(failed),
+            source: Box::new(source),
+        })
     }
 
     /// One transaction over `files`; see [`Store::replace_indexed_files`].
@@ -160,7 +179,11 @@ impl Store {
         if files.is_empty() {
             return Ok(0);
         }
-        let nothing_kept = |source| BatchFailure::Kept { written: 0, source };
+        let nothing_kept = |source| BatchFailure::Kept {
+            written: 0,
+            failed: None,
+            source,
+        };
         let mut connection = self.connection().map_err(nothing_kept)?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -171,10 +194,16 @@ impl Store {
         for file in files {
             if let Err(source) = validate_indexed_file(file) {
                 // Nothing of this file was written: keep the files before it.
-                return match transaction.commit() {
-                    Ok(()) => Err(BatchFailure::Kept { written, source }),
-                    Err(_) => Err(nothing_kept(source)),
+                let kept = if transaction.commit().is_ok() {
+                    written
+                } else {
+                    0
                 };
+                return Err(BatchFailure::Kept {
+                    written: kept,
+                    failed: Some(written),
+                    source,
+                });
             }
             if let Err(source) = write_indexed_file(&transaction, repo, file) {
                 // Dropping the transaction rolls back every file of it.
@@ -203,8 +232,11 @@ impl Store {
     /// One pass over the unlinked edges in id order, through the
     /// `to_file_id` index and the files' `(repo_id, path)` key, so its work
     /// grows with the unlinked edges, not with the files written. The pass
-    /// commits every 32,768 unlinked edges, which bounds how
-    /// long it holds the write lock. Idempotent: running it again changes
+    /// commits after every 32,768 linkable edges of this repository, which
+    /// bounds how long it holds the write lock. `edges` has no index that
+    /// leads with the repository, so the walk still passes over other
+    /// repositories' unlinked edges in the `to_file_id` index; it reads them
+    /// and changes nothing. Idempotent: running it again changes
     /// nothing, and running it after an interrupted index repairs the links
     /// that run did not make. Returns the number of edges linked.
     pub fn link_pending_edges(&self, repo: RepoId) -> Result<usize, StoreError> {
@@ -239,12 +271,14 @@ impl Store {
                 let transaction =
                     connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
                 ensure_repo_exists(&transaction, repo)?;
-                // The last unlinked edge of this chunk; none means the chunk
-                // runs to the end of the table.
+                // The last linkable edge of this repository in this chunk;
+                // none means the chunk runs to the end of the table.
                 let last = transaction
                     .query_row(
-                        "SELECT id FROM edges WHERE to_file_id IS NULL AND id > ?1 ORDER BY id LIMIT 1 OFFSET ?2",
-                        params![after, chunk - 1],
+                        &format!(
+                            "SELECT id FROM edges WHERE id > ?1 AND repo_id = ?3 AND {LINKABLE_EDGE} ORDER BY id LIMIT 1 OFFSET ?2"
+                        ),
+                        params![after, chunk - 1, repo],
                         |row| row.get::<_, i64>(0),
                     )
                     .optional()?;
@@ -385,8 +419,9 @@ mod tests {
             .expect_err("the second file must fail");
 
         assert_eq!(error.written, 1);
+        assert_eq!(error.failed, Some(1));
         assert!(matches!(
-            error.source,
+            *error.source,
             StoreError::InvalidEdgeResolution { .. }
         ));
         let hashes = store.file_hashes(repo).expect("hashes");
@@ -415,6 +450,7 @@ mod tests {
             .expect_err("the second file must fail");
 
         assert_eq!(error.written, 1);
+        assert_eq!(error.failed, Some(1));
         let hashes = store.file_hashes(repo).expect("hashes");
         assert_eq!(hashes.len(), 1);
         assert!(hashes.contains_key("a.ts"));
@@ -504,6 +540,29 @@ mod tests {
                 .count(),
             2
         );
+
+        // Readers already see both imports, by path, and nothing incomplete.
+        assert_eq!(store.resolved_edges(repo).expect("resolved").len(), 2);
+        assert_eq!(
+            store.edge_resolution_counts(repo).expect("counts").pending,
+            0
+        );
+        let missing = file("app/orphan.ts", "v1");
+        let missing_edges = [import("lib/never.ts", EdgeResolution::Resolved)];
+        store
+            .replace_indexed_files(repo, &[write(&missing, &[], &missing_edges)], NO_HOLD_LIMIT)
+            .expect("orphan write");
+        assert_eq!(
+            store.edge_resolution_counts(repo).expect("counts").pending,
+            1
+        );
+        assert_eq!(
+            store.incomplete_edge_sources(repo).expect("sources"),
+            ["app/early.ts", "app/orphan.ts"]
+        );
+        store
+            .delete_files(repo, &["app/orphan.ts".to_owned()])
+            .expect("orphan removed");
 
         assert_eq!(store.link_pending_edges(repo).expect("link"), 2);
         store
@@ -633,5 +692,40 @@ mod tests {
             std::thread::sleep(YIELD);
         }
         assert_eq!(pacer.pauses, 0);
+    }
+
+    #[test]
+    fn test_only_pending_and_deleted_targets_are_linked_by_path() {
+        // A resolved row with no target and any other detail (another
+        // branch stores package imports with detail `package`) is never
+        // linked by path, never read as resolved, and counts as incomplete.
+        let (_directory, store, repo) = store();
+        let (importer, target) = (file("app/a.ts", "v1"), file("lib/b.ts", "v1"));
+        store
+            .replace_indexed_files(
+                repo,
+                &[write(&importer, &[], &[]), write(&target, &[], &[])],
+                NO_HOLD_LIMIT,
+            )
+            .expect("write");
+        store
+            .connection()
+            .expect("connection")
+            .execute(
+                "INSERT INTO edges (repo_id, from_file_id, to_path, to_file_id, resolution_status, resolution_detail, kind) SELECT ?1, id, 'lib/b.ts', NULL, 'resolved', 'package', 'imports' FROM files WHERE path = 'app/a.ts'",
+                [repo],
+            )
+            .expect("raw edge");
+
+        assert_eq!(store.link_pending_edges(repo).expect("link"), 0);
+        assert!(store.resolved_edges(repo).expect("resolved").is_empty());
+        assert_eq!(
+            store.edge_resolution_counts(repo).expect("counts").pending,
+            1
+        );
+        assert_eq!(
+            store.incomplete_edge_sources(repo).expect("sources"),
+            ["app/a.ts"]
+        );
     }
 }

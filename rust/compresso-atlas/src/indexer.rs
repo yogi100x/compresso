@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::io;
@@ -38,6 +39,9 @@ pub(crate) const CALL_GRAPH_MARKER: &str = "+calls-v1";
 const PARALLEL_INDEX_MIN_CANDIDATES: usize = 8;
 /// Prepared files a worker may run ahead of the ordered commit.
 const READ_AHEAD_PER_WORKER: usize = 4;
+/// How often the committing thread, waiting for the next file in order,
+/// checks whether buffered files are due to be committed (D106).
+const IDLE_TICK: std::time::Duration = std::time::Duration::from_millis(50);
 /// Removed files deleted per transaction (D106).
 const DELETE_CHUNK_FILES: usize = 64;
 
@@ -299,13 +303,13 @@ impl<'a> Indexer<'a> {
         // Every Store write happens on the calling thread, in candidate order,
         // at any concurrency: files are buffered and committed several per
         // transaction, each file atomic (D106).
-        let mut writer = BatchWriter::new(
+        let writer = RefCell::new(BatchWriter::new(
             self.store,
             repo,
             &mut progress,
             self.batch_limits,
             scan.skipped.len(),
-        );
+        ));
         let workers = if candidates.len() < PARALLEL_INDEX_MIN_CANDIDATES {
             1
         } else {
@@ -317,16 +321,21 @@ impl<'a> Indexer<'a> {
                           outcome: Result<PreparedFile, PrepareFailure>|
          -> Result<(), AtlasError> {
             before_file(index, relative)?;
+            let mut writer = writer.borrow_mut();
             match outcome {
                 Ok(prepared) => writer.push(prepared),
                 Err(failure) => Err(writer.fail(relative, failure)),
             }
         };
+        // Commits buffered files that have waited too long while the next
+        // file in order is still being prepared.
+        let idle = || writer.borrow_mut().flush_if_aged();
         // A worker panic is caught only to commit the files before it, as a
         // per-file write had, and is then resumed.
         let run = panic::catch_unwind(AssertUnwindSafe(|| {
             if workers <= 1 {
                 for (index, relative) in candidates.iter().enumerate() {
+                    idle()?;
                     commit(index, relative, prepare_file(&context, relative))?;
                 }
                 Ok(())
@@ -337,9 +346,11 @@ impl<'a> Indexer<'a> {
                     workers,
                     self.concurrency.memory_budget_bytes(),
                     |index, outcome| commit(index, &candidates[index], outcome),
+                    idle,
                 )
             }
         }));
+        let mut writer = writer.into_inner();
         let flushed = writer.flush();
         let (progress, tally, mut pacer) = writer.into_parts();
         let stopped = match run {
@@ -364,7 +375,11 @@ impl<'a> Indexer<'a> {
         // full-text rows (about 1 to 2 ms each), so one transaction for
         // thousands of removed files would hold the lock for seconds.
         for removed in scan.removed.chunks(DELETE_CHUNK_FILES) {
-            pacer.write(|| self.store.delete_files(repo, removed))?;
+            if let Err(error) = pacer.write(|| self.store.delete_files(repo, removed)) {
+                // Linked as on every other early stop.
+                let _ = self.store.link_pending_edges(repo);
+                return Err(error.into());
+            }
         }
         for path in &scan.removed {
             progress(IndexProgress::Removed { path: path.clone() });
@@ -525,15 +540,20 @@ fn prepare_file(
 /// `commit` runs only on the calling thread, strictly in index order, and the
 /// first failure it returns stops the run with nothing later committed. Source
 /// bytes are charged against `memory_budget_bytes` from dispatch until commit.
-fn prepare_in_parallel<C>(
+/// `idle` runs on the calling thread every [`IDLE_TICK`] while it waits for
+/// the next file in order (D106: buffered files are committed meanwhile); a
+/// failure it returns stops the run like one from `commit`.
+fn prepare_in_parallel<C, I>(
     context: &PrepareContext<'_>,
     candidates: &[PathBuf],
     workers: usize,
     memory_budget_bytes: u64,
     commit: C,
+    idle: I,
 ) -> Result<(), AtlasError>
 where
     C: FnMut(usize, Result<PreparedFile, PrepareFailure>) -> Result<(), AtlasError>,
+    I: FnMut() -> Result<(), AtlasError>,
 {
     prepare_in_parallel_with(
         context.root,
@@ -542,22 +562,25 @@ where
         memory_budget_bytes,
         |candidate| prepare_file(context, candidate),
         commit,
+        idle,
     )
 }
 
 /// [`prepare_in_parallel`] with the per-file preparation step supplied by the
 /// caller.
-fn prepare_in_parallel_with<P, C>(
+fn prepare_in_parallel_with<P, C, I>(
     root: &Path,
     candidates: &[PathBuf],
     workers: usize,
     memory_budget_bytes: u64,
     prepare: P,
     mut commit: C,
+    mut idle: I,
 ) -> Result<(), AtlasError>
 where
     P: Fn(&Path) -> Result<PreparedFile, PrepareFailure> + Sync,
     C: FnMut(usize, Result<PreparedFile, PrepareFailure>) -> Result<(), AtlasError>,
+    I: FnMut() -> Result<(), AtlasError>,
 {
     let (job_sender, job_receiver) = mpsc::channel::<usize>();
     let job_receiver = Mutex::new(job_receiver);
@@ -615,7 +638,14 @@ where
                     }
                     next_dispatch += 1;
                 }
-                let Ok((index, prepared)) = result_receiver.recv() else {
+                let received = loop {
+                    match result_receiver.recv_timeout(IDLE_TICK) {
+                        Ok(message) => break Some(message),
+                        Err(mpsc::RecvTimeoutError::Timeout) => idle()?,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break None,
+                    }
+                };
+                let Some((index, prepared)) = received else {
                     // Every worker stopped early. Finish on this thread so the
                     // run still completes with the serial result.
                     for (index, candidate) in candidates.iter().enumerate().skip(next_commit) {
@@ -1351,11 +1381,18 @@ mod tests {
         // One byte admits a single file at a time, so every commit must
         // release the budget before the next file can be dispatched.
         let mut committed = Vec::new();
-        prepare_in_parallel(&context, &candidates, 4, 1, |index, outcome| {
-            let prepared = outcome.map_err(|failure| *failure.error)?;
-            committed.push((index, prepared.record.path));
-            Ok(())
-        })
+        prepare_in_parallel(
+            &context,
+            &candidates,
+            4,
+            1,
+            |index, outcome| {
+                let prepared = outcome.map_err(|failure| *failure.error)?;
+                committed.push((index, prepared.record.path));
+                Ok(())
+            },
+            || Ok(()),
+        )
         .expect("a starved budget must still finish");
 
         let expected = paths.into_iter().enumerate().collect::<Vec<_>>();
@@ -1382,6 +1419,7 @@ mod tests {
                         }))
                     },
                     |_, _| Ok(()),
+                    || Ok(()),
                 )
             }));
             let _ = finished_sender.send(run.is_err());

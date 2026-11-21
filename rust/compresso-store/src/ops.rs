@@ -347,7 +347,12 @@ impl Store {
             .transpose()?;
 
         let mut connection = self.connection()?;
-        let transaction = connection.transaction()?;
+        // Immediate: this transaction reads `sessions` before it writes, and
+        // a deferred one that reads first fails at once, without the busy
+        // wait, when another connection holds or has just released the
+        // write lock (D106).
+        let transaction =
+            connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         if let Some(session) = &operation.session_id {
             let exists = transaction
                 .query_row(
@@ -1399,6 +1404,54 @@ mod tests {
             )
             .expect("retrieval ledger row should be queryable");
         assert_eq!(row, (None, 1_874));
+    }
+
+    #[test]
+    fn test_a_session_ledger_write_waits_for_another_connections_write_lock() {
+        // D106: another process (an index, or a second server) holds the
+        // write lock and commits while this one records an operation with a
+        // session id. The record must wait within the busy timeout and
+        // succeed, not fail at once with `database is locked`.
+        let directory = tempdir().expect("temp directory should be created");
+        let path = directory.path().join("compresso.db");
+        let store = Store::open(&path).expect("store should open");
+        let session = store
+            .start_session("test-client", "stdio")
+            .expect("session should start");
+        let (locked_sender, locked_receiver) = std::sync::mpsc::channel();
+        let holder = thread::spawn(move || {
+            let other = rusqlite::Connection::open(&path).expect("second connection");
+            other
+                .execute_batch(
+                    "BEGIN IMMEDIATE; INSERT INTO sessions (id, client, transport, started_at) VALUES ('01HOLDER0000000000000000AA', 'holder', 'stdio', 1);",
+                )
+                .expect("the other connection takes the write lock");
+            locked_sender.send(()).expect("signal");
+            thread::sleep(std::time::Duration::from_millis(300));
+            other.execute_batch("COMMIT").expect("commit");
+        });
+        locked_receiver.recv().expect("the lock is held");
+
+        let mut record = operation(
+            "ledger-during-lock",
+            "compresso_edit",
+            (10, 10),
+            false,
+            Some(10),
+            None,
+            100,
+        );
+        record.session_id = Some(session);
+        let outcome = store.record_operation(&record);
+        holder.join().expect("holder thread");
+
+        outcome.expect("the ledger write must wait for the lock, not fail");
+        assert!(
+            store
+                .operation_by_id("ledger-during-lock")
+                .expect("lookup")
+                .is_some()
+        );
     }
 
     #[test]

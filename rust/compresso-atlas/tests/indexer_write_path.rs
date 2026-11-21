@@ -219,7 +219,12 @@ fn test_an_index_run_links_imports_an_interrupted_run_left_pending() {
     store
         .replace_indexed_files(repo, &batch, Duration::from_secs(60))
         .expect("interrupted run's writes");
-    assert!(store.resolved_edges(repo).expect("edges").is_empty());
+    // Stored unlinked (no target id), though readers already see it by path.
+    assert_eq!(
+        store.unresolved_edge_sources(repo).expect("sources"),
+        ["a.ts"]
+    );
+    assert_eq!(store.resolved_edges(repo).expect("edges").len(), 1);
 
     let report = Indexer::new(&store, counter)
         .index(&root, |_| {})
@@ -231,6 +236,13 @@ fn test_an_index_run_links_imports_an_interrupted_run_left_pending() {
         fresh.resolved_edges(fresh_repo).expect("edges")
     );
     assert_eq!(store.resolved_edges(repo).expect("edges").len(), 1);
+    assert!(
+        store
+            .unresolved_edge_sources(repo)
+            .expect("sources")
+            .is_empty(),
+        "the next run's link pass stored the target id"
+    );
 }
 
 fn write_tree(root: &Path, files: &[(&str, String)]) {

@@ -970,9 +970,12 @@ pub fn impact_with_options(
     Ok(ImpactReport {
         path: path.to_owned(),
         dependents,
-        unresolved_edges: resolution_counts.unresolved,
+        // A resolved import whose target is not committed yet (D106) may
+        // hide a dependent: it counts as unresolved here.
+        unresolved_edges: resolution_counts.unresolved + resolution_counts.pending,
         ambiguous_edges: resolution_counts.ambiguous,
         complete: resolution_counts.unresolved == 0
+            && resolution_counts.pending == 0
             && resolution_counts.ambiguous == 0
             && !truncated,
         truncated,
