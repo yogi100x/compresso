@@ -179,7 +179,7 @@ pub type RepoId = i64;
 pub type FileId = i64;
 pub struct RepoRecord { pub id: RepoId, pub root: PathBuf, pub approved_at: i64, pub parser_version: String, pub schema_version: u32, pub last_indexed_at: Option<i64> }
 pub struct IndexVersionRecord { pub parser_version: String, pub schema_version: u32, pub created_at: i64 }
-pub enum FileLanguage { Rust, TypeScript, Tsx, JavaScript, Python, Go, Java, CSharp, Shell, Text } // `as_str()`: the stored lowercase name; per-language rules live in `compresso_atlas::parsers::LANGUAGES` (D102)
+pub enum FileLanguage { Rust, TypeScript, Tsx, JavaScript, Python, Go, Java, CSharp, Sql, Shell, Text } // `as_str()`: the stored lowercase name; per-language rules live in `compresso_atlas::parsers::LANGUAGES` (D102)
 pub struct FileRecord { pub path: String, pub hash: String, pub language: Option<FileLanguage>, pub size_bytes: u64, pub token_estimate: usize, pub indexed_at: i64 }
 pub enum SymbolKind { Function, Method, Struct, Class, Enum, Trait, Interface, Const, Type, Module }
 pub struct SymbolRecord { pub name: String, pub qualified_name: String, pub kind: SymbolKind, pub signature: Option<String>, pub start_line: u32, pub end_line: u32, pub token_estimate: usize }
@@ -303,7 +303,7 @@ pub fn unfold(store: &Store, repo: RepoId, selector: &SymbolSelector) -> Result<
 pub fn search(store: &Store, repo: RepoId, query: &str, limit: usize) -> Result<Vec<SearchHit>>; // Store::search_symbols_all_terms semantics; plan_context keeps literal per-concept queries
 // search.rs — diagnostics are informational data on a successful result, never errors
 pub struct SearchOptions<'a> { pub limit: usize, pub path: Option<&'a str> } // path: repo-relative file or directory scope, applied before the hit limit
-pub enum SearchDiagnosticCode { PathNotFound, QueryTooShort, PathScopeWindowCapped } // as_str(): path_not_found, query_too_short, path_scope_window_capped
+pub enum SearchDiagnosticCode { PathNotFound, QueryTooShort, PathScopeWindowCapped, SqlDefinitions } // as_str(): path_not_found, query_too_short, path_scope_window_capped, sql_definitions (E17-42, D107: a SQL name's definitions in path order, last first, with later drops, mixed spellings, directories, and definitions outside the path scope counted)
 pub struct SearchDiagnostic { pub code: SearchDiagnosticCode, pub message: String }
 pub struct SearchReport { pub hits: Vec<SearchHit>, pub diagnostics: Vec<SearchDiagnostic> }
 pub fn validate_search_query(query: &str) -> Result<(), QueryError>; // QueryError::InvalidSearchQuery { position /* byte offset */, reason }

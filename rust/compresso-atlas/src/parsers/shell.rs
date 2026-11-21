@@ -17,6 +17,7 @@ pub(super) fn extract(source: &str) -> Extraction {
             imports: Vec::new(),
             calls: Vec::new(),
             calls_truncated: false,
+            symbols_truncated: false,
         };
     }
 
@@ -55,6 +56,7 @@ pub(super) fn extract(source: &str) -> Extraction {
         imports: Vec::new(),
         calls: Vec::new(),
         calls_truncated: false,
+        symbols_truncated: false,
     }
 }
 

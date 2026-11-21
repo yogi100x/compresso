@@ -16,6 +16,7 @@ pub enum FileLanguage {
     Go,
     Java,
     CSharp,
+    Sql,
     Shell,
     Text,
 }
@@ -65,6 +66,7 @@ impl FileLanguage {
             Self::Go => "go",
             Self::Java => "java",
             Self::CSharp => "csharp",
+            Self::Sql => "sql",
             Self::Shell => "shell",
             Self::Text => "text",
         }
@@ -80,6 +82,7 @@ impl FileLanguage {
             "go" => Ok(Self::Go),
             "java" => Ok(Self::Java),
             "csharp" => Ok(Self::CSharp),
+            "sql" => Ok(Self::Sql),
             "shell" => Ok(Self::Shell),
             "text" => Ok(Self::Text),
             _ => Err(StoreError::InvalidStoredValue {

@@ -183,6 +183,7 @@ pub(super) fn module_names(
         imports: Vec::new(),
         calls: Vec::new(),
         calls_truncated: false,
+        symbols_truncated: false,
     };
     let mut bytes = Vec::new();
     walk(root, source, &mut extraction, &mut bytes);

@@ -53,6 +53,7 @@ pub(super) struct Tally {
     pub(super) imports_unresolved: usize,
     pub(super) call_sites: usize,
     pub(super) call_site_files_truncated: usize,
+    pub(super) symbol_files_truncated: usize,
     pub(super) call_site_files_rejected: usize,
 }
 
@@ -265,6 +266,7 @@ impl<'a, P: FnMut(IndexProgress)> BatchWriter<'a, P> {
         } else if prepared.parsed {
             tally.call_sites += prepared.calls.len();
             tally.call_site_files_truncated += usize::from(prepared.calls_truncated);
+            tally.symbol_files_truncated += usize::from(prepared.symbols_truncated);
         }
     }
 }
@@ -413,6 +415,7 @@ mod tests {
             edges: Vec::new(),
             calls: Vec::new(),
             calls_truncated: false,
+            symbols_truncated: false,
             parsed: true,
             imports_resolved: 0,
             imports_unresolved: 0,

@@ -12,6 +12,7 @@ pub mod queries;
 mod rust_imports;
 pub mod scanner;
 pub mod search;
+pub mod sql_definitions;
 mod task_facets;
 mod task_identifiers;
 pub mod trace;
@@ -51,6 +52,9 @@ pub use scanner::{
 pub use search::{
     SEARCH_MIN_QUERY_CHARS, SearchDiagnostic, SearchDiagnosticCode, SearchOptions, SearchReport,
     search_with_diagnostics, validate_search_query,
+};
+pub use sql_definitions::{
+    MAX_OTHER_DEFINITIONS, SqlDefinition, SqlDefinitions, other_sql_definitions, sql_definitions,
 };
 pub use trace::{
     CallResolution, TRACE_DEFAULT_NEIGHBOR_DEPTH, TRACE_DEFAULT_PATH_DEPTH,

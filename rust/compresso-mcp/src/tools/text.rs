@@ -740,6 +740,30 @@ fn unfold(payload: &Value, out: &mut Out) {
                 )
             ));
             out.raw(string(payload, "content").unwrap_or_default());
+            // E17-42 (D107): other definitions of a SQL name, in path order.
+            let others = array(payload, "candidates")
+                .iter()
+                .map(|candidate| {
+                    format!(
+                        "{}:{}",
+                        string(candidate, "path").unwrap_or_default(),
+                        lines(
+                            number(candidate, "start_line"),
+                            number(candidate, "end_line")
+                        )
+                    )
+                })
+                .collect::<Vec<_>>();
+            if !others.is_empty() {
+                out.note(format!(
+                    "{} other definitions of this name in path order, last first: {}",
+                    others.len(),
+                    others.join(", ")
+                ));
+            }
+            if let Some(elision) = string(payload, "elision") {
+                out.note(elision.trim_start_matches('[').trim_end_matches(']'));
+            }
         }
         Some("ambiguous") => {
             out.line(format!(

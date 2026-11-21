@@ -429,6 +429,11 @@ pub fn repo_map_focused(
             if crate::parsers::languages::declares_packages(file.language) {
                 symbols.retain(|symbol| symbol.kind != SymbolKind::Module);
             }
+            // A SQL file's `script` symbol is the whole file (E17-42): the
+            // map lists its definitions.
+            if file.language == Some(FileLanguage::Sql) {
+                symbols.retain(|symbol| !crate::parsers::sql::is_file_symbol(symbol));
+            }
             let focused = focus.is_some_and(|focus| map_path_matches_focus(&file.path, focus));
             Ok((file.path.clone(), focused, in_degree, symbols))
         })
@@ -608,6 +613,11 @@ pub fn unfold(
         stored.into_iter().map(|(_, symbol)| symbol).collect()
     };
     sort_selector_candidates(&mut candidates, selector.start_line_hint);
+    if is_sql_path(&selector.path) && selector.start_line_hint.is_none() {
+        // E17-42 (D107): a name defined again later in one SQL file lists
+        // its last definition first.
+        candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.start_line));
+    }
     let reindex_hint = stale.then(|| REINDEX_HINT.to_owned());
 
     match candidates.len() {
@@ -1046,7 +1056,11 @@ pub fn impact_with_options(
             && !truncated
             && unevaluated == 0
             && unproven == 0
-            && !packages_limited,
+            && !packages_limited
+            // E17-42 (D107): SQL has no imports; what depends on a migration
+            // is read with `trace --to <name>`, so its import impact is never
+            // complete.
+            && !is_sql_path(path),
         truncated,
         unevaluated,
         unproven,
@@ -3880,7 +3894,14 @@ fn sort_selector_candidates(symbols: &mut [SymbolRecord], hint: Option<u32>) {
     });
 }
 
-fn symbol_identity(path: &str, symbol: &SymbolRecord) -> SymbolIdentity {
+/// Whether a repository path is a SQL file (E17-42).
+fn is_sql_path(path: &str) -> bool {
+    path.rsplit_once('.')
+        .and_then(|(_, extension)| crate::parsers::languages::for_extension(extension))
+        .is_some_and(|spec| spec.language == FileLanguage::Sql)
+}
+
+pub(crate) fn symbol_identity(path: &str, symbol: &SymbolRecord) -> SymbolIdentity {
     SymbolIdentity {
         path: path.to_owned(),
         qualified_name: symbol.qualified_name.clone(),
