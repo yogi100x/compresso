@@ -500,7 +500,9 @@ fn test_a_mate_with_cut_call_sites_makes_impact_incomplete() {
 fn test_too_many_namespaces_in_one_file_clear_complete() {
     let mut many = String::new();
     for index in 0..70 {
-        many.push_str(&format!("namespace N{index} {{ public class T{index} {{ }} }}\n"));
+        many.push_str(&format!(
+            "namespace N{index} {{ public class T{index} {{ }} }}\n"
+        ));
     }
     let (_temp, store, repo) = index_files(&[
         ("lib/Many.cs", many.as_str()),
@@ -511,8 +513,14 @@ fn test_too_many_namespaces_in_one_file_clear_complete() {
     ]);
     let report = impact(&store, repo, "app/Main.cs").expect("impact");
     assert!(report.packages_limited && !report.complete);
-    let traced = trace(&store, repo, Some("Main::Go"), None, TraceOptions::default())
-        .expect("trace");
+    let traced = trace(
+        &store,
+        repo,
+        Some("Main::Go"),
+        None,
+        TraceOptions::default(),
+    )
+    .expect("trace");
     assert!(!traced.complete);
 }
 
@@ -889,6 +897,38 @@ fn test_a_long_annotation_never_hides_the_public_modifier() {
     assert!(
         signature.starts_with("public static void util()"),
         "{signature}"
+    );
+}
+
+/// Round 3 SF1: a package-qualified type in a call (`com.acme.util.Strings
+/// .trim()`, `Acme.Util.Strings.Trim()`) reaches that type with no import.
+#[test]
+fn test_package_qualified_calls_reach_their_type() {
+    let (_temp, store, repo) = index_files(&[
+        (
+            "util/Strings.java",
+            "package com.acme.util;\n\npublic class Strings {\n    public static String trim(String s) { return s; }\n}\n",
+        ),
+        (
+            "app/Main.java",
+            "package app;\n\nclass Main {\n    void run() { com.acme.util.Strings.trim(\"x\"); }\n}\n",
+        ),
+        (
+            "Util/Strings.cs",
+            "namespace Acme.Util;\n\npublic static class Strings { public static string Trim(string s) => s; }\n",
+        ),
+        (
+            "App/Main.cs",
+            "namespace App;\n\npublic class Runner { void Run() { Acme.Util.Strings.Trim(\"x\"); } }\n",
+        ),
+    ]);
+    assert_eq!(
+        callees_of(&store, repo, "Main::run"),
+        [("Strings::trim".to_owned(), CallResolution::UniqueName)]
+    );
+    assert_eq!(
+        callees_of(&store, repo, "Runner::Run"),
+        [("Strings::Trim".to_owned(), CallResolution::UniqueName)]
     );
 }
 

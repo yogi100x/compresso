@@ -591,6 +591,8 @@ struct Resolver<'a> {
     file_packages: Option<HashMap<String, Vec<String>>>,
     /// A file declared more packages than are read.
     packages_limited: bool,
+    /// Every declared Java or C# package or namespace name.
+    known_packages: HashSet<String>,
     /// Java and C# only: per file, the packages or namespaces it imports
     /// whole (one record each, owner decision 2026-11-21).
     package_imports: Option<HashMap<String, HashSet<String>>>,
@@ -611,6 +613,7 @@ impl<'a> Resolver<'a> {
             declared_external_names: None,
             file_packages: None,
             packages_limited: false,
+            known_packages: HashSet::new(),
             package_imports: None,
             no_names: HashSet::new(),
             symbols: HashMap::new(),
@@ -997,6 +1000,7 @@ impl<'a> Resolver<'a> {
 
         let caller_is_test = is_test_code(from);
         let packages = self.file_packages.as_ref().expect("loaded above");
+        let known_packages = &self.known_packages;
         let scope = DeclaredScope {
             from,
             rules,
@@ -1114,7 +1118,18 @@ impl<'a> Resolver<'a> {
                 if external {
                     return Ok(Resolution::Unresolved("external_path"));
                 }
-                let type_path = qualifier.replace('.', "::");
+                // A package-qualified type (`com.acme.util.Strings`): the
+                // longest declared package prefix names the package, the
+                // rest the type; stored owner paths never hold the package.
+                let package_split = qualifier
+                    .match_indices('.')
+                    .map(|(dot, _)| dot)
+                    .rev()
+                    .find(|dot| known_packages.contains(&qualifier[..*dot]))
+                    .map(|dot| (&qualifier[..dot], &qualifier[dot + 1..]));
+                let type_path = package_split
+                    .map_or(qualifier, |(_, rest)| rest)
+                    .replace('.', "::");
                 let names_type = |candidate: &&IndexedSymbol| {
                     candidate.symbol.kind == SymbolKind::Method
                         && owner_path(candidate).is_some_and(|owner| {
@@ -1143,7 +1158,7 @@ impl<'a> Resolver<'a> {
                 };
                 if let Some(resolution) = scope.tiers(&typed, true) {
                     resolution
-                } else if let Some((package, _)) = qualifier.rsplit_once('.')
+                } else if let Some((package, _)) = package_split
                     && let Some(resolution) = declared_tier(
                         &typed
                             .iter()
@@ -1272,6 +1287,7 @@ impl<'a> Resolver<'a> {
                 // ones, so package checks stay bounded (review S5).
                 let names = packages.entry(path).or_default();
                 if names.len() < MAX_PACKAGES_PER_FILE {
+                    self.known_packages.insert(name.clone());
                     names.push(name);
                 } else {
                     self.packages_limited = true;
