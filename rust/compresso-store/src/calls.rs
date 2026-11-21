@@ -273,35 +273,6 @@ impl Store {
         Ok(paths)
     }
 
-    /// The paths of files with a stored call whose qualifier is exactly one of
-    /// `qualifiers` (`a.b.C` in `a.b.C.m()`), in path order.
-    pub fn files_with_call_qualifiers(
-        &self,
-        repo: RepoId,
-        qualifiers: &[String],
-    ) -> Result<std::collections::BTreeSet<String>, StoreError> {
-        let connection = self.connection()?;
-        ensure_repo_exists(&connection, repo)?;
-        let mut paths = std::collections::BTreeSet::new();
-        for chunk in qualifiers.chunks(ID_CHUNK) {
-            let mut statement = connection.prepare(&format!(
-                "SELECT DISTINCT f.path FROM call_sites AS c JOIN files AS f ON f.id = c.from_file_id WHERE c.repo_id = ?1 AND c.callee_qualifier IN ({})",
-                placeholders(chunk.len())
-            ))?;
-            let parameters = std::iter::once(rusqlite::types::Value::from(repo)).chain(
-                chunk
-                    .iter()
-                    .map(|name| rusqlite::types::Value::from(name.clone())),
-            );
-            for path in
-                statement.query_map(params_from_iter(parameters), |row| row.get::<_, String>(0))?
-            {
-                paths.insert(path?);
-            }
-        }
-        Ok(paths)
-    }
-
     /// The paths of files holding the [`CALL_SITES_CUT_MARKER`] row: files
     /// whose call extraction stopped at a per-file bound, so their stored
     /// call sites may miss calls written later in the file.

@@ -700,12 +700,12 @@ fn test_relative_usings_after_a_new_namespace_match_a_full_index() {
     );
 }
 
-/// Closing pass F1: a file in another package that calls the target's type
-/// by its package-qualified name, with no import, is listed; a fully
-/// qualified `new a.b.C()` or `extends a.b.C` is not a qualified call and
-/// stays a documented gap.
+/// Known gap (b), pinned: a file in another package that uses the target
+/// only by its package-qualified name, without an import (a call
+/// `a.b.C.m()`, `Acme.Util.Strings.Pad()`), is not listed, and `complete`
+/// does not cover it. Changing this needs a decision, not a silent edit.
 #[test]
-fn test_a_package_qualified_call_from_another_package_is_a_dependent() {
+fn test_a_package_qualified_use_without_an_import_is_not_listed() {
     let (_temp, store, repo) = index_files(&[
         (
             "a/b/C.java",
@@ -724,22 +724,15 @@ fn test_a_package_qualified_call_from_another_package_is_a_dependent() {
             "namespace App;\n\npublic class Main { void Go() { Acme.Util.Strings.Pad(\"x\"); } }\n",
         ),
     ]);
-    assert_eq!(
-        linked_dependents(&store, repo, "a/b/C.java"),
-        [(
-            "x/User.java".to_owned(),
-            "references",
-            Some("a.b".to_owned())
-        )]
-    );
-    assert_eq!(
-        linked_dependents(&store, repo, "Util/Strings.cs"),
-        [(
-            "App/Main.cs".to_owned(),
-            "references",
-            Some("Acme.Util".to_owned())
-        )]
-    );
+    for target in ["a/b/C.java", "Util/Strings.cs"] {
+        let report = impact(&store, repo, target).expect("impact");
+        assert!(
+            report.dependents.is_empty(),
+            "{target}: {:?}",
+            report.dependents
+        );
+        assert_eq!((report.unproven, report.unevaluated), (0, 0), "{target}");
+    }
 }
 
 /// Closing pass SF5: a call naming the type is evidence only in a form that

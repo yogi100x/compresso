@@ -1429,39 +1429,6 @@ impl PackageLinks {
                 .extend(scope.into_iter().map(|(path, _, _)| path));
             return Ok(());
         }
-        // A file anywhere that calls a type by its package-qualified name
-        // (`a.b.C.m()`) uses it without an import.
-        let qualified = packages
-            .iter()
-            .filter(|package| !package.is_empty())
-            .flat_map(|package| {
-                types
-                    .iter()
-                    .map(move |kind| (package, format!("{package}.{kind}")))
-            })
-            .collect::<Vec<_>>();
-        let names = qualified
-            .iter()
-            .map(|(_, name)| name.clone())
-            .collect::<Vec<_>>();
-        for user in store.files_with_call_qualifiers(repo, &names)? {
-            let same_language = self
-                .declared
-                .get(&user)
-                .is_some_and(|(theirs, _)| *theirs == language);
-            if user != target
-                && same_language
-                && !is_secret_path(Path::new(&user))
-                && !scope.iter().any(|(path, _, _)| *path == user)
-                && let Some((package, _)) = qualified.first()
-            {
-                linked.push((
-                    user,
-                    vec![EdgeKind::References],
-                    Some((*package).to_string()),
-                ));
-            }
-        }
         if scope.is_empty() {
             return Ok(());
         }

@@ -586,17 +586,21 @@ impl Indexer<'_> {
             file.split('.').next().unwrap_or(file).to_owned()
         };
         let mut joined = HashSet::<(&'static str, String, String)>::new();
+        // (language, file name) of every added or relocated file, looked up
+        // once per edge for C#'s file-name match.
+        let mut joined_stems = HashSet::<(&'static str, String)>::new();
         for (path, now) in read {
             if (added.contains(path) || relocated.contains(path.as_str()))
                 && let Some(language) = declaring_language(path)
             {
+                joined_stems.insert((language.as_str(), stem(path)));
                 let before = stored.get(path).map_or(&[][..], Vec::as_slice);
                 for name in before.iter().chain(now) {
                     joined.insert((language.as_str(), name.clone(), stem(path)));
                 }
             }
         }
-        if !joined.is_empty() {
+        if !joined_stems.is_empty() {
             for edge in self.store.resolved_edges(repo)? {
                 if removed.contains(&edge.from_path)
                     || declaring_language(&edge.from_path).is_none()
@@ -611,9 +615,7 @@ impl Indexer<'_> {
                 // in `Acme.Web`): a namesake in any namespace can change what
                 // they bind to, so C# matches by file name alone.
                 let relative = languages::spec(language).imports == ImportStyle::CSharp
-                    && joined.iter().any(|(joined_language, _, joined_stem)| {
-                        *joined_language == language.as_str() && *joined_stem == target_stem
-                    });
+                    && joined_stems.contains(&(language.as_str(), target_stem.clone()));
                 let namesake = relative
                     || relocated.contains(edge.to_path.as_str())
                     || stored
