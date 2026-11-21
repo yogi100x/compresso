@@ -766,14 +766,29 @@ fn execute_impact(
     let unresolved_sources = store
         .incomplete_edge_sources(repository.id)
         .map_err(map_store_error)?;
-    let complete = unresolved_sources.is_empty() && !truncated;
-    let data = json!({
+    // Java and C# (D105): files of the package scope that could not be
+    // shown to use the file make the answer incomplete, as in the MCP result.
+    let complete = unresolved_sources.is_empty()
+        && !truncated
+        && report.unproven == 0
+        && report.unevaluated == 0
+        && !report.packages_limited;
+    let mut data = json!({
         "path": report.path,
         "dependents": dependents,
         "complete": complete,
         "unresolved_or_ambiguous_sources": unresolved_sources,
         "truncated": truncated,
     });
+    if report.unproven > 0 {
+        data["unproven"] = json!(report.unproven);
+    }
+    if report.unevaluated > 0 {
+        data["unevaluated"] = json!(report.unevaluated);
+    }
+    if report.packages_limited {
+        data["packages_limited"] = json!(true);
+    }
     Ok(rendered_pretty(data))
 }
 

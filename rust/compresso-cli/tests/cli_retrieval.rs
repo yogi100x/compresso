@@ -195,6 +195,54 @@ fn test_impact_honours_limits_above_the_default_and_reports_a_cut() {
     assert_eq!(output["data"]["complete"], false);
 }
 
+/// E17-40: the CLI's `complete` agrees with the query (and the MCP result):
+/// a same-namespace file with no call evidence is unproven, so the answer is
+/// not complete.
+#[test]
+fn test_impact_complete_agrees_with_the_query_on_unproven_files() {
+    let temp = tempfile::tempdir().expect("temporary directory should be created");
+    let root = temp.path().join("repo");
+    fs::create_dir_all(root.join("app")).expect("directory");
+    fs::write(
+        root.join("app/Target.cs"),
+        "namespace App;\n\npublic class Target { }\n",
+    )
+    .expect("target");
+    fs::write(
+        root.join("app/Idle.cs"),
+        "namespace App;\n\npublic class Idle { }\n",
+    )
+    .expect("idle");
+    let store = Store::open(&temp.path().join("compresso.db")).expect("store should open");
+    Indexer::new(&store, counter_for(TokenProvider::OpenAiO200k))
+        .index(&root, |_| {})
+        .expect("fixture should index");
+    let canonical = fs::canonicalize(&root).expect("root should canonicalize");
+    let repo = store
+        .repo_by_root(&canonical)
+        .expect("lookup")
+        .expect("repository")
+        .id;
+    let query = compresso_atlas::impact(&store, repo, "app/Target.cs").expect("impact");
+    assert_eq!(query.unproven, 1);
+    let fixture = Fixture {
+        _temp: temp,
+        root: canonical,
+        store,
+    };
+    let (exit, output, _) = fixture.run_json(&[
+        "impact",
+        "app/Target.cs",
+        "--root",
+        fixture.root_str(),
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success);
+    assert_eq!(output["data"]["complete"], json!(query.complete));
+    assert_eq!(output["data"]["complete"], false);
+    assert_eq!(output["data"]["unproven"], 1);
+}
+
 #[test]
 fn test_search_and_read_json_snapshots_are_versioned_and_bounded() {
     let fixture = Fixture::new();
