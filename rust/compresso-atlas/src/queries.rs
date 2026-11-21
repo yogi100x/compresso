@@ -562,22 +562,94 @@ pub fn outline_current(
 }
 
 /// Reports whether any indexed file has drifted, disappeared, or escaped its root.
+///
+/// Every indexed file is checked, as before, but on several threads (E17-45,
+/// D110): the outcome is the first non-fresh file's in store order, exactly
+/// what the one-thread walk returned (a stale file before an unreadable one
+/// reports stale; an unreadable one before a stale one reports its error).
 pub fn repository_stale(store: &Store, repo: RepoId) -> Result<bool, AtlasError> {
     let repository = store.repository(repo)?;
     let root = canonical_query_root(&repository.root)?;
-    for indexed in store.indexed_files(repo)? {
-        let resolved = match resolve_under_root(&root, &indexed.path) {
-            Ok(ResolvedEntry::File(resolved)) => resolved,
-            Ok(ResolvedEntry::Missing)
-            | Err(AtlasError::OutsideRoot { .. })
-            | Err(AtlasError::Query(QueryError::NotAFile { .. })) => return Ok(true),
-            Err(error) => return Err(error),
-        };
-        if !file_matches_index(&resolved, &indexed)? {
-            return Ok(true);
+    let files = store.indexed_files(repo)?;
+    let workers = if files.len() < PARALLEL_STALENESS_MIN_FILES {
+        1
+    } else {
+        crate::Concurrency::default().jobs()
+    };
+    first_not_fresh(&files, workers, |indexed| {
+        indexed_file_stale(&root, indexed)
+    })
+}
+
+/// Below this many indexed files the staleness check stays on the calling
+/// thread.
+const PARALLEL_STALENESS_MIN_FILES: usize = 256;
+
+/// Whether one indexed file has drifted, disappeared, or escaped its root.
+fn indexed_file_stale(
+    root: &Path,
+    indexed: &compresso_store::FileRecord,
+) -> Result<bool, AtlasError> {
+    let resolved = match resolve_under_root(root, &indexed.path) {
+        Ok(ResolvedEntry::File(resolved)) => resolved,
+        Ok(ResolvedEntry::Missing)
+        | Err(AtlasError::OutsideRoot { .. })
+        | Err(AtlasError::Query(QueryError::NotAFile { .. })) => return Ok(true),
+        Err(error) => return Err(error),
+    };
+    Ok(!file_matches_index(&resolved, indexed)?)
+}
+
+/// The outcome of the first item, in order, that `check` finds stale or
+/// fails on; `Ok(false)` when every item is fresh. Items are checked on up
+/// to `workers` threads; an item after one already found decisive is
+/// skipped, never one before it, so the result is the one-thread walk's.
+fn first_not_fresh<T, E, F>(items: &[T], workers: usize, check: F) -> Result<bool, E>
+where
+    T: Sync,
+    E: Send,
+    F: Fn(&T) -> Result<bool, E> + Sync,
+{
+    if workers <= 1 || items.len() <= 1 {
+        for item in items {
+            if check(item)? {
+                return Ok(true);
+            }
         }
+        return Ok(false);
     }
-    Ok(false)
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    // The lowest index found decisive so far; items above it are skipped.
+    let first = AtomicUsize::new(usize::MAX);
+    let decisive = Mutex::new(Vec::<(usize, Result<bool, E>)>::new());
+    std::thread::scope(|scope| {
+        for _ in 0..workers.min(items.len()) {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    if index >= items.len() || index > first.load(Ordering::Acquire) {
+                        return;
+                    }
+                    let outcome = check(&items[index]);
+                    if !matches!(outcome, Ok(false)) {
+                        first.fetch_min(index, Ordering::AcqRel);
+                        decisive
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push((index, outcome));
+                    }
+                }
+            });
+        }
+    });
+    decisive
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .into_iter()
+        .min_by_key(|(index, _)| *index)
+        .map_or(Ok(false), |(_, outcome)| outcome)
 }
 
 /// Returns an exact current symbol body or a typed ambiguous/not-found outcome.
@@ -4440,6 +4512,71 @@ mod tests {
         QueryError, ResolvedEntry, ResolvedFile, STALENESS_HASH_BUFFER_BYTES,
         content_matches_index, line_spells_word, read_utf8_capped, resolve_under_root,
     };
+
+    /// E17-45 (D110): the parallel staleness walk returns exactly what the
+    /// one-thread walk returns: the outcome of the first item in order that
+    /// is stale or fails, whichever thread finds it first.
+    #[test]
+    fn test_parallel_staleness_walk_returns_the_first_outcome_in_order() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // Outcomes: 0 fresh, 1 stale, 2 error (carrying its index).
+        let mut state = 0x9e37_79b9_u64;
+        let mut below = |bound: u64| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 33) % bound
+        };
+        for case in 0..400 {
+            let len = below(300) as usize;
+            let outcomes = (0..len)
+                .map(|_| match below(100) {
+                    0 => 1,
+                    1 => 2,
+                    _ => 0,
+                })
+                .collect::<Vec<u8>>();
+            let items = (0..len).collect::<Vec<usize>>();
+            let check = |index: &usize| match outcomes[*index] {
+                0 => Ok(false),
+                1 => Ok(true),
+                _ => Err(*index),
+            };
+            let serial = super::first_not_fresh(&items, 1, check);
+            for workers in [2, 3, 8] {
+                assert_eq!(
+                    super::first_not_fresh(&items, workers, check),
+                    serial,
+                    "case {case}, {workers} workers"
+                );
+            }
+        }
+
+        // A later stale item found first never pre-empts an earlier error,
+        // nor a later error an earlier stale item.
+        for (first, second, expected) in [(2_u8, 1_u8, Err(0_usize)), (1, 2, Ok(true))] {
+            let seen_later = AtomicBool::new(false);
+            let items = (0..64).collect::<Vec<usize>>();
+            let outcome = super::first_not_fresh(&items, 4, |index: &usize| {
+                match *index {
+                    0 => {
+                        // Held until the later decisive item was checked.
+                        while !seen_later.load(Ordering::Acquire) {
+                            std::thread::yield_now();
+                        }
+                        if first == 1 { Ok(true) } else { Err(0) }
+                    }
+                    40 => {
+                        seen_later.store(true, Ordering::Release);
+                        if second == 1 { Ok(true) } else { Err(40) }
+                    }
+                    _ => Ok(false),
+                }
+            });
+            assert_eq!(outcome, expected);
+        }
+    }
 
     /// Serves `total` zero bytes and records how it was read.
     struct MeteredZeros {
