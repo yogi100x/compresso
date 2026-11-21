@@ -32,21 +32,17 @@ fn write_external_heavy_repository(root: &Path, files: usize, externals: usize) 
     }
 }
 
-#[test]
-fn test_full_index_with_many_unresolved_external_imports_finishes_in_bounded_time() {
-    // Before D106 every committed file ran one statement that scanned every
-    // unresolved edge in the repository. Here 20 carrier files, written
-    // first, hold 100,000 imports of modules outside the repository, and
-    // each of the 2,500 small files after them paid one scan of those
-    // edges. One link pass per run makes the index linear.
+/// Writes the carriers (20 files holding 100,000 imports of modules outside
+/// the repository, sorted first) and/or 2,500 small files importing each
+/// other, then indexes them into a fresh store; returns the index time.
+fn index_carriers_and_small_files(carriers: bool, small_files: bool) -> Duration {
     const CARRIERS: usize = 20;
     const EXTERNALS_PER_CARRIER: usize = 5_000;
     const FILES: usize = 2_500;
-    const BOUND: Duration = Duration::from_secs(30);
     let directory = TempDir::new().expect("temporary directory should be created");
     let root = directory.path().join("repo");
     fs::create_dir_all(&root).expect("repository directory should be created");
-    for carrier in 0..CARRIERS {
+    for carrier in (0..CARRIERS).filter(|_| carriers) {
         let mut source = String::new();
         for module in 0..EXTERNALS_PER_CARRIER {
             source.push_str(&format!("import {{ e }} from 'ext-{carrier}-{module}';\n"));
@@ -54,7 +50,7 @@ fn test_full_index_with_many_unresolved_external_imports_finishes_in_bounded_tim
         fs::write(root.join(format!("a_carrier_{carrier:02}.ts")), source)
             .expect("carrier should be written");
     }
-    for index in 0..FILES {
+    for index in (0..FILES).filter(|_| small_files) {
         let next = (index + 1) % FILES;
         fs::write(
             root.join(format!("file_{index:05}.ts")),
@@ -72,19 +68,38 @@ fn test_full_index_with_many_unresolved_external_imports_finishes_in_bounded_tim
         .expect("index should succeed");
     let elapsed = started.elapsed();
 
-    assert_eq!(report.files_indexed, CARRIERS + FILES);
-    assert_eq!(report.imports_unresolved, CARRIERS * EXTERNALS_PER_CARRIER);
-    assert_eq!(report.imports_resolved, FILES);
+    let carriers = if carriers { CARRIERS } else { 0 };
+    let files = if small_files { FILES } else { 0 };
+    assert_eq!(report.files_indexed, carriers + files);
+    assert_eq!(report.imports_unresolved, carriers * EXTERNALS_PER_CARRIER);
+    assert_eq!(report.imports_resolved, files);
     let repo = repo_id(&store, &root);
     assert_eq!(
         store.resolved_edges(repo).expect("edges should load").len(),
-        FILES,
+        files,
         "every local import, including those written before their target, is linked"
     );
+    elapsed
+}
+
+#[test]
+fn test_full_index_with_many_unresolved_external_imports_finishes_in_bounded_time() {
+    // Before D106 every committed file ran one statement that scanned every
+    // unresolved edge in the repository: each of 2,500 small files written
+    // after carriers holding 100,000 external imports paid one scan of
+    // them, so indexing both together took over ten times as long as
+    // indexing each alone (51.8 s against about 4 s in a debug build). One
+    // link pass per run keeps the sum. The bound is relative to the two
+    // parts measured in the same test, so a slower machine scales both
+    // sides; 3x leaves room for noise on a loaded runner.
+    let carriers_alone = index_carriers_and_small_files(true, false);
+    let small_files_alone = index_carriers_and_small_files(false, true);
+    let together = index_carriers_and_small_files(true, true);
+
+    let parts = carriers_alone + small_files_alone;
     assert!(
-        elapsed < BOUND,
-        "indexing {FILES} files after {} unresolved imports took {elapsed:?}",
-        CARRIERS * EXTERNALS_PER_CARRIER
+        together < parts * 3,
+        "together {together:?}; carriers alone {carriers_alone:?}, small files alone {small_files_alone:?}"
     );
 }
 

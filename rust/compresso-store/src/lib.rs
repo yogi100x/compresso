@@ -21,7 +21,7 @@ pub use calls::{
     StoredCallSite, validate_call_sites,
 };
 pub use files::{FileLanguage, FileRecord, RelativePathError};
-pub use index_write::{IndexedFilesError, WritePacer};
+pub use index_write::{IndexedFilesError, PacerClock, SystemClock, WritePacer};
 pub use ops::{
     DetailedStatsSummary, ModeledCostSaved, OperationId, OperationRecord, OperationStatsSummary,
     RepositoryStatsSummary, RetrievalMetrics, SessionId, SessionRecord, StatsFilter, StatsSummary,

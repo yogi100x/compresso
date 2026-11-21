@@ -28,6 +28,39 @@ pub struct IndexedFilesError {
     pub source: Box<StoreError>,
 }
 
+/// The time source of a [`WritePacer`]: a monotonic reading and a sleep.
+/// Production uses [`SystemClock`]; tests drive a fake one, so the pacer's
+/// decisions never depend on how fast the machine running them is.
+pub trait PacerClock {
+    /// Time since a fixed origin; never decreases.
+    fn now(&self) -> Duration;
+    fn sleep(&self, duration: Duration);
+}
+
+/// The real clock: [`Instant`] and [`std::thread::sleep`].
+#[derive(Debug)]
+pub struct SystemClock {
+    origin: Instant,
+}
+
+impl Default for SystemClock {
+    fn default() -> Self {
+        Self {
+            origin: Instant::now(),
+        }
+    }
+}
+
+impl PacerClock for SystemClock {
+    fn now(&self) -> Duration {
+        self.origin.elapsed()
+    }
+
+    fn sleep(&self, duration: Duration) {
+        std::thread::sleep(duration);
+    }
+}
+
 /// Keeps back-to-back write transactions from starving another connection
 /// that waits for the write lock (D106).
 ///
@@ -37,13 +70,12 @@ pub struct IndexedFilesError {
 /// of [`WritePacer::LOCK_YIELD`], the pacer leaves the lock free for that
 /// long, which always spans one retry.
 #[derive(Debug)]
-pub struct WritePacer {
+pub struct WritePacer<C: PacerClock = SystemClock> {
+    clock: C,
     max_continuous: Duration,
     yield_for: Duration,
     continuous: Duration,
-    last_end: Option<Instant>,
-    #[cfg(test)]
-    pauses: usize,
+    last_end: Option<Duration>,
 }
 
 impl Default for WritePacer {
@@ -60,38 +92,39 @@ impl WritePacer {
     pub const LOCK_YIELD: Duration = Duration::from_millis(120);
 
     pub fn new(max_continuous: Duration, yield_for: Duration) -> Self {
+        Self::with_clock(SystemClock::default(), max_continuous, yield_for)
+    }
+}
+
+impl<C: PacerClock> WritePacer<C> {
+    pub fn with_clock(clock: C, max_continuous: Duration, yield_for: Duration) -> Self {
         Self {
+            clock,
             max_continuous,
             yield_for,
             continuous: Duration::ZERO,
             last_end: None,
-            #[cfg(test)]
-            pauses: 0,
         }
     }
 
     /// Runs one write transaction, then pauses when the writes since the
-    /// last gap add up to the bound.
+    /// last gap of at least the yield add up to the bound.
     pub fn write<T>(&mut self, write: impl FnOnce() -> T) -> T {
-        let began = Instant::now();
+        let began = self.clock.now();
         if self
             .last_end
-            .is_some_and(|end| began.duration_since(end) >= self.yield_for)
+            .is_some_and(|end| began.saturating_sub(end) >= self.yield_for)
         {
             self.continuous = Duration::ZERO;
         }
         let result = write();
-        let ended = Instant::now();
-        self.continuous += ended.duration_since(began);
+        let ended = self.clock.now();
+        self.continuous += ended.saturating_sub(began);
         self.last_end = Some(ended);
         if self.continuous >= self.max_continuous {
-            std::thread::sleep(self.yield_for);
-            #[cfg(test)]
-            {
-                self.pauses += 1;
-            }
+            self.clock.sleep(self.yield_for);
             self.continuous = Duration::ZERO;
-            self.last_end = Some(Instant::now());
+            self.last_end = Some(self.clock.now());
         }
         result
     }
@@ -669,29 +702,82 @@ mod tests {
         );
     }
 
+    /// A fake clock: time moves only when a test write or a pause says so,
+    /// and every pause is recorded.
+    #[derive(Debug, Default)]
+    struct FakeClock {
+        now: std::cell::Cell<Duration>,
+        pauses: std::cell::RefCell<Vec<Duration>>,
+    }
+
+    impl FakeClock {
+        fn advance(&self, by: Duration) {
+            self.now.set(self.now.get() + by);
+        }
+    }
+
+    impl PacerClock for &FakeClock {
+        fn now(&self) -> Duration {
+            self.now.get()
+        }
+
+        fn sleep(&self, duration: Duration) {
+            self.pauses.borrow_mut().push(duration);
+            self.advance(duration);
+        }
+    }
+
     #[test]
     fn test_write_pacer_leaves_the_lock_free_after_continuous_writes() {
-        const WRITE: Duration = Duration::from_millis(30);
-        const YIELD: Duration = Duration::from_millis(80);
-        let write = || std::thread::sleep(WRITE);
+        const MS: fn(u64) -> Duration = Duration::from_millis;
+        let write = |clock: &FakeClock, pacer: &mut WritePacer<&FakeClock>, ms| {
+            pacer.write(|| clock.advance(MS(ms)));
+        };
 
-        // Four back-to-back writes pass the 100 ms bound: the lock is then
-        // left free for the yield.
-        let mut pacer = WritePacer::new(Duration::from_millis(100), YIELD);
-        let started = std::time::Instant::now();
-        for _ in 0..4 {
-            pacer.write(write);
+        // Back to back: 10 writes of 250 ms are 2.5 s of continuous writing
+        // against a 1 s bound: a 120 ms pause after the 4th and the 8th.
+        let clock = FakeClock::default();
+        let mut pacer = WritePacer::with_clock(&clock, MS(1_000), MS(120));
+        let mut paused_after = Vec::new();
+        for index in 1..=10 {
+            let before = clock.pauses.borrow().len();
+            write(&clock, &mut pacer, 250);
+            if clock.pauses.borrow().len() > before {
+                paused_after.push(index);
+            }
         }
-        assert!(pacer.pauses >= 1);
-        assert!(started.elapsed() >= WRITE * 4 + YIELD);
+        assert_eq!(paused_after, [4, 8]);
+        assert_eq!(*clock.pauses.borrow(), [MS(120), MS(120)]);
 
-        // Writes separated by gaps as long as the yield never pause.
-        let mut pacer = WritePacer::new(Duration::from_millis(100), YIELD);
-        for _ in 0..4 {
-            pacer.write(write);
-            std::thread::sleep(YIELD);
+        // Below the bound: 999 ms of writes never pause.
+        let clock = FakeClock::default();
+        let mut pacer = WritePacer::with_clock(&clock, MS(1_000), MS(120));
+        for _ in 0..9 {
+            write(&clock, &mut pacer, 111);
         }
-        assert_eq!(pacer.pauses, 0);
+        assert!(clock.pauses.borrow().is_empty());
+
+        // A gap as long as the yield resets the count; a shorter one does not.
+        let clock = FakeClock::default();
+        let mut pacer = WritePacer::with_clock(&clock, MS(1_000), MS(120));
+        for _ in 0..20 {
+            write(&clock, &mut pacer, 600);
+            clock.advance(MS(120));
+        }
+        assert!(
+            clock.pauses.borrow().is_empty(),
+            "every gap reset the count"
+        );
+        write(&clock, &mut pacer, 600);
+        clock.advance(MS(119));
+        write(&clock, &mut pacer, 600);
+        assert_eq!(*clock.pauses.borrow(), [MS(120)]);
+
+        // One write that alone exceeds the bound is followed by one pause.
+        let clock = FakeClock::default();
+        let mut pacer = WritePacer::with_clock(&clock, MS(1_000), MS(120));
+        write(&clock, &mut pacer, 1_500);
+        assert_eq!(*clock.pauses.borrow(), [MS(120)]);
     }
 
     #[test]

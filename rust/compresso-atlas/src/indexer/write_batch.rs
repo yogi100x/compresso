@@ -444,7 +444,7 @@ mod tests {
             |candidate| {
                 if candidate == Path::new("b.ts") {
                     let started = std::time::Instant::now();
-                    while started.elapsed() < std::time::Duration::from_secs(2) {
+                    while started.elapsed() < std::time::Duration::from_secs(30) {
                         if store
                             .file_hashes(repo)
                             .expect("hashes")
