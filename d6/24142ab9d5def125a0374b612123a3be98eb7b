@@ -1,0 +1,47 @@
+rust/compresso-atlas/src/cards.rs
+  s_89a704cfae63f5::t_011bab135e5e4a 192-211
+rust/compresso-atlas/src/declared_imports.rs
+  s_89a704cfae63f5::t_ca4e6879e5b540 42-43,75-80,143,146-156,161-178,183-199
+rust/compresso-atlas/src/indexer.rs
+  s_89a704cfae63f5::t_132eeb70cb98a8 538-580,736-754,760
+rust/compresso-atlas/src/parsers.rs
+  s_89a704cfae63f5::t_11051d5d0c8f0c 313-328,1075-1110
+rust/compresso-atlas/src/parsers/csharp.rs
+  s_89a704cfae63f5::t_0db6e45c86d48e 315-317
+rust/compresso-atlas/src/parsers/go.rs
+  s_89a704cfae63f5::t_3eb15546c327c8 211,214
+rust/compresso-atlas/src/parsers/java.rs
+  s_89a704cfae63f5::t_510dfc906ce847 207-209
+rust/compresso-atlas/src/queries.rs
+  s_89a704cfae63f5::t_290844143c4ff8 231-237,418-419,424-425,1001-1006,1045,1049,1055-1067,1070-1074,1078,1082,1094-1095,1106-1126,1130,1140-1142,1144,1148-1149,1151-1155,1159-1169,1175-1177,1182-1214,1219,1225,1227,1232,1248,1256-1260,1285-1286,1300-1301,1338-1359,1361-1379,1381-1410,1413-1417,1419-1426,1428-1435
+rust/compresso-atlas/src/trace.rs
+  s_89a704cfae63f5::t_61dd984eb56aed 28,592-593,598-600,604,623,626-627,995-1000,1022-1023,1150-1152,1157-1158,1161-1169,1332,1335-1338,1354,1361,1364-1365,1367,1380-1392,1398,1413-1420,1755,1784-1799
+rust/compresso-atlas/tests/indexer_java_csharp.rs
+  s_89a704cfae63f5::t_bf7df59edc5489 396-399,438-442,478-481,533-534,536,563-700
+rust/compresso-atlas/tests/queries_impact_plan.rs
+  s_89a704cfae63f5::t_e50218db24f1bf 49
+rust/compresso-mcp/src/tools/engine_tools.rs
+  s_89a704cfae63f5::t_cefa0a54c1cd7e 227-229
+rust/compresso-mcp/tests/result_format.rs
+  s_89a704cfae63f5::t_a315b028406967 2830-2832
+rust/compresso-store/src/calls.rs
+  s_89a704cfae63f5::t_d2f23457968534 96-101,178,204,275-278,285,288,300-302
+rust/compresso-store/src/lib.rs
+  s_89a704cfae63f5::t_31d0ba1b37d0d4 19-20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d624142ab9d5def125a0374b612123a3be98eb7b",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
