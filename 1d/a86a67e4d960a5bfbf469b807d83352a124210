@@ -1,0 +1,47 @@
+rust/compresso-atlas/tests/indexer_go_impact.rs
+  s_89a704cfae63f5::t_52c0c1474b0bb3 338-340
+  s_89a704cfae63f5::t_7b808cb4b32c81 344,515-674
+rust/compresso-atlas/src/parsers/calls.rs
+  s_89a704cfae63f5::t_d7e781fd02ec6e 906,908-914
+  s_89a704cfae63f5::t_a404115fa0501a 950-951
+  s_89a704cfae63f5::t_b22af8f57c9b77 843-851,863-868
+  s_89a704cfae63f5::t_ca66518081c153 903-905,915-949,952-981,988,991-997,1055
+  s_89a704cfae63f5::t_2207c238f4cebc 1039,1043-1054
+  s_89a704cfae63f5::t_02d6de4b8b19b6 907,1056
+rust/compresso-atlas/src/queries.rs
+  s_89a704cfae63f5::t_cfc162b642eeaa 991-996
+  s_89a704cfae63f5::t_20a0df561bc76d 1185-1208,1213-1214
+  s_89a704cfae63f5::t_27f438c89d2176 1230-1270,1493,1631-1632,1681,1688,1696,1760,5220,5251-5252
+  s_89a704cfae63f5::t_9cc26dc8cd91e4 1491-1492,1494-1496,1567,1618-1621,1629-1630,1633-1637,1670-1671,1673,1676-1680,1682,1685,1689,1695,1697-1698,1721,1726-1730,1733-1738,1743-1747,1751-1753,1756,1761,1765-1766,5179-5183,5186-5189,5206,5211-5219,5221-5239,5242-5245,5248-5250,5255-5257,5259-5260,5262-5310
+rust/compresso-atlas/tests/parsers_go.rs
+  s_89a704cfae63f5::t_67051bf061438b 233-235
+rust/compresso-store/src/calls.rs
+  s_89a704cfae63f5::t_add76c2da2f182 452,663-756
+  s_89a704cfae63f5::t_84988c7959afc3 277-284,291-301,306-310,317-324,443-447,449-451,454-460
+decisions.md
+  s_89a704cfae63f5::t_a6ba66833b47c1 110,116
+docs/plan/03-interfaces.md
+  s_89a704cfae63f5::t_e19eb4b2a37760 240-241,319
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_e7493d114a39d7 500
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_5577037e01d3ca 3496,3500,3503,3505,3510-3511
+rust/compresso-atlas/src/parsers.rs
+  s_89a704cfae63f5::t_618e47a25687b8 1145-1169
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1da86a67e4d960a5bfbf469b807d83352a124210",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
