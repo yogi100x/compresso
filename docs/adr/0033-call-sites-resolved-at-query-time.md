@@ -48,11 +48,16 @@ Option 2.
   file by a sweep over the symbol ranges. Names must be identifier
   characters and at most 256 bytes; anything else from error recovery is
   dropped, so a malformed file cannot abort an index (as in E17-21).
-  Covered: Rust, Python, JavaScript, TypeScript, TSX, and Go (E17-37,
+  Covered: Rust, Python, JavaScript, TypeScript, TSX, Go (E17-37,
   D102: receiver-name self calls, a package qualifier names a directory
   and reaches its exported names, a qualifier naming an external import
   is a library call, plain calls resolve only as `same_file` or
-  `same_package`, and builtins are dropped). Rust macro arguments
+  `same_package`, and builtins are dropped), Java, and C# (E17-40, D105:
+  unqualified and `this.`/`super.`/`base.` calls, type- and
+  variable-qualified calls, receiver calls, and `new T()` as a plain call
+  to the type; resolution by declared package or namespace, access
+  modifiers, imports, and the supertypes a declaration names; no
+  argument references). Rust macro arguments
   are a flat token tree, so calls inside them (`assert!(run())`,
   `format!("{}", self.name())`) are read from tokens: a name followed by a
   parenthesized group, optionally behind `Type::`, `self.`, or `expr.`; a

@@ -441,3 +441,98 @@ fn test_removing_more_files_than_one_delete_chunk_removes_them_all_in_order() {
             .all(|edge| !expected.contains(&edge.to_path))
     );
 }
+
+/// Whole-package import records (D105) and every resolved edge, sorted.
+fn package_state(store: &Store, root: &Path) -> (Vec<(String, String)>, Vec<String>) {
+    let repo = repo_id(store, root);
+    let mut records = store
+        .unresolved_edge_targets_with_detail(repo, compresso_store::EDGE_DETAIL_PACKAGE)
+        .expect("package records");
+    records.sort();
+    let edges = store
+        .resolved_edges(repo)
+        .expect("resolved edges")
+        .into_iter()
+        .map(|edge| format!("{edge:?}"))
+        .collect();
+    (records, edges)
+}
+
+#[test]
+fn test_package_import_records_are_never_linked_as_file_edges() {
+    // D105 stores a Java or C# whole-package import as one `unresolved`
+    // record with detail `package` whose `to_path` is the package name.
+    // The link pass (D106) must leave it alone even when a file exists at
+    // a path equal to that name, in full, incremental, and repaired runs.
+    let directory = TempDir::new().expect("temporary directory should be created");
+    let root = directory.path().join("repo");
+    write_tree(
+        &root,
+        &[
+            (
+                "src/com/acme/util/Strings.java",
+                "package com.acme.util;\npublic class Strings {\n    public static String trim(String s) { return s; }\n}\n".to_owned(),
+            ),
+            (
+                "src/com/acme/app/Main.java",
+                "package com.acme.app;\nimport com.acme.util.*;\npublic class Main {\n    public static void main(String[] args) { Strings.trim(\"x\"); }\n}\n".to_owned(),
+            ),
+            (
+                "Util/Text.cs",
+                "namespace Acme.Util {\n    public class Text { public static string Trim(string s) { return s; } }\n}\n".to_owned(),
+            ),
+            (
+                "App/Program.cs",
+                "using Acme.Util;\nnamespace Acme.App {\n    public class Program { public static void Main() { Text.Trim(\"x\"); } }\n}\n".to_owned(),
+            ),
+            // Files whose paths equal the package and namespace names.
+            ("com.acme.util", "not a package\n".to_owned()),
+            ("Acme.Util", "not a namespace\n".to_owned()),
+        ],
+    );
+    let store = Store::open(&directory.path().join("compresso.db")).expect("store should open");
+    let indexer = Indexer::new(&store, counter_for(TokenProvider::Heuristic));
+    indexer.index(&root, |_| {}).expect("full index");
+    let repo = repo_id(&store, &root);
+    let hashes = store.file_hashes(repo).expect("hashes");
+    assert!(hashes.contains_key("com.acme.util") && hashes.contains_key("Acme.Util"));
+    let full = package_state(&store, &root);
+    assert_eq!(
+        full.0
+            .iter()
+            .map(|(_, raw)| raw.as_str())
+            .collect::<Vec<_>>(),
+        ["Acme.Util", "com.acme.util.*"],
+        "{full:?}"
+    );
+    assert!(
+        full.1
+            .iter()
+            .all(|edge| !edge.contains("\"com.acme.util\"") && !edge.contains("\"Acme.Util\"")),
+        "{full:?}"
+    );
+
+    // Incremental: an added file and a changed importer.
+    write_tree(
+        &root,
+        &[
+            ("notes.md", "# Notes\n".to_owned()),
+            (
+                "src/com/acme/app/Main.java",
+                "package com.acme.app;\nimport com.acme.util.*;\npublic class Main {\n    public static void main(String[] args) { Strings.trim(\"y\"); }\n}\n".to_owned(),
+            ),
+        ],
+    );
+    indexer.index(&root, |_| {}).expect("incremental index");
+    assert_eq!(package_state(&store, &root), full);
+
+    // A repair pass (what the next run does after an interrupted one) and a
+    // no-op run change nothing.
+    assert_eq!(store.link_pending_edges(repo).expect("link"), 0);
+    indexer.index(&root, |_| {}).expect("no-op index");
+    assert_eq!(package_state(&store, &root), full);
+    assert_eq!(
+        store.edge_resolution_counts(repo).expect("counts").pending,
+        0
+    );
+}

@@ -194,28 +194,43 @@ fn impact_tool(
         .dependents
         .iter()
         .map(|entry| {
-            json!({
+            let mut value = json!({
                 "path": entry.path,
                 "depth": entry.depth,
                 "edge_kinds": entry.edge_kinds.iter().map(|kind| edge_kind_name(*kind)).collect::<Vec<_>>()
-            })
+            });
+            // Java and C# (D105): the package or namespace that links it.
+            if let Some(package) = &entry.package {
+                value["package"] = json!(package);
+            }
+            value
         })
         .collect::<Vec<_>>();
-    retrieval_success(
-        json!({
-            "schema_version": 1,
-            "path": report.path,
-            "dependents": dependents,
-            "unresolved_edges": report.unresolved_edges,
-            "ambiguous_edges": report.ambiguous_edges,
-            "complete": report.complete,
-            "truncated": report.truncated,
-            "stale": stale,
-            "reindex_hint": stale.then_some(REINDEX_HINT)
-        }),
-        "compresso_impact",
-        mode,
-    )
+    let mut result = json!({
+        "schema_version": 1,
+        "path": report.path,
+        "dependents": dependents,
+        "total": report.total,
+        "shown": report.dependents.len(),
+        "unresolved_edges": report.unresolved_edges,
+        "ambiguous_edges": report.ambiguous_edges,
+        "complete": report.complete,
+        "truncated": report.truncated,
+        "stale": stale,
+        "reindex_hint": stale.then_some(REINDEX_HINT)
+    });
+    // Java and C# (D105): why `complete` is false when package links could
+    // not be checked; absent otherwise.
+    if report.unevaluated > 0 {
+        result["unevaluated"] = json!(report.unevaluated);
+    }
+    if report.unproven > 0 {
+        result["unproven"] = json!(report.unproven);
+    }
+    if report.packages_limited {
+        result["packages_limited"] = json!(true);
+    }
+    retrieval_success(result, "compresso_impact", mode)
 }
 
 fn stats_tool(

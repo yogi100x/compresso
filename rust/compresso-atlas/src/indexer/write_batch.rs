@@ -169,17 +169,46 @@ impl<'a, P: FnMut(IndexProgress)> BatchWriter<'a, P> {
                     .is_err()
             })
             .collect::<Vec<_>>();
+        // Java and C# (D105): a file whose call sites are cut or dropped
+        // holds one marker row, written in the same transaction as the file,
+        // so `impact` can tell that its calls may be missing. The marker is
+        // not a call site and no report count includes it.
+        let marked = pending
+            .iter()
+            .zip(&rejected)
+            .map(|(prepared, rejected)| {
+                ((prepared.calls_truncated || *rejected)
+                    && !prepared.symbols.is_empty()
+                    && super::declaring_language(&prepared.record.path).is_some())
+                .then(|| {
+                    let mut calls = if *rejected {
+                        Vec::new()
+                    } else {
+                        prepared.calls.clone()
+                    };
+                    calls.push(CallSiteRecord {
+                        caller: 0,
+                        callee_name: compresso_store::CALL_SITES_CUT_MARKER.to_owned(),
+                        qualifier: None,
+                        form: compresso_store::CallForm::Plain,
+                        line: 1,
+                    });
+                    calls
+                })
+            })
+            .collect::<Vec<_>>();
         let writes = pending
             .iter()
             .zip(&rejected)
-            .map(|(prepared, rejected)| IndexedFileWrite {
+            .zip(&marked)
+            .map(|((prepared, rejected), marked)| IndexedFileWrite {
                 record: &prepared.record,
                 symbols: &prepared.symbols,
                 edges: &prepared.edges,
-                calls: if *rejected {
-                    &[] as &[CallSiteRecord]
-                } else {
-                    &prepared.calls
+                calls: match marked {
+                    Some(calls) => calls,
+                    None if *rejected => &[] as &[CallSiteRecord],
+                    None => &prepared.calls,
                 },
             })
             .collect::<Vec<_>>();
@@ -267,6 +296,7 @@ mod tests {
             known_paths: &known_paths,
             rust_workspace: &RustWorkspace::default(),
             go_modules: &GoModules::default(),
+            declared: &crate::declared_imports::DeclaredPackages::default(),
             counter: counter_for(TokenProvider::Heuristic),
             indexed_at: 2,
         };
@@ -441,5 +471,56 @@ mod tests {
             seen_while_waiting.load(std::sync::atomic::Ordering::Relaxed),
             "a.ts must be committed while b.ts is still being prepared"
         );
+    }
+
+    #[test]
+    fn test_a_cut_java_file_gets_its_marker_row_in_the_same_write_and_no_report_count() {
+        // D105's marker row for a file whose call sites were cut is written
+        // with the file in its batch transaction; it is not a call site and
+        // no `IndexReport` count includes it.
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let store = Store::open(&directory.path().join("compresso.db")).expect("store should open");
+        let repo = store
+            .approve_repo(directory.path())
+            .expect("repository should be approved");
+        let mut prepared = synthetic("src/A.java");
+        prepared.record.language = Some(compresso_store::FileLanguage::Java);
+        prepared.symbols = vec![compresso_store::SymbolRecord {
+            name: "A".to_owned(),
+            qualified_name: "A".to_owned(),
+            kind: compresso_store::SymbolKind::Class,
+            signature: None,
+            start_line: 1,
+            end_line: 3,
+            token_estimate: 1,
+        }];
+        prepared.calls = vec![CallSiteRecord {
+            caller: 0,
+            callee_name: "run".to_owned(),
+            qualifier: None,
+            form: compresso_store::CallForm::Plain,
+            line: 2,
+        }];
+        prepared.calls_truncated = true;
+        let mut writer = BatchWriter::new(&store, repo, |_| {}, BatchLimits::DEFAULT, 0);
+        writer.push(prepared).expect("buffered");
+        writer.flush().expect("written");
+        let (_, tally, _) = writer.into_parts();
+
+        assert_eq!(
+            store.call_site_count(repo).expect("count"),
+            1,
+            "the marker is no call"
+        );
+        assert_eq!(
+            store
+                .files_with_cut_call_sites(repo)
+                .expect("marked files")
+                .into_iter()
+                .collect::<Vec<_>>(),
+            ["src/A.java"]
+        );
+        assert_eq!(tally.call_sites, 1);
+        assert_eq!(tally.call_site_files_truncated, 1);
     }
 }

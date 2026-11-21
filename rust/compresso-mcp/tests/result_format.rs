@@ -2719,3 +2719,120 @@ async fn test_text_grep_unlisted_file_paths_cannot_split_the_list() {
     );
     lean.close().await;
 }
+
+const STORE_JAVA: &str = "package a;\n\n/** Saves jobs: save is atomic. */\npublic class Store {\n    /** save writes one job. */\n    public void save(String job) {\n        write(job);\n    }\n\n    void write(String job) {\n        save(job);\n    }\n}\n";
+
+const STORE_CS: &str = "namespace A;\n\n/// <summary>Saves jobs: Save is atomic.</summary>\npublic class Store\n{\n    /// <summary>Save writes one job.</summary>\n    public void Save(string job)\n    {\n        Write(job);\n    }\n\n    void Write(string job)\n    {\n        Save(job);\n    }\n}\n";
+
+/// E17-40 (D105): Java and C# rows carry their enclosing symbols, the
+/// capped rows list definitions and code before Javadoc and `///` lines,
+/// and a read window names the symbols it starts in.
+#[tokio::test]
+async fn test_text_results_name_java_and_csharp_symbols_and_rank_doc_rows_last() {
+    let fixture = fixture_with(&[
+        ("src/main/java/a/Store.java", STORE_JAVA),
+        ("src/A/Store.cs", STORE_CS),
+    ]);
+    let mut source = String::from("package a;\n\npublic class Steps {\n");
+    for index in 0..40 {
+        source.push_str(&format!(
+            "\n    public int step{index}() {{\n        return {index};\n    }}\n"
+        ));
+    }
+    source.push_str("}\n");
+    write_file(&fixture.root, "src/main/java/a/Steps.java", &source);
+    Indexer::new(&fixture.store, counter_for(TokenProvider::OpenAiO200k))
+        .index(&fixture.root, |_| {})
+        .expect("fixture reindexes");
+    let mut lean = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, is_error) = lean
+        .call(
+            "compresso_grep",
+            &json!({ "pattern": "save", "path": "src/main/java/a/Store.java", "max_matches_per_file": 2 }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    assert!(
+        text.contains(
+            "src/main/java/a/Store.java (4; unlisted: 3, 5)\n6 [def Store::save] public void save(String job) {\n11 [Store::write] save(job);\n"
+        ),
+        "{text}"
+    );
+    let (text, is_error) = lean
+        .call(
+            "compresso_grep",
+            &json!({ "pattern": "Save", "path": "src/A/Store.cs", "max_matches_per_file": 2 }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    assert!(
+        text.contains(
+            "src/A/Store.cs (4; unlisted: 3, 6)\n7 [def Store::Save] public void Save(string job)\n14 [Store::Write] Save(job);\n"
+        ),
+        "{text}"
+    );
+    let (text, _) = lean
+        .call(
+            "compresso_read",
+            &json!({ "path": "src/main/java/a/Steps.java" }),
+        )
+        .await;
+    assert!(text.contains("starts there: Steps::step"), "{text}");
+    lean.close().await;
+}
+
+/// E17-40 round 3 SF6: the impact result carries exact `total` and `shown`
+/// and names the package that links a Java or C# dependent.
+#[tokio::test]
+async fn test_impact_result_names_totals_and_the_linking_package() {
+    let fixture = fixture_with(&[
+        (
+            "lib/Widget.cs",
+            "namespace Lib;\n\npublic static class Widget { public static void Make() { } }\n",
+        ),
+        (
+            "app/Main.cs",
+            "using Lib;\n\nnamespace App;\n\npublic class Main { }\n",
+        ),
+        (
+            "lib/User.cs",
+            "namespace Lib;\n\npublic class User { void Run() { Widget.Make(); } }\n",
+        ),
+        ("lib/Idle.cs", "namespace Lib;\n\npublic class Idle { }\n"),
+    ]);
+    let mut full = Harness::start(
+        &fixture,
+        options_with(&fixture, McpToolProfile::Full, McpResultFormat::Json),
+    )
+    .await;
+    let (text, is_error) = full
+        .call(
+            "compresso_impact",
+            &json!({ "path": "lib/Widget.cs", "max_results": 1 }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    let value: Value = serde_json::from_str(&text).expect("JSON result");
+    assert_eq!(value["total"], 2, "{value}");
+    assert_eq!(value["shown"], 1);
+    assert_eq!(value["truncated"], true);
+    assert_eq!(value["complete"], false);
+    assert_eq!(
+        value["dependents"],
+        json!([{ "path": "app/Main.cs", "depth": 1, "edge_kinds": ["imports"], "package": "Lib" }])
+    );
+    let (text, _) = full
+        .call("compresso_impact", &json!({ "path": "lib/Widget.cs" }))
+        .await;
+    let value: Value = serde_json::from_str(&text).expect("JSON result");
+    assert_eq!(value["total"], 2);
+    assert_eq!(value["shown"], 2);
+    // `Idle.cs` shares the namespace and shows no use: unproven.
+    assert_eq!(value["unproven"], 1);
+    assert_eq!(value["complete"], false);
+    assert_eq!(
+        value["dependents"][1],
+        json!({ "path": "lib/User.cs", "depth": 1, "edge_kinds": ["references"], "package": "Lib" })
+    );
+    full.close().await;
+}

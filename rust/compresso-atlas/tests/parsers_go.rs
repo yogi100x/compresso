@@ -363,3 +363,27 @@ fn test_go_indexed_function_values_are_not_calls_to_the_slice() {
         "{calls:?}"
     );
 }
+
+/// E17-40 review M1: a `var` spec of 250,000 names with a 500 KB type
+/// copies the type text once, not once per name.
+#[test]
+fn test_go_many_value_names_with_a_huge_type_are_linear() {
+    let fields = "x".repeat(500_000);
+    let names = vec!["a"; 250_000].join(", ");
+    let source = format!("package p\n\nvar {names} struct{{ {fields} int }}\n");
+    let started = std::time::Instant::now();
+    let extraction = ParserRegistry::extract(Language::Go, &source).expect("extracts");
+    let elapsed = started.elapsed();
+    eprintln!("Go: 250,000 names with a 500 KB type in {elapsed:?}");
+    assert_eq!(extraction.symbols.len(), 250_000);
+    assert!(extraction.symbols.iter().all(|symbol| {
+        symbol
+            .signature
+            .as_deref()
+            .is_some_and(|text| text.len() <= 1_024)
+    }));
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "took {elapsed:?}"
+    );
+}
