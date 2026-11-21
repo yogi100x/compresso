@@ -544,12 +544,12 @@ impl Indexer<'_> {
         };
         let mut joined = HashSet::<(&'static str, String, String)>::new();
         for (path, now) in read {
-            if added.contains(path) || relocated.contains(path.as_str()) {
-                if let Some(language) = declaring_language(path) {
-                    let before = stored.get(path).map_or(&[][..], Vec::as_slice);
-                    for name in before.iter().chain(now) {
-                        joined.insert((language.as_str(), name.clone(), stem(path)));
-                    }
+            if (added.contains(path) || relocated.contains(path.as_str()))
+                && let Some(language) = declaring_language(path)
+            {
+                let before = stored.get(path).map_or(&[][..], Vec::as_slice);
+                for name in before.iter().chain(now) {
+                    joined.insert((language.as_str(), name.clone(), stem(path)));
                 }
             }
         }
