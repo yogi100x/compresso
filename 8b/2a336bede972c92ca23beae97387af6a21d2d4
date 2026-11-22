@@ -1,0 +1,28 @@
+docs/adr/0036-opt-in-read-only-live-sql.md
+  s_89a704cfae63f5::t_236987ec61f763 15-27,91-95,119-137,145-154,163-165,197-204,212-216,266-291
+  s_89a704cfae63f5::t_2bd646bbf9c0f3 292
+README.md
+  s_89a704cfae63f5::t_fa0ee60416b08b 16-19
+decisions.md
+  s_89a704cfae63f5::t_bef9bce711f9ef 110
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_988323443c9cbe 3622
+docs/runbooks/install-local.md
+  s_89a704cfae63f5::t_c547079b742cc2 136-159
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8b2a336bede972c92ca23beae97387af6a21d2d4",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
