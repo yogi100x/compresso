@@ -498,8 +498,10 @@ mod tests {
             &harness.manager,
             &harness.context(Scope::Project(harness.project.clone())),
         );
+        // Refused by the link check itself, not only by the file-type check.
         assert!(
-            matches!(result, Err(IntegrationError::InvalidRequest { .. })),
+            matches!(&result, Err(IntegrationError::InvalidRequest { reason })
+                if reason.contains("symbolic link")),
             "{result:?}"
         );
         assert_eq!(fs::read_dir(&elsewhere).expect("dir").count(), 0);
