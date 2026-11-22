@@ -1,0 +1,29 @@
+rust/compresso-sql/src/sqlite.rs
+  s_89a704cfae63f5::t_e55a9da229a64a 16-17,47-54,114-119,126-127,143-151,165-168,173-186,267-288
+  s_89a704cfae63f5::t_9a69e273c6005f 8-10
+  s_89a704cfae63f5::t_779c14d5391f39 517-528
+  s_89a704cfae63f5::t_94b8858a2e9e83 294,296-297
+  s_89a704cfae63f5::t_ab298545b0bd78 516
+rust/compresso-sql/tests/sqlite.rs
+  s_89a704cfae63f5::t_cd1125b3362a54 178-182
+rust/compresso-sql/tests/sqlite_memory.rs
+  s_89a704cfae63f5::t_991d78241135ad 42
+  s_89a704cfae63f5::t_cd1125b3362a54 1-41,43-52
+  s_89a704cfae63f5::t_8c20f297e7313e 53-55
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bebfd79cabf0b6e1e5cdd44aace322bccc7219ca",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
