@@ -63,9 +63,15 @@ jobs:
         run: node --experimental-strip-types --test scripts/doc-drift-lint.test.ts
       - name: Enforce documentation drift lint
         shell: bash
+        # Build outside the checkout: the secret scan below reads the whole
+        # working tree, and dependency metadata (sqlx's .rmeta embeds a PEM
+        # private key from its documentation examples) would be reported.
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/doc-drift-target
         run: |
           cargo run -p compresso-cli --example surface_inventory > "${RUNNER_TEMP}/surface-inventory.json"
           node --experimental-strip-types scripts/doc-drift-lint.ts --inventory "${RUNNER_TEMP}/surface-inventory.json" --json
+          rm -rf "${CARGO_TARGET_DIR}"
       - name: Install Rust security tools
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
