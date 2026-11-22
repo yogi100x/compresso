@@ -1,0 +1,27 @@
+decisions.md
+  s_89a704cfae63f5::t_dd93d57419ebdb 110
+docs/adr/0035-opt-in-verified-edit-tool.md
+  s_89a704cfae63f5::t_46b5d47a67e7e9 45-46,138,227-261
+docs/plan/03-interfaces.md
+  s_89a704cfae63f5::t_90b7641e7e5f87 499-503
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_f6d835c783be91 37,330,546,551,553,555,557,559,561-563
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_d25249676c7eda 2702,3556-3576,3592,3623-3625
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "eadc8f82dd2d0ca0c63f8339d401c7a8f9bd5f92",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
