@@ -105,6 +105,30 @@ If verification fails, confirm that the tarball and `SHA256SUMS` came from the s
 platform is unsupported, use a matching E1-06 artifact or build locally; do not rename an artifact
 for a different target.
 
+## Optional: read-only live SQL queries
+
+`compresso_sql` (E17-50, ADR-0036) is off unless you turn it on. Put the
+database URL in an environment variable whose name starts with
+`COMPRESSO_SQL_`, in the environment your coding client starts from (your
+shell profile or the client's own launch environment; Compresso never reads
+`.env` files and never stores the URL):
+
+```sh
+export COMPRESSO_SQL_APP='postgres://reader@db.internal:5432/app'
+compresso integrations install claude-code --sql-env COMPRESSO_SQL_APP
+```
+
+The entry stores only the name. Other clients can start
+`compresso mcp serve --sql-env COMPRESSO_SQL_APP` from their own
+configuration. Accepted values: `sqlite:/absolute/path.db`,
+`postgres://...`, `mysql://...`. Use a role that can only read: Compresso
+refuses a Postgres superuser or a member of the server-file or
+server-program roles, and a MySQL account with FILE, SUPER, or ALL
+PRIVILEGES on `*.*`. Any host other than loopback or a local socket needs
+TLS with certificate verification (`sslmode=verify-full`,
+`ssl-mode=VERIFY_IDENTITY`, or no mode at all). Results go to your coding
+client and may be sent to its model provider.
+
 ## Test the installer
 
 The test suite builds deterministic stub artifacts through the E1-06 packager and exercises local

@@ -7,6 +7,11 @@ integrations. The MCP server is read-only unless the operator starts it with
 `--edits`, which adds one write tool, `compresso_edit`, for verified literal
 replacements, identifier renames, and anchored inserts in indexed files
 (ADR-0035); `compresso edit` runs the same edits from the command line.
+Compresso makes no network request of its own unless the operator starts the
+server with `--sql-env COMPRESSO_SQL_NAME`, which adds one read-only tool,
+`compresso_sql`, that queries the one Postgres, MySQL/MariaDB, or SQLite
+database whose URL that environment variable holds (ADR-0036; see
+`docs/runbooks/install-local.md`).
 
 ## Connecting a coding client
 
