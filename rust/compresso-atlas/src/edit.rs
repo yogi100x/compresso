@@ -1421,6 +1421,12 @@ struct MadeDirectory {
     relative: String,
     absolute: PathBuf,
     identity: Option<(u64, u64)>,
+    /// An open handle to the directory made (Unix), held until the call
+    /// ends: while it is open the directory's inode cannot be freed and
+    /// handed to another directory, so `identity` cannot be matched by a
+    /// directory another writer put in its place (E17-49 review). `None`
+    /// elsewhere, where `identity` is `None` too.
+    _handle: Option<fs::File>,
 }
 
 impl WorkingFile {
@@ -1892,15 +1898,13 @@ fn create_working(gate: &Gate<'_>, path: &str, content: &str) -> Result<WorkingF
             operation: None,
         });
     }
-    // A new directory name Windows reads as another name (trailing `.` or
-    // space) or that holds a control character (E17-49 review).
+    // A new directory name in decomposed form (E17-49 review). Only new
+    // ones: a directory already on disk is never refused as a parent. The
+    // walk above reads such a name safely on every platform; every other
+    // name rule ran on the text before any file-system call.
     for directory in &new_file.new_directories {
         let name = directory.relative.rsplit('/').next().unwrap_or_default();
-        if name.ends_with(['.', ' '])
-            || name
-                .chars()
-                .any(|character| character.is_control() || is_decomposed(character))
-        {
+        if name.chars().any(is_decomposed) {
             return Err(EditError::Refused {
                 path: path.to_owned(),
                 reason: Refusal::UnportableName,
@@ -1962,12 +1966,18 @@ fn judge_create_path(gate: &Gate<'_>, path: &str, relative: &Path) -> Result<(),
 fn judge_create_name(gate: &Gate<'_>, path: &str, relative: &Path) -> Result<(), EditError> {
     // Directories are named by the name rules alone here: this runs before
     // the link-free walk, so it must not read anything on disk.
+    // Read from the text, never parsed as a platform path: on Windows
+    // `a:b` parses as a drive prefix and a control character fails the
+    // file-system call itself, so these rules run before any such call.
     let refuse = |reason| Err(refused_at(gate, path, relative, reason, false));
-    if relative
-        .components()
-        .any(|component| is_reserved_component(&component.as_os_str().to_string_lossy()))
-    {
+    let names = text_components(relative);
+    if names.iter().any(|name| is_reserved_component(name)) {
         return refuse(Refusal::ReservedName);
+    }
+    // A name Windows reads as another (trailing `.` or space) or that holds
+    // a control character, in any component (E17-49 review).
+    if names.iter().any(|name| is_unportable_component(name)) {
+        return refuse(Refusal::UnportableName);
     }
     if is_secret_path(relative) {
         return refuse(Refusal::Excluded);
@@ -1978,13 +1988,28 @@ fn judge_create_name(gate: &Gate<'_>, path: &str, relative: &Path) -> Result<(),
     if is_control_path(relative) {
         return refuse(Refusal::ControlFile);
     }
-    if relative
-        .components()
-        .any(|component| component.as_os_str().to_string_lossy().starts_with('.'))
-    {
+    if names.iter().any(|name| name.starts_with('.')) {
         return refuse(Refusal::Hidden);
     }
     Ok(())
+}
+
+/// The `/`-separated components of a repository-relative path, read from
+/// its text (a canonical spelling's `\` counts as `/`).
+fn text_components(relative: &Path) -> Vec<String> {
+    relative
+        .to_string_lossy()
+        .replace('\\', "/")
+        .split('/')
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A name ending with `.` or a space (Windows strips them, so it names
+/// another entry) or holding a control character.
+fn is_unportable_component(name: &str) -> bool {
+    name.ends_with(['.', ' ']) || name.chars().any(char::is_control)
 }
 
 /// The scanner's exclusion rules of [`judge_create_path`]: a file the
@@ -2008,23 +2033,26 @@ fn refused_at(
     on_disk: bool,
 ) -> EditError {
     let mut directory = None;
-    let mut prefix = PathBuf::new();
-    for component in relative.parent().into_iter().flat_map(Path::components) {
-        prefix.push(component);
-        let name = component.as_os_str().to_string_lossy();
+    let names = text_components(relative);
+    // Directories only: every component but the last.
+    for end in 1..names.len() {
+        let text = names[..end].join("/");
+        let prefix = Path::new(&text);
+        let name = names[end - 1].as_str();
         let refuses = match reason {
-            Refusal::ReservedName => is_reserved_component(&name),
+            Refusal::ReservedName => is_reserved_component(name),
+            Refusal::UnportableName => is_unportable_component(name),
             Refusal::Excluded => {
-                is_secret_path(&prefix)
-                    || (on_disk && gate.exclusions.excludes_directory(gate.root, &prefix))
+                is_secret_path(prefix)
+                    || (on_disk && gate.exclusions.excludes_directory(gate.root, prefix))
             }
             Refusal::Protected => name.eq_ignore_ascii_case(".git"),
-            Refusal::ControlFile => is_control_path(&prefix),
+            Refusal::ControlFile => is_control_path(prefix),
             Refusal::Hidden => name.starts_with('.'),
             _ => false,
         };
         if refuses {
-            directory = Some(prefix.to_string_lossy().replace('\\', "/"));
+            directory = Some(text);
             break;
         }
     }
@@ -3160,11 +3188,12 @@ fn make_directories(
                 });
             }
         }
-        let identity = file_identity(&directory.absolute);
+        let (identity, handle) = hold_directory(&directory.absolute);
         made.push(MadeDirectory {
             relative: directory.relative.clone(),
             absolute: directory.absolute.clone(),
             identity,
+            _handle: handle,
         });
         sync_directory(&directory.absolute);
         let real = fs::symlink_metadata(&directory.absolute)
@@ -3178,9 +3207,35 @@ fn make_directories(
     Ok(())
 }
 
+/// Opens the directory just made and takes its identity from the open
+/// handle (Unix); see [`MadeDirectory`]. Without a handle the identity is
+/// unknown and the directory is never removed by identity on Unix.
+fn hold_directory(path: &Path) -> (Option<(u64, u64)>, Option<fs::File>) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        let Ok(handle) = fs::File::open(path) else {
+            return (None, None);
+        };
+        let identity = handle
+            .metadata()
+            .ok()
+            .filter(fs::Metadata::is_dir)
+            .map(|metadata| (metadata.dev(), metadata.ino()));
+        (identity, Some(handle))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        (None, None)
+    }
+}
+
 /// Removes the directories in `made`, deepest first, each only while it is
-/// still the directory made (identity on Unix) and empty: never one the
-/// call did not create, never one holding anything.
+/// empty and, on Unix, still the directory made (device and inode, which
+/// the held handle keeps from being reused): never one holding anything.
+/// Elsewhere no identity is known, so an empty directory another writer put
+/// at the same path in the meantime could be removed.
 fn remove_made_directories(made: &[MadeDirectory]) {
     for directory in made.iter().rev() {
         let same = fs::symlink_metadata(&directory.absolute)
@@ -4320,8 +4375,9 @@ mod tests {
                     if index == 1 {
                         fs::remove_file(root.join("p/x.rs"))?;
                         fs::remove_dir(root.join("p"))?;
-                        // Keep the old inode alive so the new one differs.
-                        fs::create_dir(root.join("held"))?;
+                        // A file system may hand the freed inode number to
+                        // the next directory; the call's held handle keeps
+                        // that from happening while it runs.
                         fs::create_dir(root.join("p"))?;
                         return Err(io::Error::other("injected"));
                     }

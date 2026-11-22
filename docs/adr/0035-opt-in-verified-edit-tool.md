@@ -289,8 +289,10 @@ or from another create of the call is refused, and a symbolic link on the path
 is refused `no_directory` before anything follows it, whatever it points to.
 Directories are made with create-new calls after every target is re-verified;
 something that appears meanwhile stops the call. A failed call removes the
-directories it made, deepest first, only while each is still empty and still
-the directory made. A dry run creates nothing and reports what it would create.
+directories it made, deepest first, only while each is empty and, on Unix,
+still the directory made (an open handle held during the call keeps its inode
+from being reused); on Windows an empty directory another writer put at the
+same path during the call can be removed. A dry run creates nothing and reports what it would create.
 Directories get the platform default permissions. New directory names that
 end with `.` or a space, hold a control character, or equal another after
 lowercasing are refused, and so is any new name written in decomposed Unicode
