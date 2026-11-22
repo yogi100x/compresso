@@ -293,7 +293,15 @@ impl SqlSettings {
                 .iter()
                 .chain(POSTGRES_UNOVERRIDABLE)
                 .chain(TRUST_ANCHOR_ENVIRONMENT)
-                .filter(|name| std::env::var_os(name).is_some())
+                .filter(|name| match std::env::var_os(name) {
+                    // The certificate loader drops empty SSL_CERT_DIR
+                    // entries, so a directory list with none is no change.
+                    Some(value) if **name == "SSL_CERT_DIR" => {
+                        std::env::split_paths(&value).any(|path| !path.as_os_str().is_empty())
+                    }
+                    Some(_) => true,
+                    None => false,
+                })
                 .map(|name| (*name).to_owned())
                 .collect(),
         }

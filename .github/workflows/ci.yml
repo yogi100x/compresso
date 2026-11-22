@@ -301,7 +301,7 @@ jobs:
           done
           unset SSL_CERT_FILE SSL_CERT_DIR
           export COMPRESSO_SQL_TEST_POSTGRES_WRONG_HOST_URL="postgres://reader@127.0.0.1:5433/probe?sslmode=verify-full&sslrootcert=${RUNNER_TEMP}/pgtls/ca.pem"
-          cargo test -p compresso-sql --locked --test live -- --test-threads=1
+          cargo test -p compresso-sql --locked --test live -- --test-threads=1 --nocapture
       - name: Run live MySQL tests against MySQL 8.4
         # Runs even when the previous step failed, so one round reports
         # both engines; the job still fails if either step fails.
@@ -313,7 +313,7 @@ jobs:
         shell: bash
         run: |
           unset SSL_CERT_FILE SSL_CERT_DIR
-          cargo test -p compresso-sql --locked --test live -- --test-threads=1 live_mysql
+          cargo test -p compresso-sql --locked --test live -- --test-threads=1 --nocapture live_mysql
       - name: Stop the TLS Postgres
         if: always()
         run: docker rm -f pgtls || true

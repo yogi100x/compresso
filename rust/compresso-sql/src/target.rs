@@ -55,8 +55,11 @@ pub fn is_valid_env_name(name: &str) -> bool {
     })
 }
 
-/// Postgres environment variables the driver would read to change the
-/// connection (`libpq` names). Any of them set makes a Postgres target
+/// Postgres environment variables the driver reads to change the connection:
+/// exactly those `sqlx-postgres` 0.9.1 reads in `new_without_pgpass`
+/// (`PGPASSFILE` is read only when the password file is used, which never
+/// happens here; server and tooling variables such as `PGDATA` are never
+/// read). Any of them set makes a Postgres target
 /// unusable, so the connection comes only from the operator's variable.
 pub const POSTGRES_ENVIRONMENT: &[&str] = &[
     "PGHOST",
@@ -64,7 +67,6 @@ pub const POSTGRES_ENVIRONMENT: &[&str] = &[
     "PGPORT",
     "PGUSER",
     "PGPASSWORD",
-    "PGPASSFILE",
     "PGDATABASE",
     "PGOPTIONS",
     "PGSSLMODE",
@@ -846,10 +848,10 @@ mod tests {
     fn test_postgres_environment_variables_make_the_target_unusable() {
         let error =
             SqlTarget::parse_with_environment("postgres://u@localhost/app", Vec::new(), |name| {
-                (name == "PGPASSFILE").then(String::new)
+                (name == "PGAPPNAME").then(String::new)
             })
             .expect_err("environment");
-        assert!(error.starts_with("PGPASSFILE is set"), "{error}");
+        assert!(error.starts_with("PGAPPNAME is set"), "{error}");
         for name in POSTGRES_ENVIRONMENT {
             assert_eq!(
                 postgres_environment_conflict(|candidate| (candidate == *name).then(String::new)),

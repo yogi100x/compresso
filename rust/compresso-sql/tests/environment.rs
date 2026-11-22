@@ -2,7 +2,10 @@
 //! real process environment. One test in its own binary, because it sets
 //! and removes variables of this process.
 
-use compresso_sql::{SqlEngine, SqlService, SqlSettings};
+use compresso_sql::{
+    POSTGRES_ENVIRONMENT, POSTGRES_UNOVERRIDABLE, SqlEngine, SqlService, SqlSettings,
+    TRUST_ANCHOR_ENVIRONMENT,
+};
 
 const ENV: &str = "COMPRESSO_SQL_TEST";
 const POSTGRES: &str = "postgres://u:p@127.0.0.1:5432/app?sslmode=disable";
@@ -27,9 +30,22 @@ fn problem(settings: &SqlSettings) -> Option<String> {
 
 #[test]
 fn test_connection_settings_come_only_from_the_named_variable() {
-    for name in ["PGAPPNAME", "PGOPTIONS", "SSL_CERT_FILE", "SSL_CERT_DIR"] {
+    // Start from a known environment whatever the machine sets (GitHub's
+    // Windows image sets PGUSER, PGPASSWORD, PGROOT, PGDATA, PGBIN, ...).
+    for name in POSTGRES_ENVIRONMENT
+        .iter()
+        .chain(POSTGRES_UNOVERRIDABLE)
+        .chain(TRUST_ANCHOR_ENVIRONMENT)
+    {
         unset(name);
     }
+    // Server-side and tooling variables the driver never reads change
+    // nothing.
+    for name in ["PGDATA", "PGBIN", "PGROOT", "PGLOCALEDIR", "PGPASSFILE"] {
+        set(name, "/somewhere");
+    }
+    set(ENV, POSTGRES);
+    assert_eq!(problem(&SqlSettings::from_env(ENV)), None);
     // from_env records every PG* variable that is set, by name.
     set("PGAPPNAME", "probe");
     set(ENV, POSTGRES);
@@ -70,6 +86,12 @@ fn test_connection_settings_come_only_from_the_named_variable() {
         }
         unset(name);
     }
+    // An empty SSL_CERT_DIR names no directory: the certificate loader
+    // ignores it, and so does the rule.
+    set("SSL_CERT_DIR", "");
+    set(ENV, "postgres://u:p@db.example.com:5432/app");
+    assert_eq!(problem(&SqlSettings::from_env(ENV)), None);
+    unset("SSL_CERT_DIR");
     let service = SqlService::new(&SqlSettings::with_value(ENV, Some(MYSQL)), Vec::new());
     assert_eq!(service.engine(), Some(SqlEngine::MySql));
     unset(ENV);
