@@ -415,18 +415,90 @@ fn test_live_mysql_a_statement_cut_by_the_time_limit_is_a_timeout() {
     }
 }
 
+const CUT_BENCHMARK: &str = "SELECT BENCHMARK(10000000000, MD5('a'))";
+const CUT_SLEEP: &str = "SELECT SLEEP(5)";
+const CUT_SCAN: &str = "SELECT COUNT(*) FROM information_schema.COLUMNS a, information_schema.COLUMNS b, information_schema.COLUMNS c";
+
+/// Whether the server is MariaDB (else MySQL).
+fn is_mariadb(url: &str) -> bool {
+    runtime().block_on(async {
+        let mut connection = MySqlConnection::connect(url).await.expect("connect");
+        let version: String = sqlx::query_scalar("SELECT CAST(VERSION() AS CHAR)")
+            .fetch_one(&mut connection)
+            .await
+            .expect("version");
+        version.to_ascii_lowercase().contains("mariadb")
+    })
+}
+
 #[test]
-fn test_live_mysql_the_interruption_warning_rule_alone_catches_a_cut() {
+fn test_live_mysql_report_what_the_server_signals_for_a_cut() {
+    // Facts, printed to the test log: for each shape cut at 500 ms, what the
+    // statement returned and what SHOW WARNINGS and @@warning_count said.
     let Some((_, reader, _)) = mysql() else {
         return;
     };
-    // Deadline rule off: only an interruption warning can turn the cut
-    // BENCHMARK into a timeout.
+    let mariadb = is_mariadb(&reader);
+    runtime().block_on(async {
+        let mut connection = MySqlConnection::connect(&reader).await.expect("connect");
+        let limit = if mariadb {
+            "SET SESSION max_statement_time = 0.5"
+        } else {
+            "SET SESSION max_execution_time = 500"
+        };
+        connection.execute(raw_sql(limit)).await.expect("limit");
+        for sql in [CUT_BENCHMARK, CUT_SLEEP, CUT_SCAN] {
+            let started = Instant::now();
+            let outcome = connection
+                .fetch_all(raw_sql(sql))
+                .await
+                .map(|rows| format!("{} row(s)", rows.len()))
+                .unwrap_or_else(|error| format!("error: {error}"));
+            let elapsed = started.elapsed();
+            let warnings = connection
+                .fetch_all(raw_sql("SHOW WARNINGS"))
+                .await
+                .map(|rows| {
+                    rows.iter()
+                        .map(|row| {
+                            use sqlx::Row;
+                            let code: Option<String> = row.try_get_unchecked(1).ok();
+                            code.unwrap_or_default()
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            eprintln!(
+                "CUT FACT engine={} shape={sql} outcome={outcome} elapsed={elapsed:?} warning_codes={warnings:?}",
+                if mariadb { "mariadb" } else { "mysql" }
+            );
+        }
+    });
+}
+
+#[test]
+fn test_live_mysql_the_interruption_signal_alone_catches_what_the_server_flags() {
+    let Some((_, reader, _)) = mysql() else {
+        return;
+    };
+    // Deadline rule off: only what the server reports (an error, or an
+    // interruption warning) can turn a cut statement into a timeout. A
+    // table scan cut at the limit is reported by both engines.
     let service = service(&reader).with_cut_checks_for_tests(true, false);
     let error = service
-        .execute(&request("SELECT BENCHMARK(10000000000, MD5('a'))", 500))
-        .expect_err("cut BENCHMARK");
+        .execute(&request(CUT_SCAN, 500))
+        .expect_err("cut scan");
     assert_eq!(error.code(), "sql_timeout", "{error}");
+    // MariaDB 11.4 cuts BENCHMARK at the limit and reports nothing (seen
+    // in CI): only the deadline rule catches it, so with that rule off the
+    // cut value comes back. This documents the fact the product's deadline
+    // rule exists for.
+    let benchmark = service.execute(&request(CUT_BENCHMARK, 500));
+    if is_mariadb(&reader) {
+        assert!(benchmark.is_ok(), "{benchmark:?}");
+    } else {
+        eprintln!("CUT FACT mysql BENCHMARK with the deadline rule off: {benchmark:?}");
+    }
 }
 
 #[test]
@@ -437,10 +509,10 @@ fn test_live_mysql_the_deadline_rule_alone_catches_a_cut() {
     // Warning rule off: only reaching the deadline can turn the cut SLEEP
     // (which returns 1 with no error) into a timeout.
     let service = service(&reader).with_cut_checks_for_tests(false, true);
-    let error = service
-        .execute(&request("SELECT SLEEP(5)", 500))
-        .expect_err("cut SLEEP");
-    assert_eq!(error.code(), "sql_timeout", "{error}");
+    for sql in [CUT_SLEEP, CUT_BENCHMARK] {
+        let error = service.execute(&request(sql, 500)).expect_err(sql);
+        assert_eq!(error.code(), "sql_timeout", "{sql}: {error}");
+    }
 }
 
 #[test]

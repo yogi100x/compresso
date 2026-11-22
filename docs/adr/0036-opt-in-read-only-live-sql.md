@@ -179,7 +179,14 @@ keychain credentials, a SQL parser, and mutation stay in E15.
      `SHOW WARNINGS`), or whose run reached its deadline (within 2% or
      10 ms), answers `sql_timeout` instead of a result: a cut result is never
      presented as complete, at the cost of refusing a query that finishes
-     just at its limit.
+     just at its limit. Observed on MariaDB 11.4.3 (CI, 2026-11-23): a
+     `BENCHMARK` cut at the limit returns 0 with no interruption warning the
+     check sees, so only the deadline rule catches it; a cut `SLEEP` is also
+     caught by the deadline rule; a cut table scan fails with an error. The
+     live suite prints what `SHOW WARNINGS` reports for each shape on each
+     engine (`test_live_mysql_report_what_the_server_signals_for_a_cut`);
+     MySQL 8.4 has not been observed yet. Both rules stay on, and either one
+     answers `sql_timeout`.
    - One connection per call means nothing a statement leaves in the session
      (advisory or named locks, `set_config`, user variables, temporary
      objects) survives the call.

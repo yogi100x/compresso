@@ -290,11 +290,22 @@ jobs:
           # The tool refuses to run while SSL_CERT_FILE or SSL_CERT_DIR is set
           # (they would change which servers TLS trusts); the private CA of
           # the TLS check is passed through the URL's sslrootcert instead.
-          echo "SSL_CERT_FILE set by the runner: ${SSL_CERT_FILE:+yes}${SSL_CERT_FILE:-no}"
+          # Report set-but-empty separately: an empty value is still "set".
+          for name in SSL_CERT_FILE SSL_CERT_DIR; do
+            if [ -z "${!name+x}" ]; then
+              echo "${name}: not set"
+            else
+              value="${!name}"
+              echo "${name}: set by the environment, value length ${#value}"
+            fi
+          done
           unset SSL_CERT_FILE SSL_CERT_DIR
           export COMPRESSO_SQL_TEST_POSTGRES_WRONG_HOST_URL="postgres://reader@127.0.0.1:5433/probe?sslmode=verify-full&sslrootcert=${RUNNER_TEMP}/pgtls/ca.pem"
           cargo test -p compresso-sql --locked --test live -- --test-threads=1
       - name: Run live MySQL tests against MySQL 8.4
+        # Runs even when the previous step failed, so one round reports
+        # both engines; the job still fails if either step fails.
+        if: ${{ !cancelled() }}
         env:
           COMPRESSO_SQL_TEST_REQUIRE_LIVE: "1"
           COMPRESSO_SQL_TEST_MYSQL_URL: mysql://reader@127.0.0.1:3307/compresso_probe?ssl-mode=DISABLED
