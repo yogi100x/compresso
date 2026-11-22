@@ -831,3 +831,29 @@ async fn test_create_reports_the_directories_it_makes_over_mcp() {
     harness.close().await;
     assert!(!fixture.root.join("lib").exists());
 }
+
+/// E17-49 (D114), lean text form end to end: a grep limited to one file
+/// names the use site the filter hid, and a call at the smallest budget
+/// still succeeds within it. (Here because this harness serves lean.)
+#[tokio::test]
+async fn test_lean_grep_text_names_a_use_site_the_path_filter_hid() {
+    let fixture = Fixture::new();
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean, true)).await;
+    let (text, is_error) = harness
+        .call(
+            "compresso_edit",
+            &json!({ "operations": [{ "op": "create", "path": "src/other.rs", "content": "pub fn other() -> String {\n    crate::format_utc(1);\n    format_utc(2)\n}\n" }] }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    let grep = |max_tokens: u64| json!({ "patterns": ["pub fn format_utc("], "path": "src/lib.rs", "max_tokens": max_tokens });
+    let (text, is_error) = harness.call("compresso_grep", &grep(1_000)).await;
+    assert!(!is_error, "{text}");
+    assert!(
+        text.contains("[used outside this path: src/other.rs:3 format_utc]"),
+        "{text}"
+    );
+    let (text, is_error) = harness.call("compresso_grep", &grep(300)).await;
+    assert!(!is_error, "{text}");
+    harness.close().await;
+}

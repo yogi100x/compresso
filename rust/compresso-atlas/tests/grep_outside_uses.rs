@@ -260,3 +260,24 @@ fn test_the_hint_reads_a_bounded_number_of_rows() {
     );
     assert_eq!(outside.sites.len(), 2);
 }
+
+/// A method call on another value (`socket.send(data)`) does not use a
+/// free function `send`, even one defined once in the repository.
+#[test]
+fn test_a_method_call_on_another_value_is_not_a_use_of_a_function() {
+    let fixture = Fixture::new(&[
+        (
+            "src/net/send.ts",
+            "export function send(data) {\n  return data;\n}\n",
+        ),
+        (
+            "src/app.ts",
+            "import { send } from \"./net/send\";\n\nexport function start(socket, data) {\n  socket.send(data);\n}\n\nexport function direct(data) {\n  return send(data);\n}\n",
+        ),
+    ]);
+    let outside = fixture
+        .outside("function send", Some("src/net"))
+        .expect("the direct call is a use site");
+    assert_eq!(sites(&outside), ["src/app.ts:8 send"]);
+    assert_eq!(outside.total, 1, "{outside:?}");
+}

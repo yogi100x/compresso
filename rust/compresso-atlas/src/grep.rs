@@ -10,7 +10,9 @@
 use std::path::Path;
 
 use compresso_core::TokenCounter;
-use compresso_store::{FileLanguage, FileRecord, RepoId, Store, SymbolKind, SymbolRecord};
+use compresso_store::{
+    CallForm, FileLanguage, FileRecord, RepoId, Store, SymbolKind, SymbolRecord,
+};
 use regex::{Regex, RegexBuilder};
 
 use crate::AtlasError;
@@ -1651,7 +1653,10 @@ pub fn literal_alternation_source(parts: &[String]) -> String {
 /// a pattern's own scope) or when there are none.
 ///
 /// A use site is a stored call site naming the definition (a call, or the
-/// function passed as an argument), read through the callee-name index.
+/// function passed as an argument), read through the callee-name index; for
+/// a definition that is not a method only a bare call or a function passed
+/// as an argument counts, since a qualified or method call (`socket.send()`)
+/// may reach another definition of the name.
 /// The first [`GREP_OUTSIDE_DEFINITIONS`] definitions listed, in rank
 /// order, are looked up; a name defined more than once in the repository is
 /// skipped, since its call sites may reach another definition. Per name the
@@ -1689,7 +1694,7 @@ pub fn use_sites_outside_filter(
         return Ok(None);
     }
     let mut symbols = std::collections::HashMap::<&str, Vec<SymbolRecord>>::new();
-    let mut names = Vec::<(usize, String)>::new();
+    let mut names = Vec::<(usize, String, SymbolKind)>::new();
     for (index, path, line) in definitions {
         let Some(qualified) = line.symbol.as_deref() else {
             continue;
@@ -1703,7 +1708,7 @@ pub fn use_sites_outside_filter(
         else {
             continue;
         };
-        if names.iter().any(|(_, name)| *name == symbol.name) {
+        if names.iter().any(|(_, name, _)| *name == symbol.name) {
             continue;
         }
         // A name defined twice may be another definition's use site.
@@ -1711,7 +1716,7 @@ pub fn use_sites_outside_filter(
             .symbols_named(repo, &symbol.name, 2)
             .map_or(0, |hits| hits.len());
         if defined == 1 {
-            names.push((index, symbol.name.clone()));
+            names.push((index, symbol.name.clone(), symbol.kind));
         }
     }
     let mut root = None;
@@ -1720,14 +1725,24 @@ pub fn use_sites_outside_filter(
     let mut found = std::collections::BTreeMap::<(String, u32), String>::new();
     let mut at_least = false;
     let mut rows_read = 0;
-    for (index, name) in names {
+    for (index, name, kind) in names {
         let mut calls = store.call_sites_named(repo, &name, GREP_OUTSIDE_SITES_PER_NAME + 1)?;
         rows_read += calls.len();
         if calls.len() > GREP_OUTSIDE_SITES_PER_NAME {
             at_least = true;
             calls.truncate(GREP_OUTSIDE_SITES_PER_NAME);
         }
+        // A call through a qualifier or on a value (`socket.send()`,
+        // `self.send()`) cannot be told from a call of another `send` without
+        // resolving it, so for anything but a method only a bare call and a
+        // function passed as an argument count.
+        let counts = |form: CallForm| {
+            kind == SymbolKind::Method || matches!(form, CallForm::Plain | CallForm::Reference)
+        };
         for call in calls {
+            if !counts(call.form) {
+                continue;
+            }
             let inside = filter
                 .as_ref()
                 .is_none_or(|filter| filter.matches(&call.from_path))
