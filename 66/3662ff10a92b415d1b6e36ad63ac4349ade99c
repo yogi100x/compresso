@@ -1,0 +1,50 @@
+rust/compresso-cli/tests/cli_session_commands.rs
+  s_89a704cfae63f5::t_97bd7291257220 1-322
+  s_89a704cfae63f5::t_8200d83b70c7df 323-333
+rust/compresso-mcp/src/session.rs
+  s_89a704cfae63f5::t_2b31189db6da00 166-167,176,292-310
+  s_89a704cfae63f5::t_62346f5446d745 11-13,79-80,119,158-165,168-175,177
+rust/compresso-mcp/src/tools/report.rs
+  s_89a704cfae63f5::t_0166f164d59253 1-511
+  s_89a704cfae63f5::t_3ed40c031d3ef8 512
+rust/compresso-mcp/tests/tools_report.rs
+  s_89a704cfae63f5::t_4c38a840dba3a3 1-239
+  s_89a704cfae63f5::t_d0ac4e4ec93cb7 240-268
+rust/compresso-integrations/src/session_commands.rs
+  s_89a704cfae63f5::t_bc1e497cb712b9 1-516
+  s_89a704cfae63f5::t_0ed0843cc042bf 517-552
+rust/compresso-cli/src/commands.rs
+  s_89a704cfae63f5::t_60c11d648e60b1 195-204,226-229
+rust/compresso-cli/src/commands/integrations.rs
+  s_89a704cfae63f5::t_76b3feddd3630a 14-15,696-701,708,728-729,782-792,803,806-807,819-821,833,836-837,882-903,916-919,961-964,1034,1061-1067,1076-1077,1087-1092,1109-1119,1170-1171,1204-1205,1216-1217,1293,1453-1584,1613-1618,1698-1700,1704-1714,1720,1738-1743,1752-1754,1768-1780
+rust/compresso-integrations/src/lib.rs
+  s_89a704cfae63f5::t_1658673a55bf28 32,63
+rust/compresso-mcp/src/server.rs
+  s_89a704cfae63f5::t_ca29598c0fe63f 119,132-134,965-973
+rust/compresso-mcp/src/tools/engine_tools.rs
+  s_89a704cfae63f5::t_a3eb9bf42f53a4 391,486,494
+rust/compresso-mcp/src/tools/mod.rs
+  s_89a704cfae63f5::t_a75fc022f35247 9,89-96,131,149-161,175
+rust/compresso-mcp/tests/handshake.rs
+  s_89a704cfae63f5::t_706700524a0a03 14,23
+rust/compresso-mcp/tests/tool_profile.rs
+  s_89a704cfae63f5::t_28c690f2f7dcde 19,32,188
+rust/compresso-mcp/tests/tools_recall.rs
+  s_89a704cfae63f5::t_cc36d2fe3a50aa 250
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "663662ff10a92b415d1b6e36ad63ac4349ade99c",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
