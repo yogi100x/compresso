@@ -238,15 +238,14 @@ fn test_an_unindexed_file_passes_the_same_gates_as_an_indexed_one() {
         let error = fixture
             .apply(vec![replace("link.rs", "x", "y", 1)])
             .expect_err("a link out of the root");
-        // The scanner never indexes a link, so it stays unindexed.
+        // One answer for every link, whatever it points to (review item 3).
         assert!(
             matches!(
                 error,
-                EditError::OutsideRoot { .. }
-                    | EditError::Refused {
-                        reason: Refusal::NotIndexed | Refusal::NotFound,
-                        ..
-                    }
+                EditError::Refused {
+                    reason: Refusal::NotFound,
+                    ..
+                }
             ),
             "{error:?}"
         );
@@ -530,17 +529,20 @@ fn test_create_refuses_an_unwritable_directory_in_dry_runs_too() {
     let fixture = Fixture::new(&[("locked/a.rs", b"fn a() {}\n")]);
     let locked = fixture.root.join("locked");
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).expect("chmod");
-    // Root may write anywhere; the OS answer is what is asserted.
-    let writable = fs::write(locked.join(".probe"), b"").is_ok();
-    let _ = fs::remove_file(locked.join(".probe"));
-    for dry_run in [true, false] {
-        let result = fixture.apply_dry(vec![create("locked/new.rs", "x\n")], dry_run);
-        if writable {
-            assert!(result.is_ok() || dry_run);
-        } else {
-            assert_eq!(refusal(result.unwrap_err()), Refusal::ReadOnly);
-        }
+    // A process that may write anywhere (root) cannot observe the refusal.
+    if fs::write(locked.join(".probe"), b"").is_ok() {
+        let _ = fs::remove_file(locked.join(".probe"));
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).expect("chmod back");
+        eprintln!("skipped: this process may write into a 0o555 directory");
+        return;
     }
+    for dry_run in [true, false] {
+        let error = fixture
+            .apply_dry(vec![create("locked/new.rs", "x\n")], dry_run)
+            .expect_err("unwritable directory");
+        assert_eq!(refusal(error), Refusal::ReadOnly, "dry_run={dry_run}");
+    }
+    assert!(!locked.join("new.rs").exists());
     fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).expect("chmod back");
 }
 
@@ -603,4 +605,281 @@ fn test_create_content_is_bounded_text() {
     }
     assert!(!fixture.root.join("new.txt").exists());
     assert_eq!(fixture.text("a.rs"), "fn a() {}\n");
+}
+
+// --- Review follow-ups (E17-47, D112) ---
+
+/// Control files the review found `create` could plant, and siblings of
+/// entries already on the list: refused for edit and for create alike.
+const NEW_CONTROL_FILES: &[&str] = &[
+    ".yarnrc",
+    ".pnpmfile.cjs",
+    "mise.toml",
+    ".mise.toml",
+    "mise.local.toml",
+    ".mise.local.toml",
+    ".tool-versions",
+    "rust-toolchain.toml",
+    "rust-toolchain",
+    ".exrc",
+    ".nvim.lua",
+    ".nvimrc",
+    ".vimrc",
+    ".hg/hgrc",
+    ".jj/repo/config.toml",
+    ".svn/entries",
+    ".yarn/releases/yarn.cjs",
+    "AGENT.md",
+    ".rules",
+    "opencode.json",
+    "opencode.jsonc",
+    ".opencode/agent.md",
+    ".drone.yml",
+    "bitbucket-pipelines.yml",
+    "azure-pipelines.yaml",
+];
+
+#[test]
+fn test_control_files_the_review_found_are_refused_for_edit_and_create() {
+    let files = NEW_CONTROL_FILES
+        .iter()
+        .map(|path| (*path, b"x = 1\n".as_slice()))
+        .chain([("keep.rs", b"fn k() {}\n".as_slice())])
+        .collect::<Vec<_>>();
+    let fixture = Fixture::new(&files);
+    for path in NEW_CONTROL_FILES {
+        let error = fixture
+            .apply(vec![replace(path, "x = 1", "x = 2", 1)])
+            .expect_err(path);
+        assert_eq!(refusal(error).as_str(), "control_file", "edit {path}");
+        assert_eq!(fixture.text(path), "x = 1\n", "{path}");
+    }
+    let fresh = Fixture::new(&[("keep.rs", b"fn k() {}\n")]);
+    for path in NEW_CONTROL_FILES {
+        if let Some((directory, _)) = path.rsplit_once('/') {
+            fs::create_dir_all(fresh.root.join(directory)).expect("dir");
+        }
+        let error = fresh
+            .apply(vec![EditOperation::Create {
+                path: (*path).to_owned(),
+                content: "x\n".to_owned(),
+            }])
+            .expect_err(path);
+        assert_eq!(refusal(error).as_str(), "control_file", "create {path}");
+        assert!(!fresh.root.join(path).exists(), "{path}");
+    }
+}
+
+#[test]
+fn test_create_refuses_hidden_paths_with_a_one_line_reason() {
+    let fixture = Fixture::new(&[("src/a.rs", b"fn a() {}\n")]);
+    fs::create_dir_all(fixture.root.join("src/.hidden")).expect("dir");
+    for path in [".editorconfig", "src/.local.rs", "src/.hidden/x.rs", ".foo"] {
+        let error = fixture
+            .apply(vec![EditOperation::Create {
+                path: path.to_owned(),
+                content: "x\n".to_owned(),
+            }])
+            .expect_err(path);
+        let message = error.to_string();
+        assert!(!message.contains('\n'), "{message}");
+        assert!(message.contains("client"), "{message}");
+        assert_eq!(refusal(error).as_str(), "hidden", "{path}");
+        assert!(!fixture.root.join(path).exists(), "{path}");
+    }
+    // An existing hidden file that is not a control file stays editable.
+    write(&fixture.root, ".editorconfig", b"x = 1\n");
+    fixture
+        .apply(vec![replace(".editorconfig", "x = 1", "x = 2", 1)])
+        .expect("edit is not create");
+}
+
+#[test]
+fn test_create_refuses_colons_and_reserved_device_names_everywhere() {
+    let fixture = Fixture::new(&[("src/a.rs", b"fn a() {}\n")]);
+    for path in [
+        "a:b.rs",
+        "src/x:y",
+        "src/con",
+        "nul.txt",
+        "COM1.rs",
+        "src/lpt9",
+        "Aux.h",
+        "prn.tar.gz",
+        "src/com9.",
+    ] {
+        let error = fixture
+            .apply(vec![EditOperation::Create {
+                path: path.to_owned(),
+                content: "x\n".to_owned(),
+            }])
+            .expect_err(path);
+        assert_eq!(refusal(error).as_str(), "reserved_name", "{path}");
+    }
+    for path in [
+        "src/console.rs",
+        "src/com10.rs",
+        "src/auxiliary.rs",
+        "src/nullable.rs",
+    ] {
+        fixture
+            .apply(vec![EditOperation::Create {
+                path: path.to_owned(),
+                content: "x\n".to_owned(),
+            }])
+            .expect(path);
+    }
+}
+
+#[test]
+fn test_two_creates_differing_only_by_case_are_refused_in_dry_and_real_runs() {
+    let fixture = Fixture::new(&[("src/a.rs", b"fn a() {}\n")]);
+    for dry_run in [true, false] {
+        let error = fixture
+            .apply_dry(
+                vec![
+                    EditOperation::Create {
+                        path: "src/Foo.rs".to_owned(),
+                        content: "x\n".to_owned(),
+                    },
+                    EditOperation::Create {
+                        path: "src/foo.rs".to_owned(),
+                        content: "y\n".to_owned(),
+                    },
+                ],
+                dry_run,
+            )
+            .expect_err("differ only by case");
+        let message = error.to_string();
+        assert!(
+            message.contains("operation 2") && message.contains("case"),
+            "{message}"
+        );
+    }
+    assert!(!fixture.root.join("src/Foo.rs").exists());
+    assert!(!fixture.root.join("src/foo.rs").exists());
+}
+
+/// A path through a symbolic link is refused alike whatever the link points
+/// to, so an answer never reveals whether something outside the root exists.
+#[cfg(unix)]
+#[test]
+fn test_a_link_is_refused_alike_whatever_it_points_to() {
+    let fixture = Fixture::new(&[("src/a.rs", b"fn a() {}\n"), ("real/b.rs", b"fn b() {}\n")]);
+    let outside = fixture.root.parent().expect("parent").join("outside");
+    fs::create_dir_all(&outside).expect("outside");
+    fs::write(outside.join("there.rs"), "fn x() {}\n").expect("outside file");
+    let link = |name: &str, target: &Path| {
+        std::os::unix::fs::symlink(target, fixture.root.join(name)).expect("link")
+    };
+    link("to_existing.rs", &outside.join("there.rs"));
+    link("to_missing.rs", &outside.join("absent.rs"));
+    link("to_inside.rs", &fixture.root.join("src/a.rs"));
+    link("dir_out", &outside);
+    link("dir_in", &fixture.root.join("real"));
+    for path in [
+        "to_existing.rs",
+        "to_missing.rs",
+        "to_inside.rs",
+        "dir_out/there.rs",
+        "dir_out/absent.rs",
+        "dir_in/b.rs",
+        "missing.rs",
+    ] {
+        let error = fixture
+            .apply(vec![replace(path, "fn", "fn", 1)])
+            .expect_err(path);
+        assert!(
+            matches!(
+                error,
+                EditError::Refused {
+                    reason: Refusal::NotFound,
+                    ..
+                }
+            ),
+            "{path}: {error:?}"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(outside.join("there.rs")).expect("outside"),
+        "fn x() {}\n"
+    );
+}
+
+/// Crash leftovers of the edit tool are skipped by exactly their pattern; a
+/// user's file that only resembles it is indexed.
+#[test]
+fn test_the_scanner_skips_exactly_the_edit_temporary_pattern() {
+    let fixture = Fixture::new(&[
+        ("src/a.rs", b"fn a() {}\n"),
+        ("src/.a.rs.compresso-edit-new-4242-7.tmp", b"fn left() {}\n"),
+        (".b.rs.compresso-edit-old-1-0.tmp", b"fn left() {}\n"),
+        (".notes.compresso-edit-draft.tmp", b"notes\n"),
+        (".x.compresso-edit-new-12.tmp", b"notes\n"),
+    ]);
+    assert!(!fixture.indexed("src/.a.rs.compresso-edit-new-4242-7.tmp"));
+    assert!(!fixture.indexed(".b.rs.compresso-edit-old-1-0.tmp"));
+    assert!(fixture.indexed(".notes.compresso-edit-draft.tmp"));
+    assert!(fixture.indexed(".x.compresso-edit-new-12.tmp"));
+}
+
+/// A refresh is observed through a probe file written after the last index:
+/// a refresh indexes it.
+fn probe(fixture: &Fixture, name: &str) -> String {
+    let path = format!("probe_{name}.rs");
+    write(&fixture.root, &path, b"fn probe() {}\n");
+    path
+}
+
+#[test]
+fn test_a_target_the_scanner_would_refuse_never_costs_a_refresh() {
+    let fixture = Fixture::new(&[(".gitignore", b"ignored/\n"), ("kept.rs", b"fn k() {}\n")]);
+    write(&fixture.root, "blob.txt", b"x\n\0");
+    write(&fixture.root, "huge.txt", "x\n".repeat(600_000).as_bytes());
+    write(&fixture.root, "ignored/x.rs", b"x\n");
+    let mut targets = vec!["blob.txt", "huge.txt", "ignored/x.rs"];
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(fixture.root.join("kept.rs"), fixture.root.join("link.rs"))
+            .expect("link");
+        fs::create_dir_all(fixture.root.join("real")).expect("dir");
+        write(&fixture.root, "real/y.rs", b"x\n");
+        std::os::unix::fs::symlink(fixture.root.join("real"), fixture.root.join("alias"))
+            .expect("dir link");
+        targets.extend(["link.rs", "alias/y.rs"]);
+    }
+    for (index, target) in targets.into_iter().enumerate() {
+        let probe = probe(&fixture, &index.to_string());
+        fixture
+            .apply(vec![replace(target, "x", "y", 1)])
+            .expect_err(target);
+        assert!(!fixture.indexed(&probe), "{target} cost a refresh");
+    }
+}
+
+#[test]
+fn test_an_unchanged_target_a_refresh_did_not_index_is_remembered() {
+    let fixture = Fixture::new(&[("kept.rs", b"fn k() {}\n")]);
+    // Passes every cheap check, but the scanner skips it.
+    let target = ".q.compresso-edit-new-1-1.tmp";
+    write(&fixture.root, target, b"x\n");
+    let first = probe(&fixture, "first");
+    fixture
+        .apply(vec![replace(target, "x", "y", 1)])
+        .expect_err("not indexed");
+    assert!(fixture.indexed(&first), "the first call refreshes");
+    let second = probe(&fixture, "second");
+    fixture
+        .apply(vec![replace(target, "x", "y", 1)])
+        .expect_err("not indexed");
+    assert!(
+        !fixture.indexed(&second),
+        "an unchanged target is remembered"
+    );
+    write(&fixture.root, target, b"x\nmore\n");
+    let third = probe(&fixture, "third");
+    fixture
+        .apply(vec![replace(target, "x", "y", 1)])
+        .expect_err("not indexed");
+    assert!(fixture.indexed(&third), "a changed target is tried again");
 }

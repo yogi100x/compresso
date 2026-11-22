@@ -259,6 +259,17 @@ Measured surface after this amendment (o200k / Anthropic-calibrated): full with
 edits 4,778 / 5,496 tokens, lean with edits 2,573 / 2,960; without the tool,
 full 4,033 / 4,639 and lean 2,008 / 2,310 (unchanged).
 
+After an independent security review the same day, create also refuses any
+hidden path component (a denylist always has gaps; tool configuration goes
+through the client's own write path), `:` and Windows reserved device names,
+and two creates differing only by case; the control-file denylist grew (see
+D112); a path through a link is `not_found` whatever it points to; and the
+refresh for an unindexed target is skipped for targets the cheap checks
+refuse and for unchanged targets a refresh already left unindexed. Known
+gaps: no journal for a crash mid-commit, no automatic cleanup of leftover
+temporary files, hard links required for create, and the request byte bound
+checked after the MCP frame is parsed.
+
 Threat model addition: injected repository content can now ask for a new file
 as well as an edit. A created file is reached through the same path gates and
 is listed in the report with `created: true`; the client's approval prompt

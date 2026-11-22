@@ -1125,9 +1125,27 @@ fn open_no_follow(path: &Path) -> io::Result<File> {
 
 /// Whether `relative` names a temporary file the edit tool writes beside an
 /// edited file (`.<name>.compresso-edit-<role>-<pid>-<n>.tmp`).
+/// Exactly that pattern (E17-47 review): `<role>` is `new` or `old`, and
+/// `<pid>` and `<n>` are decimal; a user's file that only resembles it is
+/// indexed.
 pub(crate) fn is_edit_temporary(relative: &str) -> bool {
     let name = relative.rsplit('/').next().unwrap_or(relative);
-    name.starts_with('.') && name.contains(".compresso-edit-") && name.ends_with(".tmp")
+    let Some(rest) = name
+        .strip_prefix('.')
+        .and_then(|rest| rest.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    let Some((base, tail)) = rest.rsplit_once(".compresso-edit-") else {
+        return false;
+    };
+    let decimal = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    let mut parts = tail.split('-');
+    !base.is_empty()
+        && matches!(parts.next(), Some("new" | "old"))
+        && parts.next().is_some_and(decimal)
+        && parts.next().is_some_and(decimal)
+        && parts.next().is_none()
 }
 
 fn is_secret_pattern(relative: &str) -> bool {

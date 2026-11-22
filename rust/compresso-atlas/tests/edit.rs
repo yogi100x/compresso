@@ -675,7 +675,9 @@ fn test_symlink_components_and_links_out_of_the_root_are_refused() {
     let error = fixture
         .apply(vec![replace("other/a.rs", "a", "b", 1)])
         .expect_err("outside root");
-    assert!(matches!(error, EditError::OutsideRoot { .. }), "{error:?}");
+    // Every link reads as missing, whatever it points to (E17-47 review):
+    // the answer no longer tells whether the target outside the root exists.
+    assert_eq!(refusal(error), Refusal::NotFound);
     assert_eq!(
         fs::read_to_string(&outside).expect("outside"),
         "fn a() {}\n"

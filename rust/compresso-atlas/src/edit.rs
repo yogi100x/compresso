@@ -206,7 +206,10 @@ impl EditOperation {
 #[derive(Clone, Debug, Default)]
 pub struct EditRequest {
     pub operations: Vec<EditOperation>,
-    /// Report and diff only; write nothing and leave the index as it is.
+    /// Report and diff only; write no repository file. The index is still
+    /// refreshed first when the call renames (D97 (f), as on main) or names
+    /// a target that exists but is not indexed (E17-47), so a dry run and a
+    /// real run judge the same files; that writes only Compresso's store.
     pub dry_run: bool,
     /// Canonical files or directories never written, such as the store's
     /// database files.
@@ -292,6 +295,10 @@ pub enum Refusal {
     /// `create`: a directory on the path is missing, is not a directory, or
     /// is a symbolic link.
     NoDirectory,
+    /// `create`: a path component starts with `.` (E17-47 review).
+    Hidden,
+    /// `create`: a component holds `:` or is a Windows reserved device name.
+    ReservedName,
 }
 
 impl Refusal {
@@ -310,6 +317,8 @@ impl Refusal {
             Self::ForeignOwner => "foreign_owner",
             Self::Exists => "exists",
             Self::NoDirectory => "no_directory",
+            Self::Hidden => "hidden",
+            Self::ReservedName => "reserved_name",
         }
     }
 
@@ -335,6 +344,12 @@ impl Refusal {
             }
             Self::NoDirectory => {
                 "a directory on the path does not exist, is not a directory, or is a symbolic link; create writes into existing directories only"
+            }
+            Self::Hidden => {
+                "create makes ordinary source files only, never a path with a component starting with '.', because such files often configure tools and a denylist always has gaps; write it through the client's own file tools, which ask for their own permission"
+            }
+            Self::ReservedName => {
+                "a path component contains ':' or is a reserved device name (CON, PRN, AUX, NUL, COM1-9, LPT1-9, with or without an extension), which create refuses on every platform"
             }
         }
     }
@@ -775,11 +790,15 @@ pub(crate) fn apply_edits_with_hook(
         .iter()
         .any(|operation| matches!(operation, EditOperation::Rename { .. }));
     let exclusions = ScannerExclusions::load(&root);
-    let refresh =
-        has_rename || has_unindexed_target(&root, &exclusions, &request.operations, &indexed);
+    let candidates = refresh_candidates(&root, &exclusions, &request.operations, &indexed);
+    // At most one refresh per call.
+    let refresh = has_rename || !candidates.is_empty();
     let index_refreshed = !refresh || Indexer::new(store, counter).index(&root, |_| {}).is_ok();
     if refresh {
         indexed = load_indexed()?;
+        if index_refreshed {
+            remember_unindexed(&root, &candidates, &indexed);
+        }
     }
     let gate = Gate {
         root: &root,
@@ -1020,8 +1039,21 @@ fn validate_request(request: &EditRequest) -> Result<(), EditError> {
         EDIT_MAX_REQUEST_BYTES,
         request_bytes,
     )?;
+    // Two creates whose paths differ only by case would be one file on a
+    // case-insensitive file system; refused alike everywhere, dry runs too.
+    let mut created = BTreeMap::<String, (usize, &str)>::new();
     for (index, operation) in request.operations.iter().enumerate() {
         validate_operation(operation).map_err(|error| error.at_operation(index + 1))?;
+        if let EditOperation::Create { path, .. } = operation
+            && let Some((earlier, earlier_path)) =
+                created.insert(path.to_lowercase(), (index + 1, path))
+            && earlier_path != path
+        {
+            return Err(invalid(format!(
+                "operation {}: create path '{path}' differs only by case from operation {earlier}'s '{earlier_path}'; a case-insensitive file system cannot hold both",
+                index + 1
+            )));
+        }
     }
     Ok(())
 }
@@ -1266,8 +1298,14 @@ fn load(gate: &Gate<'_>, path: &str) -> Result<WorkingFile, EditError> {
     if gate.exclusions.excludes(gate.root, relative) {
         return Err(refused(path, Refusal::Excluded));
     }
-    // Resolved before the index lookup (which stays a hard gate) so a
-    // missing or linked unindexed path reports what it is.
+    // Judged without following any link first (E17-47 review): a path
+    // through a link, or a missing one, reads as missing whatever the link
+    // points to, so an answer never tells whether something outside the
+    // root exists. The read gate below still re-checks.
+    match leaf_state(gate.root, path) {
+        LeafState::Link | LeafState::Missing => return Err(refused(path, Refusal::NotFound)),
+        LeafState::File(_) | LeafState::Other => {}
+    }
     let resolved = match resolve_under_root(gate.root, path) {
         Ok(ResolvedEntry::File(resolved)) => resolved,
         // Like the read gate, a path through a symbolic link reads as missing.
@@ -1341,39 +1379,170 @@ fn load(gate: &Gate<'_>, path: &str) -> Result<WorkingFile, EditError> {
     })
 }
 
-/// Whether a `replace` or `insert` names a path that exists on disk but is
-/// not indexed, and that no earlier `create` of the call makes: the call
-/// then refreshes the index first (E17-47). A path the gates refuse anyway
-/// (secret, `.git`, control file, scanner-excluded) does not cost a refresh.
-/// Bounded by the operation count.
-fn has_unindexed_target(
+/// Most targets the unindexed-target memory holds per process; it is
+/// cleared when full, so it never grows past this.
+pub const EDIT_UNINDEXED_MEMO_ENTRIES: usize = 1_024;
+
+/// Size and modification time of a target that existed on disk but that an
+/// index refresh did not index, keyed by canonical root and path.
+type UnindexedMemo = BTreeMap<(PathBuf, String), (u64, Option<std::time::SystemTime>)>;
+
+/// Targets a refresh did not index, remembered for this process (E17-47
+/// review): an unchanged one does not cost another refresh.
+fn unindexed_memo() -> &'static std::sync::Mutex<UnindexedMemo> {
+    static MEMO: std::sync::OnceLock<std::sync::Mutex<UnindexedMemo>> = std::sync::OnceLock::new();
+    MEMO.get_or_init(|| std::sync::Mutex::new(BTreeMap::new()))
+}
+
+/// A `replace` or `insert` target that may be indexed by a refresh, with
+/// the size and modification time it had when judged.
+struct RefreshCandidate {
+    path: String,
+    size: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+/// The `replace` and `insert` targets that exist on disk but are not
+/// indexed, that no earlier `create` of the call makes, and that a refresh
+/// could index: the call then refreshes the index once first (E17-47).
+/// Every cheap check that would make the scanner or the edit gates refuse
+/// the target is applied first, so such a target never costs a refresh:
+/// secret, `.git`, control file, scanner-excluded, any symbolic link on the
+/// path (judged without following links), not a regular file, over the
+/// edit limit, binary (a NUL in the first 8 KiB, the scanner's sniff), or
+/// remembered unchanged from an earlier refresh that did not index it.
+/// Bounded by the operation count; reads at most 8 KiB per target.
+fn refresh_candidates(
     root: &Path,
     exclusions: &ScannerExclusions,
     operations: &[EditOperation],
     indexed: &BTreeMap<String, FileRecord>,
-) -> bool {
+) -> Vec<RefreshCandidate> {
     let mut created = BTreeSet::new();
+    let mut candidates = Vec::new();
     for operation in operations {
-        match operation {
+        let path = match operation {
             EditOperation::Create { path, .. } => {
                 created.insert(path.as_str());
+                continue;
             }
-            EditOperation::Replace { path, .. } | EditOperation::Insert { path, .. }
-                if !indexed.contains_key(path)
-                    && !created.contains(path.as_str())
-                    && validate_path(path).is_ok()
-                    && !is_secret_path(Path::new(path))
-                    && !has_git_component(Path::new(path))
-                    && !is_control_path(Path::new(path))
-                    && !exclusions.excludes(root, Path::new(path))
-                    && fs::symlink_metadata(root.join(path)).is_ok() =>
-            {
-                return true;
+            EditOperation::Replace { path, .. } | EditOperation::Insert { path, .. } => path,
+            EditOperation::Rename { .. } => continue,
+        };
+        let relative = Path::new(path);
+        if indexed.contains_key(path)
+            || created.contains(path.as_str())
+            || candidates
+                .iter()
+                .any(|candidate: &RefreshCandidate| &candidate.path == path)
+            || validate_path(path).is_err()
+            || is_secret_path(relative)
+            || has_git_component(relative)
+            || is_control_path(relative)
+            || exclusions.excludes(root, relative)
+        {
+            continue;
+        }
+        let LeafState::File(metadata) = leaf_state(root, path) else {
+            continue;
+        };
+        if metadata.len() > EDIT_MAX_FILE_BYTES {
+            continue;
+        }
+        let modified = metadata.modified().ok();
+        let remembered = unindexed_memo()
+            .lock()
+            .ok()
+            .and_then(|memo| memo.get(&(root.to_path_buf(), path.clone())).copied());
+        if remembered == Some((metadata.len(), modified)) {
+            continue;
+        }
+        let binary = match resolve_under_root(root, path) {
+            Ok(ResolvedEntry::File(resolved)) => {
+                let mut prefix = Vec::new();
+                resolved
+                    .open()
+                    .and_then(|file| file.take(BINARY_SNIFF_BYTES).read_to_end(&mut prefix))
+                    .map_or(true, |_| prefix.contains(&0))
             }
-            _ => {}
+            _ => true,
+        };
+        if binary {
+            continue;
+        }
+        candidates.push(RefreshCandidate {
+            path: path.clone(),
+            size: metadata.len(),
+            modified,
+        });
+    }
+    candidates
+}
+
+/// Bytes the scanner reads to decide a file is binary.
+const BINARY_SNIFF_BYTES: u64 = 8 * 1024;
+
+/// Remembers the candidates a refresh did not index.
+fn remember_unindexed(
+    root: &Path,
+    candidates: &[RefreshCandidate],
+    indexed: &BTreeMap<String, FileRecord>,
+) {
+    let Ok(mut memo) = unindexed_memo().lock() else {
+        return;
+    };
+    for candidate in candidates
+        .iter()
+        .filter(|candidate| !indexed.contains_key(&candidate.path))
+    {
+        if memo.len() >= EDIT_UNINDEXED_MEMO_ENTRIES {
+            memo.clear();
+        }
+        memo.insert(
+            (root.to_path_buf(), candidate.path.clone()),
+            (candidate.size, candidate.modified),
+        );
+    }
+}
+
+/// What a repository path names, judged without following any link.
+enum LeafState {
+    File(fs::Metadata),
+    /// A directory or another non-file type.
+    Other,
+    /// A component of the path, the leaf included, is a symbolic link.
+    Link,
+    /// A component is missing or is not a directory.
+    Missing,
+}
+
+/// Walks `path` under `root` one component at a time with
+/// `symlink_metadata`, so no link is followed and nothing outside the root
+/// is consulted: a path through a link is `Link` whatever it points to.
+/// Bounded by the path's components ([`MAX_PATH_BYTES`]).
+fn leaf_state(root: &Path, path: &str) -> LeafState {
+    let mut current = root.to_path_buf();
+    let mut components = Path::new(path).components().peekable();
+    while let Some(component) = components.next() {
+        current.push(component);
+        let Ok(metadata) = fs::symlink_metadata(&current) else {
+            return LeafState::Missing;
+        };
+        if metadata.file_type().is_symlink() {
+            return LeafState::Link;
+        }
+        if components.peek().is_none() {
+            return if metadata.is_file() {
+                LeafState::File(metadata)
+            } else {
+                LeafState::Other
+            };
+        }
+        if !metadata.is_dir() {
+            return LeafState::Missing;
         }
     }
-    false
+    LeafState::Missing
 }
 
 /// Whether any component of `relative` is `.git`, in any case (a create on
@@ -1452,26 +1621,76 @@ fn create_working(gate: &Gate<'_>, path: &str, content: &str) -> Result<WorkingF
     let relative = Path::new(path);
     // Judged on the requested spelling first, so a refusal never depends on
     // what exists on disk.
-    let judge = |relative: &Path| -> Result<(), EditError> {
-        if is_secret_path(relative) {
-            return Err(refused(path, Refusal::Excluded));
-        }
-        if has_git_component(relative) {
-            return Err(refused(path, Refusal::Protected));
-        }
-        if is_control_path(relative) {
-            return Err(refused(path, Refusal::ControlFile));
-        }
-        if gate.exclusions.excludes(gate.root, relative) {
-            return Err(refused(path, Refusal::Excluded));
-        }
-        Ok(())
-    };
-    judge(relative)?;
+    judge_create_path(gate, path, relative)?;
     let (new_file, canonical_relative) = resolve_new_file(gate.root, path)?;
+    check_new_file(gate, path, content, new_file, &canonical_relative)
+}
+
+/// The path rules of `create`, judged on one spelling of the path. Create
+/// is stricter than edit (E17-47 review): besides the shared denylist it
+/// refuses any hidden component, `:`, and reserved device names.
+fn judge_create_path(gate: &Gate<'_>, path: &str, relative: &Path) -> Result<(), EditError> {
+    if relative
+        .components()
+        .any(|component| is_reserved_component(&component.as_os_str().to_string_lossy()))
+    {
+        return Err(refused(path, Refusal::ReservedName));
+    }
+    if is_secret_path(relative) {
+        return Err(refused(path, Refusal::Excluded));
+    }
+    if has_git_component(relative) {
+        return Err(refused(path, Refusal::Protected));
+    }
+    if is_control_path(relative) {
+        return Err(refused(path, Refusal::ControlFile));
+    }
+    if relative
+        .components()
+        .any(|component| component.as_os_str().to_string_lossy().starts_with('.'))
+    {
+        return Err(refused(path, Refusal::Hidden));
+    }
+    if gate.exclusions.excludes(gate.root, relative) {
+        return Err(refused(path, Refusal::Excluded));
+    }
+    Ok(())
+}
+
+/// Whether a path component holds `:` (an alternate data stream or drive
+/// on Windows) or is a Windows reserved device name, with or without an
+/// extension, compared as Windows does (case-insensitive, trailing dots and
+/// spaces ignored).
+fn is_reserved_component(name: &str) -> bool {
+    if name.contains(':') {
+        return true;
+    }
+    let key = name.trim_end_matches(['.', ' ']).to_ascii_uppercase();
+    let stem = key
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(' ');
+    match stem.as_bytes() {
+        b"CON" | b"PRN" | b"AUX" | b"NUL" => true,
+        [b'C', b'O', b'M', digit] | [b'L', b'P', b'T', digit] => (b'1'..=b'9').contains(digit),
+        _ => false,
+    }
+}
+
+/// The checks of `create` that follow the resolution of its directory,
+/// given the directory's canonical spelling (separate so a test can judge a
+/// spelling only a case-insensitive file system produces).
+fn check_new_file(
+    gate: &Gate<'_>,
+    path: &str,
+    content: &str,
+    new_file: NewFile,
+    canonical_relative: &Path,
+) -> Result<WorkingFile, EditError> {
     // The canonical spelling of the directory too: on a case-insensitive
     // file system `Ignored/x` is inside the ignored directory `ignored/`.
-    judge(&canonical_relative)?;
+    judge_create_path(gate, path, canonical_relative)?;
     if gate
         .protected
         .iter()
@@ -1525,6 +1744,13 @@ const CONTROL_DIRECTORIES: &[&str] = &[
     ".gemini",
     ".continue",
     ".zed",
+    // E17-47 review: version-control metadata of other systems, a package
+    // manager's executable releases and plugins, and agent configuration.
+    ".hg",
+    ".jj",
+    ".svn",
+    ".yarn",
+    ".opencode",
 ];
 /// File names (at any depth) that are ignore files, agent instructions, or
 /// hook, CI, or environment-execution configuration. Compared
@@ -1559,6 +1785,32 @@ const CONTROL_FILES: &[&str] = &[
     ".geminiignore",
     ".npmrc",
     ".yarnrc.yml",
+    // E17-47 review: files `create` could plant that tools load and run, and
+    // their siblings (same tool, another file name).
+    ".yarnrc",
+    ".pnpmfile.cjs",
+    ".pnpmfile.mjs",
+    "mise.toml",
+    ".mise.toml",
+    "mise.local.toml",
+    ".mise.local.toml",
+    ".tool-versions",
+    "rust-toolchain",
+    "rust-toolchain.toml",
+    ".exrc",
+    ".vimrc",
+    ".nvimrc",
+    ".nvim.lua",
+    "agent.md",
+    ".rules",
+    "opencode.json",
+    "opencode.jsonc",
+    ".drone.yml",
+    ".drone.yaml",
+    "bitbucket-pipelines.yml",
+    "bitbucket-pipelines.yaml",
+    "azure-pipelines.yaml",
+    ".travis.yaml",
 ];
 
 /// A path component as case-insensitive file systems and Windows compare it:
@@ -2531,6 +2783,8 @@ fn commit(
                 return Err(io::Error::other("the file changed after it was validated"));
             }
             if entry.file.created.is_some() {
+                #[cfg(test)]
+                tests::run_after_recheck(&entry.target);
                 // Never over an existing path: a link fails if one appeared.
                 fs::hard_link(&entry.edited, &entry.target)?;
                 let _ = fs::remove_file(&entry.edited);
@@ -2725,6 +2979,22 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    type AfterRecheck = Box<dyn FnMut(&Path)>;
+
+    thread_local! {
+        /// Runs between a created file's last re-check and its link step.
+        static AFTER_RECHECK: std::cell::RefCell<Option<AfterRecheck>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn run_after_recheck(target: &Path) {
+        AFTER_RECHECK.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().as_mut() {
+                hook(target);
+            }
+        });
+    }
 
     struct Fixture {
         _directory: TempDir,
@@ -3241,6 +3511,69 @@ mod tests {
             path: path.to_owned(),
             content: content.to_owned(),
         }
+    }
+
+    /// E17-47 review item 2: a file that appears after the last re-check and
+    /// before the link step is never replaced.
+    #[test]
+    fn test_a_file_appearing_after_the_last_recheck_is_never_replaced() {
+        let fixture = Fixture::new(&[("b.rs", "fn b() {}\n")]);
+        AFTER_RECHECK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(|target: &Path| {
+                fs::write(target, "fn theirs() {}\n").expect("planted");
+            }));
+        });
+        let result = fixture.apply(vec![create("a.rs", "fn mine() {}\n")], &mut |_, _| Ok(()));
+        AFTER_RECHECK.with(|hook| *hook.borrow_mut() = None);
+        let error = result.expect_err("the path was taken");
+        assert!(matches!(error, EditError::WriteFailed { .. }), "{error:?}");
+        assert_eq!(
+            fs::read_to_string(fixture.root.join("a.rs")).unwrap(),
+            "fn theirs() {}\n",
+            "the file that appeared is kept"
+        );
+    }
+
+    /// E17-47 review item 7: the canonical spelling of a created file's
+    /// directory is judged, on every file system: `Ignored/x` as a
+    /// case-insensitive file system spells `ignored/x`.
+    #[test]
+    fn test_create_judges_the_canonical_directory_spelling_on_every_file_system() {
+        let fixture = Fixture::new(&[(".gitignore", "ignored/\n"), ("ignored/keep.txt", "x\n")]);
+        let exclusions = ScannerExclusions::load(&fixture.root);
+        let indexed = BTreeMap::new();
+        let gate = Gate {
+            root: &fixture.root,
+            exclusions: &exclusions,
+            indexed: &indexed,
+            protected: &[],
+            index_refreshed: true,
+        };
+        judge_create_path(&gate, "Ignored/new.rs", Path::new("Ignored/new.rs"))
+            .expect("the requested spelling alone passes");
+        let new_file = NewFile {
+            target: fixture.root.join("ignored/new.rs"),
+            directory_identity: None,
+        };
+        let error = check_new_file(
+            &gate,
+            "Ignored/new.rs",
+            "x\n",
+            new_file,
+            Path::new("ignored/new.rs"),
+        )
+        .map(|_| ())
+        .expect_err("the canonical spelling is ignored");
+        assert!(
+            matches!(
+                error,
+                EditError::Refused {
+                    reason: Refusal::Excluded,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
     }
 
     /// E17-47: undoing a created file removes it.
