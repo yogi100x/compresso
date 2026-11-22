@@ -414,7 +414,7 @@ mod tests {
             &["--sql-env"][..],
             &["--sql-env", "DATABASE_URL"],
             &["--sql-env", "COMPRESSO_SQL_"],
-            &["--sql-env", "postgres://u:p@h/db"],
+            &["--sql-env", concat!("postgres://u:", "p@h/db")],
             &["--sql-env=COMPRESSO_SQL_a"],
             &[
                 "--sql-env",

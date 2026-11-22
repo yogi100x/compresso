@@ -62,24 +62,33 @@ fn test_refused_connections_carry_no_url_part() {
 
 /// A one-shot Postgres server that rejects the login with the message a
 /// real server sends, which names the user.
-fn echoing_postgres_server() -> (u16, std::thread::JoinHandle<()>) {
+fn echoing_postgres_server() -> (u16, std::thread::JoinHandle<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("address").port();
     let handle = std::thread::spawn(move || {
         let Ok((mut stream, _)) = listener.accept() else {
-            return;
+            return String::new();
         };
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .expect("timeout");
         let mut length = [0u8; 4];
         if stream.read_exact(&mut length).is_err() {
-            return;
+            return String::new();
         }
         let mut startup = vec![0u8; u32::from_be_bytes(length) as usize - 4];
         if stream.read_exact(&mut startup).is_err() {
-            return;
+            return String::new();
         }
+        // The user the client sent, echoed back as a real server does.
+        let user = startup[4..]
+            .split(|byte| *byte == 0)
+            .map(|field| String::from_utf8_lossy(field).into_owned())
+            .collect::<Vec<_>>()
+            .windows(2)
+            .find(|pair| pair[0] == "user")
+            .map(|pair| pair[1].clone())
+            .unwrap_or_default();
         let mut fields = Vec::new();
         for (tag, value) in [
             (b'S', "FATAL".to_owned()),
@@ -88,7 +97,7 @@ fn echoing_postgres_server() -> (u16, std::thread::JoinHandle<()>) {
             (
                 b'M',
                 format!(
-                    "password authentication failed for user \"{USER}\" on database \"{DATABASE}\""
+                    "password authentication failed for user \"{user}\" on database \"{DATABASE}\""
                 ),
             ),
         ] {
@@ -103,6 +112,7 @@ fn echoing_postgres_server() -> (u16, std::thread::JoinHandle<()>) {
         message.extend_from_slice(&fields);
         let _ = stream.write_all(&message);
         let _ = stream.flush();
+        user
     });
     (port, handle)
 }
@@ -119,7 +129,22 @@ fn test_a_server_error_that_names_the_user_is_scrubbed() {
         error.message().contains("password authentication failed"),
         "{error}"
     );
-    server.join().expect("server thread");
+    assert_eq!(server.join().expect("server thread"), USER);
+}
+
+#[test]
+fn test_a_user_name_the_driver_takes_from_the_environment_is_scrubbed_too() {
+    let (port, server) = echoing_postgres_server();
+    // No user in the URL: the driver sends PGUSER or the operating-system
+    // user, which the server then names in its error.
+    let service = service(&format!(
+        "postgres://127.0.0.1:{port}/{DATABASE}?sslmode=disable"
+    ));
+    let error = query(&service, "SELECT 1").expect_err("rejected login");
+    let user = server.join().expect("server thread");
+    assert!(!user.is_empty());
+    assert!(!error.message().contains(&format!("\"{user}\"")), "{error}");
+    assert_no_canary(&error);
 }
 
 #[test]

@@ -33,6 +33,7 @@ use sqlx::{
 use tokio::runtime::Runtime;
 
 use crate::cells::{self, RowCollector};
+use crate::redact::Secrets;
 use crate::target::{LocalTls, NetworkTarget, Tls};
 use crate::{
     CONNECT_TIMEOUT, ColumnEntry, Connector, DescribeResult, ForeignKeyEntry, IndexEntry,
@@ -60,8 +61,44 @@ pub(crate) struct Bound<'a> {
     pub(crate) runtime: &'a Runtime,
 }
 
+/// What the driver fills in from the environment when the URL leaves it out
+/// (`PGUSER` or the operating-system user, `PGDATABASE`, `PGHOST`): scrubbed
+/// from errors like the URL's own parts.
+fn driver_secrets(target: &NetworkTarget) -> Secrets {
+    let mut secrets = Secrets::default();
+    match target.engine {
+        SqlEngine::Postgres => {
+            if let Ok(options) = PgConnectOptions::from_url(&target.url) {
+                secrets.add(options.get_username());
+                secrets.add(options.get_host());
+                if let Some(database) = options.get_database() {
+                    secrets.add(database);
+                }
+            }
+        }
+        _ => {
+            if let Ok(options) = MySqlConnectOptions::from_url(&target.url) {
+                secrets.add(options.get_username());
+                secrets.add(options.get_host());
+                if let Some(database) = options.get_database() {
+                    secrets.add(database);
+                }
+            }
+        }
+    }
+    secrets
+}
+
 impl Connector for Bound<'_> {
     fn run(&self, request: &SqlRequest) -> Result<SqlOutcome, SqlError> {
+        let secrets = driver_secrets(self.network);
+        self.run_unscrubbed(request)
+            .map_err(|error| SqlError::new(error.code(), secrets.scrub(error.message())))
+    }
+}
+
+impl Bound<'_> {
+    fn run_unscrubbed(&self, request: &SqlRequest) -> Result<SqlOutcome, SqlError> {
         let deadline = request.timeout + CLIENT_GRACE;
         self.runtime.block_on(async {
             match self.network.engine {
@@ -268,13 +305,16 @@ async fn postgres_call(
         ));
     }
     let millis = request.timeout.as_millis();
+    // standard_conforming_strings is forced on so the server reads `\` in
+    // a plain string literally, as the gate's lexer does (a role or database
+    // may turn it off).
     connection
         .execute(raw_sql("BEGIN READ ONLY"))
         .await
         .map_err(error)?;
     connection
         .execute(raw_sql(AssertSqlSafe(format!(
-            "SET LOCAL statement_timeout = {millis}; SET LOCAL lock_timeout = {millis}; SET LOCAL idle_in_transaction_session_timeout = {}",
+            "SET LOCAL statement_timeout = {millis}; SET LOCAL lock_timeout = {millis}; SET LOCAL idle_in_transaction_session_timeout = {}; SET LOCAL standard_conforming_strings = on",
             millis + CLIENT_GRACE.as_millis() * 2
         ))))
         .await

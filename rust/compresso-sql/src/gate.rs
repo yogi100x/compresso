@@ -207,7 +207,9 @@ pub fn check_statement(sql: &str, engine: SqlEngine) -> Result<(), String> {
     if matches!(keyword.as_str(), "EXPLAIN" | "DESCRIBE" | "DESC") && explains_with_analyze(first) {
         return Err("EXPLAIN ANALYZE runs the statement; use EXPLAIN without ANALYZE".to_owned());
     }
-    for token in first {
+    // A SHOW statement only reads (`SHOW CREATE TABLE`, `SHOW GRANTS`), so
+    // the words it names are not checked.
+    for token in first.iter().filter(|_| keyword != "SHOW") {
         if let Token::Word(word) = token
             && DENIED_WORDS.contains(&word.as_str())
         {
@@ -649,6 +651,34 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn test_show_statements_may_name_write_keywords() {
+        for sql in [
+            "SHOW CREATE TABLE orders",
+            "SHOW CREATE VIEW v",
+            "SHOW GRANTS",
+        ] {
+            assert!(allowed(sql, SqlEngine::MySql), "{sql}");
+        }
+        // Only a leading SHOW is exempt.
+        assert!(!allowed(
+            "SELECT 1 FROM t WHERE x = 'SHOW' AND create = 1",
+            SqlEngine::MySql
+        ));
+    }
+
+    #[test]
+    fn test_postgres_strings_are_lexed_as_standard_conforming() {
+        // With standard_conforming_strings off the server would end the
+        // first string at `\'` and run the call; the connection turns the
+        // setting on for the transaction, so this lexing is the server's.
+        assert!(allowed("SELECT '\\'', 1, '\\''", SqlEngine::Postgres));
+        assert!(allowed(
+            "SELECT '\\'' , pg_terminate_backend(1) --'",
+            SqlEngine::Postgres
+        ));
     }
 
     #[test]
