@@ -11,8 +11,10 @@ Compresso makes no network request of its own unless the operator starts the
 server with `--sql-env COMPRESSO_SQL_NAME`, which adds one read-only tool,
 `compresso_sql`, that queries the one Postgres, MySQL/MariaDB, or SQLite
 database whose URL that environment variable holds (ADR-0036; see
-`docs/runbooks/install-local.md`). Postgres and MySQL/MariaDB support has not
-yet been run against a live server; SQLite has.
+`docs/runbooks/install-local.md`). Postgres and MariaDB support has been run
+only by CI tests against throwaway containers, MySQL not at all; SQLite is
+fully tested. A Postgres target is refused while any
+`PG*` variable (such as `PGUSER`) is set where the client starts.
 
 ## Connecting a coding client
 

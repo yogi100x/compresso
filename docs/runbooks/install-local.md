@@ -108,9 +108,9 @@ for a different target.
 ## Optional: read-only live SQL queries
 
 `compresso_sql` (E17-50, ADR-0036) is off unless you turn it on.
-**Postgres and MySQL/MariaDB support has not yet been run against a live
-server**; only SQLite has been exercised. Enable it for those engines
-knowing that. Put the
+**Postgres and MariaDB support has been run only by CI tests against
+throwaway containers, and MySQL not at all**; only SQLite is fully tested.
+Enable it for those engines knowing that. Put the
 database URL in an environment variable whose name starts with
 `COMPRESSO_SQL_`, in the environment your coding client starts from (your
 shell profile or the client's own launch environment; Compresso never reads
@@ -128,8 +128,11 @@ parameters), `postgres://user[:password]@host[:port]/database`, and
 `mysql://user[:password]@host[:port]/database`; user, host, and database are
 required, and only the TLS parameters (and MySQL `socket`) are accepted. The
 connection comes only from that URL: while any `PG*` variable such as
-`PGPASSWORD` or `PGHOST` is set in the client's environment, a Postgres
-target is refused, and `~/.pgpass` is never read. Use a role that can only
+`PGUSER`, `PGPASSWORD`, or `PGHOST` is set in the client's environment, a
+Postgres target is refused with an error naming the variable, and
+`~/.pgpass` is never read. Such variables are common (Postgres installers,
+some CI images set `PGUSER`); unset them in the environment the client
+starts from. Use a role that can only
 read: Compresso refuses a Postgres superuser or a member of the server-file,
 server-program, or `pg_signal_backend` roles, and a MySQL/MariaDB account
 with FILE, SUPER, PROCESS, CONNECTION_ADMIN, PROXY, or ALL PRIVILEGES on

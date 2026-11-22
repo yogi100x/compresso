@@ -11,10 +11,14 @@ connection comes only from the one named variable (decision 6). Every other
 choice here was made by the orchestrating and implementing sessions and is
 **awaiting owner confirmation** (listed in D115).
 
-**Postgres and MySQL/MariaDB have not been run against a live server.** The
-live tests exist and a CI job (`live-sql`) runs them against throwaway
-containers; until that job has passed, every statement below about those
-engines is reasoned from their documentation and `sqlx` 0.9.1's source.
+**Live verification is partial.** The CI job `live-sql` runs `tests/live.rs`
+against Postgres 16.4 and MariaDB 11.4.3 containers. Its first run passed the
+Postgres read-only codes, timeout and no-orphan session, privileged-role and
+`standard_conforming_strings` checks, the wrong-host TLS check (skipped:
+no variable), and the MySQL read-only codes and privileged-account and
+`sql_mode` checks; it found the MariaDB silent cut (decision 5) and a test
+that called from inside a runtime. MySQL itself (not MariaDB) has not been
+run; statements below not covered by a named live test are reasoned.
 
 ## Context
 
@@ -133,7 +137,13 @@ keychain credentials, a SQL parser, and mutation stay in E15.
      loses `ANSI_QUOTES`, `NO_BACKSLASH_ESCAPES`, and `ANSI` and is
      confirmed; `max_execution_time` (MariaDB `max_statement_time`) and lock
      wait timeouts; `START TRANSACTION READ ONLY`; prepare, then text
-     protocol; roll back and close, or drop.
+     protocol; roll back and close, or drop. MariaDB stops `BENCHMARK` (and
+     `SLEEP`) at its limit and returns a value with no error (seen in CI), so
+     a query that leaves an interruption warning (1317, 1028, 1969, 3024 in
+     `SHOW WARNINGS`), or whose run reached its deadline (within 2% or
+     10 ms), answers `sql_timeout` instead of a result: a cut result is never
+     presented as complete, at the cost of refusing a query that finishes
+     just at its limit.
    - One connection per call means nothing a statement leaves in the session
      (advisory or named locks, `set_config`, user variables, temporary
      objects) survives the call.
@@ -160,7 +170,9 @@ keychain credentials, a SQL parser, and mutation stay in E15.
    values to 256; text cells cut at 1,000 characters; binary cells shown as
    their size; a result (names and rows) at most 256 KiB; then the JSON is
    fitted to `max_tokens` (300–8,000) by dropping trailing rows and, if
-   needed, columns. `timeout_ms` 100–30,000. One call is bounded end to end:
+   needed, columns. `timeout_ms` 100–30,000. The network engines run on a
+   thread of their own, so a call from any thread, including one already
+   inside a Tokio runtime, cannot panic. One call is bounded end to end:
    connect (10 s), setup and statement (`timeout_ms` plus 2 s), and closing
    (`ROLLBACK` and close at most 2 s each, after which the connection is
    dropped, never awaited); `SqlService::call_limit` states it and a test
