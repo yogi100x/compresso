@@ -275,7 +275,9 @@ pub fn edit_failure_message(error: &EditError) -> (&'static str, String) {
         EditError::HashMismatch { actual, .. } => {
             ("hash_mismatch", format!("{error}. Current hash: {actual}."))
         }
-        EditError::Bound { .. } => ("limit_exceeded", format!("{error}.")),
+        EditError::Bound { .. } | EditError::CreateBound { .. } => {
+            ("limit_exceeded", format!("{error}."))
+        }
         EditError::Changed { .. } => ("file_changed", format!("{error}. Read it again and retry.")),
         EditError::WriteFailed {
             path,
@@ -487,6 +489,11 @@ pub fn report_payload(
     let created = report.files.iter().filter(|file| file.created).count();
     if created > 0 {
         payload["files_created"] = json!(created);
+    }
+    // E17-49: directories made for created files (for a dry run, the ones
+    // it would make), present only when not empty; at most 32 per call.
+    if !report.directories_created.is_empty() {
+        payload["directories_created"] = json!(report.directories_created);
     }
     let unchanged = report
         .operations

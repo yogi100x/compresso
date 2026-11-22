@@ -509,6 +509,38 @@ fn grep(payload: &Value, out: &mut Out) {
             None => format!("path {path} matched no indexed file"),
         });
     }
+    // E17-49 (D114): files outside the path filter where the patterns also
+    // match, the most matches first, then how many more files.
+    if let Some(outside) = payload.get("outside_matches") {
+        let files = array(outside, "files")
+            .iter()
+            .map(|file| {
+                format!(
+                    "{} ({})",
+                    list_path(string(file, "path").unwrap_or_default()),
+                    number(file, "matches")
+                )
+            })
+            .collect::<Vec<_>>();
+        let more = number(outside, "files_total").saturating_sub(files.len() as u64);
+        let at_least = flag(outside, "at_least");
+        if !files.is_empty() {
+            out.note(format!(
+                "also matches outside this path: {}{}{}",
+                files.join(", "),
+                if more > 0 {
+                    format!(" (+{more} files)")
+                } else {
+                    String::new()
+                },
+                if at_least {
+                    "; at least; the outside scan stopped early"
+                } else {
+                    ""
+                }
+            ));
+        }
+    }
     // E17-38 (D103): a literal `a|b` that matched nothing was searched as
     // its literal parts.
     // Shrunk to fit a small budget: pattern indexes only.
@@ -916,6 +948,21 @@ fn edit(payload: &Value, out: &mut Out) {
             header.push_str(&format!("; {count} {label}"));
         }
     }
+    // E17-49: present only when not empty; at most 32 per call.
+    let directories = array(payload, "directories_created")
+        .iter()
+        .filter_map(Value::as_str)
+        .map(list_path)
+        .collect::<Vec<_>>();
+    if !directories.is_empty() {
+        header.push_str(&format!(
+            "; {} director{} {}: {}",
+            directories.len(),
+            if directories.len() == 1 { "y" } else { "ies" },
+            if dry_run { "to create" } else { "created" },
+            directories.join(", ")
+        ));
+    }
     out.line(header);
     for file in array(payload, "files") {
         let lines = array(file, "lines")
@@ -1214,6 +1261,46 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// E17-49 (D114): files outside the path filter where the patterns
+    /// also match, in one line.
+    #[test]
+    fn test_grep_names_files_outside_the_path_filter_in_one_line() {
+        let render = |outside: Value| {
+            render(
+                "compresso_grep",
+                &json!({ "results": [], "scan": {}, "outside_matches": outside }),
+            )
+            .expect("text")
+        };
+        let text = render(json!({
+            "files_total": 5,
+            "matches_total": 9,
+            "files": [
+                { "path": "src/routes/auth.ts", "matches": 2 },
+                { "path": "src/middlewares/schema.ts", "matches": 1 },
+                { "path": "src/z.ts", "matches": 1 }
+            ]
+        }));
+        assert!(
+            text.contains(
+                "[also matches outside this path: src/routes/auth.ts (2), src/middlewares/schema.ts (1), src/z.ts (1) (+2 files)]"
+            ),
+            "{text}"
+        );
+        let text = render(json!({
+            "files_total": 1,
+            "matches_total": 1,
+            "at_least": true,
+            "files": [{ "path": "a.ts", "matches": 1 }]
+        }));
+        assert!(
+            text.contains(
+                "[also matches outside this path: a.ts (1); at least; the outside scan stopped early]"
+            ),
+            "{text}"
+        );
+    }
 
     #[test]
     fn test_symbol_label_keeps_owner_and_drops_redundant_kind() {

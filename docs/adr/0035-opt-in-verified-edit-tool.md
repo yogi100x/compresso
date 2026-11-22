@@ -237,7 +237,8 @@ of this record stands.
   The other bounds are call-wide and unchanged, so the most work one call can
   do grows only by the per-operation scan of a file of at most 1 MB.
 - **Create (decisions 2 and 5; out of scope).** A `create` operation writes a
-  new file into an existing directory, never over anything at the path, all or
+  new file into an existing directory (D114 below lets it make missing
+  directories too), never over anything at the path, all or
   nothing with the rest of the call. It passes the path gates an existing
   file passes before it exists (secret, `.git` in any case, control file,
   scanner exclusion on the requested and the canonical directory spelling,
@@ -245,7 +246,8 @@ of this record stands.
   directory), contains no NUL, and is at most 64 KiB. It is hard-linked into
   place, so a file that appears meanwhile is never replaced, and a rollback
   removes it only while it holds the created bytes. Deleting, moving, and
-  changing permissions stay out of scope, as do creating directories.
+  changing permissions stay out of scope; creating directories stayed out
+  until D114 (below).
 - **Unindexed targets (decision 5).** "Every target must already be an indexed
   file" stays a hard gate. A `replace` or `insert` target that exists on disk
   but is not indexed makes the call refresh the index once first, as a rename
@@ -276,6 +278,30 @@ whole index. Known
 gaps: no journal for a crash mid-commit, no automatic cleanup of leftover
 temporary files, hard links required for create, and the request byte bound
 checked after the MCP frame is parsed.
+
+D114 (E17-49, owner-approved 2026-11-22; its bounds and refusals await owner
+confirmation) amends the create item above: `create` makes missing parent
+directories inside the repository, at most 8 levels per create and 32
+directories per call. Each new directory passes the file's path rules (hidden,
+reserved, `.git`, control, secret, and scanner-excluded components are refused,
+naming the directory), a name that differs only by case from an entry beside it
+or from another create of the call is refused, and a symbolic link on the path
+is refused `no_directory` before anything follows it, whatever it points to.
+Directories are made with create-new calls after every target is re-verified;
+something that appears meanwhile stops the call. A failed call removes the
+directories it made, deepest first, only while each is empty and, on Unix,
+still the directory made (an open handle held during the call keeps its inode
+from being reused); on Windows an empty directory another writer put at the
+same path during the call can be removed. A dry run creates nothing and reports what it would create.
+Directories get the platform default permissions. New directory names that
+end with `.` or a space, hold a control character, or equal another after
+lowercasing are refused, and so is any new name written in decomposed Unicode
+form (a combining mark or conjoining jamo).
+Caveat: directories are created by absolute path, so a parent directory
+swapped for a link after the last check is followed; the check after each
+creation then fails the call and the rollback removes the directory made
+through the link while it is still empty. This is the residual window above,
+not closed (no directory-handle-relative calls in the standard library).
 
 Threat model addition: injected repository content can now ask for a new file
 as well as an edit. A created file is reached through the same path gates and
