@@ -366,7 +366,11 @@ async fn test_sql_server_reads_a_sqlite_file_and_refuses_writes() {
         );
         let bounded: Value = serde_json::from_str(&text).expect("json");
         let columns = bounded["columns"].as_array().expect("columns");
-        assert!(columns.iter().all(|name| name.as_str().unwrap().chars().count() < 100));
+        assert!(
+            columns
+                .iter()
+                .all(|name| name.as_str().unwrap().chars().count() < 100)
+        );
         if statement.contains(" AS c") {
             assert_eq!(bounded["truncated"], true);
             assert!(bounded["columns_omitted"].as_u64().unwrap() > 0);
