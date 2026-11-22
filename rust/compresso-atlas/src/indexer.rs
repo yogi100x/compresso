@@ -29,7 +29,7 @@ use write_batch::{BatchLimits, BatchWriter};
 const INDEX_SCHEMA_VERSION: u32 = 1;
 pub(crate) const DEFAULT_PARSER_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
-    "+atlas-shell-text-v1+rust-imports-v2+sql-v1+java-csharp-v1+go-v1+calls-v1"
+    "+atlas-shell-text-v1+rust-imports-v2+go-impact-v1+sql-v1+java-csharp-v1+go-v1+calls-v1"
 );
 /// Marks an index whose parser recorded call sites (D89). Every version this
 /// indexer stamps carries it, including one set with

@@ -230,7 +230,13 @@ fn test_go_local_declarations_and_func_literals_are_not_symbols() {
     assert_eq!(names, ["outer"]);
     let calls = call_rows(&extraction);
     assert!(calls.contains(&("outer", "inner", None, CallForm::Plain, 7)));
-    assert!(calls.contains(&("outer", "f", None, CallForm::Plain, 8)));
+    // E17-46 (D111): `f` is bound in `outer` (`f := func() ...`), so `f()`
+    // may call a local value: it is recorded under the shadow qualifier
+    // (trace reports it unplaced), not as a plain call.
+    assert!(
+        calls.contains(&("outer", "f", Some("<shadowed>"), CallForm::Path, 8)),
+        "{calls:?}"
+    );
 }
 
 #[test]

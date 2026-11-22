@@ -195,7 +195,9 @@ pub struct ImpactEntry {
     pub edge_kinds: Vec<EdgeKind>,
     /// Java and C# (D105): the package or namespace that links this file to
     /// the one before it, when no file edge does: `imports` for a file that
-    /// imports the whole package, `references` for another file of it.
+    /// imports the whole package, `references` for another file of it. Go
+    /// (D111): the directory of a `references` file of the same package
+    /// (`""` at the repository root).
     pub package: Option<String>,
 }
 
@@ -223,16 +225,18 @@ pub struct ImpactReport {
     /// Every dependent found within `max_depth`; `dependents` holds the
     /// first `max_results` of them.
     pub total: usize,
-    /// Java and C# (D105): files of a checked file's package that might use
-    /// it but could not be checked (their call sites stopped at the per-file
-    /// bound, or the check bound was reached); when non-zero, `complete` is
-    /// false.
+    /// Java and C# (D105) and Go (D111): files of a checked file's package
+    /// that might use it but could not be checked (their call sites stopped
+    /// at the per-file bound, or the check bound was reached); when
+    /// non-zero, `complete` is false.
     pub unevaluated: usize,
     /// Java and C# (D105): files in scope of a checked file's package (its
     /// package or namespace, the default package or global namespace, a
     /// `global using` of it) with no recorded call naming one of its types.
-    /// They may use it in ways calls do not show (a type in a field or
-    /// parameter, a call through an interface, a constant read); when
+    /// Go (D111): files of its directory with no recorded call that
+    /// resolves to a function, struct type, or method it defines. They may
+    /// use it in ways calls do not show (a type in a field or parameter, a
+    /// call through an interface or a variable, a constant read); when
     /// non-zero, `complete` is false.
     pub unproven: usize,
     /// Java and C#: a file declared more packages or namespaces than are
@@ -996,6 +1000,18 @@ pub fn impact_with_options(
     path: &str,
     options: ImpactOptions,
 ) -> Result<ImpactReport, AtlasError> {
+    impact_with_evidence(store, repo, path, options, EvidenceState::default())
+}
+
+/// [`impact_with_options`] with the same-package evidence bounds given
+/// (tests set smaller caps).
+fn impact_with_evidence(
+    store: &Store,
+    repo: RepoId,
+    path: &str,
+    options: ImpactOptions,
+    mut evidence: EvidenceState,
+) -> Result<ImpactReport, AtlasError> {
     if !(1..=2).contains(&options.max_depth) {
         return Err(QueryError::InvalidImpactOptions {
             reason: "max_depth must be between 1 and 2",
@@ -1032,7 +1048,6 @@ pub fn impact_with_options(
     }
 
     let packages = PackageLinks::load(store, repo)?;
-    let mut evidence = EvidenceState::default();
     let mut discovered = BTreeMap::<String, (u8, Vec<EdgeKind>, Option<String>)>::new();
     let mut frontier = BTreeSet::from([path.to_owned()]);
     for depth in 1..=options.max_depth {
@@ -1056,7 +1071,12 @@ pub fn impact_with_options(
                 }
                 match discovered.get_mut(importer) {
                     Some((known_depth, known_kinds, known_package)) if *known_depth == depth => {
-                        // A file edge at the same depth names the link.
+                        // A file edge at the same depth names the link,
+                        // whichever link arrives first (E17-46): a package
+                        // link adds nothing to a file edge.
+                        if package.is_some() && known_package.is_none() {
+                            continue;
+                        }
                         if package.is_none() && known_package.is_some() {
                             *known_package = None;
                             known_kinds.clear();
@@ -1245,10 +1265,52 @@ const MAX_EVIDENCE_TARGETS: usize = 64;
 /// At most this many type names of one file are looked for in call sites;
 /// a file declaring more is unevaluated.
 const MAX_EVIDENCE_TYPES: usize = 64;
+/// Go (E17-46): at most this many names (functions, struct types, and
+/// methods) of one file are checked; a file declaring more is unevaluated.
+/// Its directory is read whole once, so the bound limits only work in
+/// memory; it is the store's `IN` chunk size, as Java's and C#'s bound was
+/// tied to its query.
+const MAX_GO_EVIDENCE_NAMES: usize = 400;
+
+/// One symbol of a Go directory, as evidence reads it.
+struct DirectorySymbol {
+    path: String,
+    kind: SymbolKind,
+    name: String,
+    /// The receiver type of a method.
+    owner: Option<String>,
+}
+
+/// Go (E17-46): the symbols and the plain and self call sites of one
+/// directory, read once per `impact` (two store queries).
+struct DirectoryEvidence {
+    symbols: Vec<DirectorySymbol>,
+    /// Indexes into `symbols` by name.
+    by_name: HashMap<String, Vec<usize>>,
+    calls: Vec<compresso_store::StoredCallSite>,
+    /// Files of the directory not read (past [`MAX_DIRECTORY_FILES`], or all
+    /// of them when the row budget ran out): their use is unknown.
+    unread: HashSet<String>,
+}
+
+/// Go (E17-46): at most this many files of one directory are read per
+/// `impact`, in path order. Go packages are rarely more than a few hundred
+/// files (the largest directory of the public repository measured for D111
+/// has about 160); a generated directory past it is still bounded.
+const MAX_DIRECTORY_FILES: usize = 2_048;
+/// Go (E17-46): at most this many symbol and call-site rows are held for
+/// same-package evidence per `impact` (all directories together), about
+/// 45 times the largest directory measured for D111.
+const MAX_EVIDENCE_ROWS: usize = 250_000;
 
 /// What the same-package checks of one `impact` found and could not settle.
-#[derive(Default)]
 struct EvidenceState {
+    /// Go: files read per directory.
+    files_cap: usize,
+    /// Go: symbol and call-site rows still allowed in this `impact`.
+    rows_left: usize,
+    /// Go directories already read in this `impact`.
+    directories: HashMap<String, std::rc::Rc<DirectoryEvidence>>,
     checked: usize,
     /// Files in scope that might use a checked file but whose use could not
     /// be checked: their call extraction was cut, or a check bound was hit.
@@ -1264,6 +1326,107 @@ struct EvidenceState {
     expanded: HashSet<(&'static str, String)>,
 }
 
+impl Default for EvidenceState {
+    fn default() -> Self {
+        Self::with_caps(MAX_DIRECTORY_FILES, MAX_EVIDENCE_ROWS)
+    }
+}
+
+impl EvidenceState {
+    fn with_caps(files_cap: usize, rows: usize) -> Self {
+        Self {
+            files_cap,
+            rows_left: rows,
+            directories: HashMap::new(),
+            checked: 0,
+            unevaluated: BTreeSet::new(),
+            unproven: BTreeSet::new(),
+            unchecked: 0,
+            cut: None,
+            expanded: HashSet::new(),
+        }
+    }
+
+    /// The evidence of a Go directory, read on first use in this `impact`.
+    /// The evidence of a Go directory whose Go files are `files` (path
+    /// order), read on first use in this `impact`: at most `files_cap` files,
+    /// and nothing once the row budget is spent.
+    fn directory(
+        &mut self,
+        store: &Store,
+        repo: RepoId,
+        language: FileLanguage,
+        directory: &str,
+        files: &[String],
+    ) -> Result<std::rc::Rc<DirectoryEvidence>, AtlasError> {
+        if let Some(evidence) = self.directories.get(directory) {
+            return Ok(evidence.clone());
+        }
+        let read = &files[..files.len().min(self.files_cap)];
+        let mut unread = files[read.len()..].iter().cloned().collect::<HashSet<_>>();
+        let mut symbols = Vec::new();
+        let mut calls = Vec::new();
+        let mut spent = false;
+        if let Some(through) = read.last() {
+            let found = store.symbols_in_directory(
+                repo,
+                directory,
+                language,
+                through,
+                self.rows_left.saturating_add(1),
+            )?;
+            evidence_work::count_query(found.len());
+            if found.len() > self.rows_left {
+                self.rows_left = 0;
+                spent = true;
+            } else {
+                self.rows_left -= found.len();
+                let found_calls = store.call_sites_in_directory(
+                    repo,
+                    directory,
+                    language,
+                    through,
+                    self.rows_left.saturating_add(1),
+                )?;
+                evidence_work::count_query(found_calls.len());
+                if found_calls.len() > self.rows_left {
+                    self.rows_left = 0;
+                    spent = true;
+                } else {
+                    self.rows_left -= found_calls.len();
+                    symbols = found
+                        .into_iter()
+                        .map(|symbol| DirectorySymbol {
+                            owner: crate::trace::owner_base(&symbol.symbol.qualified_name),
+                            path: symbol.path,
+                            kind: symbol.symbol.kind,
+                            name: symbol.symbol.name,
+                        })
+                        .collect();
+                    calls = found_calls;
+                }
+            }
+        }
+        if spent {
+            // The row budget ran out: nothing of the directory is known.
+            unread.extend(read.iter().cloned());
+        }
+        let mut by_name = HashMap::<String, Vec<usize>>::new();
+        for (index, symbol) in symbols.iter().enumerate() {
+            by_name.entry(symbol.name.clone()).or_default().push(index);
+        }
+        let evidence = std::rc::Rc::new(DirectoryEvidence {
+            symbols,
+            by_name,
+            calls,
+            unread,
+        });
+        self.directories
+            .insert(directory.to_owned(), evidence.clone());
+        Ok(evidence)
+    }
+}
+
 /// Java and C# package and namespace links (D105). A file's dependents
 /// through its package are (a) the files importing the package whole (one
 /// stored record each: they import the package that holds the file, listed
@@ -1275,10 +1438,17 @@ struct EvidenceState {
 /// naming one of the file's types is listed (`references`); a file whose
 /// calls were cut is `unevaluated`; every other one is `unproven`. Both
 /// make `complete` false. Read once per `impact`.
+///
+/// Go (D111): a package is a directory, so a file's dependents without an
+/// import are the other Go files of its directory (only test files for a
+/// `_test.go` file); see [`PackageLinks::directory_dependents`].
 struct PackageLinks {
     /// Every Java and C# file: its language and declared packages (empty
     /// for the default package or global namespace).
     declared: HashMap<String, (&'static str, Vec<String>)>,
+    /// Go: the files of each directory, by language, in path order, with
+    /// how many of them are test files.
+    directories: HashMap<(&'static str, String), (Vec<String>, usize)>,
     importers: HashMap<(&'static str, String), Vec<String>>,
     /// `global using` records: (language, name), with the directory whose
     /// files they reach (`""` for the whole repository).
@@ -1324,6 +1494,7 @@ impl PackageLinks {
     fn load(store: &Store, repo: RepoId) -> Result<Option<Self>, AtlasError> {
         let languages = crate::parsers::languages::declaring_languages();
         let mut declared = HashMap::<String, (&'static str, Vec<String>)>::new();
+        let mut directories = HashMap::<(&'static str, String), (Vec<String>, usize)>::new();
         let mut all_paths = Vec::new();
         for file in store.indexed_files(repo)? {
             if let Some(language) = file
@@ -1332,10 +1503,33 @@ impl PackageLinks {
             {
                 declared.insert(file.path.clone(), (language.as_str(), Vec::new()));
             }
+            if let Some(language) = file
+                .language
+                .filter(|language| crate::parsers::languages::spec(*language).package_is_directory)
+                && !is_secret_path(Path::new(&file.path))
+            {
+                let entry = directories
+                    .entry((
+                        language.as_str(),
+                        crate::trace::parent_directory(&file.path).to_owned(),
+                    ))
+                    .or_default();
+                entry.1 += usize::from(crate::parsers::languages::is_test_file(&file.path));
+                entry.0.push(file.path.clone());
+            }
             all_paths.push(file.path);
         }
         if declared.is_empty() {
-            return Ok(None);
+            if directories.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(Self {
+                declared,
+                directories,
+                importers: HashMap::new(),
+                global: Vec::new(),
+                limited: false,
+            }));
         }
         let projects = project_directories(all_paths.into_iter());
         let mut limited = false;
@@ -1373,6 +1567,7 @@ impl PackageLinks {
         }
         Ok(Some(Self {
             declared,
+            directories,
             importers,
             global,
             limited,
@@ -1415,6 +1610,9 @@ impl PackageLinks {
         state: &mut EvidenceState,
         linked: &mut Vec<(String, Vec<EdgeKind>, Option<String>)>,
     ) -> Result<(), AtlasError> {
+        if crate::parsers::languages::package_is_directory(target) {
+            return self.directory_dependents(store, repo, target, state, linked);
+        }
         if crate::parsers::languages::is_declaration_only(target) {
             return Ok(());
         }
@@ -1522,8 +1720,23 @@ impl PackageLinks {
             return Ok(());
         }
         let users = store.files_with_call_sites_naming(repo, &types, &types)?;
+        Self::sort_scope(store, repo, state, scope, &users, linked)
+    }
+
+    /// Lists the files of `scope` in `users` as dependents and counts every
+    /// other one: `unevaluated` when its call sites were cut, `unproven`
+    /// otherwise. Shared by every language (D105, D111).
+    fn sort_scope(
+        store: &Store,
+        repo: RepoId,
+        state: &mut EvidenceState,
+        scope: Vec<(String, EdgeKind, String)>,
+        users: &BTreeSet<String>,
+        linked: &mut Vec<(String, Vec<EdgeKind>, Option<String>)>,
+    ) -> Result<(), AtlasError> {
         if state.cut.is_none() {
             state.cut = Some(store.files_with_cut_call_sites(repo)?);
+            evidence_work::count_query(state.cut.as_ref().map_or(0, BTreeSet::len));
         }
         let cut = state.cut.as_ref().expect("loaded above");
         for (path, kind, package) in scope {
@@ -1536,6 +1749,229 @@ impl PackageLinks {
             }
         }
         Ok(())
+    }
+
+    /// Go (D111): a package is a directory, and its files use each other's
+    /// declarations without an import. The files in scope of `target` are
+    /// the other Go files of its directory; for a `_test.go` file only the
+    /// other test files, since other code never reaches test code. Package
+    /// clauses are not stored (D102), so an external test package
+    /// (`package store_test`) is not told apart by name: when it imports the
+    /// directory's package (which only an external test package may do) it
+    /// is listed through that import edge, and otherwise it stays in scope.
+    ///
+    /// A file in scope is listed (`references`, its directory as `package`)
+    /// when one of its stored calls resolves by the trace rules to exactly
+    /// one definition in the directory, and that one is in `target`:
+    /// - a plain call `F()` or `T(x)` to a function or struct type `target`
+    ///   defines (the caller's own definition, a definition in another file
+    ///   of the directory, or in a test file the caller cannot reach, makes
+    ///   it ambiguous or another file's, so no evidence);
+    /// - a call on the enclosing method's receiver (`s.flush()` in a method
+    ///   of `Store`) to a method `Store::flush` that `target` defines.
+    ///
+    /// Calls to a name the calling function binds (a parameter, a result, a
+    /// local, a func-literal parameter) are not recorded as such at all
+    /// (`parsers::calls`), so they are no evidence either.
+    ///
+    /// Not evidence: calls on any other value (`s.Flush()` on a variable or
+    /// expression), since methods share names across types; bare function
+    /// arguments (`apply(handler)`), since a local variable reads the same;
+    /// composite literals, type uses, and constant or variable reads, which
+    /// record no call. A file that declares nothing at package level has no
+    /// dependents through its package.
+    ///
+    /// Bounds: at most [`MAX_EVIDENCE_TARGETS`] files checked per `impact`
+    /// (D105's, charged before any store read) and
+    /// [`MAX_GO_EVIDENCE_NAMES`] names (functions, struct types, and
+    /// methods) per file; past either the file is counted unchecked. Each
+    /// directory is read once per `impact`, driven from its files: its
+    /// symbols and its plain and self call sites (two queries), so at most
+    /// 2 × 64 + 1 queries per call (the last for the cut markers), and rows
+    /// bounded by the checked directories' own symbols and call sites (at
+    /// most 4,096 per file). Evidence is then found in memory.
+    fn directory_dependents(
+        &self,
+        store: &Store,
+        repo: RepoId,
+        target: &str,
+        state: &mut EvidenceState,
+        linked: &mut Vec<(String, Vec<EdgeKind>, Option<String>)>,
+    ) -> Result<(), AtlasError> {
+        let Some(language) = ParserRegistry::for_path(Path::new(target)) else {
+            return Ok(());
+        };
+        let directory = crate::trace::parent_directory(target);
+        let Some((files, tests)) = self
+            .directories
+            .get(&(language.as_str(), directory.to_owned()))
+        else {
+            return Ok(());
+        };
+        let target_is_test = crate::parsers::languages::is_test_file(target);
+        // Whether any other file can reach it, before any work.
+        let reachable_mates = if target_is_test {
+            tests.saturating_sub(1)
+        } else {
+            files.len().saturating_sub(1)
+        };
+        if reachable_mates == 0 {
+            return Ok(());
+        }
+        if state.checked == MAX_EVIDENCE_TARGETS {
+            state.unchecked += 1;
+            return Ok(());
+        }
+        // Charged before any store read, so at most `MAX_EVIDENCE_TARGETS`
+        // directories are read per `impact`, whatever the files declare.
+        state.checked += 1;
+        let evidence = state.directory(store, repo, language, directory, files)?;
+        if evidence.unread.contains(target) {
+            // Past a read cap: what the file declares is not known, so every
+            // file of its scope is unevaluated.
+            state.unevaluated.extend(
+                files
+                    .iter()
+                    .filter(|path| {
+                        path.as_str() != target
+                            && (!target_is_test || crate::parsers::languages::is_test_file(path))
+                    })
+                    .cloned(),
+            );
+            return Ok(());
+        }
+        let mut functions = BTreeSet::new();
+        let mut methods = BTreeSet::new();
+        let mut declares = false;
+        for symbol in evidence
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.path == target)
+        {
+            declares = true;
+            match symbol.kind {
+                SymbolKind::Function | SymbolKind::Class | SymbolKind::Struct => {
+                    functions.insert(symbol.name.as_str());
+                }
+                SymbolKind::Method => {
+                    if let Some(owner) = &symbol.owner {
+                        methods.insert((owner.as_str(), symbol.name.as_str()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !declares {
+            return Ok(());
+        }
+        if functions.len() + methods.len() > MAX_GO_EVIDENCE_NAMES {
+            state.unchecked += 1;
+            return Ok(());
+        }
+        let scope = files
+            .iter()
+            .filter(|path| {
+                path.as_str() != target
+                    && (!target_is_test || crate::parsers::languages::is_test_file(path))
+            })
+            .map(|path| (path.clone(), EdgeKind::References, directory.to_owned()))
+            .collect::<Vec<_>>();
+        // Files past a read cap may use it: unevaluated, never "no use".
+        let (unread, scope): (Vec<_>, Vec<_>) = scope
+            .into_iter()
+            .partition(|(path, _, _)| evidence.unread.contains(path));
+        state
+            .unevaluated
+            .extend(unread.into_iter().map(|(path, _, _)| path));
+        if functions.is_empty() && methods.is_empty() {
+            state
+                .unproven
+                .extend(scope.into_iter().map(|(path, _, _)| path));
+            return Ok(());
+        }
+        let in_scope = scope
+            .iter()
+            .map(|(path, _, _)| path.as_str())
+            .collect::<HashSet<_>>();
+        let mut users = BTreeSet::new();
+        for call in &evidence.calls {
+            if users.contains(&call.from_path) || !in_scope.contains(call.from_path.as_str()) {
+                continue;
+            }
+            let owner = match call.form {
+                compresso_store::CallForm::Plain
+                    if functions.contains(call.callee_name.as_str()) =>
+                {
+                    None
+                }
+                compresso_store::CallForm::SelfRef => {
+                    match crate::trace::owner_base(&call.caller_qualified_name) {
+                        Some(owner)
+                            if methods.contains(&(owner.as_str(), call.callee_name.as_str())) =>
+                        {
+                            Some(owner)
+                        }
+                        _ => continue,
+                    }
+                }
+                _ => continue,
+            };
+            let caller_is_test = crate::parsers::languages::is_test_file(&call.from_path);
+            // Every definition of the name in the directory the caller may
+            // reach: what the trace rules choose among.
+            let mut candidates = evidence
+                .by_name
+                .get(call.callee_name.as_str())
+                .into_iter()
+                .flatten()
+                .map(|index| &evidence.symbols[*index])
+                .filter(|symbol| {
+                    (caller_is_test || !crate::parsers::languages::is_test_file(&symbol.path))
+                        && match &owner {
+                            None => matches!(
+                                symbol.kind,
+                                SymbolKind::Function | SymbolKind::Class | SymbolKind::Struct
+                            ),
+                            Some(owner) => {
+                                symbol.kind == SymbolKind::Method
+                                    && symbol.owner.as_ref() == Some(owner)
+                            }
+                        }
+                });
+            if let (Some(symbol), None) = (candidates.next(), candidates.next())
+                && symbol.path == target
+            {
+                users.insert(call.from_path.clone());
+            }
+        }
+        Self::sort_scope(store, repo, state, scope, &users, linked)
+    }
+}
+
+/// Counts the store queries and rows the same-package evidence reads, in
+/// test builds only, so a test can bound the work of one `impact` without
+/// timing it (E17-46).
+mod evidence_work {
+    #[cfg(test)]
+    thread_local! {
+        static WORK: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+    }
+
+    #[cfg(test)]
+    pub(super) fn count_query(rows: usize) {
+        WORK.with(|work| {
+            let (queries, read) = work.get();
+            work.set((queries + 1, read + rows));
+        });
+    }
+
+    #[cfg(not(test))]
+    pub(super) const fn count_query(_rows: usize) {}
+
+    /// The queries and rows counted on this thread since the last call.
+    #[cfg(test)]
+    pub(super) fn take() -> (usize, usize) {
+        WORK.with(|work| work.replace((0, 0)))
     }
 }
 
@@ -5064,5 +5500,173 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// Indexes `files` and returns what one `impact` on `target` counted.
+    fn evidence_work(
+        files: &[(String, String)],
+        target: &str,
+    ) -> (usize, usize, super::ImpactReport) {
+        evidence_work_capped(files, target, None)
+    }
+
+    /// [`evidence_work`] at depth 1 with the given (files, rows) caps.
+    fn evidence_work_capped(
+        files: &[(String, String)],
+        target: &str,
+        caps: Option<(usize, usize)>,
+    ) -> (usize, usize, super::ImpactReport) {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let root = directory.path().join("repo");
+        for (path, source) in files {
+            let absolute = root.join(path);
+            fs::create_dir_all(absolute.parent().expect("parent")).expect("directory");
+            fs::write(absolute, source).expect("file");
+        }
+        let store = compresso_store::Store::open(&directory.path().join("compresso.db"))
+            .expect("store should open");
+        crate::Indexer::new(
+            &store,
+            compresso_core::counter_for(compresso_core::TokenProvider::Heuristic),
+        )
+        .index(&root, |_| {})
+        .expect("index");
+        let canonical = fs::canonicalize(&root).expect("root canonicalizes");
+        let repo = store
+            .repo_by_root(&canonical)
+            .expect("lookup")
+            .expect("repository")
+            .id;
+        super::evidence_work::take();
+        let report = match caps {
+            None => super::impact(&store, repo, target).expect("impact"),
+            Some((files_cap, rows)) => super::impact_with_evidence(
+                &store,
+                repo,
+                target,
+                super::ImpactOptions {
+                    max_depth: 1,
+                    max_results: 500,
+                },
+                super::EvidenceState::with_caps(files_cap, rows),
+            )
+            .expect("impact"),
+        };
+        let (queries, rows) = super::evidence_work::take();
+        (queries, rows, report)
+    }
+
+    /// One Go package of `size` files, each calling `Target` and declaring
+    /// `extra` more functions, beside another package of the same files
+    /// calling a `Target` of its own.
+    fn go_package(size: usize, extra: usize) -> Vec<(String, String)> {
+        let mut files = vec![("go.mod".to_owned(), "module example.com/svc\n".to_owned())];
+        for package in ["pkg", "other"] {
+            files.push((
+                format!("{package}/target.go"),
+                format!("package {package}\n\nfunc Target() {{}}\n"),
+            ));
+            for index in 0..size {
+                let more = (0..extra)
+                    .map(|name| format!("func f{index:04}x{name}() {{}}\n"))
+                    .collect::<String>();
+                files.push((
+                    format!("{package}/f{index:04}.go"),
+                    format!("package {package}\n\nfunc f{index:04}() {{\n\tTarget()\n}}\n{more}"),
+                ));
+            }
+        }
+        files
+    }
+
+    /// E17-46 (D111, review should-fix 3): the same-package evidence of one
+    /// Go `impact` reads each directory once, driven from its files: two
+    /// queries per directory (its symbols, its plain and self calls), at
+    /// most 64 directories, and one query for the cut markers. The rows are
+    /// the directory's own; a package of the same names elsewhere adds none,
+    /// and checking more files of the same directory reads nothing more.
+    #[test]
+    fn test_go_package_evidence_work_is_bounded_by_the_check_bounds() {
+        let (small_queries, small_rows, small) =
+            evidence_work(&go_package(100, 0), "pkg/target.go");
+        let (large_queries, large_rows, large) =
+            evidence_work(&go_package(200, 0), "pkg/target.go");
+        assert_eq!(small.total, 100);
+        assert_eq!(large.total, 200);
+        assert_eq!(small_queries, 3, "one directory read, one cut query");
+        assert_eq!(large_queries, 3);
+        // Symbols (the target's and one per file) and one call per file.
+        assert_eq!(small_rows, (100 + 1) + 100);
+        assert_eq!(large_rows, (200 + 1) + 200);
+        assert_eq!(large.unevaluated, 200 - 63);
+
+        // Files past the name bound (401 names each) are counted, and read
+        // nothing more: their directory is already read.
+        let (wide_queries, wide_rows, wide) = evidence_work(&go_package(100, 400), "pkg/target.go");
+        assert_eq!(wide.total, 100);
+        assert_eq!(wide_queries, 3);
+        assert_eq!(wide_rows, (100 * 401 + 1) + 100);
+        assert_eq!(wide.unevaluated, 100);
+
+        // Dependents spread over 100 directories: at most 64 are read.
+        let mut files = vec![
+            ("go.mod".to_owned(), "module example.com/svc\n".to_owned()),
+            (
+                "pkg/target.go".to_owned(),
+                "package pkg\n\nfunc Target() {}\n".to_owned(),
+            ),
+        ];
+        for index in 0..100 {
+            files.push((
+                format!("d{index:03}/user.go"),
+                format!("package d{index:03}\n\nimport \"example.com/svc/pkg\"\n\nfunc use() {{\n\tpkg.Target()\n}}\n"),
+            ));
+            files.push((
+                format!("d{index:03}/mate.go"),
+                format!("package d{index:03}\n\nfunc mate() {{}}\n"),
+            ));
+        }
+        let (spread_queries, _, spread) = evidence_work(&files, "pkg/target.go");
+        assert_eq!(spread.total, 100);
+        assert_eq!(spread_queries, 2 * super::MAX_EVIDENCE_TARGETS + 1);
+        assert_eq!(spread.unevaluated, 100 - 64);
+    }
+
+    /// Closing pass item 4: a directory is read up to a cap of files (in
+    /// path order) and a cap of rows per `impact`; the files not read are
+    /// `unevaluated`, never taken as showing no use.
+    #[test]
+    fn test_go_directory_reads_stop_at_their_caps_and_count_the_rest() {
+        let mut files = vec![
+            ("go.mod".to_owned(), "module example.com/svc\n".to_owned()),
+            (
+                "pkg/a.go".to_owned(),
+                "package pkg\n\nfunc Target() {}\n".to_owned(),
+            ),
+        ];
+        for index in 0..30 {
+            files.push((
+                format!("pkg/f{index:04}.go"),
+                format!("package pkg\n\nfunc f{index:04}() {{\n\tTarget()\n}}\n"),
+            ));
+        }
+        // Ten files read: the target and nine callers; 21 not read.
+        let (_, rows, report) = evidence_work_capped(&files, "pkg/a.go", Some((10, 1_000)));
+        assert_eq!(report.total, 9);
+        assert_eq!(report.unevaluated, 21);
+        assert!(!report.complete);
+        assert_eq!(rows, 10 + 9, "symbols and calls of the ten files only");
+
+        // A row budget smaller than the directory: nothing of it is known.
+        let (_, _, report) = evidence_work_capped(&files, "pkg/a.go", Some((2_048, 5)));
+        assert_eq!(report.total, 0);
+        assert_eq!(report.unevaluated, 30);
+        assert!(!report.complete);
+
+        // Within both caps every caller is listed.
+        let (_, _, report) = evidence_work_capped(&files, "pkg/a.go", Some((2_048, 1_000)));
+        assert_eq!(report.total, 30);
+        assert_eq!(report.unevaluated, 0);
+        assert!(report.complete, "{report:?}");
     }
 }

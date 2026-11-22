@@ -5,7 +5,7 @@ use std::sync::{LazyLock, OnceLock};
 use compresso_store::{CallSiteRecord, SymbolKind, SymbolRecord};
 use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
 
-mod calls;
+pub(crate) mod calls;
 mod csharp;
 mod declarations;
 mod go;
@@ -1292,5 +1292,30 @@ mod tests {
             field.len() <= MAX_SIGNATURE_BYTES && field.ends_with('…'),
             "{field}"
         );
+    }
+
+    /// E17-46: the Go binding scan visits each node of a function once, so
+    /// a function of 100,000 statements, each binding a name and calling
+    /// one, costs a pass proportional to its size, not to statements times
+    /// calls; counted, not timed.
+    #[test]
+    fn test_go_binding_scan_is_one_pass_per_function() {
+        let visits = |statements: usize| {
+            let body = (0..statements)
+                .map(|index| format!("\tv{index} := f{index}()\n"))
+                .collect::<String>();
+            let source = format!("package p\n\nfunc big() {{\n{body}}}\n");
+            super::calls::BINDING_NODES.with(|count| count.set(0));
+            let extraction = ParserRegistry::extract(Language::Go, &source).expect("extracts");
+            let nodes = super::calls::BINDING_NODES.with(std::cell::Cell::get);
+            (nodes, extraction.calls.len())
+        };
+        let (small, small_calls) = visits(50_000);
+        let (large, large_calls) = visits(100_000);
+        assert!(small_calls > 0 && large_calls > 0);
+        // About ten nodes per statement, and twice the statements cost
+        // twice the visits.
+        assert!(large <= 100_000 * 16, "{large}");
+        assert!(large <= small * 2 + 16, "{small} {large}");
     }
 }

@@ -170,17 +170,17 @@ impl<'a, P: FnMut(IndexProgress)> BatchWriter<'a, P> {
                     .is_err()
             })
             .collect::<Vec<_>>();
-        // Java and C# (D105): a file whose call sites are cut or dropped
-        // holds one marker row, written in the same transaction as the file,
-        // so `impact` can tell that its calls may be missing. The marker is
-        // not a call site and no report count includes it.
+        // Java and C# (D105) and Go (D111): a file whose call sites are cut
+        // or dropped holds one marker row, written in the same transaction
+        // as the file, so `impact` can tell that its calls may be missing.
+        // The marker is not a call site and no report count includes it.
         let marked = pending
             .iter()
             .zip(&rejected)
             .map(|(prepared, rejected)| {
                 ((prepared.calls_truncated || *rejected)
                     && !prepared.symbols.is_empty()
-                    && super::declaring_language(&prepared.record.path).is_some())
+                    && crate::parsers::languages::calls_are_package_evidence(&prepared.record.path))
                 .then(|| {
                     let mut calls = if *rejected {
                         Vec::new()
@@ -525,5 +525,55 @@ mod tests {
         );
         assert_eq!(tally.call_sites, 1);
         assert_eq!(tally.call_site_files_truncated, 1);
+    }
+
+    #[test]
+    fn test_a_cut_go_file_gets_its_marker_row_and_a_cut_script_file_none() {
+        // E17-46 (D111): Go reads call sites as same-package evidence, so a
+        // cut Go file is marked as a Java file is; other languages are not.
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let store = Store::open(&directory.path().join("compresso.db")).expect("store should open");
+        let repo = store
+            .approve_repo(directory.path())
+            .expect("repository should be approved");
+        let mut writer = BatchWriter::new(&store, repo, |_| {}, BatchLimits::DEFAULT, 0);
+        for (path, language) in [
+            ("store/store.go", compresso_store::FileLanguage::Go),
+            ("src/a.ts", compresso_store::FileLanguage::TypeScript),
+        ] {
+            let mut prepared = synthetic(path);
+            prepared.record.language = Some(language);
+            prepared.symbols = vec![compresso_store::SymbolRecord {
+                name: "run".to_owned(),
+                qualified_name: "run".to_owned(),
+                kind: compresso_store::SymbolKind::Function,
+                signature: None,
+                start_line: 1,
+                end_line: 3,
+                token_estimate: 1,
+            }];
+            prepared.calls = vec![CallSiteRecord {
+                caller: 0,
+                callee_name: "open".to_owned(),
+                qualifier: None,
+                form: compresso_store::CallForm::Plain,
+                line: 2,
+            }];
+            prepared.calls_truncated = true;
+            writer.push(prepared).expect("buffered");
+        }
+        writer.flush().expect("written");
+        let (_, tally, _) = writer.into_parts();
+
+        assert_eq!(store.call_site_count(repo).expect("count"), 2);
+        assert_eq!(
+            store
+                .files_with_cut_call_sites(repo)
+                .expect("marked files")
+                .into_iter()
+                .collect::<Vec<_>>(),
+            ["store/store.go"]
+        );
+        assert_eq!(tally.call_sites, 2);
     }
 }

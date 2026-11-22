@@ -199,7 +199,8 @@ fn impact_tool(
                 "depth": entry.depth,
                 "edge_kinds": entry.edge_kinds.iter().map(|kind| edge_kind_name(*kind)).collect::<Vec<_>>()
             });
-            // Java and C# (D105): the package or namespace that links it.
+            // Java and C# (D105): the package or namespace that links it; Go
+            // (D111): the directory of a same-package file.
             if let Some(package) = &entry.package {
                 value["package"] = json!(package);
             }
@@ -219,8 +220,8 @@ fn impact_tool(
         "stale": stale,
         "reindex_hint": stale.then_some(REINDEX_HINT)
     });
-    // Java and C# (D105): why `complete` is false when package links could
-    // not be checked; absent otherwise.
+    // Java and C# (D105) and Go (D111): why `complete` is false when
+    // package links could not be checked; absent otherwise.
     if report.unevaluated > 0 {
         result["unevaluated"] = json!(report.unevaluated);
     }

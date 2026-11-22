@@ -162,13 +162,18 @@ fn test_go_package_imports_are_edges_to_each_package_file() {
         ],
         "test files are not part of the imported package; fmt and testing are external"
     );
+    // E17-46 (D111) amends D102's output here: the importer first, then the
+    // package's test file that calls `Open` (`references`); `build.go` (a
+    // composite literal only) and `doc.go` show no call: `unproven`.
     let report = impact(&fixture.store, fixture.repo(), "store/store.go").expect("impact");
     let dependents = report
         .dependents
         .iter()
         .map(|entry| entry.path.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(dependents, ["cmd/server/main.go"]);
+    assert_eq!(dependents, ["cmd/server/main.go", "store/store_test.go"]);
+    assert_eq!(report.unproven, 2);
+    assert!(!report.complete);
 }
 
 #[test]

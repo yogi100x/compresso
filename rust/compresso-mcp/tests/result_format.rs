@@ -2836,3 +2836,37 @@ async fn test_impact_result_names_totals_and_the_linking_package() {
     );
     full.close().await;
 }
+
+/// E17-46 (D111): a Go file's dependents include the files of its package
+/// that call it (`references`, the directory as `package`); a file of the
+/// package with no call is unproven, so `complete` is false, as the CLI says.
+#[tokio::test]
+async fn test_go_impact_result_lists_package_files_and_counts_unproven_ones() {
+    let fixture = fixture_with(&[
+        ("go.mod", "module example.com/svc\n"),
+        ("store/parse.go", "package store\n\nfunc Parse() {}\n"),
+        (
+            "store/load.go",
+            "package store\n\nfunc Load() {\n\tParse()\n}\n",
+        ),
+        ("store/idle.go", "package store\n\nfunc idle() {}\n"),
+    ]);
+    let mut full = Harness::start(
+        &fixture,
+        options_with(&fixture, McpToolProfile::Full, McpResultFormat::Json),
+    )
+    .await;
+    let (text, is_error) = full
+        .call("compresso_impact", &json!({ "path": "store/parse.go" }))
+        .await;
+    assert!(!is_error, "{text}");
+    let value: Value = serde_json::from_str(&text).expect("JSON result");
+    assert_eq!(value["total"], 1, "{value}");
+    assert_eq!(value["unproven"], 1);
+    assert_eq!(value["complete"], false);
+    assert_eq!(
+        value["dependents"],
+        json!([{ "path": "store/load.go", "depth": 1, "edge_kinds": ["references"], "package": "store" }])
+    );
+    full.close().await;
+}

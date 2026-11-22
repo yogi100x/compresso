@@ -577,6 +577,16 @@ pub(crate) fn package_is_directory(path: &str) -> bool {
         .is_some_and(|spec| spec.package_is_directory)
 }
 
+/// Whether `impact` reads a repository path's call sites as evidence that
+/// it uses another file of its package (Java and C# through their declared
+/// packages, D105; Go through its directory, D111), so a file of it whose
+/// call extraction was cut holds the cut marker row.
+pub(crate) fn calls_are_package_evidence(path: &str) -> bool {
+    path.rsplit_once('.')
+        .and_then(|(_, extension)| for_extension(extension))
+        .is_some_and(|spec| spec.declarations.is_some() || spec.package_is_directory)
+}
+
 /// The call-resolution rule set of a repository path's language.
 pub(crate) fn call_rules(path: &str) -> CallRules {
     path.rsplit_once('.')
