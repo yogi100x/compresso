@@ -1,11 +1,9 @@
 //! Postgres and MySQL/MariaDB paths.
 //!
-//! The default run needs no database server: it checks that connection
+//! These tests need no database server: they check that connection
 //! failures, including a server that echoes the user name back, never carry
-//! any part of the configured URL. The live tests run only when
-//! `COMPRESSO_SQL_TEST_POSTGRES_URL` or `COMPRESSO_SQL_TEST_MYSQL_URL` names a
-//! throwaway database reachable with a read-only role (and, optionally,
-//! `..._PRIVILEGED_URL` names a superuser or FILE/SUPER account there).
+//! any part of the configured URL, and that a stalled peer cannot hold a
+//! call. The live tests are in `tests/live.rs`.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -14,7 +12,6 @@ use std::time::Duration;
 use compresso_sql::{
     SqlAction, SqlEngine, SqlError, SqlOutcome, SqlRequest, SqlService, SqlSettings,
 };
-use serde_json::Value;
 
 const ENV: &str = "COMPRESSO_SQL_TEST";
 const USER: &str = concat!("canary", "_", "role");
@@ -157,131 +154,6 @@ fn test_remote_hosts_without_verified_tls_are_not_configured() {
     assert_eq!(error.code(), "sql_not_configured");
     assert!(error.message().contains("verify-full"), "{error}");
     assert_no_canary(&error);
-}
-
-// ------------------------------------------------- live (environment-gated)
-
-fn live(variable: &str) -> Option<SqlService> {
-    let url = std::env::var(variable).ok()?;
-    Some(service(&url))
-}
-
-fn rows(outcome: SqlOutcome) -> Vec<Vec<Value>> {
-    match outcome {
-        SqlOutcome::Query(result) => result.rows,
-        other => panic!("unexpected outcome {other:?}"),
-    }
-}
-
-fn check_live_engine(service: &SqlService, engine: SqlEngine, sleep: &str, locking: Option<&str>) {
-    assert_eq!(service.engine(), Some(engine));
-    assert_eq!(
-        rows(query(service, "SELECT 1 AS one").expect("select")),
-        vec![vec![Value::from(1)]]
-    );
-    for sql in [
-        "SELECT 1; SELECT 2",
-        "CREATE TABLE compresso_sql_probe (a int)",
-        "DELETE FROM compresso_sql_probe",
-    ] {
-        assert_eq!(
-            query(service, sql).expect_err(sql).code(),
-            "sql_refused",
-            "{sql}"
-        );
-    }
-    // Passes the gate; the read-only transaction must refuse it.
-    if let Some(locking) = locking {
-        let error = query(service, locking).expect_err("locking read");
-        assert!(
-            matches!(
-                error.code(),
-                "sql_read_only" | "sql_error" | "sql_permission"
-            ),
-            "{error}"
-        );
-    }
-    let request = SqlRequest {
-        action: SqlAction::Query(sleep.to_owned()),
-        max_rows: 10,
-        timeout: Duration::from_millis(500),
-    };
-    assert_eq!(
-        service.execute(&request).expect_err("sleep").code(),
-        "sql_timeout"
-    );
-    assert!(matches!(
-        service
-            .execute(&SqlRequest::new(SqlAction::Tables))
-            .expect("tables"),
-        SqlOutcome::Tables(_)
-    ));
-}
-
-#[test]
-fn test_live_postgres_reads_and_refuses_writes() {
-    let Some(service) = live("COMPRESSO_SQL_TEST_POSTGRES_URL") else {
-        return;
-    };
-    check_live_engine(
-        &service,
-        SqlEngine::Postgres,
-        "SELECT pg_sleep(5)",
-        Some("SELECT relname FROM pg_catalog.pg_class LIMIT 1 FOR SHARE"),
-    );
-    let SqlOutcome::Describe(described) = service
-        .execute(&SqlRequest::new(SqlAction::Describe(
-            "pg_catalog.pg_class".to_owned(),
-        )))
-        .expect("describe")
-    else {
-        panic!("describe");
-    };
-    assert!(
-        described
-            .columns
-            .iter()
-            .any(|column| column.name == "relname")
-    );
-    let typed = rows(
-        query(
-            &service,
-            "SELECT now()::timestamptz, 12.50::numeric, '\\x0102'::bytea, '{\"a\":1}'::jsonb",
-        )
-        .expect("types"),
-    );
-    assert_eq!(typed[0][2], Value::from("<binary 2 bytes>"));
-    assert_eq!(typed[0][1], Value::from("12.50"));
-    if let Some(privileged) = live("COMPRESSO_SQL_TEST_POSTGRES_PRIVILEGED_URL") {
-        assert_eq!(
-            query(&privileged, "SELECT 1")
-                .expect_err("superuser")
-                .code(),
-            "sql_privileged_role"
-        );
-    }
-}
-
-#[test]
-fn test_live_mysql_reads_and_refuses_writes() {
-    let Some(service) = live("COMPRESSO_SQL_TEST_MYSQL_URL") else {
-        return;
-    };
-    check_live_engine(
-        &service,
-        SqlEngine::MySql,
-        "SELECT SLEEP(5)",
-        // Every statement the gate admits is a plain read in MySQL; a write
-        // reached through a stored function needs a fixture this test does
-        // not create, so the database-level refusal is not probed here.
-        None,
-    );
-    if let Some(privileged) = live("COMPRESSO_SQL_TEST_MYSQL_PRIVILEGED_URL") {
-        assert_eq!(
-            query(&privileged, "SELECT 1").expect_err("root").code(),
-            "sql_privileged_role"
-        );
-    }
 }
 
 #[test]

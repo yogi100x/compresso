@@ -194,6 +194,55 @@ jobs:
             target/release/compresso.exe
           if-no-files-found: error
 
+  live-sql:
+    # E17-50: the compresso_sql tests that need a real server, against
+    # throwaway containers. The other jobs stay server-free.
+    name: Live SQL (Postgres, MariaDB)
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16.4
+        env:
+          POSTGRES_DB: probe
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      mariadb:
+        image: mariadb:11.4.3
+        env:
+          MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: "1"
+          MARIADB_DATABASE: compresso_probe
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        env:
+          # Remove after https://github.com/Swatinem/rust-cache/issues/331 is fixed.
+          NODE_OPTIONS: --disable-warning=DEP0040
+        with:
+          shared-key: ci-ubuntu-24.04
+      - name: Run live SQL tests
+        env:
+          # The tests create the unprivileged `reader` accounts themselves.
+          COMPRESSO_SQL_TEST_POSTGRES_URL: postgres://reader@127.0.0.1:5432/probe?sslmode=disable
+          COMPRESSO_SQL_TEST_POSTGRES_PRIVILEGED_URL: postgres://postgres@127.0.0.1:5432/probe?sslmode=disable
+          COMPRESSO_SQL_TEST_MYSQL_URL: mysql://reader@127.0.0.1:3306/compresso_probe?ssl-mode=DISABLED
+          COMPRESSO_SQL_TEST_MYSQL_PRIVILEGED_URL: mysql://root@127.0.0.1:3306/compresso_probe?ssl-mode=DISABLED
+        run: cargo test -p compresso-sql --locked --test live -- --test-threads=1
+
   eval:
     name: Eval (${{ matrix.os }})
     needs: rust
