@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const EXPECTED_CRATES: [&str; 11] = [
+const EXPECTED_CRATES: [&str; 12] = [
     "compresso-agent",
     "compresso-atlas",
     "compresso-cli",
@@ -12,6 +12,7 @@ const EXPECTED_CRATES: [&str; 11] = [
     "compresso-mcp",
     "compresso-proxy",
     "compresso-recall",
+    "compresso-sql",
     "compresso-store",
     "compresso-updater",
 ];

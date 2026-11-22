@@ -447,11 +447,28 @@ fn surface_text(profile: McpToolProfile, edits: bool, sql: SqlSurface) -> String
     for tool in &tools {
         text.push_str(&format!("- {}\n", tool.name));
         if tool.name == "compresso_sql" {
-            text.push_str(&serde_json::to_string_pretty(tool).expect("tool json"));
+            let value = canonical(serde_json::to_value(tool).expect("tool json"));
+            text.push_str(&serde_json::to_string_pretty(&value).expect("tool json"));
             text.push('\n');
         }
     }
     text
+}
+
+/// Keys sorted at every level, so the golden does not depend on whether a
+/// workspace build turns on `serde_json`'s insertion-ordered maps.
+fn canonical(value: Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let sorted = map
+                .into_iter()
+                .map(|(key, value)| (key, canonical(value)))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            Value::Object(sorted.into_iter().collect())
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(canonical).collect()),
+        other => other,
+    }
 }
 
 fn check_golden(name: &str, actual: &str) {
