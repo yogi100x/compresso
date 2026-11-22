@@ -16,7 +16,19 @@
 //! MySQL executable comments (`/*! ... */`, MariaDB `/*M! ... */`) run their
 //! contents, so they are refused rather than skipped. A keyword written as a
 //! quoted identifier is an identifier, not a keyword, which is how a column
-//! literally named `update` can still be selected.
+//! literally named `update` can still be selected. Postgres Unicode-escaped
+//! names and strings (`U&"..."`, `UESCAPE`) are refused because this lexer
+//! does not decode them.
+//!
+//! The function deny-list is a text list and therefore incomplete by nature:
+//! a view, a wrapper function, or a function it does not name can still be
+//! reached. It is not a boundary. The controls that hold are the database's
+//! read-only session, the refusal of privileged roles, and the deadlines;
+//! what remains reachable under them is listed in ADR-0036.
+//!
+//! MySQL is lexed under the default quoting rules; the connection removes
+//! `ANSI_QUOTES`, `NO_BACKSLASH_ESCAPES`, and `ANSI` from the session's
+//! `sql_mode` and confirms it before any statement reaches this gate.
 
 use crate::SqlEngine;
 
