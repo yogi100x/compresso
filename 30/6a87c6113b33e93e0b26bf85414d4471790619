@@ -1,0 +1,21 @@
+docs/adr/0036-opt-in-read-only-live-sql.md
+  s_89a704cfae63f5::t_f8da401012264e 275-279,282-283
+docs/runbooks/install-local.md
+  s_89a704cfae63f5::t_b33094e2b2a3a6 146-150,153-154
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "306a87c6113b33e93e0b26bf85414d4471790619",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
