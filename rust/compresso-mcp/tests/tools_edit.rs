@@ -484,9 +484,11 @@ fn test_lean_instructions_name_the_edit_rule_only_when_it_is_served() {
 async fn test_the_report_cap_holds_for_a_full_batch_of_operations() {
     let fixture = Fixture::new();
     let mut source = String::new();
-    for index in 0..32 {
+    // Two full batches (E17-47: 64 operations per call).
+    let batch = compresso_atlas::EDIT_MAX_OPERATIONS;
+    for index in 0..2 * batch {
         source.push_str(&format!(
-            "pub const A_RATHER_LONG_CONFIGURATION_VALUE_NAME_{index:02}: u32 = 0;\n"
+            "pub const A_RATHER_LONG_CONFIGURATION_VALUE_NAME_{index:03}: u32 = 0;\n"
         ));
     }
     fs::write(fixture.root.join("src/values.rs"), &source).expect("values");
@@ -494,14 +496,14 @@ async fn test_the_report_cap_holds_for_a_full_batch_of_operations() {
         .index(&fixture.root, |_| {})
         .expect("reindex");
     let counter = counter_for(TokenProvider::OpenAiO200k);
-    for (profile, offset) in [(McpToolProfile::Full, 0), (McpToolProfile::Lean, 16)] {
-        let operations = (offset..offset + 16)
+    for (profile, offset) in [(McpToolProfile::Full, 0), (McpToolProfile::Lean, batch)] {
+        let operations = (offset..offset + batch)
             .map(|index| {
                 json!({
                     "op": "replace",
                     "path": "src/values.rs",
-                    "old": format!("A_RATHER_LONG_CONFIGURATION_VALUE_NAME_{index:02}: u32 = 0"),
-                    "new": format!("A_RATHER_LONG_CONFIGURATION_VALUE_NAME_{index:02}: u32 = 1")
+                    "old": format!("A_RATHER_LONG_CONFIGURATION_VALUE_NAME_{index:03}: u32 = 0"),
+                    "new": format!("A_RATHER_LONG_CONFIGURATION_VALUE_NAME_{index:03}: u32 = 1")
                 })
             })
             .collect::<Vec<_>>();
@@ -517,15 +519,18 @@ async fn test_the_report_cap_holds_for_a_full_batch_of_operations() {
         if profile == McpToolProfile::Full {
             let report: Value = serde_json::from_str(&text).expect("JSON");
             assert_eq!(report["truncated"], true);
-            assert_eq!(report["sites_total"], 16);
+            assert_eq!(report["sites_total"], batch);
         } else {
-            assert!(text.starts_with("edited 16 site(s) in 1 file(s)"), "{text}");
+            assert!(
+                text.starts_with(&format!("edited {batch} site(s) in 1 file(s)")),
+                "{text}"
+            );
         }
         harness.close().await;
     }
     assert_eq!(
         fixture.text("src/values.rs").matches("u32 = 1;").count(),
-        32
+        2 * batch
     );
 }
 
@@ -677,4 +682,101 @@ async fn test_a_scoped_rename_reports_whole_matches_outside_its_scope() {
     assert!(text.contains("  outside scope src/main.rs:2: "), "{text}");
     harness.close().await;
     assert!(fixture.text("src/main.rs").contains("lib::format_utc(5)"));
+}
+
+/// E17-47 (D112): the schema advertises the limit, an over-limit call says
+/// the limit and the count, and one call creates a file, edits a file made
+/// since the last index, and reports an identical replace as unchanged.
+#[tokio::test]
+async fn test_large_batches_create_and_unchanged_replaces_over_mcp() {
+    let limit = compresso_atlas::EDIT_MAX_OPERATIONS;
+    let (tools, _) = advertised_surface_with(McpToolProfile::Full, false, true);
+    let edit = tools
+        .iter()
+        .find(|tool| tool.name == "compresso_edit")
+        .expect("edit tool");
+    let schema = serde_json::to_value(edit.input_schema.as_ref()).expect("schema");
+    assert_eq!(schema["properties"]["operations"]["maxItems"], json!(limit));
+    let ops = schema["properties"]["operations"]["items"]["properties"]["op"]["enum"].clone();
+    assert!(
+        ops.as_array().expect("enum").contains(&json!("create")),
+        "{ops}"
+    );
+    let description = edit.description.as_deref().unwrap_or_default();
+    assert!(
+        description.contains(&format!("Up to {limit} operations")),
+        "{description}"
+    );
+
+    let fixture = Fixture::new();
+    fs::write(fixture.root.join("src/late.rs"), "fn late() {}\n").expect("late");
+    for profile in [McpToolProfile::Full, McpToolProfile::Lean] {
+        let mut harness = Harness::start(&fixture, fixture.options(profile, true)).await;
+        let too_many = (0..=limit)
+            .map(|_| json!({ "op": "replace", "path": "src/lib.rs", "old": "a", "new": "b" }))
+            .collect::<Vec<_>>();
+        let (text, is_error) = harness
+            .call("compresso_edit", &json!({ "operations": too_many }))
+            .await;
+        assert!(is_error);
+        assert!(text.starts_with("[limit_exceeded]"), "{text}");
+        assert!(
+            text.contains(&format!("({} > {limit})", limit + 1)) && text.contains("split"),
+            "{text}"
+        );
+        let (text, is_error) = harness
+            .call(
+                "compresso_edit",
+                &json!({ "operations": [{ "op": "create", "path": "src/lib.rs", "contents": "x" }] }),
+            )
+            .await;
+        assert!(is_error);
+        assert!(text.contains("create takes path, content"), "{text}");
+        harness.close().await;
+    }
+
+    let calls = |file: &str| {
+        json!({ "operations": [
+            { "op": "create", "path": file, "content": "pub fn made() {}\n" },
+            { "op": "replace", "path": "src/lib.rs", "old": "pub fn label", "new": "pub fn label" },
+            { "op": "replace", "path": "src/late.rs", "old": "fn late", "new": "fn later" }
+        ] })
+    };
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Full, true)).await;
+    let (text, is_error) = harness.call("compresso_edit", &calls("src/made.rs")).await;
+    assert!(!is_error, "{text}");
+    let report: Value = serde_json::from_str(&text).expect("JSON");
+    assert_eq!(report["files_created"], 1);
+    assert_eq!(report["unchanged_operations"], 1);
+    assert_eq!(report["operations"][0]["op"], "create");
+    assert_eq!(report["operations"][1]["unchanged"], true);
+    assert_eq!(report["operations"][1]["matched"], 1);
+    assert_eq!(report["operations"][2]["sites"], 1);
+    let created = report["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .find(|file| file["path"] == "src/made.rs")
+        .expect("created file reported");
+    assert_eq!(created["created"], true);
+    assert_eq!(created["verified"], true);
+    harness.close().await;
+    assert_eq!(fixture.text("src/made.rs"), "pub fn made() {}\n");
+    assert_eq!(fixture.text("src/late.rs"), "fn later() {}\n");
+    assert_eq!(fixture.text("src/lib.rs"), LIB_RS);
+
+    // The lean text form states both.
+    fs::write(fixture.root.join("src/late.rs"), "fn late() {}\n").expect("late again");
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean, true)).await;
+    let (text, is_error) = harness.call("compresso_edit", &calls("src/other.rs")).await;
+    assert!(!is_error, "{text}");
+    assert!(text.contains("1 file(s) created"), "{text}");
+    assert!(text.contains("@@ src/other.rs: created"), "{text}");
+    assert!(
+        text.contains(
+            "replace in src/lib.rs: old and new are identical; 1 match(es) found, unchanged"
+        ),
+        "{text}"
+    );
+    harness.close().await;
 }

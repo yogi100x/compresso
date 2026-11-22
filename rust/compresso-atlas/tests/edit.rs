@@ -264,6 +264,7 @@ fn test_expected_count_mismatch_writes_nothing_and_names_the_lines() {
             expected,
             actual,
             locations,
+            ..
         } => {
             assert_eq!((operation, expected, actual), (2, 1, 2));
             assert_eq!(
@@ -429,6 +430,10 @@ fn test_secret_gitignored_and_unindexed_paths_are_refused() {
         ("kept.rs", b"fn x() {}\n"),
     ]);
     write(&fixture.root, "late.rs", b"fn x() {}\n");
+    // Valid UTF-8, but the scanner sniffs a NUL as binary and never indexes
+    // it, so even after the refresh an unindexed target needs (E17-47) it is
+    // refused.
+    write(&fixture.root, "late.bin", b"fn x() {}\n\0");
     assert_eq!(
         refusal(
             fixture
@@ -449,11 +454,12 @@ fn test_secret_gitignored_and_unindexed_paths_are_refused() {
     assert_eq!(
         refusal(
             fixture
-                .apply(vec![replace("late.rs", "x", "y", 1)])
+                .apply(vec![replace("late.bin", "x", "y", 1)])
                 .unwrap_err()
         ),
         Refusal::NotIndexed
     );
+    assert_eq!(fixture.read("late.bin"), b"fn x() {}\n\0");
     assert_eq!(
         refusal(
             fixture
@@ -618,8 +624,9 @@ fn test_oversize_and_non_utf8_files_are_refused() {
         )])
         .map(|_| ())
         .and_then(|()| {
+            // Enough 64 KiB inserts to pass 1 MB, within the call's byte bound.
             fixture.apply(
-                (0..EDIT_MAX_OPERATIONS)
+                (0..17)
                     .map(|_| EditOperation::Insert {
                         path: "grow.txt".to_owned(),
                         anchor: "\n".to_owned(),
@@ -668,7 +675,9 @@ fn test_symlink_components_and_links_out_of_the_root_are_refused() {
     let error = fixture
         .apply(vec![replace("other/a.rs", "a", "b", 1)])
         .expect_err("outside root");
-    assert!(matches!(error, EditError::OutsideRoot { .. }), "{error:?}");
+    // Every link reads as missing, whatever it points to (E17-47 review):
+    // the answer no longer tells whether the target outside the root exists.
+    assert_eq!(refusal(error), Refusal::NotFound);
     assert_eq!(
         fs::read_to_string(&outside).expect("outside"),
         "fn a() {}\n"
@@ -735,7 +744,10 @@ fn test_bounds_are_enforced_before_anything_is_written() {
         .collect();
     assert!(matches!(
         fixture.apply(too_many),
-        Err(EditError::Invalid { .. })
+        Err(EditError::Bound {
+            bound: EditBound::Operations,
+            ..
+        })
     ));
     let oversized = replace("many.txt", &"v".repeat(EDIT_MAX_TEXT_BYTES + 1), "x", 1);
     assert!(matches!(

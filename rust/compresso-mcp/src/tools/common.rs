@@ -258,7 +258,42 @@ pub(crate) enum PathState {
     Missing,
 }
 
+/// The repository-relative forward-slash form of an absolute path that sits
+/// under the root as written, or `None`. Lexical only: nothing is resolved.
+/// On Windows the platform separator is accepted in what was passed and the
+/// answer still uses forward slashes, the only form the tools take.
+fn lexical_relative(root: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?.to_str()?;
+    let separators: &[char] = if cfg!(windows) { &['/', '\\'] } else { &['/'] };
+    if relative.is_empty()
+        || relative
+            .split(separators)
+            .any(|part| part == ".." || part == ".")
+    {
+        return None;
+    }
+    Some(if cfg!(windows) {
+        relative.replace('\\', "/")
+    } else {
+        relative.to_owned()
+    })
+}
+
 pub(crate) fn validate_repo_path(root: &Path, requested: &str) -> Result<PathState, ToolFailure> {
+    let path = Path::new(requested);
+    // Checked first (E17-47): an absolute path that names a file under the
+    // root lexically is answered with the repository-relative path to pass,
+    // so one retry succeeds. Lexical only: nothing is resolved, so the
+    // answer says nothing about what exists or where a link points; any
+    // other absolute path keeps the answer below.
+    if path.is_absolute()
+        && !requested.contains('\0')
+        && let Some(relative) = lexical_relative(root, path)
+    {
+        return Err(ToolFailure::invalid(format!(
+            "argument 'path' must be repository-relative: pass '{relative}'."
+        )));
+    }
     if requested.is_empty()
         || requested.contains('\0')
         || requested.contains('\\')
@@ -268,7 +303,6 @@ pub(crate) fn validate_repo_path(root: &Path, requested: &str) -> Result<PathSta
             "argument 'path' must be a non-empty repository-relative forward-slash path.",
         ));
     }
-    let path = Path::new(requested);
     if path.is_absolute() {
         let resolved_or_lexical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         return if resolved_or_lexical.starts_with(root) {
@@ -284,8 +318,19 @@ pub(crate) fn validate_repo_path(root: &Path, requested: &str) -> Result<PathSta
             Component::Normal(_) => {}
             Component::ParentDir => return Err(ToolFailure::outside_root()),
             Component::CurDir => {
+                let cleaned = requested
+                    .split('/')
+                    .filter(|part| *part != ".")
+                    .collect::<Vec<_>>()
+                    .join("/");
                 return Err(ToolFailure::invalid(
-                    "argument 'path' must not contain current-directory components.",
+                    if cleaned.is_empty() || cleaned.split('/').any(|part| part == "..") {
+                        "argument 'path' must not contain current-directory components.".to_owned()
+                    } else {
+                        format!(
+                            "argument 'path' must not contain current-directory components: pass '{cleaned}'."
+                        )
+                    },
                 ));
             }
             Component::RootDir | Component::Prefix(_) => {

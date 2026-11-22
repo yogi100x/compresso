@@ -42,7 +42,8 @@ adds a narrower tool now, ahead of E15.
 2. **Operations.** `replace` (exact literal, `expected_count`, default 1),
    `rename` (whole identifier across the indexed files of a scope given as a
    path prefix or glob), and `insert` (before or after an anchor that occurs
-   exactly once). Up to 16 operations per call, applied in order to in-memory
+   exactly once). Up to 16 operations per call (64 since E17-47, see the
+   amendment below), applied in order to in-memory
    copies, all or nothing. No regular expressions. File creation and deletion
    are out of scope: every target must already be an indexed file.
 3. **Identifier boundaries** are defined explicitly, not by a regex `\b`: an
@@ -134,7 +135,7 @@ adds a narrower tool now, ahead of E15.
    usually just read them) and marked stale in the report. An optional
    `expected_hash` (BLAKE3 of the current bytes) per replace or insert refuses
    the edit on mismatch.
-8. **Bounds.** 16 operations; 64 KiB per `old`, `new`, anchor, or inserted text;
+8. **Bounds.** 16 operations (64 and a 4 MiB call total since E17-47); 64 KiB per `old`, `new`, anchor, or inserted text;
    identifiers up to 256 bytes; 200 changed files; 2,000 sites; 16 MiB written;
    256 MiB read per call to search rename scopes (one budget shared by every
    rename in the call; a rename stops as soon as its matched files pass 200); at most 20 listed locations per list
@@ -223,3 +224,60 @@ planned general edit surface.
   measured (o200k / Anthropic-calibrated) full 4,030 / 4,636 tokens, full with
   edits 4,627 / 5,322, lean 2,006 / 2,308, lean with edits 2,489 / 2,863. The
   lean half-cost test compares the profiles without the opt-in tool.
+
+## Amendment 2026-11-22 (E17-47, D112; proposed by the implementing session, awaiting owner confirmation)
+
+A probe ran a 15-task editing suite with `compresso_edit` as the main edit
+path. The tool worked, but four gaps sent the model back to shell scripts.
+D112 changes decisions 2 and 8 and the out-of-scope list as follows; the rest
+of this record stands.
+
+- **Bounds (decision 8).** 64 operations per call (was 16), and at most 4 MiB
+  of path and text in all, the size of the operations document the CLI reads.
+  The other bounds are call-wide and unchanged, so the most work one call can
+  do grows only by the per-operation scan of a file of at most 1 MB.
+- **Create (decisions 2 and 5; out of scope).** A `create` operation writes a
+  new file into an existing directory, never over anything at the path, all or
+  nothing with the rest of the call. It passes the path gates an existing
+  file passes before it exists (secret, `.git` in any case, control file,
+  scanner exclusion on the requested and the canonical directory spelling,
+  protected paths, a real directory inside the root, the OS write query on the
+  directory), contains no NUL, and is at most 64 KiB. It is hard-linked into
+  place, so a file that appears meanwhile is never replaced, and a rollback
+  removes it only while it holds the created bytes. Deleting, moving, and
+  changing permissions stay out of scope, as do creating directories.
+- **Unindexed targets (decision 5).** "Every target must already be an indexed
+  file" stays a hard gate. A `replace` or `insert` target that exists on disk
+  but is not indexed makes the call refresh the index once first, as a rename
+  already did (decision 9), so a file created during a session is edited when
+  the scanner indexes it, which means it passed every check an indexed file
+  passed; otherwise it is refused as before.
+- **Identical texts.** A `replace` whose `old` and `new` are identical checks
+  its count and is reported `unchanged` instead of failing the call.
+
+Measured surface after this amendment (o200k / Anthropic-calibrated): full with
+edits 4,781 / 5,499 tokens, lean with edits 2,573 / 2,960; without the tool,
+full 4,033 / 4,639 and lean 2,008 / 2,310 (unchanged).
+
+After an independent security review the same day, create also refuses any
+hidden path component (a denylist always has gaps; tool configuration goes
+through the client's own write path), `:` and Windows reserved device names,
+and two creates differing only by case; the control-file denylist grew (see
+D112); a path through a link is `not_found` whatever it points to; and the
+refresh for an unindexed target is skipped for targets the cheap checks
+refuse and for unchanged targets a refresh already left unindexed (also after
+a failed refresh). The control-file denylist is defence in depth, not a
+boundary, and stops growing after the final review round: ordinary code and
+build files that tools run (`build.rs`, `package.json`, `Makefile`,
+`conftest.py`, `eslint.config.js`, `go.work`) stay editable and creatable on
+purpose, and the client's approval of the edit tool is the boundary. A text
+file that is not UTF-8 is now skipped by the scanner instead of failing the
+whole index. Known
+gaps: no journal for a crash mid-commit, no automatic cleanup of leftover
+temporary files, hard links required for create, and the request byte bound
+checked after the MCP frame is parsed.
+
+Threat model addition: injected repository content can now ask for a new file
+as well as an edit. A created file is reached through the same path gates and
+is listed in the report with `created: true`; the client's approval prompt
+still applies. A created file is not executable.

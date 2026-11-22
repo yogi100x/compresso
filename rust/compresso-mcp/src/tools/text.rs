@@ -904,6 +904,12 @@ fn edit(payload: &Value, out: &mut Out) {
             "adjacent match(es) to check by hand",
         ),
         ("unverified_files", "file(s) NOT verified on disk"),
+        // E17-47: present only when not zero.
+        ("files_created", "file(s) created"),
+        (
+            "unchanged_operations",
+            "replace(s) with identical old and new, unchanged",
+        ),
     ] {
         let count = number(payload, key);
         if count > 0 {
@@ -917,11 +923,19 @@ fn edit(payload: &Value, out: &mut Out) {
             .filter_map(Value::as_u64)
             .map(|line| line.to_string())
             .collect::<Vec<_>>();
-        let mut row = format!(
-            "@@ {}: {} site(s)",
-            string(file, "path").unwrap_or_default(),
-            number(file, "sites")
-        );
+        let mut row = if flag(file, "created") {
+            format!(
+                "@@ {}: created, {} byte(s)",
+                string(file, "path").unwrap_or_default(),
+                number(file, "bytes_after")
+            )
+        } else {
+            format!(
+                "@@ {}: {} site(s)",
+                string(file, "path").unwrap_or_default(),
+                number(file, "sites")
+            )
+        };
         if !lines.is_empty() {
             row.push_str(" at line ");
             row.push_str(&lines.join(", "));
@@ -944,6 +958,14 @@ fn edit(payload: &Value, out: &mut Out) {
         out.line(row);
     }
     for operation in array(payload, "operations") {
+        if flag(operation, "unchanged") {
+            out.line(format!(
+                "replace in {}: old and new are identical; {} match(es) found, unchanged",
+                string(operation, "path").unwrap_or_default(),
+                number(operation, "matched")
+            ));
+            continue;
+        }
         if string(operation, "op") != Some("rename") {
             continue;
         }
