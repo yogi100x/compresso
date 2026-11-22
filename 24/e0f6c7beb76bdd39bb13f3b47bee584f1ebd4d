@@ -1,0 +1,25 @@
+decisions.md
+  s_89a704cfae63f5::t_0ec96708793914 110
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_deacfd2bb7c853 17,29,35,41,48,702-720,784-786,831,846-855
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_e95c2071f304fd 3556-3574,3590,3621-3623
+docs/runbooks/mcp-manual-verification.md
+  s_89a704cfae63f5::t_89fc73fccd0f87 51,56-58
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "24e0f6c7beb76bdd39bb13f3b47bee584f1ebd4d",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
