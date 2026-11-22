@@ -96,8 +96,9 @@ impl SqliteTarget {
             let Ok(protected_canonical) = fs::canonicalize(protected) else {
                 continue;
             };
-            let inside =
-                protected_canonical.is_dir() && canonical.starts_with(&protected_canonical);
+            let inside = protected_canonical.is_dir()
+                && (canonical.starts_with(&protected_canonical)
+                    || linked_into(&metadata, &protected_canonical));
             if inside
                 || canonical == protected_canonical
                 || same_file(&metadata, &protected_canonical)
@@ -127,6 +128,35 @@ impl SqliteTarget {
         let memory_stop = harden(&mut connection, timeout).map_err(map_error)?;
         Ok((connection, memory_stop))
     }
+}
+
+/// Whether `metadata` is the same file (device and inode) as any file
+/// under `directory`, two levels deep and at most 10,000 entries, so a hard
+/// link to any of Compresso's own files is refused like the store itself.
+fn linked_into(metadata: &fs::Metadata, directory: &Path) -> bool {
+    let mut pending = vec![(directory.to_path_buf(), 0)];
+    let mut seen = 0usize;
+    while let Some((folder, depth)) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&folder) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            seen += 1;
+            if seen > 10_000 {
+                return false;
+            }
+            let path = entry.path();
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() && depth < 2 {
+                pending.push((path, depth + 1));
+            } else if kind.is_file() && same_file(metadata, &path) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[cfg(unix)]

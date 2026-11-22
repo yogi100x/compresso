@@ -16,15 +16,48 @@ pub const MAX_NAME_CHARS: usize = 64;
 /// Characters of one metadata value (a type, a default expression) kept.
 pub const MAX_METADATA_CHARS: usize = 256;
 
-/// `value` cut to `limit` characters, with the number left out.
+/// `value` cut to `limit` characters, with the number left out, and C1
+/// control and bidirectional-formatting characters written as `\uXXXX`
+/// text: they can reorder or hide what a reader sees, and JSON escapes
+/// only C0 controls.
 pub(crate) fn cut(value: &str, limit: usize) -> String {
-    match value.char_indices().nth(limit) {
+    let cut = match value.char_indices().nth(limit) {
         None => value.to_owned(),
         Some((index, _)) => {
             let omitted = value[index..].chars().count();
             format!("{}... [+{omitted} chars]", &value[..index])
         }
+    };
+    neutralise(&cut)
+}
+
+/// Whether a character is a C1 control or a bidirectional formatting
+/// character.
+fn is_hidden_control(character: char) -> bool {
+    matches!(
+        character,
+        '\u{80}'..='\u{9f}'
+            | '\u{61c}'
+            | '\u{200e}'
+            | '\u{200f}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2066}'..='\u{2069}'
+    )
+}
+
+fn neutralise(value: &str) -> String {
+    if !value.chars().any(is_hidden_control) {
+        return value.to_owned();
     }
+    let mut output = String::with_capacity(value.len() + 8);
+    for character in value.chars() {
+        if is_hidden_control(character) {
+            output.push_str(&format!("\\u{:04X}", u32::from(character)));
+        } else {
+            output.push(character);
+        }
+    }
+    output
 }
 
 /// A text cell, cut to [`MAX_CELL_CHARS`] with the number of characters left

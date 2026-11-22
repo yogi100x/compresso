@@ -300,7 +300,11 @@ impl SqlTarget {
             .password()
             .map(|password| decoded(password, "password"))
             .transpose()?;
-        let host = decoded(url.host_str().unwrap_or_default(), "host")?;
+        // An IPv6 literal reaches the driver without its brackets.
+        let host = decoded(url.host_str().unwrap_or_default(), "host")?
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_owned();
         let socket = param("socket");
         if host.is_empty() && socket.is_none() {
             return Err("the URL must name its host".to_owned());
@@ -624,6 +628,22 @@ mod tests {
             tls("postgres://u@127.0.0.1.nip.io/app"),
             Ok(Tls::VerifyFull)
         );
+    }
+
+    #[test]
+    fn test_ipv6_loopback_literals_reach_the_driver_without_brackets() {
+        for value in ["postgres://u@[::1]:5433/app", "mysql://u@[::1]:3307/app"] {
+            let SqlTarget::Network(target, _) = parse(value).expect(value) else {
+                panic!("network");
+            };
+            assert_eq!(target.tls, Tls::Local(LocalTls::Prefer), "{value}");
+            let host = match &target.options {
+                DriverOptions::Postgres(options) => options.get_host().to_owned(),
+                DriverOptions::MySql(options) => options.get_host().to_owned(),
+            };
+            assert_eq!(host, "::1", "{value}");
+        }
+        assert_eq!(tls("postgres://u@[2001:db8::1]/app"), Ok(Tls::VerifyFull));
     }
 
     #[test]

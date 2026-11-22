@@ -444,3 +444,36 @@ fn test_sqlite_wal_database_in_a_read_only_directory_says_why() {
         Err(error) => assert_eq!(error.code(), "sql_wal_unavailable", "{error}"),
     }
 }
+
+#[test]
+fn test_sqlite_c1_and_bidirectional_controls_are_escaped_not_returned() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let service = service(&shop(directory.path()), Vec::new());
+    let result = query(
+        &service,
+        "SELECT 'a' || char(8238) || 'b' || char(133) || 'c' || char(8297) AS v, 1 AS 'x\u{202e}y'",
+    )
+    .expect("query");
+    let text = serde_json::to_string(&result).expect("json");
+    for raw in ['\u{202e}', '\u{85}', '\u{2069}'] {
+        assert!(!text.contains(raw), "{raw:?} in {text}");
+    }
+    assert_eq!(result.rows[0][0], Value::from("a\\u202Eb\\u0085c\\u2069"));
+    assert_eq!(result.columns[1], "x\\u202Ey");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_sqlite_a_hard_link_to_any_file_in_the_data_directory_is_refused() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data = directory.path().join("compresso");
+    fs::create_dir_all(data.join("reports")).expect("data dir");
+    let store = data.join("compresso.db");
+    create(&store, "CREATE TABLE operations (id TEXT);");
+    let other = data.join("reports").join("side.db");
+    create(&other, "CREATE TABLE t (a);");
+    let link = directory.path().join("innocent.db");
+    fs::hard_link(&other, &link).expect("hard link");
+    let error = query(&service(&link, vec![store, data]), "SELECT 1").expect_err("hard link");
+    assert_eq!(error.code(), "sql_refused", "{error}");
+}
