@@ -1,0 +1,27 @@
+README.md
+  s_89a704cfae63f5::t_8a77be45076f2f 38-39
+decisions.md
+  s_89a704cfae63f5::t_bee2ab0b7905fa 110
+docs/adr/0036-opt-in-read-only-live-sql.md
+  s_89a704cfae63f5::t_477ac44c371bd9 111-114,142-149,212-215
+docs/plan/01-stack-and-workspace.md
+  s_89a704cfae63f5::t_c59f6d37f6cb8d 105,110
+docs/runbooks/mcp-manual-verification.md
+  s_89a704cfae63f5::t_0efbebd557fbb6 92-98
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bca4e1ffdb44caebc8f0718166cf5c040f2bcc46",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
