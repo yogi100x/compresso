@@ -768,8 +768,11 @@ async function memberTree(
     }));
   } catch (error) {
     const stderr = (error as { stderr?: string }).stderr?.trim();
+    const hint = locked
+      ? ""
+      : " (the capability check resolves a copy of the workspace offline; run `cargo fetch --locked` first so every crate is in the local cache)";
     throw new Error(
-      `cargo tree failed for ${member}${stderr ? `: ${stderr}` : ""}`,
+      `cargo tree failed for ${member}${hint}${stderr ? `: ${stderr}` : ""}`,
       { cause: error },
     );
   }
@@ -802,6 +805,92 @@ function treeCapabilityPath(lines: TreeLine[], capability: Capability) {
       packageCapabilities(line.name, line.features).has(capability)
     ) {
       return [...stack];
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Every path from `member` to a network package in its real resolved tree
+ * (inverted, without de-duplication), returning the first that passes
+ * through a workspace crate other than compresso-sql (or the other exempt
+ * consumer: compresso-cli reaches compresso-sql through compresso-mcp).
+ */
+async function networkPathThroughOtherMember(
+  manifestPath: string,
+  member: string,
+  tree: TreeLine[],
+  members: Set<string>,
+) {
+  const targets = [
+    ...new Set(
+      tree
+        .filter((line) => line.depth > 0 && networkDependencies.has(line.name))
+        .map((line) => line.name),
+    ),
+  ];
+  for (const target of targets) {
+    let stdout: string;
+    try {
+      ({ stdout } = await execFileAsync(
+        "cargo",
+        [
+          "tree",
+          "--locked",
+          "-p",
+          member,
+          "-i",
+          target,
+          "--no-dedupe",
+          "-e",
+          "normal,build,dev",
+          "--target",
+          "all",
+          "--prefix",
+          "depth",
+          "-f",
+          "{p}",
+          "--manifest-path",
+          manifestPath,
+        ],
+        {
+          cwd: dirname(manifestPath),
+          encoding: "utf8",
+          maxBuffer: 256 * 1024 * 1024,
+        },
+      ));
+    } catch (error) {
+      const stderr = (error as { stderr?: string }).stderr?.trim();
+      throw new Error(
+        `cargo tree -i ${target} failed for ${member}${stderr ? `: ${stderr}` : ""}`,
+        { cause: error },
+      );
+    }
+    const stack: string[] = [];
+    for (const line of stdout.split("\n")) {
+      const match = line.match(/^(\d+)(\S+) v/u);
+      if (!match) {
+        continue;
+      }
+      const depth = Number(match[1]);
+      stack.length = depth;
+      stack.push(match[2]);
+      if (match[2] !== member || depth === 0) {
+        continue;
+      }
+      // stack is target -> ... -> member; the path runs the other way.
+      const path = [...stack].reverse();
+      const others = path
+        .slice(1, -1)
+        .filter(
+          (name) =>
+            members.has(name) &&
+            name !== databaseNetworkCrate &&
+            !databaseNetworkConsumers.has(name),
+        );
+      if (others.length > 0) {
+        return { path, member: others[0] };
+      }
     }
   }
   return undefined;
@@ -1030,6 +1119,29 @@ export async function checkWorkspace(
               capability,
             );
             through = ` without ${databaseNetworkCrate}`;
+            // In the real tree, no path to a network package may pass
+            // through a workspace crate other than compresso-sql (a feature
+            // compresso-sql turns on in a pure-local crate would otherwise
+            // pass the shadow resolve).
+            if (!path) {
+              const members = new Set(
+                resolved.packages
+                  .filter((candidate) =>
+                    resolved.workspace_members.includes(candidate.id),
+                  )
+                  .map((candidate) => candidate.name),
+              );
+              const via = await networkPathThroughOtherMember(
+                manifestPath,
+                pkg.name,
+                tree,
+                members,
+              );
+              if (via) {
+                path = via.path;
+                through = ` passes through workspace crate ${via.member}, not only ${databaseNetworkCrate}, and`;
+              }
+            }
           }
           if (path) {
             violations.add(

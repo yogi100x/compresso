@@ -318,3 +318,19 @@ test("test_eval_calibration_contract_fails_closed", async () => {
     /compresso-eval.*reqwest.*network capability/u,
   );
 });
+
+test("test_network_through_a_pure_local_crate_enabled_by_sql_fails", async () => {
+  // compresso-sql turns on a feature of compresso-core that pulls a network
+  // package: the real tree reaches it through compresso-core, not
+  // compresso-sql, even though the shadow resolve without compresso-sql
+  // finds nothing (E17-50 review).
+  const result = await checkWorkspace(
+    fixture("denied-pure-local-feature-through-sql"),
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(
+    result.violations.join("\n"),
+    /compresso-mcp \(pure-local\): resolved dependency path compresso-mcp -> compresso-core -> foo -> socket2 passes through workspace crate compresso-core/u,
+  );
+});
