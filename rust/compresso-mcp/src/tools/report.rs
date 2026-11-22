@@ -1,31 +1,35 @@
 //! `compresso_report`: local reports behind the in-session commands
 //! (E17-48, D113).
 //!
-//! Five kinds, all built from facts this process already holds:
+//! Five kinds:
 //!
 //! - `status`: version and build, the server's options, the bound
-//!   repository's index state, this session's calls, and recent failed calls;
+//!   repository's indexed-file count (one count query; staleness is not
+//!   checked here), this session's calls, and recent failed calls;
 //! - `update`: the running version and the documented manual update steps.
 //!   Compresso never updates itself and never checks for a newer version;
 //! - `share`: a short savings summary the user can copy;
-//! - `bug` and `feedback`: a report with version, platform, server options,
-//!   the last operation ids and the codes of recent failed calls, and the
-//!   user's own description with secrets redacted and absolute paths removed.
-//!   It is saved to a new file under `reports/` beside the Compresso database
-//!   (never in the repository) and returned in full.
+//! - `bug` and `feedback`: what Compresso adds itself (version, platform,
+//!   server options, index state without its path, the last operation ids,
+//!   and the codes of recent failed calls), then the note as given by the
+//!   caller, fenced, after control characters, secrets, and paths are removed
+//!   on a best-effort basis (see [`clean_note`]). The note is written by the
+//!   model from what the user or model typed and may hold anything, so the
+//!   user must read the report before posting it. It is saved to a new file
+//!   under `reports/` beside the Compresso database (never in the repository)
+//!   and returned in full; the result names the file without the home
+//!   directory or user name.
 //!
 //! Nothing is sent anywhere: the tool has no network or process code, and a
 //! report leaves the machine only if the user copies it out. Like every tool
 //! result it reaches the coding client, which may send it to its model
-//! provider. No report holds repository content, file contents, the
-//! repository's path, or any absolute path.
+//! provider.
 
 use std::fmt::Write as _;
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use compresso_atlas::repository_stale;
 use compresso_store::{StatsFilter, StatsSummary, Store};
 use rmcp::model::JsonObject;
 use serde_json::{Value, json};
@@ -53,6 +57,9 @@ const UPDATE_STEPS: &str = "Compresso does not update itself and does not check 
 3. Run `compresso --version` and `compresso doctor`.
 4. Restart the coding client (or reconnect its MCP servers) so it starts the new binary, then run `compresso integrations status claude-code --project DIR`.
 If you installed Compresso another way, update it the same way you installed it.";
+
+/// Heads the note block of a bug or feedback report.
+const NOTE_HEADER: &str = "note (written by the user or the model and included as given, with paths and secrets removed on a best-effort basis; read the whole report before posting it):\n";
 
 const HOW_TO_SEND: &str = "Compresso sent this report nowhere. Read it first and remove anything you do not want to share; then, if you choose, paste it where your Compresso release asks for problem reports or feedback.";
 
@@ -101,21 +108,36 @@ pub(crate) fn run(
         "update" => format!("{}\n\n{UPDATE_STEPS}", build_line()),
         "share" => share_text(&all_history(context.store)?),
         "bug" | "feedback" => {
+            let home = home_directory();
+            let store_directory = context
+                .store
+                .database_path()
+                .and_then(|path| path.parent().map(Path::to_path_buf));
+            let roots = [
+                home.as_deref(),
+                context.repository_root,
+                store_directory.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
             let text = report_text(
                 &kind,
                 &format_timestamp(now)?,
                 &facts(context)?,
-                note.as_deref()
-                    .map(|note| clean_note(note, context.repository_root)),
+                note.as_deref().map(|note| clean_note(note, &roots)),
             );
-            let saved = save_report(context.store, &kind, now, &text);
-            payload["saved_to"] = saved
-                .as_ref()
-                .map_or(Value::Null, |path| Value::from(path.display().to_string()));
-            if saved.is_none() {
-                payload["save_note"] = Value::from(
-                    "the report was not saved to a file (the reports directory may already hold 100 reports; delete old ones); copy it from this result",
-                );
+            match store_directory {
+                Some(directory) => {
+                    let saved = save_report(&directory, home.as_deref(), &kind, now, &text)?;
+                    payload["saved_to"] = Value::from(display_location(&saved, home.as_deref()));
+                }
+                None => {
+                    payload["saved_to"] = Value::Null;
+                    payload["save_note"] = Value::from(
+                        "this server's store has no file, so the report was not saved; copy it from this result",
+                    );
+                }
             }
             payload["how_to_send"] = Value::from(HOW_TO_SEND);
             text
@@ -149,7 +171,7 @@ fn build_line() -> String {
 enum IndexState {
     Unbound,
     NotIndexed,
-    Indexed { files: usize, stale: Option<bool> },
+    Indexed { files: u64 },
 }
 
 /// Content-free facts shared by `status`, `bug`, and `feedback`.
@@ -178,10 +200,8 @@ fn facts(context: &ReportContext<'_>) -> Result<Facts, ToolFailure> {
             Some(repository) if repository.last_indexed_at.is_some() => IndexState::Indexed {
                 files: context
                     .store
-                    .indexed_files(repository.id)
-                    .map(|files| files.len())
+                    .indexed_file_count(repository.id)
                     .unwrap_or_default(),
-                stale: repository_stale(context.store, repository.id).ok(),
             },
             _ => IndexState::NotIndexed,
         },
@@ -223,14 +243,9 @@ fn index_line(index: &IndexState) -> String {
     match index {
         IndexState::Unbound => "none bound to this server".to_owned(),
         IndexState::NotIndexed => "bound, not indexed (run `compresso index`)".to_owned(),
-        IndexState::Indexed { files, stale } => format!(
-            "bound, indexed files: {files}, index {}",
-            match stale {
-                Some(false) => "current",
-                Some(true) => "stale (run `compresso index`)",
-                None => "state unknown",
-            }
-        ),
+        IndexState::Indexed { files } => {
+            format!("bound, indexed files: {files} (staleness not checked)")
+        }
     }
 }
 
@@ -289,85 +304,187 @@ fn report_text(kind: &str, created: &str, facts: &Facts, note: Option<String>) -
     for (tool, code) in &facts.failures {
         let _ = writeln!(text, "- {tool}: {code}");
     }
-    text.push_str("description (secrets redacted, absolute paths removed):\n");
+    text.push_str(NOTE_HEADER);
     match note.filter(|note| !note.trim().is_empty()) {
         Some(note) => {
-            text.push_str(note.trim_end());
-            text.push('\n');
+            text.push_str("----- begin note -----\n");
+            for line in note.trim_end().lines() {
+                text.push_str("| ");
+                text.push_str(line);
+                text.push('\n');
+            }
+            text.push_str("----- end of note -----\n");
         }
-        None => text.push_str("(none given)\n"),
+        None => text.push_str("(no note given)\n"),
     }
     text
 }
 
-/// The user's description with secrets redacted by the recall redactor and
-/// absolute paths replaced by [`PATH_MARKER`]: first every occurrence of the
-/// bound repository's root (as given and canonical, so a root holding a
-/// space is caught whole), then every whitespace-separated word that is an
-/// absolute path. Repository-relative paths are kept. Limits: another
-/// absolute path that holds a space keeps the part after the space, and a
-/// one-segment path such as `/tmp` is kept.
-fn clean_note(note: &str, repository_root: Option<&Path>) -> String {
-    let mut redacted = compresso_recall::redact(note).text;
-    if let Some(root) = repository_root {
-        let canonical = fs::canonicalize(root).ok();
-        let mut roots = [Some(root), canonical.as_deref()]
-            .into_iter()
-            .flatten()
-            .filter_map(Path::to_str)
-            .filter(|root| root.len() > 1)
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        // Longest first, so a canonical form that extends the given one is
-        // replaced whole.
-        roots.sort_by_key(|root| std::cmp::Reverse(root.len()));
-        for root in roots {
-            redacted = redacted.replace(&root, PATH_MARKER);
-        }
+/// Marks where a known root was found, before the path scan; control
+/// characters are stripped from the note first, so it cannot occur in it.
+const ROOT_SENTINEL: char = '\u{1}';
+
+/// The note made safer to show, on a best-effort basis (no guarantee):
+///
+/// 1. control characters other than newline and tab are removed (ANSI
+///    escapes included), then secrets are redacted by the recall redactor;
+/// 2. each known root (home, repository, store directory; as given and
+///    canonical) is marked wherever it occurs, spaces included, when it ends
+///    at a path boundary, so a sibling such as `/x/appendix` of `/x/app` is
+///    left for step 3;
+/// 3. a path starts at a known root, at `/` or `\` not preceded by a name
+///    character, at `~/` or `~name/`, at a drive letter followed by `:\` or
+///    `:/`, and at `../` or `..\` anywhere. Inside quotes or brackets it is
+///    removed through the closing one, otherwise through the next
+///    whitespace; then each following whitespace-separated word (on the same
+///    line) that holds `/` or `\` is removed too. Each removal becomes
+///    [`PATH_MARKER`].
+///
+/// A separator right after a letter, digit, `_`, `-`, or `.` is inside a
+/// relative path such as `src/lib.rs`, which is kept unless it climbs.
+fn clean_note(note: &str, roots: &[&Path]) -> String {
+    let stripped = note
+        .chars()
+        .filter(|character| !character.is_control() || matches!(character, '\n' | '\t'))
+        .collect::<String>();
+    let mut text = compresso_recall::redact(&stripped).text;
+    let mut forms = roots
+        .iter()
+        .flat_map(|root| [Some(root.to_path_buf()), fs::canonicalize(root).ok()])
+        .flatten()
+        .filter_map(|root| {
+            root.to_str()
+                .map(|root| root.trim_end_matches(['/', '\\']).to_owned())
+        })
+        .filter(|root| root.chars().count() > 1)
+        .collect::<Vec<_>>();
+    forms.sort_by_key(|root| std::cmp::Reverse(root.len()));
+    forms.dedup();
+    for root in forms {
+        text = mark_root(&text, &root);
     }
-    let mut cleaned = String::with_capacity(redacted.len());
-    for piece in redacted.split_inclusive(char::is_whitespace) {
-        let word = piece.trim_end_matches(char::is_whitespace);
-        let space = &piece[word.len()..];
-        let bare = word.trim_matches(|character: char| {
-            matches!(
-                character,
-                '"' | '\'' | '`' | '(' | ')' | '[' | ']' | '<' | '>' | ',' | ';'
-            )
-        });
-        if is_absolute_path(bare) {
-            cleaned.push_str(&word.replacen(bare, PATH_MARKER, 1));
-        } else {
-            cleaned.push_str(word);
-        }
-        cleaned.push_str(space);
-    }
-    cleaned
+    scrub_paths(&text)
 }
 
-/// Whether `word` is (or ends in, after `=` or `:`) an absolute path of at
-/// least two segments on any platform, a drive or network path, a home path,
-/// or a file URL. A single segment such as `/compresso` is kept, so a
-/// command a user mentions survives.
-fn is_absolute_path(word: &str) -> bool {
-    let candidate = word
-        .rsplit_once(['=', ':'])
-        .filter(|(head, tail)| {
-            !head.is_empty() && (tail.starts_with('/') || tail.starts_with('\\'))
-        })
-        .map_or(word, |(_, tail)| tail);
-    let bytes = word.as_bytes();
-    let drive = bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && matches!(bytes[2], b'\\' | b'/');
-    drive
-        || word.starts_with("file:")
-        || word.starts_with("~/")
-        || word.starts_with("~\\")
-        || word.starts_with("\\\\")
-        || (candidate.starts_with('/') && candidate[1..].contains('/'))
-        || (candidate.starts_with('\\') && candidate[1..].contains('\\'))
+fn is_name_character(character: char) -> bool {
+    character.is_alphanumeric() || matches!(character, '_' | '-' | '.')
+}
+
+/// Replaces each occurrence of `root` that ends at a path boundary (not
+/// followed by a letter, digit, `_`, or `-`) with [`ROOT_SENTINEL`].
+fn mark_root(text: &str, root: &str) -> String {
+    let mut marked = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(root) {
+        let after = &rest[at + root.len()..];
+        let boundary = after
+            .chars()
+            .next()
+            .is_none_or(|next| !(next.is_alphanumeric() || matches!(next, '_' | '-')));
+        marked.push_str(&rest[..at]);
+        if boundary {
+            marked.push(ROOT_SENTINEL);
+        } else {
+            marked.push_str(root);
+        }
+        rest = after;
+    }
+    marked.push_str(rest);
+    marked
+}
+
+fn is_separator(character: char) -> bool {
+    matches!(character, '/' | '\\')
+}
+
+/// Whether a path starts at `chars[index]` (see [`clean_note`]).
+fn path_starts(chars: &[char], index: usize) -> bool {
+    let at = |offset: usize| chars.get(index + offset).copied();
+    let previous = index.checked_sub(1).map(|before| chars[before]);
+    match chars[index] {
+        ROOT_SENTINEL => true,
+        '/' | '\\' => !previous.is_some_and(is_name_character),
+        '~' => {
+            let mut next = index + 1;
+            while chars.get(next).is_some_and(|&c| is_name_character(c)) {
+                next += 1;
+            }
+            chars.get(next).copied().is_some_and(is_separator)
+        }
+        '.' => at(1) == Some('.') && at(2).is_some_and(is_separator),
+        letter if letter.is_ascii_alphabetic() => {
+            at(1) == Some(':') && at(2).is_some_and(is_separator)
+        }
+        _ => false,
+    }
+}
+
+/// The closing character for an opening quote or bracket.
+fn closing_for(opening: char) -> Option<char> {
+    Some(match opening {
+        '"' => '"',
+        '\'' => '\'',
+        '`' => '`',
+        '(' => ')',
+        '[' => ']',
+        '{' => '}',
+        '<' => '>',
+        '«' => '»',
+        '\u{201c}' => '\u{201d}',
+        '\u{2018}' => '\u{2019}',
+        _ => return None,
+    })
+}
+
+fn scrub_paths(text: &str) -> String {
+    let chars = text.chars().collect::<Vec<_>>();
+    let mut cleaned = String::with_capacity(text.len());
+    let mut index = 0;
+    while index < chars.len() {
+        if !path_starts(&chars, index) {
+            cleaned.push(chars[index]);
+            index += 1;
+            continue;
+        }
+        let closer = index
+            .checked_sub(1)
+            .and_then(|before| closing_for(chars[before]))
+            .and_then(|closer| {
+                chars[index + 1..]
+                    .iter()
+                    .position(|&c| c == closer || c == '\n')
+                    .map(|offset| index + 1 + offset)
+                    .filter(|&end| chars[end] == closer)
+            });
+        let mut end = closer.unwrap_or_else(|| {
+            let mut end = index;
+            while end < chars.len() && !chars[end].is_whitespace() {
+                end += 1;
+            }
+            end
+        });
+        if closer.is_none() {
+            // Following words on the same line that hold a separator belong
+            // to the path (a space inside it).
+            loop {
+                let mut word = end;
+                while word < chars.len() && chars[word].is_whitespace() && chars[word] != '\n' {
+                    word += 1;
+                }
+                let mut word_end = word;
+                while word_end < chars.len() && !chars[word_end].is_whitespace() {
+                    word_end += 1;
+                }
+                if word == end || !chars[word..word_end].iter().copied().any(is_separator) {
+                    break;
+                }
+                end = word_end;
+            }
+        }
+        cleaned.push_str(PATH_MARKER);
+        index = end;
+    }
+    cleaned
 }
 
 fn all_history(store: &Store) -> Result<StatsSummary, ToolFailure> {
@@ -394,22 +511,95 @@ fn share_text(summary: &StatsSummary) -> String {
     )
 }
 
-/// Saves `text` to a new file under `reports/` beside the database, private
-/// to the user where the platform allows. `None` when the store has no file
-/// (an in-memory store) or the write fails.
-fn save_report(store: &Store, kind: &str, now: i64, text: &str) -> Option<PathBuf> {
-    let directory = store.database_path()?.parent()?.join(REPORTS_DIRECTORY);
-    fs::create_dir_all(&directory).ok()?;
-    if fs::read_dir(&directory)
-        .ok()?
-        .take(MAX_SAVED_REPORTS)
-        .count()
-        >= MAX_SAVED_REPORTS
-    {
-        return None;
+/// The user's home directory from the environment, if set.
+fn home_directory() -> Option<PathBuf> {
+    let name = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(name)
+        .map(PathBuf::from)
+        .filter(|home| home.is_absolute())
+}
+
+/// Whether `name` is a saved report's file name:
+/// `<bug|feedback>-<digits>-<26 base-32 characters>.txt`.
+fn is_report_name(name: &str) -> bool {
+    let Some(rest) = name
+        .strip_prefix("bug-")
+        .or_else(|| name.strip_prefix("feedback-"))
+    else {
+        return false;
+    };
+    let Some(rest) = rest.strip_suffix(".txt") else {
+        return false;
+    };
+    let Some((seconds, id)) = rest.split_once('-') else {
+        return false;
+    };
+    !seconds.is_empty()
+        && seconds.bytes().all(|byte| byte.is_ascii_digit())
+        && id.len() == 26
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte.is_ascii_uppercase())
+}
+
+/// Saves `text` as a new report under `reports/` in `store_directory`.
+///
+/// The `reports` path must be a real directory (a symbolic link or another
+/// file type is refused, never followed); it is created with mode 0700 and
+/// files with 0600 on Unix. At most [`MAX_SAVED_REPORTS`] files with a report
+/// name are kept: past that the call is refused and nothing is deleted. The
+/// text goes to a temporary file in the same directory, which is then renamed,
+/// so no partial report remains.
+fn save_report(
+    store_directory: &Path,
+    home: Option<&Path>,
+    kind: &str,
+    now: i64,
+    text: &str,
+) -> Result<PathBuf, ToolFailure> {
+    let directory = store_directory.join(REPORTS_DIRECTORY);
+    let shown = display_directory(&directory, home);
+    let unusable = || {
+        ToolFailure::new(
+            "report_directory_unusable",
+            format!(
+                "The report was not saved: {shown} is not a plain directory Compresso can use (a symbolic link or another file type is refused)."
+            ),
+        )
+    };
+    match fs::symlink_metadata(&directory) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(unusable());
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder.create(&directory).map_err(|_| unusable())?;
+        }
+        Err(_) => return Err(unusable()),
+    }
+    let saved = fs::read_dir(&directory)
+        .map_err(|_| unusable())?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_str().is_some_and(is_report_name))
+        .count();
+    if saved >= MAX_SAVED_REPORTS {
+        return Err(ToolFailure::new(
+            "report_limit_reached",
+            format!(
+                "The report was not saved: {shown} already holds {MAX_SAVED_REPORTS} reports, the most Compresso keeps. Delete old reports there, then run the command again; Compresso deletes none by itself."
+            ),
+        ));
     }
     let identity = compresso_core::operation_identity();
-    let path = directory.join(format!("{kind}-{now}-{}.txt", identity.id));
+    let name = format!("{kind}-{now}-{}.txt", identity.id);
+    let path = directory.join(&name);
+    let temporary = directory.join(format!(".{name}.partial"));
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -417,9 +607,70 @@ fn save_report(store: &Store, kind: &str, now: i64, text: &str) -> Option<PathBu
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options.open(&path).ok()?;
-    file.write_all(text.as_bytes()).ok()?;
-    Some(path)
+    let mut file = options.open(&temporary).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::PermissionDenied {
+            ToolFailure::new(
+                "report_directory_unwritable",
+                format!("The report was not saved: Compresso may not write in {shown}."),
+            )
+        } else {
+            ToolFailure::new(
+                "report_write_failed",
+                format!("The report was not saved: a file could not be created in {shown}."),
+            )
+        }
+    })?;
+    let written = file
+        .write_all(text.as_bytes())
+        .and_then(|()| file.sync_all())
+        .and_then(|()| {
+            drop(file);
+            fs::rename(&temporary, &path)
+        });
+    if written.is_err() {
+        let _ = fs::remove_file(&temporary);
+        return Err(ToolFailure::new(
+            "report_write_failed",
+            format!(
+                "The report was not saved: writing it in {shown} failed, and no partial file was kept."
+            ),
+        ));
+    }
+    Ok(path)
+}
+
+/// A directory for a message: `~/...` under home, else in words.
+fn display_directory(directory: &Path, home: Option<&Path>) -> String {
+    match home.and_then(|home| directory.strip_prefix(home).ok()) {
+        Some(relative) => format!(
+            "~/{}",
+            relative
+                .components()
+                .map(|part| part.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/")
+        ),
+        None => "the reports folder beside the Compresso database".to_owned(),
+    }
+}
+
+/// Where a saved report is, for the tool result, without the home
+/// directory or user name: `~/...` under home, else the file name and the
+/// directory in words.
+fn display_location(path: &Path, home: Option<&Path>) -> String {
+    if let Some(relative) = home.and_then(|home| path.strip_prefix(home).ok()) {
+        let parts = relative
+            .components()
+            .map(|part| part.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        return format!("~/{}", parts.join("/"));
+    }
+    format!(
+        "{} in the reports folder beside the Compresso database",
+        path.file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    )
 }
 
 /// `1234567` as `1,234,567`.
@@ -450,10 +701,7 @@ mod tests {
     fn sample_facts() -> Facts {
         Facts {
             options: "full profile; recall on; edits off".to_owned(),
-            index: IndexState::Indexed {
-                files: 412,
-                stale: Some(false),
-            },
+            index: IndexState::Indexed { files: 412 },
             session_operations: Some(3),
             session_savings: Some(1_500),
             operations: vec![(
@@ -468,9 +716,9 @@ mod tests {
     #[test]
     fn test_clean_note_removes_absolute_paths_and_secrets_but_keeps_relative_paths() {
         let note = "crash reading /Users/someone/work/app/src/main.rs and C:\\Users\\someone\\app\\x.rs, \
-                    see ~/notes.txt or file:///tmp/a; src/lib.rs is fine; key ghp_0123456789abcdefghijABCDEFGHIJ012345 \
+                    see ~/notes.txt or file:///tmp/a; but src/lib.rs is fine; key ghp_0123456789abcdefghijABCDEFGHIJ012345 \
                     path=/home/someone/repo";
-        let cleaned = clean_note(note, None);
+        let cleaned = clean_note(note, &[]);
         assert!(!cleaned.contains("/Users/"), "{cleaned}");
         assert!(!cleaned.contains("C:\\Users"), "{cleaned}");
         assert!(!cleaned.contains("~/notes"), "{cleaned}");
@@ -486,9 +734,9 @@ mod tests {
         let root = Path::new("/Users/Jane Doe/work/app");
         let cleaned = clean_note(
             "failed reading /Users/Jane Doe/work/app/src/x.rs twice",
-            Some(root),
+            &[root],
         );
-        assert_eq!(cleaned, "failed reading [path]/src/x.rs twice");
+        assert_eq!(cleaned, "failed reading [path] twice");
         assert!(!cleaned.contains("Doe"), "{cleaned}");
     }
 
@@ -500,7 +748,7 @@ mod tests {
             &sample_facts(),
             Some(clean_note(
                 "grep failed in /private/var/repo after edit",
-                None,
+                &[],
             )),
         );
         assert!(text.starts_with("Compresso bug report\n"));
@@ -519,7 +767,7 @@ mod tests {
     fn test_feedback_report_without_note_says_none_given() {
         let text = report_text("feedback", "2026-11-22T10:00:01Z", &sample_facts(), None);
         assert!(text.starts_with("Compresso feedback\n"));
-        assert!(text.ends_with("(none given)\n"));
+        assert!(text.ends_with("(no note given)\n"));
     }
 
     #[test]
@@ -527,7 +775,7 @@ mod tests {
         let text = status_text(&sample_facts());
         assert!(text.starts_with(&build_line()));
         assert!(text.contains("server: full profile; recall on; edits off"));
-        assert!(text.contains("index current"));
+
         assert!(text.contains("3 Compresso calls, 1,500 tokens saved"));
         assert!(text.contains("compresso_read: outside_root"));
         let unbound = Facts {
@@ -538,6 +786,126 @@ mod tests {
         let text = status_text(&unbound);
         assert!(text.contains("repository: none bound"));
         assert!(text.ends_with("(newest first): none"));
+    }
+
+    /// Every input the review found leaking, and the decided rule's cases.
+    #[test]
+    fn test_clean_note_removes_paths_in_every_reviewed_form() {
+        let leaks = [
+            r#"path:"/Users/jane/secret/x""#,
+            "path='/Users/jane/secret/x'",
+            r#"{"path":"/Users/jane/secret/a.rs"}"#,
+            "{/Users/jane/x}",
+            "«/Users/jane/x»",
+            "cwd=~/secret/x",
+            "--file=~/x",
+            r"/Users\jane\x",
+            "../../Users/jane/.ssh",
+            r"see C:\Users\jane\x and D:/jane/y",
+            "~jane/notes",
+        ];
+        for leak in leaks {
+            let cleaned = clean_note(&format!("before {leak} after"), &[]);
+            assert!(!cleaned.contains("jane"), "{leak:?} -> {cleaned:?}");
+            assert!(!cleaned.contains("secret"), "{leak:?} -> {cleaned:?}");
+            assert!(cleaned.starts_with("before "), "{leak:?} -> {cleaned:?}");
+            assert!(
+                cleaned.ends_with(" after") || cleaned.ends_with("after"),
+                "{leak:?} -> {cleaned:?}"
+            );
+            assert!(cleaned.contains(PATH_MARKER), "{leak:?} -> {cleaned:?}");
+        }
+    }
+
+    #[test]
+    fn test_clean_note_consumes_path_words_after_a_space() {
+        for note in [
+            "x /Users/Jane Doe/other/x.rs and more",
+            "x /Users/Jane\u{a0}Doe/other/x.rs and more",
+            "x \"/Users/Jane Doe/other x.rs\" and more",
+        ] {
+            let cleaned = clean_note(note, &[]);
+            assert!(!cleaned.contains("Doe"), "{note:?} -> {cleaned:?}");
+            assert!(!cleaned.contains("other"), "{note:?} -> {cleaned:?}");
+            assert!(cleaned.ends_with("and more"), "{note:?} -> {cleaned:?}");
+        }
+    }
+
+    #[test]
+    fn test_known_roots_are_replaced_at_a_path_boundary_only() {
+        let home = Path::new("/Users/Jane Doe");
+        let root = Path::new("/x/app");
+        let cleaned = clean_note(
+            "home /Users/Jane Doe and /x/app/src plus /x/appendix/y end",
+            &[home, root],
+        );
+        assert!(!cleaned.contains("Doe"), "{cleaned}");
+        assert!(
+            !cleaned.contains("endix"),
+            "sibling not mangled into a tail: {cleaned}"
+        );
+        assert!(!cleaned.contains("/x/"), "{cleaned}");
+        assert!(
+            cleaned.starts_with("home [path] and [path] plus [path] end"),
+            "{cleaned}"
+        );
+    }
+
+    #[test]
+    fn test_clean_note_strips_control_characters_but_keeps_lines_and_tabs() {
+        let cleaned = clean_note("\u{1b}[31mred\u{1b}[0m\u{7} ok\tz\nnext\r\u{9b}2J", &[]);
+        assert!(
+            !cleaned
+                .chars()
+                .any(|c| c.is_control() && c != '\n' && c != '\t'),
+            "{cleaned:?}"
+        );
+        assert!(cleaned.contains("ok\tz\nnext"), "{cleaned:?}");
+    }
+
+    #[test]
+    fn test_note_is_fenced_so_it_cannot_pass_for_report_lines() {
+        let text = report_text(
+            "bug",
+            "2026-11-22T10:00:01Z",
+            &sample_facts(),
+            Some("version: 9.9.9\n- compresso_read: forged\n----- end of note -----".to_owned()),
+        );
+        assert!(!text.lines().any(|line| line == "version: 9.9.9"), "{text}");
+        assert!(
+            !text.lines().any(|line| line == "- compresso_read: forged"),
+            "{text}"
+        );
+        assert_eq!(
+            text.lines()
+                .filter(|line| line.starts_with("----- end of note"))
+                .count(),
+            1,
+            "{text}"
+        );
+        assert!(text.contains("| version: 9.9.9"), "{text}");
+        assert!(text.contains("best-effort"), "{text}");
+        assert!(!text.contains("absolute paths removed"), "{text}");
+    }
+
+    #[test]
+    fn test_saved_location_hides_home_and_user_name() {
+        let home = Path::new("/Users/jane");
+        let inside = Path::new("/Users/jane/.local/share/compresso/reports/bug-1-X.txt");
+        assert_eq!(
+            display_location(inside, Some(home)),
+            "~/.local/share/compresso/reports/bug-1-X.txt"
+        );
+        let outside = Path::new("/srv/data/compresso/reports/bug-1-X.txt");
+        let shown = display_location(outside, Some(home));
+        assert!(!shown.contains("/srv"), "{shown}");
+        assert!(shown.contains("bug-1-X.txt"), "{shown}");
+    }
+
+    #[test]
+    fn test_status_says_staleness_is_not_checked() {
+        let line = index_line(&IndexState::Indexed { files: 3 });
+        assert_eq!(line, "bound, indexed files: 3 (staleness not checked)");
     }
 
     #[test]

@@ -182,13 +182,21 @@ async fn test_bug_report_is_saved_locally_in_full_without_absolute_paths() {
         !text.contains("abcdefghijklmnopqrstuvwxyz0123456789"),
         "{text}"
     );
-    let saved = PathBuf::from(payload["saved_to"].as_str().expect("saved path"));
-    assert_eq!(
-        saved
-            .parent()
-            .map(|parent| fs::canonicalize(parent).expect("reports directory")),
-        Some(fs::canonicalize(fixture.reports()).expect("reports directory")),
-        "saved beside the database"
+    let shown = payload["saved_to"].as_str().expect("saved location");
+    let saved = fs::read_dir(fixture.reports())
+        .expect("reports beside the database")
+        .map(|entry| entry.expect("entry").path())
+        .collect::<Vec<_>>();
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    let saved = saved.into_iter().next().expect("one report");
+    assert!(
+        shown.starts_with(
+            saved
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("name")
+        ),
+        "{shown}"
     );
     assert_eq!(fs::read_to_string(&saved).expect("report file"), text);
     assert!(
@@ -254,27 +262,154 @@ async fn test_status_update_and_share_write_no_file() {
     assert_eq!(operations, 0, "report calls are not written to the ledger");
 }
 
+/// A saved-report file name the cap counts.
+fn report_name(index: usize) -> String {
+    format!("bug-{index}-01ARZ3NDEKTSV4RRFFQ69G5FAV.txt")
+}
+
+/// The call's error text, which must start with `[code]`.
+async fn failed_report(harness: &mut Harness, code: &str) -> String {
+    let (failed, text) = harness
+        .call("compresso_report", json!({ "kind": "bug", "note": "x" }))
+        .await;
+    assert!(failed, "{text}");
+    assert!(text.starts_with(&format!("[{code}]")), "{text}");
+    text
+}
+
 #[tokio::test]
-async fn test_a_full_reports_directory_saves_no_more_reports() {
+async fn test_the_cap_is_exactly_one_hundred_matching_reports() {
     let fixture = Fixture::new();
     fs::create_dir_all(fixture.reports()).expect("reports directory");
-    for index in 0..100 {
-        fs::write(fixture.reports().join(format!("old-{index}.txt")), "x").expect("old report");
+    for index in 0..99 {
+        fs::write(fixture.reports().join(report_name(index)), "x").expect("old report");
+    }
+    // Files that are not reports do not count toward the cap.
+    for index in 0..10 {
+        fs::write(fixture.reports().join(format!("notes-{index}.txt")), "x").expect("other file");
     }
     let mut harness = Harness::start(fixture.store.clone(), None).await;
-    let payload = harness
+    let saved = harness
         .report(json!({ "kind": "feedback", "note": "hi" }))
         .await;
-    assert!(payload["saved_to"].is_null(), "{payload}");
     assert!(
-        payload["save_note"]
-            .as_str()
-            .expect("note")
-            .contains("100 reports")
+        saved["saved_to"].is_string(),
+        "the 100th report is saved: {saved}"
     );
-    assert!(payload["text"].as_str().expect("text").ends_with("hi\n"));
-    assert_eq!(fs::read_dir(fixture.reports()).expect("dir").count(), 100);
+    let text = failed_report(&mut harness, "report_limit_reached").await;
+    assert!(text.contains("100"), "{text}");
+    assert!(text.contains("delete"), "{text}");
+    assert!(
+        !text.contains(&fixture.temp.path().display().to_string()),
+        "{text}"
+    );
     harness.close().await;
+    assert_eq!(
+        fs::read_dir(fixture.reports()).expect("dir").count(),
+        110,
+        "nothing deleted"
+    );
+}
+
+#[tokio::test]
+async fn test_saved_location_in_the_result_holds_no_absolute_path() {
+    let fixture = Fixture::new();
+    let mut harness = Harness::start(fixture.store.clone(), None).await;
+    let payload = harness.report(json!({ "kind": "bug" })).await;
+    harness.close().await;
+    let shown = payload["saved_to"].as_str().expect("saved location");
+    assert!(!shown.starts_with('/') && !shown.contains(":\\"), "{shown}");
+    let result = payload.to_string();
+    assert!(
+        !result.contains(&fixture.temp.path().display().to_string()),
+        "{result}"
+    );
+    for name in ["HOME", "USER", "USERNAME", "USERPROFILE"] {
+        if let Some(value) = std::env::var_os(name).and_then(|value| value.into_string().ok())
+            && value.len() > 2
+        {
+            assert!(!result.contains(&value), "{name} appears in {result}");
+        }
+    }
+    // Only the report itself is left: no temporary file.
+    let names = fs::read_dir(fixture.reports())
+        .expect("dir")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .into_string()
+                .expect("UTF-8")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(names.len(), 1, "{names:?}");
+    assert!(
+        names[0].starts_with("bug-") && names[0].ends_with(".txt"),
+        "{names:?}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_reports_directory_and_files_are_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::new();
+    let mut harness = Harness::start(fixture.store.clone(), None).await;
+    harness.report(json!({ "kind": "bug" })).await;
+    harness.close().await;
+    let mode =
+        |path: &std::path::Path| fs::metadata(path).expect("metadata").permissions().mode() & 0o777;
+    assert_eq!(mode(&fixture.reports()), 0o700);
+    let file = fs::read_dir(fixture.reports())
+        .expect("dir")
+        .next()
+        .expect("one")
+        .expect("entry");
+    assert_eq!(mode(&file.path()), 0o600);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_a_symlinked_reports_directory_is_refused() {
+    let fixture = Fixture::new();
+    let elsewhere = fixture.temp.path().join("elsewhere");
+    fs::create_dir(&elsewhere).expect("target");
+    std::os::unix::fs::symlink(&elsewhere, fixture.reports()).expect("symlink");
+    let mut harness = Harness::start(fixture.store.clone(), None).await;
+    failed_report(&mut harness, "report_directory_unusable").await;
+    harness.close().await;
+    assert_eq!(
+        fs::read_dir(&elsewhere).expect("dir").count(),
+        0,
+        "link not followed"
+    );
+}
+
+#[tokio::test]
+async fn test_a_reports_path_that_is_a_file_is_refused() {
+    let fixture = Fixture::new();
+    fs::write(fixture.reports(), "not a directory").expect("file");
+    let mut harness = Harness::start(fixture.store.clone(), None).await;
+    failed_report(&mut harness, "report_directory_unusable").await;
+    harness.close().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_an_unwritable_reports_directory_is_its_own_error() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::new();
+    fs::create_dir(fixture.reports()).expect("reports");
+    fs::set_permissions(fixture.reports(), fs::Permissions::from_mode(0o500)).expect("chmod");
+    let mut harness = Harness::start(fixture.store.clone(), None).await;
+    failed_report(&mut harness, "report_directory_unwritable").await;
+    harness.close().await;
+    fs::set_permissions(fixture.reports(), fs::Permissions::from_mode(0o700)).expect("chmod back");
+    assert_eq!(
+        fs::read_dir(fixture.reports()).expect("dir").count(),
+        0,
+        "no partial file"
+    );
 }
 
 #[tokio::test]
