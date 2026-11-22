@@ -35,7 +35,8 @@ session's repository, read-only, secret-redacted, builds no index, and uploads
 nothing; a client never gets another client's transcripts, and Cursor gets
 none because its transcript format is unsupported. Pass `--no-recall` to
 either command to leave it off, or re-run the command with `--no-recall` to
-turn it off later. Compresso itself makes no network request, but anything an
+turn it off later. Compresso itself makes no network request (unless the operator
+enables `compresso_sql` with `--sql-env`), but anything an
 MCP tool returns, recall snippets included, goes to the coding client, which
 may send it to its model provider.
 

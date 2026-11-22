@@ -89,6 +89,13 @@ Raw client logs and repository content are intentionally not committed; this
 runbook retains only arguments, bounded metadata, latency observations, and the
 required rejection excerpt.
 
+## Opt-in SQL tool (E17-50)
+
+`compresso_sql` (served only by `compresso mcp serve --sql-env NAME`,
+ADR-0036) has not been verified in a live client session. The release binary
+answered a SQLite query and refused a `DELETE` over raw stdio, and Postgres
+and MySQL/MariaDB have not been run against a live server.
+
 ## Opt-in edit tool (E17-32)
 
 The record above covers the read-only tools of a server started without

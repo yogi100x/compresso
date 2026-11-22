@@ -108,8 +108,10 @@ mutation stay in E15.
    - *Postgres*: one fresh connection per call; refuse if the role is a
      superuser or a member of `pg_read_server_files`,
      `pg_write_server_files`, or `pg_execute_server_program`; `BEGIN READ
-     ONLY`; `SET LOCAL statement_timeout`, `lock_timeout`, and
-     `idle_in_transaction_session_timeout`; the statement is prepared with
+     ONLY`; `SET LOCAL statement_timeout`, `lock_timeout`,
+     `idle_in_transaction_session_timeout`, and `standard_conforming_strings =
+     on` (so the server reads a backslash in a plain string literally, as the
+     gate's lexer does; a role or database may turn it off); the statement is prepared with
      the extended protocol (which refuses more than one command), then run
      with the simple protocol so each column arrives as the server's own
      text; `ROLLBACK` and close, or drop the connection when the result was
@@ -137,7 +139,14 @@ mutation stay in E15.
    option to accept invalid certificates. A Postgres URL must name its host,
    and a non-loopback `hostaddr` (from the URL or `PGHOSTADDR`) counts as
    remote. Only a fixed list of URL parameters is accepted (Postgres
-   `options` is refused).
+   `options` is refused). The Postgres driver still fills fields the URL
+   leaves out from `PGUSER` (or the operating-system user), `PGPASSWORD`,
+   `PGDATABASE`, `PGOPTIONS`, `PGSSLROOTCERT`/`PGSSLCERT`/`PGSSLKEY`, and
+   `~/.pgpass`, as libpq does; the TLS mode is always set from this policy,
+   the user, host, and database it ends up with are scrubbed from errors like
+   the URL's own parts, and `PGOPTIONS` server settings are overridden by the
+   read-only transaction and the `SET LOCAL` batch where it matters. This is
+   awaiting owner confirmation (alternative: require every field in the URL).
 7. **Bounds.** `max_rows` (default 100, at most 1,000); text cells cut at
    1,000 characters with the count left out; binary cells shown as `<binary
    N bytes>`; rows stop at 256 KiB serialized; then the JSON is fitted to
@@ -200,6 +209,10 @@ been run.
 - **SQLite:** the database file is never written (opened read-only); WAL
   readers may update the `-shm` index, which is shared memory, not data;
   a crafted schema can make a statement slow until the deadline.
+- **False refusals:** a leading `SHOW` statement is exempt from the word
+  check, so `SHOW CREATE TABLE` runs; elsewhere an unquoted column named
+  like a denied word (`lock`, `copy`, `call`, `cluster`, `security`) must
+  be quoted, and MySQL `LOCK IN SHARE MODE` is refused.
 - **All engines:** the gate's lexer is not the server's parser; a dialect
   feature it does not model could hide a keyword or a function name from it,
   which the read-only session then still has to stop.
