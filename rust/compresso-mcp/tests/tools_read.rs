@@ -1523,8 +1523,14 @@ async fn test_read_argument_errors_name_the_arguments_that_work() {
         }
     }
     // A path given absolutely or with `./` is answered with the path to pass.
+    // The absolute path is built with the platform's separator, as a client
+    // on that platform would write it; the answer always uses forward slashes.
     for path in [
-        format!("{root}/src/sample.rs"),
+        std::path::Path::new(&root)
+            .join("src")
+            .join("sample.rs")
+            .to_string_lossy()
+            .into_owned(),
         "./src/sample.rs".to_owned(),
     ] {
         let response = harness

@@ -258,6 +258,27 @@ pub(crate) enum PathState {
     Missing,
 }
 
+/// The repository-relative forward-slash form of an absolute path that sits
+/// under the root as written, or `None`. Lexical only: nothing is resolved.
+/// On Windows the platform separator is accepted in what was passed and the
+/// answer still uses forward slashes, the only form the tools take.
+fn lexical_relative(root: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?.to_str()?;
+    let separators: &[char] = if cfg!(windows) { &['/', '\\'] } else { &['/'] };
+    if relative.is_empty()
+        || relative
+            .split(separators)
+            .any(|part| part == ".." || part == ".")
+    {
+        return None;
+    }
+    Some(if cfg!(windows) {
+        relative.replace('\\', "/")
+    } else {
+        relative.to_owned()
+    })
+}
+
 pub(crate) fn validate_repo_path(root: &Path, requested: &str) -> Result<PathState, ToolFailure> {
     let path = Path::new(requested);
     // Checked first (E17-47): an absolute path that names a file under the
@@ -267,14 +288,7 @@ pub(crate) fn validate_repo_path(root: &Path, requested: &str) -> Result<PathSta
     // other absolute path keeps the answer below.
     if path.is_absolute()
         && !requested.contains('\0')
-        && let Some(relative) =
-            path.strip_prefix(root)
-                .ok()
-                .and_then(Path::to_str)
-                .filter(|relative| {
-                    !relative.is_empty()
-                        && !relative.split('/').any(|part| part == ".." || part == ".")
-                })
+        && let Some(relative) = lexical_relative(root, path)
     {
         return Err(ToolFailure::invalid(format!(
             "argument 'path' must be repository-relative: pass '{relative}'."
