@@ -1216,6 +1216,8 @@ fn test_a_linked_ancestor_is_refused_alike_and_creates_nothing() {
     let outside = fixture.root.parent().expect("parent").join("outside");
     fs::create_dir_all(&outside).expect("outside");
     fs::write(outside.join("there.rs"), "x\n").expect("outside file");
+    // Ignore rules behind a link must not change the answer either.
+    fs::write(outside.join(".gitignore"), "new/\n").expect("outside ignore file");
     let targets = [
         fixture.root.join("nowhere"),
         outside.join("there.rs"),
@@ -1228,6 +1230,8 @@ fn test_a_linked_ancestor_is_refused_alike_and_creates_nothing() {
         "lnk/there.rs",
         "lnk/new/x.rs",
         "lnk/new/deeper/x.rs",
+        "lnk/new/.env",
+        "lnk/new/deeper/.env.local",
         "src/lnk/x.rs",
     ];
     let mut answers = Vec::<Vec<String>>::new();

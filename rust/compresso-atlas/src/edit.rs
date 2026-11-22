@@ -1870,7 +1870,9 @@ fn judge_create_path(gate: &Gate<'_>, path: &str, relative: &Path) -> Result<(),
 
 /// The rules of [`judge_create_path`] that read the path's spelling only.
 fn judge_create_name(gate: &Gate<'_>, path: &str, relative: &Path) -> Result<(), EditError> {
-    let refuse = |reason| Err(refused_at(gate, path, relative, reason));
+    // Directories are named by the name rules alone here: this runs before
+    // the link-free walk, so it must not read anything on disk.
+    let refuse = |reason| Err(refused_at(gate, path, relative, reason, false));
     if relative
         .components()
         .any(|component| is_reserved_component(&component.as_os_str().to_string_lossy()))
@@ -1899,15 +1901,22 @@ fn judge_create_name(gate: &Gate<'_>, path: &str, relative: &Path) -> Result<(),
 /// scanner would skip is never created, nor a directory for one.
 fn judge_create_excluded(gate: &Gate<'_>, path: &str, relative: &Path) -> Result<(), EditError> {
     if gate.exclusions.excludes(gate.root, relative) {
-        return Err(refused_at(gate, path, relative, Refusal::Excluded));
+        return Err(refused_at(gate, path, relative, Refusal::Excluded, true));
     }
     Ok(())
 }
 
 /// A create refusal of `path`, naming the outermost directory of
 /// `relative` the rule refuses on its own (E17-49), if a directory and not
-/// the file name is the cause.
-fn refused_at(gate: &Gate<'_>, path: &str, relative: &Path, reason: Refusal) -> EditError {
+/// the file name is the cause. Only with `on_disk` are the scanner's ignore
+/// files consulted, which a caller allows only after the link-free walk.
+fn refused_at(
+    gate: &Gate<'_>,
+    path: &str,
+    relative: &Path,
+    reason: Refusal,
+    on_disk: bool,
+) -> EditError {
     let mut directory = None;
     let mut prefix = PathBuf::new();
     for component in relative.parent().into_iter().flat_map(Path::components) {
@@ -1916,7 +1925,8 @@ fn refused_at(gate: &Gate<'_>, path: &str, relative: &Path, reason: Refusal) -> 
         let refuses = match reason {
             Refusal::ReservedName => is_reserved_component(&name),
             Refusal::Excluded => {
-                is_secret_path(&prefix) || gate.exclusions.excludes_directory(gate.root, &prefix)
+                is_secret_path(&prefix)
+                    || (on_disk && gate.exclusions.excludes_directory(gate.root, &prefix))
             }
             Refusal::Protected => name.eq_ignore_ascii_case(".git"),
             Refusal::ControlFile => is_control_path(&prefix),
