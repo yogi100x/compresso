@@ -237,7 +237,8 @@ of this record stands.
   The other bounds are call-wide and unchanged, so the most work one call can
   do grows only by the per-operation scan of a file of at most 1 MB.
 - **Create (decisions 2 and 5; out of scope).** A `create` operation writes a
-  new file into an existing directory, never over anything at the path, all or
+  new file into an existing directory (D114 below lets it make missing
+  directories too), never over anything at the path, all or
   nothing with the rest of the call. It passes the path gates an existing
   file passes before it exists (secret, `.git` in any case, control file,
   scanner exclusion on the requested and the canonical directory spelling,
@@ -290,7 +291,14 @@ Directories are made with create-new calls after every target is re-verified;
 something that appears meanwhile stops the call. A failed call removes the
 directories it made, deepest first, only while each is still empty and still
 the directory made. A dry run creates nothing and reports what it would create.
-Directories get the platform default permissions.
+Directories get the platform default permissions. New directory names that
+end with `.` or a space, hold a control character, or equal another under a
+conservative case- and normalization-folding comparison are refused.
+Caveat: directories are created by absolute path, so a parent directory
+swapped for a link after the last check is followed; the check after each
+creation then fails the call and the rollback removes the directory made
+through the link while it is still empty. This is the residual window above,
+not closed (no directory-handle-relative calls in the standard library).
 
 Threat model addition: injected repository content can now ask for a new file
 as well as an edit. A created file is reached through the same path gates and
