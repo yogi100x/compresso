@@ -12,13 +12,19 @@ choice here was made by the orchestrating and implementing sessions and is
 **awaiting owner confirmation** (listed in D115).
 
 **Live verification is partial.** The CI job `live-sql` runs `tests/live.rs`
-against Postgres 16.4 and MariaDB 11.4.3 containers. Its first run passed the
-Postgres read-only codes, timeout and no-orphan session, privileged-role and
-`standard_conforming_strings` checks, the wrong-host TLS check (skipped:
-no variable), and the MySQL read-only codes and privileged-account and
-`sql_mode` checks; it found the MariaDB silent cut (decision 5) and a test
-that called from inside a runtime. MySQL itself (not MariaDB) has not been
-run; statements below not covered by a named live test are reasoned.
+against Postgres 16.4, MariaDB 11.4.3, MySQL 8.4, and a TLS Postgres with a
+certificate made in the job; `COMPRESSO_SQL_TEST_REQUIRE_LIVE=1` makes a
+missing variable a failure. Its first run (Postgres and MariaDB only) passed
+five checks: Postgres read-only codes, timeout with no session left behind,
+privileged role and `standard_conforming_strings`, and MariaDB read-only
+codes and privileged account with `sql_mode`. The wrong-host TLS check did
+not run then (no variable; it passed vacuously). That run exposed three
+faults, all fixed: MariaDB returning a value for a statement cut at its time
+limit, a panic when called from inside a Tokio runtime, and in-process tests
+refused on machines with `PGUSER` set; separately, build output in the
+checkout tripped the secret scan. Everything added since (MySQL 8.4, TLS,
+the role and cut-rule tests) is unproven until that job runs again;
+statements below not covered by a named live test are reasoned.
 
 ## Context
 
@@ -82,7 +88,11 @@ keychain credentials, a SQL parser, and mutation stay in E15.
    `compresso_sql`'s one database (network), one local file with no network
    (SQLite), or no usable database (unconfigured).
 5. **The statement gate is a strict subset of SQL, and defence in depth
-   only.** A first gate that lexed each dialect faithfully was bypassed six
+   only.** It also refuses `INTO` and `SHARE` anywhere, quoted EXPLAIN
+   options (`EXPLAIN ("analyze")`), and MySQL `SHOW ... WHERE` (its
+   expressions run outside `max_execution_time`); refusals say exactly what
+   to do (remove the comment; quote a reserved-looking name). A first gate
+   that lexed each dialect faithfully was bypassed six
    times in review (a non-ASCII dollar-quote tag, Unicode whitespace after
    MySQL `--`, optimizer hints that override the server deadline, prefixed
    and escaped strings, a word glued to a number). The gate now refuses,
@@ -106,10 +116,25 @@ keychain credentials, a SQL parser, and mutation stay in E15.
      statements at most 16 MiB (`SQLITE_LIMIT_LENGTH`, `SQL_LENGTH`, so one
      huge allocation fails instead of overrunning the deadline), a 16 MiB
      page cache, an authorizer allowing only reads, six metadata pragmas, and
-     allowed functions, `stmt.readonly()` required, a progress-handler
-     deadline, and a busy timeout. No process-wide heap limit: the same
-     library serves Compresso's store. The store is refused by path,
-     directory, and (Unix) file identity.
+     allowed functions, `stmt.readonly()` required, and a busy timeout.
+     `temp_store = MEMORY` (set by the connection; queries still cannot
+     change pragmas), so temporary tables, sorts, and recursive queues never
+     spill to disk (a fan-out over 1 MB values grew temporary files 300-450
+     MB a second before); a progress handler every 100 instructions stops the
+     statement at its deadline or once SQLite's memory (process-wide, read
+     with `sqlite3_memory_used`) rises 256 MiB above the call's start
+     (`sql_memory_limit`). Measured: the review's fan-out probe stops in
+     about 0.15-0.2 s at both 1 s and 3 s deadlines, peak resident memory
+     about 290 MB. No hard heap limit: it would be process-wide and the
+     store shares the library; because MCP calls run one at a time, the
+     process-wide count is the call's own. The store is refused by path and
+     directory; on Unix any target with more than one hard link is refused
+     outright, and a walk of Compresso's data directory (at most 10,000
+     entries, 3 levels) refuses whatever it cannot fully check. Off Unix,
+     where the standard library gives no file identity, SQLite targets are
+     refused (Compresso ships for macOS and Linux only). Backslashes are
+     allowed inside plain SQLite strings (SQLite never reads them as
+     escapes), so `LIKE ... ESCAPE '\'` works there.
    - *WAL databases*: a reader may create `-wal` and `-shm` beside the
      database (SQLite needs its shared-memory index); the database's own
      bytes are never written. In a read-only directory SQLite cannot, and
@@ -117,9 +142,16 @@ keychain credentials, a SQL parser, and mutation stay in E15.
      was rejected deliberately: on a database another process is writing it
      ignores the log and locks, so it can return stale or inconsistent rows
      or report corruption.
-   - *Postgres*: one fresh connection per call; refuse a superuser or a
-     member of `pg_read_server_files`, `pg_write_server_files`,
-     `pg_execute_server_program`, or `pg_signal_backend`; `BEGIN READ ONLY`;
+   - *Postgres*: one fresh connection per call; refuse a role that is, or
+     is a member of (direct, inherited, or NOINHERIT and usable with SET
+     ROLE), a superuser, BYPASSRLS, CREATEROLE, or REPLICATION role, or any
+     predefined `pg_` role: none is allowed, not even `pg_read_all_data`,
+     which reads protected catalogs such as `pg_authid` password hashes,
+     `pg_user_mapping`, and `pg_subscription`; `pg_read_all_stats`,
+     `pg_read_all_settings`, and `pg_monitor` expose other sessions'
+     statements, like MySQL's PROCESS. CREATEDB is allowed. The filter runs
+     on the server and returns one row, so no cap on memberships can hide a
+     refused role; any error refuses. `BEGIN READ ONLY`;
      `SET LOCAL statement_timeout`, `lock_timeout`,
      `idle_in_transaction_session_timeout`, and `standard_conforming_strings
      = on`; prepare with the extended protocol (refuses several statements),
@@ -128,7 +160,9 @@ keychain credentials, a SQL parser, and mutation stay in E15.
    - *MySQL/MariaDB*: one fresh connection per call; utf8mb4 pinned and
      confirmed (`character_set_client`, `_connection`, `_results`); refuse
      FILE, SUPER, PROCESS, CONNECTION_ADMIN (MariaDB `CONNECTION ADMIN`),
-     global ALL, or PROXY, held directly or through a role: MariaDB walks
+     global ALL, or PROXY, held directly or through a role (grant lines are
+     tokenized with quoted names honoured, so a role named `read ON all` is
+     a role; any line that does not parse refuses): MariaDB walks
      the role graph with `SHOW GRANTS FOR role`; MySQL lists granted roles'
      privileges with `SHOW GRANTS … USING`, and an account with a role
      granted to a role (from `information_schema.APPLICABLE_ROLES`) is
@@ -160,7 +194,14 @@ keychain credentials, a SQL parser, and mutation stay in E15.
    `PGPASSFILE`, `PGDATABASE`, `PGOPTIONS`, `PGSSLMODE`, `PGSSLROOTCERT`,
    `PGSSLCERT`, `PGSSLKEY`, or `PGAPPNAME` is set in the server's
    environment, a Postgres target answers `sql_not_configured` naming that
-   variable (never its value); the password file is never read.
+   variable (never its value); the password file is never read. The
+   variables the driver reads whatever the settings say (`PGHOSTADDR`,
+   `PGOPTIONS`, `PGSSL*`, and `PGPASSWORD` when the URL has no password) are
+   also checked in the real process environment for settings built with an
+   explicit value, and a built options object carrying `PGOPTIONS` is
+   refused. `SSL_CERT_FILE` and `SSL_CERT_DIR`, which the native certificate
+   loader reads, make any network target unusable the same way. Such
+   variables are common (Postgres installers; CI images set `PGUSER`).
 7. **Transport.** Plain text only to a loopback address or a local socket;
    any other host gets TLS with certificate and host-name verification
    (Postgres `verify-full`, MySQL `VERIFY_IDENTITY`), a weaker mode is a
@@ -168,7 +209,11 @@ keychain credentials, a SQL parser, and mutation stay in E15.
 8. **Bounds.** `max_rows` (default 100, at most 1,000); at most 100 columns
    (`columns_omitted` counts the rest); names cut to 64 characters, metadata
    values to 256; text cells cut at 1,000 characters; binary cells shown as
-   their size; a result (names and rows) at most 256 KiB; then the JSON is
+   their size; C0 controls (except tab, LF, CR), C1 controls, every Unicode
+   15.1 Cf character (zero-width and bidirectional marks, U+FEFF, the ZWJ
+   inside emoji sequences too), U+2028/U+2029, and the tag block written as
+   `\uXXXX` text in values and names, in every engine; a result (names and
+   rows) at most 256 KiB; then the JSON is
    fitted to `max_tokens` (300–8,000) by dropping trailing rows and, if
    needed, columns. `timeout_ms` 100–30,000. The network engines run on a
    thread of their own, so a call from any thread, including one already
@@ -217,6 +262,33 @@ keychain credentials, a SQL parser, and mutation stay in E15.
   deadline; nothing else.
 - **All engines**: the gate is not the server's parser; anything it admits
   that the server reads otherwise must still pass the read-only session.
+
+## Least-privilege accounts (the operator's part)
+
+The tool refuses powerful roles, but it cannot know which tables hold
+secrets: a MySQL account with SELECT on the `mysql` schema, or a Postgres
+role that can read catalog secrets, exposes them to the model. Supply an
+account that can read only what the model should see, for example:
+
+```sql
+-- Postgres
+CREATE ROLE compresso_reader LOGIN PASSWORD '...';
+GRANT CONNECT ON DATABASE app TO compresso_reader;
+GRANT USAGE ON SCHEMA public TO compresso_reader;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO compresso_reader;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO compresso_reader;
+
+-- MySQL / MariaDB
+CREATE USER 'compresso_reader'@'%' IDENTIFIED BY '...';
+GRANT SELECT ON app.* TO 'compresso_reader'@'%';
+```
+
+## Known gaps in the build gates
+
+- The capability check's shadow resolve removes `compresso-sql` and the
+  real-tree path rule looks at workspace crates; a non-workspace local
+  path crate that `compresso-sql` feature-unifies into a network capability
+  is not caught.
 
 ## Consequences
 

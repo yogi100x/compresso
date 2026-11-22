@@ -133,10 +133,30 @@ Postgres target is refused with an error naming the variable, and
 `~/.pgpass` is never read. Such variables are common (Postgres installers,
 some CI images set `PGUSER`); unset them in the environment the client
 starts from. Use a role that can only
-read: Compresso refuses a Postgres superuser or a member of the server-file,
-server-program, or `pg_signal_backend` roles, and a MySQL/MariaDB account
-with FILE, SUPER, PROCESS, CONNECTION_ADMIN, PROXY, or ALL PRIVILEGES on
-`*.*`, directly or through roles. Statements must be plain SQL: no comments,
+read: Compresso refuses a Postgres role that is, or is a member of, a
+superuser, BYPASSRLS, CREATEROLE, or REPLICATION role or any predefined
+`pg_` role (including `pg_read_all_data`, which can read password hashes),
+and a MySQL/MariaDB account with FILE, SUPER, PROCESS, CONNECTION_ADMIN,
+PROXY, or ALL PRIVILEGES on `*.*`, directly or through roles. It cannot know
+which of your tables hold secrets: an account that can read the `mysql`
+schema or secret tables exposes them. A least-privilege account:
+
+```sql
+-- Postgres
+CREATE ROLE compresso_reader LOGIN PASSWORD '...';
+GRANT CONNECT ON DATABASE app TO compresso_reader;
+GRANT USAGE ON SCHEMA public TO compresso_reader;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO compresso_reader;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO compresso_reader;
+
+-- MySQL / MariaDB
+CREATE USER 'compresso_reader'@'%' IDENTIFIED BY '...';
+GRANT SELECT ON app.* TO 'compresso_reader'@'%';
+```
+
+`SSL_CERT_FILE` and `SSL_CERT_DIR` must not be set where the client
+starts, as for `PG*` variables. SQLite targets work on macOS and Linux
+only, and a SQLite file with more than one hard link is refused. Statements must be plain SQL: no comments,
 `$`, backslashes, or non-ASCII outside `'...'` strings. Compresso answers one
 tool call at a time, so a slow query delays its other tools until it ends
 (at most the statement's `timeout_ms` plus about 16 s). Reading a WAL-mode

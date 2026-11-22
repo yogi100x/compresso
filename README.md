@@ -13,7 +13,10 @@ server with `--sql-env COMPRESSO_SQL_NAME`, which adds one read-only tool,
 database whose URL that environment variable holds (ADR-0036; see
 `docs/runbooks/install-local.md`). Postgres and MariaDB support has been run
 only by CI tests against throwaway containers, MySQL not at all; SQLite is
-fully tested. A Postgres target is refused while any
+fully tested. Give it an account that can read only what the model should
+see (see the runbook for a least-privilege example): the tool refuses
+powerful roles, but a role that can read secret tables exposes them. A
+Postgres target is refused while any
 `PG*` variable (such as `PGUSER`) is set where the client starts.
 
 ## Connecting a coding client
