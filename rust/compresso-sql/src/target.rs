@@ -213,13 +213,8 @@ pub(crate) fn postgres_environment_conflict(
 }
 
 impl SqlTarget {
-    /// Parses one URL. The error never contains the URL or its parts.
-    pub(crate) fn parse(value: &str, protected: Vec<PathBuf>) -> Result<Self, String> {
-        Self::parse_with_environment(value, protected, |name| {
-            std::env::var_os(name).map(|_| String::new())
-        })
-    }
-
+    /// Parses one URL against the Postgres variables `environment` reports
+    /// as set. The error never contains the URL or its parts.
     pub(crate) fn parse_with_environment(
         value: &str,
         protected: Vec<PathBuf>,

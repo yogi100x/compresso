@@ -188,3 +188,43 @@ fn test_a_stalled_peer_cannot_hold_a_call_past_its_limit() {
     }
     server.join().expect("server thread");
 }
+
+#[test]
+fn test_a_set_pg_variable_refuses_postgres_and_the_ambient_environment_is_not_read() {
+    let url = format!("postgres://{USER}:{PASSWORD}@127.0.0.1:5432/{DATABASE}?sslmode=disable");
+    // Settings built with an explicit value see only the environment they
+    // are given, whatever this process has set (GitHub's Windows image sets
+    // PGUSER).
+    assert_eq!(service(&url).engine(), Some(SqlEngine::Postgres));
+    let settings = SqlSettings::with_value(ENV, Some(&url)).with_postgres_environment(&["PGUSER"]);
+    let service = SqlService::new(&settings, Vec::new());
+    assert_eq!(service.engine(), None);
+    let error = query(&service, "SELECT 1").expect_err("PGUSER set");
+    assert_eq!(error.code(), "sql_not_configured");
+    assert!(error.message().contains("PGUSER is set"), "{error}");
+    assert_no_canary(&error);
+    // MySQL reads no PG* variable.
+    let mysql = format!("mysql://{USER}@127.0.0.1:3306/{DATABASE}");
+    let settings =
+        SqlSettings::with_value(ENV, Some(&mysql)).with_postgres_environment(&["PGUSER"]);
+    assert_eq!(
+        SqlService::new(&settings, Vec::new()).engine(),
+        Some(SqlEngine::MySql)
+    );
+}
+
+#[test]
+fn test_a_call_from_inside_an_async_context_does_not_panic() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let port = closed_port();
+    let service = service(&format!(
+        "postgres://{USER}:{PASSWORD}@127.0.0.1:{port}/{DATABASE}?sslmode=disable"
+    ));
+    let error = runtime
+        .block_on(async { query(&service, "SELECT 1") })
+        .expect_err("refused");
+    assert_eq!(error.code(), "sql_connection", "{error}");
+}

@@ -37,7 +37,7 @@ use serde_json::Value;
 pub use cells::{
     MAX_CELL_CHARS, MAX_COLUMNS, MAX_METADATA_CHARS, MAX_NAME_CHARS, MAX_RESULT_BYTES,
 };
-pub use target::{SqlEngine, is_valid_env_name};
+pub use target::{POSTGRES_ENVIRONMENT, SqlEngine, is_valid_env_name};
 
 /// Prefix every operator-chosen variable name carries.
 pub const ENV_PREFIX: &str = "COMPRESSO_SQL_";
@@ -273,23 +273,40 @@ pub(crate) trait Connector {
 pub struct SqlSettings {
     env_name: String,
     value: Option<String>,
+    /// The Postgres variables ([`POSTGRES_ENVIRONMENT`]) set where the
+    /// value was read: their names only, never their values.
+    postgres_environment: Vec<String>,
 }
 
 impl SqlSettings {
-    /// Reads `env_name` from this process's environment once.
+    /// Reads `env_name`, and which Postgres variables are set, from this
+    /// process's environment once.
     pub fn from_env(env_name: &str) -> Self {
         Self {
             env_name: env_name.to_owned(),
             value: std::env::var(env_name).ok(),
+            postgres_environment: POSTGRES_ENVIRONMENT
+                .iter()
+                .filter(|name| std::env::var_os(name).is_some())
+                .map(|name| (*name).to_owned())
+                .collect(),
         }
     }
 
-    /// Settings with an explicit value, for embedders and tests.
+    /// Settings with an explicit value and no Postgres variable set, for
+    /// embedders and tests; the process environment is not read.
     pub fn with_value(env_name: &str, value: Option<&str>) -> Self {
         Self {
             env_name: env_name.to_owned(),
             value: value.map(str::to_owned),
+            postgres_environment: Vec::new(),
         }
+    }
+
+    /// The same settings as if the named Postgres variables were set.
+    pub fn with_postgres_environment(mut self, names: &[&str]) -> Self {
+        self.postgres_environment = names.iter().map(|name| (*name).to_owned()).collect();
+        self
     }
 
     /// The operator-chosen variable name (not secret, but kept out of tool
@@ -305,6 +322,7 @@ impl fmt::Debug for SqlSettings {
             .debug_struct("SqlSettings")
             .field("env_name", &self.env_name)
             .field("value", &self.value.as_ref().map(|_| "[redacted]"))
+            .field("postgres_environment", &self.postgres_environment)
             .finish()
     }
 }
@@ -329,7 +347,15 @@ impl SqlService {
         } else {
             match settings.value.as_deref() {
                 None => Err("the variable is not set".to_owned()),
-                Some(value) => target::SqlTarget::parse(value, protected),
+                Some(value) => {
+                    target::SqlTarget::parse_with_environment(value, protected, |name| {
+                        settings
+                            .postgres_environment
+                            .iter()
+                            .any(|set| set == name)
+                            .then(String::new)
+                    })
+                }
             }
         };
         Self {

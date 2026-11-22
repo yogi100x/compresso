@@ -191,21 +191,35 @@ fn test_live_postgres_known_gap_a_session_of_the_same_role_can_be_terminated() {
     let Some((service, reader, _)) = postgres() else {
         return;
     };
-    runtime().block_on(async {
-        let victim_url = format!(
-            "{reader}{}application_name=compresso_victim",
-            if reader.contains('?') { "&" } else { "?" }
-        );
-        let victim = PgConnection::connect(&victim_url).await.expect("victim");
-        let sql = "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = 'compresso_victim'";
-        // The gate refuses the call by name...
-        assert_eq!(gated(&service, sql).expect_err("gate").code(), "sql_refused");
-        // ...but the read-only session does not stop it (ADR-0036, known
-        // gaps): a wrapper function the gate cannot see would reach it.
-        let rows = ungated(&service, sql).expect("terminate");
-        assert_eq!(rows, vec![vec![Value::from(true)]]);
-        drop(victim);
+    let victim_url = format!(
+        "{reader}{}application_name=compresso_victim",
+        if reader.contains('?') { "&" } else { "?" }
+    );
+    // The victim connection lives on its own runtime; the calls below are
+    // made from plain test code, as the MCP server makes them.
+    let victim_runtime = runtime();
+    let victim = victim_runtime
+        .block_on(PgConnection::connect(&victim_url))
+        .expect("victim");
+    let sql = "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = 'compresso_victim'";
+    // The gate refuses the call by name...
+    assert_eq!(
+        gated(&service, sql).expect_err("gate").code(),
+        "sql_refused"
+    );
+    // ...but the read-only session does not stop it (ADR-0036, "What a model
+    // can still do"): a wrapper function the gate cannot see would reach it.
+    let rows = ungated(&service, sql).expect("the server allows it");
+    eprintln!("known gap, server answered: {rows:?}");
+    assert_eq!(rows, vec![vec![Value::from(true)]]);
+    let alive = victim_runtime.block_on(async {
+        let mut victim = victim;
+        sqlx::query_scalar::<_, i32>("SELECT 1")
+            .fetch_one(&mut victim)
+            .await
+            .is_ok()
     });
+    assert!(!alive, "the terminated session still answered");
 }
 
 #[test]
@@ -324,18 +338,24 @@ fn test_live_mysql_reads_and_writes_get_the_read_only_code() {
 }
 
 #[test]
-fn test_live_mysql_timeout_stops_a_cpu_bound_select() {
+fn test_live_mysql_a_statement_cut_by_the_time_limit_is_a_timeout() {
     let Some((service, _, _)) = mysql() else {
         return;
     };
-    // SLEEP returns 1 without an error when cut; BENCHMARK runs until the
-    // server's deadline stops it with an error.
-    let started = Instant::now();
-    let error = service
-        .execute(&request("SELECT BENCHMARK(10000000000, MD5('a'))", 500))
-        .expect_err("timeout");
-    assert_eq!(error.code(), "sql_timeout", "{error}");
-    assert!(started.elapsed() < service.call_limit(Duration::from_millis(500)));
+    // MariaDB stops BENCHMARK at max_statement_time and returns 0 with no
+    // error (seen in CI); a table scan is stopped with an error. Both must
+    // answer sql_timeout, never a result.
+    for sql in [
+        "SELECT BENCHMARK(10000000000, MD5('a'))",
+        "SELECT SLEEP(5)",
+        "SELECT COUNT(*) FROM information_schema.COLUMNS a, information_schema.COLUMNS b, information_schema.COLUMNS c",
+    ] {
+        let started = Instant::now();
+        let result = service.execute(&request(sql, 500));
+        let error = result.expect_err(sql);
+        assert_eq!(error.code(), "sql_timeout", "{sql}: {error}");
+        assert!(started.elapsed() < service.call_limit(Duration::from_millis(500)));
+    }
 }
 
 #[test]

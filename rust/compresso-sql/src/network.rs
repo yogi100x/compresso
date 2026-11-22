@@ -71,10 +71,21 @@ pub(crate) fn call_limit(connect_timeout: Duration, timeout: Duration) -> Durati
 impl Connector for Bound<'_> {
     fn run(&self, request: &SqlRequest, gated: bool) -> Result<SqlOutcome, SqlError> {
         let limit = call_limit(self.connect_timeout, request.timeout);
-        self.runtime.block_on(async {
-            tokio::time::timeout(limit, self.call(request, gated))
-                .await
-                .unwrap_or_else(|_| Err(SqlError::timeout(request.timeout)))
+        // The runtime is driven from a thread of its own, so a caller on any
+        // thread (an MCP blocking task, or code already inside a Tokio
+        // runtime) can never hit "Cannot start a runtime from within a
+        // runtime".
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    self.runtime.block_on(async {
+                        tokio::time::timeout(limit, self.call(request, gated))
+                            .await
+                            .unwrap_or_else(|_| Err(SqlError::timeout(request.timeout)))
+                    })
+                })
+                .join()
+                .unwrap_or_else(|_| Err(SqlError::new("internal", "the SQL call failed")))
         })
     }
 }
@@ -457,6 +468,29 @@ const MYSQL_INDEXES: &str = "SELECT CAST(INDEX_NAME AS CHAR), CAST(NON_UNIQUE AS
 
 const MYSQL_FOREIGN_KEYS: &str = "SELECT CAST(CONSTRAINT_NAME AS CHAR), CAST(COLUMN_NAME AS CHAR), CAST(REFERENCED_TABLE_SCHEMA AS CHAR), CAST(REFERENCED_TABLE_NAME AS CHAR), CAST(REFERENCED_COLUMN_NAME AS CHAR) FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION";
 
+/// Warning and error codes MySQL and MariaDB use for a statement stopped by
+/// a time limit or a kill: 1317 interrupted, 1028 sort aborted, 1969
+/// MariaDB max_statement_time, 3024 MySQL max_execution_time.
+const INTERRUPTION_CODES: &[&str] = &["1317", "1028", "1969", "3024"];
+
+/// Whether the last statement left an interruption warning.
+async fn mysql_interrupted(connection: &mut MySqlConnection) -> bool {
+    let Ok(warnings) = connection.fetch_all(raw_sql("SHOW WARNINGS")).await else {
+        // The warnings cannot be read: do not vouch for the result.
+        return true;
+    };
+    warnings.iter().any(|warning| {
+        text_at(warning, 1).is_some_and(|code| INTERRUPTION_CODES.contains(&code.trim()))
+    })
+}
+
+/// Whether a statement ran until (or within 2% or 10 ms of) its deadline,
+/// where an engine may have cut it without an error.
+pub(crate) fn reached_deadline(elapsed: Duration, timeout: Duration) -> bool {
+    let margin = (timeout / 50).max(Duration::from_millis(10));
+    elapsed + margin >= timeout
+}
+
 /// Global privileges that reach outside a read-only session: server files,
 /// other sessions, or every privilege (`_` and space spellings both, for
 /// MySQL and MariaDB).
@@ -757,7 +791,19 @@ async fn mysql_call(
                     }
                 }
             }
+            let elapsed = started.elapsed();
             let clean = !rows.is_truncated();
+            // MySQL and MariaDB can stop a statement at max_execution_time or
+            // max_statement_time and still return a row with no error
+            // (BENCHMARK returns 0, SLEEP returns 1). Such a result is never
+            // passed off as complete: an interruption warning, or a run that
+            // reached the deadline, answers sql_timeout.
+            if clean && mysql_interrupted(connection).await {
+                return Err(SqlError::timeout(request.timeout));
+            }
+            if reached_deadline(elapsed, request.timeout) {
+                return Err(SqlError::timeout(request.timeout));
+            }
             Ok((SqlOutcome::Query(rows.finish(elapsed_ms(started))), clean))
         }
         SqlAction::Tables => {
@@ -1019,6 +1065,23 @@ mod tests {
                 .code(),
             "sql_privileged_role"
         );
+    }
+
+    #[test]
+    fn test_a_run_that_reaches_its_deadline_is_not_complete() {
+        let timeout = Duration::from_millis(500);
+        // The CI MariaDB run that returned BENCHMARK's 0 after exactly 500 ms.
+        assert!(reached_deadline(Duration::from_millis(500), timeout));
+        assert!(reached_deadline(Duration::from_millis(495), timeout));
+        assert!(!reached_deadline(Duration::from_millis(300), timeout));
+        assert!(reached_deadline(
+            Duration::from_millis(29_500),
+            Duration::from_secs(30)
+        ));
+        assert!(!reached_deadline(
+            Duration::from_millis(29_000),
+            Duration::from_secs(30)
+        ));
     }
 
     #[test]
