@@ -108,9 +108,9 @@ for a different target.
 ## Optional: read-only live SQL queries
 
 `compresso_sql` (E17-50, ADR-0036) is off unless you turn it on.
-**Postgres and MariaDB support has been run only by CI tests against
-throwaway containers, and MySQL not at all**; only SQLite is fully tested.
-Enable it for those engines knowing that. Put the
+Its live tests pass in CI against Postgres 16.4, MariaDB 11.4.3, and MySQL
+8.4 containers; other versions, managed cloud variants (RDS, Cloud SQL,
+Azure, PlanetScale, Neon), and Windows clients have not been tried. Put the
 database URL in an environment variable whose name starts with
 `COMPRESSO_SQL_`, in the environment your coding client starts from (your
 shell profile or the client's own launch environment; Compresso never reads

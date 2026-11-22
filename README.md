@@ -11,9 +11,11 @@ Compresso makes no network request of its own unless the operator starts the
 server with `--sql-env COMPRESSO_SQL_NAME`, which adds one read-only tool,
 `compresso_sql`, that queries the one Postgres, MySQL/MariaDB, or SQLite
 database whose URL that environment variable holds (ADR-0036; see
-`docs/runbooks/install-local.md`). Postgres and MariaDB support has been run
-only by CI tests against throwaway containers, MySQL not at all; SQLite is
-fully tested (on Windows a hard link to a file in Compresso's data
+`docs/runbooks/install-local.md`). Its live tests pass in CI against
+Postgres 16.4, MariaDB 11.4.3, and MySQL 8.4 containers (read-only codes,
+time limits, privilege refusals, TLS host checks); other versions, managed
+cloud variants, and Windows clients have not been tried. SQLite is fully
+tested (on Windows a hard link to a file in Compresso's data
 directory is not detected as one). Give it an account that can read only what the model should
 see (see the runbook for a least-privilege example): the tool refuses
 powerful roles, but a role that can read secret tables exposes them. A

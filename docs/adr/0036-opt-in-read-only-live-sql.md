@@ -11,20 +11,30 @@ connection comes only from the one named variable (decision 6). Every other
 choice here was made by the orchestrating and implementing sessions and is
 **awaiting owner confirmation** (listed in D115).
 
-**Live verification is partial.** The CI job `live-sql` runs `tests/live.rs`
-against Postgres 16.4, MariaDB 11.4.3, MySQL 8.4, and a TLS Postgres with a
-certificate made in the job; `COMPRESSO_SQL_TEST_REQUIRE_LIVE=1` makes a
-missing variable a failure. Its first run (Postgres and MariaDB only) passed
-five checks: Postgres read-only codes, timeout with no session left behind,
-privileged role and `standard_conforming_strings`, and MariaDB read-only
-codes and privileged account with `sql_mode`. The wrong-host TLS check did
-not run then (no variable; it passed vacuously). That run exposed three
-faults, all fixed: MariaDB returning a value for a statement cut at its time
-limit, a panic when called from inside a Tokio runtime, and in-process tests
-refused on machines with `PGUSER` set; separately, build output in the
-checkout tripped the secret scan. Everything added since (MySQL 8.4, TLS,
-the role and cut-rule tests) is unproven until that job runs again;
-statements below not covered by a named live test are reasoned.
+**Proven live (CI job `live-sql`, run on commit 62709ca, 2026-11-23)**
+against Postgres 16.4, MariaDB 11.4.3, and MySQL 8.4 containers and a TLS
+Postgres whose certificate is made in the job, with
+`COMPRESSO_SQL_TEST_REQUIRE_LIVE=1` so nothing passes empty:
+
+- Postgres 16.4: `test_live_postgres_reads_and_each_write_gets_the_read_only_code`,
+  `test_live_postgres_timeout_leaves_no_session_behind`,
+  `test_live_postgres_privileged_role_and_role_settings`,
+  `test_live_postgres_known_gap_a_session_of_the_same_role_can_be_terminated`,
+  `test_live_postgres_tls_to_the_wrong_host_name_is_refused`.
+- MariaDB 11.4.3 and MySQL 8.4 (each):
+  `test_live_mysql_reads_and_writes_get_the_read_only_code`,
+  `test_live_mysql_privileged_account_and_server_modes`,
+  `test_live_mysql_a_statement_cut_by_the_time_limit_is_a_timeout`,
+  `test_live_mysql_the_deadline_rule_alone_catches_a_cut`,
+  `test_live_mysql_the_interruption_signal_alone_catches_what_the_server_flags`,
+  `test_live_mysql_report_what_the_server_signals_for_a_cut`.
+
+Not proven: other server versions, managed cloud variants, and Windows
+clients. The first live run exposed three faults, all fixed (MariaDB
+returning a value for a statement cut at its time limit, a panic when called
+from inside a Tokio runtime, in-process tests refused where `PGUSER` was
+set), and build output in the checkout tripped the secret scan. Statements
+below not covered by a named live test are reasoned.
 
 ## Context
 
@@ -184,8 +194,11 @@ keychain credentials, a SQL parser, and mutation stay in E15.
      check sees, so only the deadline rule catches it; a cut `SLEEP` is also
      caught by the deadline rule; a cut table scan fails with an error. The
      live suite prints what `SHOW WARNINGS` reports for each shape on each
-     engine (`test_live_mysql_report_what_the_server_signals_for_a_cut`);
-     MySQL 8.4 has not been observed yet. Both rules stay on, and either one
+     engine (`test_live_mysql_report_what_the_server_signals_for_a_cut`); the
+     run on 62709ca passed on both engines but captured no output, so the
+     per-shape facts for MySQL 8.4 (and the warning codes on MariaDB) are
+     not recorded yet; the job now runs with `--nocapture` so the next run
+     logs them. Both rules stay on, and either one
      answers `sql_timeout`.
    - One connection per call means nothing a statement leaves in the session
      (advisory or named locks, `set_config`, user variables, temporary
