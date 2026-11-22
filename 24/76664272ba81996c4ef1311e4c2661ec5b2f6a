@@ -1,0 +1,19 @@
+decisions.md
+  s_33147a621dd28c::t_065bfad2cc66de 110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2476664272ba81996c4ef1311e4c2661ec5b2f6a",
+  "prompts": {},
+  "sessions": {
+    "s_33147a621dd28c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ac64e63fbe883d311",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
