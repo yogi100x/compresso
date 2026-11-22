@@ -292,8 +292,9 @@ something that appears meanwhile stops the call. A failed call removes the
 directories it made, deepest first, only while each is still empty and still
 the directory made. A dry run creates nothing and reports what it would create.
 Directories get the platform default permissions. New directory names that
-end with `.` or a space, hold a control character, or equal another under a
-conservative case- and normalization-folding comparison are refused.
+end with `.` or a space, hold a control character, or equal another after
+lowercasing are refused, and so is any new name written in decomposed Unicode
+form (a combining mark or conjoining jamo).
 Caveat: directories are created by absolute path, so a parent directory
 swapped for a link after the last check is followed; the check after each
 creation then fails the call and the rollback removes the directory made
