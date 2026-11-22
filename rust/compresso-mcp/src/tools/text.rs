@@ -509,29 +509,34 @@ fn grep(payload: &Value, out: &mut Out) {
             None => format!("path {path} matched no indexed file"),
         });
     }
-    // E17-49 (D114): use sites of a listed definition that the path filter
-    // left out, the first two by path and line, then how many more.
-    if let Some(outside) = payload.get("outside_uses") {
-        let sites = array(outside, "sites")
+    // E17-49 (D114): files outside the path filter where the patterns also
+    // match, the most matches first, then how many more files.
+    if let Some(outside) = payload.get("outside_matches") {
+        let files = array(outside, "files")
             .iter()
-            .map(|site| {
+            .map(|file| {
                 format!(
-                    "{}:{} {}",
-                    list_path(string(site, "path").unwrap_or_default()),
-                    number(site, "line"),
-                    list_path(string(site, "name").unwrap_or_default())
+                    "{} ({})",
+                    list_path(string(file, "path").unwrap_or_default()),
+                    number(file, "matches")
                 )
             })
             .collect::<Vec<_>>();
-        let more = number(outside, "total").saturating_sub(sites.len() as u64);
-        if !sites.is_empty() {
+        let more = number(outside, "files_total").saturating_sub(files.len() as u64);
+        let at_least = flag(outside, "at_least");
+        if !files.is_empty() {
             out.note(format!(
-                "used outside this path: {}{}",
-                sites.join(", "),
-                match (more, flag(outside, "at_least")) {
-                    (0, false) => String::new(),
-                    (more, false) => format!(" (+{more} more)"),
-                    (more, true) => format!(" (+{more} or more)"),
+                "also matches outside this path: {}{}{}",
+                files.join(", "),
+                if more > 0 {
+                    format!(" (+{more} files)")
+                } else {
+                    String::new()
+                },
+                if at_least {
+                    "; the outside scan stopped at its bound, so there may be more"
+                } else {
+                    ""
                 }
             ));
         }
@@ -1257,42 +1262,42 @@ mod tests {
 
     use super::*;
 
-    /// E17-49 (D114): the use sites a path filter hid, in one line.
+    /// E17-49 (D114): files outside the path filter where the patterns
+    /// also match, in one line.
     #[test]
-    fn test_grep_names_use_sites_outside_the_path_filter_in_one_line() {
+    fn test_grep_names_files_outside_the_path_filter_in_one_line() {
         let render = |outside: Value| {
             render(
                 "compresso_grep",
-                &json!({ "results": [], "scan": {}, "outside_uses": outside }),
+                &json!({ "results": [], "scan": {}, "outside_matches": outside }),
             )
             .expect("text")
         };
         let text = render(json!({
-            "total": 3,
-            "sites": [
-                { "path": "src/app.ts", "line": 4, "name": "handleLogin" },
-                { "path": "src/routes/auth.ts", "line": 12, "name": "handleLogin" }
+            "files_total": 5,
+            "matches_total": 9,
+            "files": [
+                { "path": "src/routes/auth.ts", "matches": 2 },
+                { "path": "src/middlewares/schema.ts", "matches": 1 },
+                { "path": "src/z.ts", "matches": 1 }
             ]
         }));
         assert!(
             text.contains(
-                "used outside this path: src/app.ts:4 handleLogin, src/routes/auth.ts:12 handleLogin (+1 more)"
+                "[also matches outside this path: src/routes/auth.ts (2), src/middlewares/schema.ts (1), src/z.ts (1) (+2 files)]"
             ),
             "{text}"
         );
         let text = render(json!({
-            "total": 64,
+            "files_total": 1,
+            "matches_total": 1,
             "at_least": true,
-            "sites": [{ "path": "a.ts", "line": 1, "name": "f" }]
+            "files": [{ "path": "a.ts", "matches": 1 }]
         }));
         assert!(
-            text.contains("used outside this path: a.ts:1 f (+63 or more)"),
-            "{text}"
-        );
-        let text =
-            render(json!({ "total": 1, "sites": [{ "path": "a.ts", "line": 1, "name": "f" }] }));
-        assert!(
-            text.contains("[used outside this path: a.ts:1 f]"),
+            text.contains(
+                "[also matches outside this path: a.ts (1); the outside scan stopped at its bound, so there may be more]"
+            ),
             "{text}"
         );
     }

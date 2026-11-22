@@ -833,10 +833,11 @@ async fn test_create_reports_the_directories_it_makes_over_mcp() {
 }
 
 /// E17-49 (D114), lean text form end to end: a grep limited to one file
-/// names the use site the filter hid, and a call at the smallest budget
-/// still succeeds within it. (Here because this harness serves lean.)
+/// names the file outside it where the pattern also matches, and a call at
+/// the smallest budget still succeeds within it. (Here because this harness
+/// serves lean.)
 #[tokio::test]
-async fn test_lean_grep_text_names_a_use_site_the_path_filter_hid() {
+async fn test_lean_grep_text_names_a_file_outside_the_path_filter() {
     let fixture = Fixture::new();
     let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean, true)).await;
     let (text, is_error) = harness
@@ -846,11 +847,11 @@ async fn test_lean_grep_text_names_a_use_site_the_path_filter_hid() {
         )
         .await;
     assert!(!is_error, "{text}");
-    let grep = |max_tokens: u64| json!({ "patterns": ["pub fn format_utc("], "path": "src/lib.rs", "max_tokens": max_tokens });
+    let grep = |max_tokens: u64| json!({ "patterns": ["format_utc("], "path": "src/lib.rs", "max_tokens": max_tokens });
     let (text, is_error) = harness.call("compresso_grep", &grep(1_000)).await;
     assert!(!is_error, "{text}");
     assert!(
-        text.contains("[used outside this path: src/other.rs:3 format_utc]"),
+        text.contains("[also matches outside this path: src/other.rs (2), src/main.rs (1)]"),
         "{text}"
     );
     let (text, is_error) = harness.call("compresso_grep", &grep(300)).await;

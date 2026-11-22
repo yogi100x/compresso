@@ -171,13 +171,13 @@ pub(crate) fn dispatch(
             entry
         })
         .collect::<Vec<_>>();
-    // E17-49 (D114): use sites a path filter hid, both profiles. Bounded
-    // store work (see `use_sites_outside_filter`); never fails the call.
-    let outside =
-        compresso_atlas::use_sites_outside_filter(store, repository.id, &options, &report)
-            .ok()
-            .flatten()
-            .map(|outside| outside_value(&outside));
+    // E17-49 (D114): where the patterns also match outside the path filter,
+    // both profiles. A bounded second scan (see `matches_outside_filter`)
+    // run only when a filter is given; it never fails the call.
+    let outside = compresso_atlas::matches_outside_filter(store, repository.id, &options, &report)
+        .ok()
+        .flatten()
+        .map(|outside| outside_value(&outside));
     let stale = repository_stale(store, repository.id).map_err(map_atlas_error)?;
     let operation_id = operation_identity().id;
     let counter = navigation_counter();
@@ -208,6 +208,8 @@ pub(crate) fn dispatch(
     let mut names = lean;
     let mut line_names = LINE_NAME_STEPS.iter().copied().peekable();
     let mut full_notes = true;
+    // The outside-matches note (E17-49) is the first thing dropped.
+    let mut outside_note = outside.is_some();
     let (mut payload, tokens) = loop {
         let mut fitted = report.fit_to_budget(budget, counter);
         if !names {
@@ -243,8 +245,8 @@ pub(crate) fn dispatch(
                 )
             };
         }
-        if full_notes && let Some(outside) = &outside {
-            payload["outside_uses"] = outside.clone();
+        if outside_note && let Some(outside) = &outside {
+            payload["outside_matches"] = outside.clone();
         }
         if lean && full_notes && !report.paths_unmatched.is_empty() {
             payload["paths_unmatched"] = report
@@ -266,6 +268,10 @@ pub(crate) fn dispatch(
         if tokens <= grep_tokens {
             break (payload, tokens);
         }
+        if outside_note {
+            outside_note = false;
+            continue;
+        }
         if names
             && fitted
                 .results
@@ -285,10 +291,7 @@ pub(crate) fn dispatch(
             line_names.next();
             continue;
         }
-        if full_notes
-            && (!alternations.is_empty()
-                || outside.is_some()
-                || (lean && !report.paths_unmatched.is_empty()))
+        if full_notes && (!alternations.is_empty() || (lean && !report.paths_unmatched.is_empty()))
         {
             full_notes = false;
             continue;
@@ -450,14 +453,15 @@ fn search_literal_alternations(
     notes
 }
 
-/// The `outside_uses` note (E17-49, D114): `at_least` only when true.
-fn outside_value(outside: &compresso_atlas::OutsideUses) -> Value {
+/// The `outside_matches` note (E17-49, D114): `at_least` only when true.
+fn outside_value(outside: &compresso_atlas::OutsideMatches) -> Value {
     let mut value = json!({
-        "total": outside.total,
-        "sites": outside
-            .sites
+        "files_total": outside.files_total,
+        "matches_total": outside.matches_total,
+        "files": outside
+            .files
             .iter()
-            .map(|site| json!({ "path": site.path, "line": site.line, "name": site.name }))
+            .map(|(path, matches)| json!({ "path": path, "matches": matches }))
             .collect::<Vec<_>>(),
     });
     if outside.at_least {

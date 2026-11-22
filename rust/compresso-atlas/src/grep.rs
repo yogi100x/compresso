@@ -10,9 +10,7 @@
 use std::path::Path;
 
 use compresso_core::TokenCounter;
-use compresso_store::{
-    CallForm, FileLanguage, FileRecord, RepoId, Store, SymbolKind, SymbolRecord,
-};
+use compresso_store::{FileLanguage, FileRecord, RepoId, Store, SymbolKind, SymbolRecord};
 use regex::{Regex, RegexBuilder};
 
 use crate::AtlasError;
@@ -203,38 +201,33 @@ pub struct GrepPatternResult {
     pub files_unlisted: Vec<(String, usize)>,
 }
 
-/// Definitions on listed lines whose use sites outside a path filter
-/// [`use_sites_outside_filter`] looks up (E17-49, D114).
-pub const GREP_OUTSIDE_DEFINITIONS: usize = 4;
-/// Call-site rows read per definition name (E17-49): one more is read to
-/// tell whether the count is a lower bound.
-pub const GREP_OUTSIDE_SITES_PER_NAME: usize = 64;
-/// Use sites outside the filter named by path and line (E17-49).
-pub const GREP_OUTSIDE_SITES_NAMED: usize = 2;
+/// Indexed files outside a path filter that [`matches_outside_filter`]
+/// reads before it stops (E17-49, D114).
+pub const GREP_OUTSIDE_SCAN_MAX_FILES: usize = 2_000;
+/// Bytes [`matches_outside_filter`] reads before it stops (E17-49).
+pub const GREP_OUTSIDE_SCAN_MAX_BYTES: u64 = 32 * 1024 * 1024;
+/// Files outside the filter named by path, the most matches first (E17-49).
+pub const GREP_OUTSIDE_FILES_NAMED: usize = 3;
 
-/// One use site a path filter left out (E17-49).
+/// Where the call's patterns also match in indexed files outside its path
+/// filter (E17-49, D114).
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OutsideUseSite {
-    pub path: String,
-    pub line: u32,
-    /// The name of the definition it uses.
-    pub name: String,
-}
-
-/// Use sites, outside a call's path filter, of definitions the call listed
-/// inside it (E17-49, D114).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OutsideUses {
-    /// Distinct use sites found.
-    pub total: usize,
-    /// A name had more than [`GREP_OUTSIDE_SITES_PER_NAME`] call sites, so
-    /// `total` is a lower bound.
+pub struct OutsideMatches {
+    /// Files outside the filter with at least one matching line.
+    pub files_total: usize,
+    /// Matching lines in them, summed over the patterns.
+    pub matches_total: usize,
+    /// The first [`GREP_OUTSIDE_FILES_NAMED`] as `(path, matching lines)`,
+    /// most matches first, then by path.
+    pub files: Vec<(String, usize)>,
+    /// The scan stopped at its file or byte bound: the totals are lower
+    /// bounds.
     pub at_least: bool,
-    /// The first [`GREP_OUTSIDE_SITES_NAMED`] in path and line order.
-    pub sites: Vec<OutsideUseSite>,
-    /// Call-site rows read from the store: at most
-    /// [`GREP_OUTSIDE_DEFINITIONS`] x ([`GREP_OUTSIDE_SITES_PER_NAME`] + 1).
-    pub rows_read: usize,
+    /// Files read and bytes read by the scan (at most
+    /// [`GREP_OUTSIDE_SCAN_MAX_FILES`] and about
+    /// [`GREP_OUTSIDE_SCAN_MAX_BYTES`]).
+    pub files_scanned: usize,
+    pub bytes_scanned: u64,
 }
 
 /// Unlisted files named per pattern (E17-38, D103).
@@ -1648,28 +1641,42 @@ pub fn literal_alternation_source(parts: &[String]) -> String {
         .join("|")
 }
 
-/// Use sites outside the path filter of the definitions `report` lists
-/// inside it (E17-49, D114); `None` without a filter (the call's `path` or
-/// a pattern's own scope) or when there are none.
+/// Where the patterns of a call with a path filter (the call's `path` or a
+/// pattern's own scope) that matched inside it also match in indexed files
+/// outside it (E17-49, D114); `None` without a filter, when no pattern
+/// matched inside it, or when nothing matches outside.
 ///
-/// A use site is a stored call site naming the definition (a call, or the
-/// function passed as an argument), read through the callee-name index; for
-/// a definition that is not a method only a bare call or a function passed
-/// as an argument counts, since a qualified or method call (`socket.send()`)
-/// may reach another definition of the name.
-/// The first [`GREP_OUTSIDE_DEFINITIONS`] definitions listed, in rank
-/// order, are looked up; a name defined more than once in the repository is
-/// skipped, since its call sites may reach another definition. Per name the
-/// store work is one symbol read of the defining file, one name lookup of
-/// at most two rows, and at most [`GREP_OUTSIDE_SITES_PER_NAME`] + 1
-/// call-site rows. Sites in secret paths, or in files the scanner now
-/// excludes (an index row can be stale), are never counted or named.
-pub fn use_sites_outside_filter(
+/// Files are read as a search reads them: indexed files in index path
+/// order through the same root resolution and read gate, never a secret
+/// path, and never a file the scanner now excludes (judged only for files
+/// that match). The scan stops after [`GREP_OUTSIDE_SCAN_MAX_FILES`] files or
+/// once [`GREP_OUTSIDE_SCAN_MAX_BYTES`] are read, and then says its totals
+/// are lower bounds.
+pub fn matches_outside_filter(
     store: &Store,
     repo: RepoId,
     options: &GrepOptions<'_>,
     report: &GrepReport,
-) -> Result<Option<OutsideUses>, AtlasError> {
+) -> Result<Option<OutsideMatches>, AtlasError> {
+    matches_outside_filter_within(
+        store,
+        repo,
+        options,
+        report,
+        GREP_OUTSIDE_SCAN_MAX_FILES,
+        GREP_OUTSIDE_SCAN_MAX_BYTES,
+    )
+}
+
+fn matches_outside_filter_within(
+    store: &Store,
+    repo: RepoId,
+    options: &GrepOptions<'_>,
+    report: &GrepReport,
+    max_files: usize,
+    max_bytes: u64,
+) -> Result<Option<OutsideMatches>, AtlasError> {
+    let matchers = compile_patterns(options)?;
     let filter = match options.path {
         Some(path) => PathFilter::parse(path)?,
         None => None,
@@ -1678,119 +1685,150 @@ pub fn use_sites_outside_filter(
     if filter.is_none() && scopes.iter().all(Option::is_none) {
         return Ok(None);
     }
-    // Definitions on listed lines, in rank order, each with its pattern.
-    let mut definitions = Vec::<(usize, &str, &GrepLine)>::new();
-    'collect: for (index, result) in report.results.iter().enumerate() {
-        for file in result.files.iter().filter(|file| !file.stale) {
-            for line in file.lines.iter().filter(|line| line.definition) {
-                if definitions.len() == GREP_OUTSIDE_DEFINITIONS {
-                    break 'collect;
-                }
-                definitions.push((index, &file.path, line));
-            }
-        }
-    }
-    if definitions.is_empty() {
+    // Only the patterns that matched inside the filter.
+    let searched = report
+        .results
+        .iter()
+        .enumerate()
+        .filter(|(_, result)| result.matches_total > 0)
+        .map(|(index, _)| index)
+        .filter(|index| *index < matchers.len())
+        .collect::<Vec<_>>();
+    if searched.is_empty() {
         return Ok(None);
     }
-    let mut symbols = std::collections::HashMap::<&str, Vec<SymbolRecord>>::new();
-    let mut names = Vec::<(usize, String, SymbolKind)>::new();
-    for (index, path, line) in definitions {
-        let Some(qualified) = line.symbol.as_deref() else {
-            continue;
-        };
-        if !symbols.contains_key(path) {
-            symbols.insert(path, store.symbols_in_file(repo, path)?);
-        }
-        let Some(symbol) = symbols[path]
-            .iter()
-            .find(|symbol| symbol.start_line == line.line && symbol.qualified_name == qualified)
-        else {
-            continue;
-        };
-        if names.iter().any(|(_, name, _)| *name == symbol.name) {
-            continue;
-        }
-        // A name defined twice may be another definition's use site.
-        let defined = store
-            .symbols_named(repo, &symbol.name, 2)
-            .map_or(0, |hits| hits.len());
-        if defined == 1 {
-            names.push((index, symbol.name.clone(), symbol.kind));
-        }
-    }
-    let mut root = None;
-    let mut exclusions = None;
-    let mut judged = std::collections::HashMap::<String, bool>::new();
-    let mut found = std::collections::BTreeMap::<(String, u32), String>::new();
-    let mut at_least = false;
-    let mut rows_read = 0;
-    for (index, name, kind) in names {
-        let mut calls = store.call_sites_named(repo, &name, GREP_OUTSIDE_SITES_PER_NAME + 1)?;
-        rows_read += calls.len();
-        if calls.len() > GREP_OUTSIDE_SITES_PER_NAME {
-            at_least = true;
-            calls.truncate(GREP_OUTSIDE_SITES_PER_NAME);
-        }
-        // A call through a qualifier or on a value (`socket.send()`,
-        // `self.send()`) cannot be told from a call of another `send` without
-        // resolving it, so for anything but a method only a bare call and a
-        // function passed as an argument count.
-        let counts = |form: CallForm| {
-            kind == SymbolKind::Method || matches!(form, CallForm::Plain | CallForm::Reference)
-        };
-        for call in calls {
-            if !counts(call.form) {
-                continue;
-            }
-            let inside = filter
+    let inside = |index: usize, path: &str| {
+        filter.as_ref().is_none_or(|filter| filter.matches(path))
+            && scopes[index]
                 .as_ref()
-                .is_none_or(|filter| filter.matches(&call.from_path))
-                && scopes[index]
-                    .as_ref()
-                    .is_none_or(|scope| scope.matches(&call.from_path));
-            if inside || is_secret_path(Path::new(&call.from_path)) {
-                continue;
-            }
-            let excluded = match judged.get(&call.from_path) {
-                Some(excluded) => *excluded,
-                None => {
-                    if root.is_none() {
-                        root = Some(canonical_query_root(&store.repository(repo)?.root)?);
-                    }
-                    let root = root.as_deref().expect("set above");
-                    let exclusions =
-                        exclusions.get_or_insert_with(|| ScannerExclusions::load(root));
-                    let excluded = exclusions.excludes(root, Path::new(&call.from_path));
-                    judged.insert(call.from_path.clone(), excluded);
-                    excluded
-                }
-            };
-            if !excluded {
-                found
-                    .entry((call.from_path, call.line))
-                    .or_insert_with(|| name.clone());
-            }
+                .is_none_or(|scope| scope.matches(path))
+    };
+    let root = canonical_query_root(&store.repository(repo)?.root)?;
+    let mut exclusions = None;
+    let mut outside = OutsideMatches {
+        files_total: 0,
+        matches_total: 0,
+        files: Vec::new(),
+        at_least: false,
+        files_scanned: 0,
+        bytes_scanned: 0,
+    };
+    let mut found = Vec::<(String, usize)>::new();
+    for record in store.indexed_files(repo)? {
+        let patterns = searched
+            .iter()
+            .copied()
+            .filter(|index| !inside(*index, &record.path))
+            .collect::<Vec<_>>();
+        if patterns.is_empty() || is_secret_path(Path::new(&record.path)) {
+            continue;
         }
+        if outside.files_scanned == max_files || outside.bytes_scanned >= max_bytes {
+            outside.at_least = true;
+            break;
+        }
+        let Ok(ResolvedEntry::File(resolved)) = resolve_under_root(&root, &record.path) else {
+            continue;
+        };
+        let Ok(source) = read_utf8(&resolved) else {
+            continue;
+        };
+        outside.files_scanned += 1;
+        outside.bytes_scanned = outside
+            .bytes_scanned
+            .saturating_add(u64::try_from(source.len()).unwrap_or(u64::MAX));
+        let matches = patterns
+            .iter()
+            .map(|index| {
+                if options.regex {
+                    matching_lines_by_line(&matchers[*index], &source, 0).0
+                } else {
+                    matching_lines(&matchers[*index], &source, 0).0
+                }
+            })
+            .sum::<usize>();
+        if matches == 0 {
+            continue;
+        }
+        // The index row may be older than the ignore rules.
+        let exclusions = exclusions.get_or_insert_with(|| ScannerExclusions::load(&root));
+        if exclusions.excludes(&root, Path::new(&record.path)) {
+            continue;
+        }
+        found.push((record.path, matches));
     }
     if found.is_empty() {
         return Ok(None);
     }
-    Ok(Some(OutsideUses {
-        total: found.len(),
-        at_least,
-        sites: found
-            .into_iter()
-            .take(GREP_OUTSIDE_SITES_NAMED)
-            .map(|((path, line), name)| OutsideUseSite { path, line, name })
-            .collect(),
-        rows_read,
-    }))
+    outside.files_total = found.len();
+    outside.matches_total = found.iter().map(|(_, matches)| matches).sum();
+    found.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    found.truncate(GREP_OUTSIDE_FILES_NAMED);
+    outside.files = found;
+    Ok(Some(outside))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// E17-49 (D114): the outside scan reads at most its file bound and then
+    /// says its totals are lower bounds.
+    #[test]
+    fn test_the_outside_scan_stops_at_its_file_and_byte_bounds() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let root = directory.path().join("repo");
+        fs_write(&root.join("in/a.ts"), "needle\n");
+        for index in 0..5 {
+            fs_write(&root.join(format!("out/{index}.ts")), "needle\n");
+        }
+        let store = Store::open(&directory.path().join("store.db")).expect("store");
+        crate::Indexer::new(
+            &store,
+            compresso_core::counter_for(compresso_core::TokenProvider::Heuristic),
+        )
+        .index(&root, |_| {})
+        .expect("index");
+        let repo = store
+            .repo_by_root(&std::fs::canonicalize(&root).expect("root"))
+            .expect("store")
+            .expect("repo")
+            .id;
+        let patterns = ["needle".to_owned()];
+        let options = GrepOptions {
+            patterns: &patterns,
+            regex: false,
+            case_insensitive: false,
+            path: Some("in"),
+            max_files: 20,
+            max_matches_per_file: 5,
+            context_lines: 0,
+            scopes: &[],
+            select_rows: false,
+        };
+        let report = grep(&store, repo, &options).expect("grep");
+        let bounded = matches_outside_filter_within(&store, repo, &options, &report, 2, u64::MAX)
+            .expect("note")
+            .expect("matches outside");
+        assert_eq!(bounded.files_scanned, 2);
+        assert_eq!(bounded.files_total, 2);
+        assert!(bounded.at_least);
+        let by_bytes = matches_outside_filter_within(&store, repo, &options, &report, 100, 7)
+            .expect("note")
+            .expect("matches outside");
+        assert_eq!((by_bytes.files_scanned, by_bytes.bytes_scanned), (1, 7));
+        assert!(by_bytes.at_least);
+        let whole = matches_outside_filter(&store, repo, &options, &report)
+            .expect("note")
+            .expect("matches outside");
+        assert_eq!((whole.files_scanned, whole.files_total), (5, 5));
+        assert!(!whole.at_least);
+    }
+
+    fn fs_write(path: &Path, contents: &str) {
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("directory");
+        std::fs::write(path, contents).expect("file");
+    }
 
     #[test]
     fn test_literal_alternatives_split_on_unescaped_pipes_only() {
