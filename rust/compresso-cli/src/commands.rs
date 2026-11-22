@@ -72,8 +72,9 @@ pub enum RootCommand {
     Impact(ImpactArgs),
     /// Show who calls a symbol, what it calls, or how one reaches another.
     Trace(TraceArgs),
-    /// Apply verified literal edits to indexed files: replace, rename, or
-    /// insert, all or nothing, then re-index (opt-in write path, D97).
+    /// Apply verified literal edits to repository files: replace, rename,
+    /// insert, or create (through --operations), all or nothing, then
+    /// re-index (opt-in write path, D97, D112).
     Edit(EditArgs),
     Compress(CompressArgs),
     Explain(ExplainArgs),

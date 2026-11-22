@@ -147,7 +147,7 @@ pub(crate) const LEAN_TOOLS: &[LeanTool] = &[
     },
     LeanTool {
         name: "compresso_edit",
-        description: "Verified literal edits, all or nothing: replace exact text, rename an identifier across indexed files, insert at a unique anchor. Reports site lines and, for a rename, matches of the old name left in scope. dry_run adds a diff. In JSON strings write tabs as \\t and line breaks as \\n.",
+        description: "Verified literal edits, all or nothing: replace exact text, rename an identifier across indexed files, insert at a unique anchor, create a new file. Reports site lines and, for a rename, matches of the old name left in scope. dry_run adds a diff. In JSON strings write tabs as \\t and line breaks as \\n.",
         hint: "compresso_edit for multi-site edits and renames",
     },
 ];

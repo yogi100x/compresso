@@ -9,8 +9,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use compresso_atlas::{
-    EDIT_MAX_OPERATIONS, EditError, EditLocation, EditOperation, EditReport, EditRequest,
-    IndexState, InsertPosition, apply_edits,
+    EDIT_MAX_OPERATIONS, EditBound, EditError, EditLocation, EditOperation, EditReport,
+    EditRequest, IndexState, InsertPosition, apply_edits,
 };
 use compresso_core::{Mode, TokenCounter, TokenProvider, counter_for, operation_identity};
 use compresso_store::{OperationRecord, Store};
@@ -135,10 +135,19 @@ fn parse_operations(value: Option<Value>) -> Result<Vec<EditOperation>, ToolFail
             "argument 'operations' must be an array of 1 to {EDIT_MAX_OPERATIONS} operation objects."
         )));
     };
-    if items.is_empty() || items.len() > EDIT_MAX_OPERATIONS {
+    if items.is_empty() {
         return Err(invalid(format!(
             "argument 'operations' must hold 1 to {EDIT_MAX_OPERATIONS} operations."
         )));
+    }
+    // Checked before any item is parsed, with the message the edit itself
+    // gives (E17-47): the limit and the count sent.
+    if items.len() > EDIT_MAX_OPERATIONS {
+        return Err(map_edit_error(EditError::Bound {
+            bound: EditBound::Operations,
+            limit: EDIT_MAX_OPERATIONS as u64,
+            actual: items.len() as u64,
+        }));
     }
     items
         .into_iter()
@@ -159,15 +168,19 @@ fn parse_operations(value: Option<Value>) -> Result<Vec<EditOperation>, ToolFail
 
 fn parse_operation(mut object: Map<String, Value>) -> Result<EditOperation, ToolFailure> {
     let op = optional_string(&mut object, "op", false)?
-        .ok_or_else(|| invalid("missing 'op' (replace, rename, or insert)."))?;
+        .ok_or_else(|| invalid("missing 'op' (replace, rename, insert, or create)."))?;
     let allowed: &[&str] = match op.as_str() {
         "replace" => &["path", "old", "new", "expected_count", "expected_hash"],
         "rename" => &["old", "new", "path", "expected_count", "allow_existing"],
         "insert" => &["path", "anchor", "text", "position", "expected_hash"],
-        _ => return Err(invalid("'op' must be replace, rename, or insert.")),
+        "create" => &["path", "content"],
+        _ => return Err(invalid("'op' must be replace, rename, insert, or create.")),
     };
     if let Some(unknown) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
-        return Err(invalid(format!("unknown field '{unknown}' for {op}.")));
+        return Err(invalid(format!(
+            "unknown field '{unknown}' for {op}; {op} takes {}.",
+            allowed.join(", ")
+        )));
     }
     let required = |object: &mut Map<String, Value>, name: &'static str, allow_empty| {
         optional_string(object, name, allow_empty)?
@@ -190,6 +203,11 @@ fn parse_operation(mut object: Map<String, Value>) -> Result<EditOperation, Tool
             path: optional_string(&mut object, "path", false)?,
             expected_count: count(&mut object)?,
             allow_existing: optional_bool(&mut object, "allow_existing")?.unwrap_or(false),
+        },
+        "create" => EditOperation::Create {
+            path: required(&mut object, "path", false)?,
+            // An empty file may be created.
+            content: required(&mut object, "content", true)?,
         },
         _ => EditOperation::Insert {
             path: required(&mut object, "path", false)?,
@@ -220,9 +238,11 @@ pub fn edit_failure_message(error: &EditError) -> (&'static str, String) {
             "not_indexed",
             "The repository is not indexed. Run `compresso index`, then retry.".to_owned(),
         ),
-        EditError::OutsideRoot { .. } => (
+        EditError::OutsideRoot { path } => (
             "outside_root",
-            "The requested path resolves outside the approved repository root.".to_owned(),
+            format!(
+                "The requested path '{path}' resolves outside the approved repository root; nothing was written."
+            ),
         ),
         EditError::Refused { .. } => ("edit_refused", format!("{error}; nothing was written.")),
         EditError::CountMismatch { locations, .. } => (
@@ -307,7 +327,7 @@ pub fn report_payload(
         .files
         .iter()
         .map(|file| {
-            json!({
+            let mut value = json!({
                 "path": file.path,
                 "sites": file.sites,
                 "lines": file.lines,
@@ -319,7 +339,11 @@ pub fn report_payload(
                 "hash_before": file.hash_before,
                 "hash_after": file.hash_after,
                 "verified": file.verified
-            })
+            });
+            if file.created {
+                value["created"] = json!(true);
+            }
+            value
         })
         .collect::<Vec<_>>();
     let operations = report
@@ -338,9 +362,16 @@ pub fn report_payload(
                     object.insert("old".to_owned(), json!(old));
                     object.insert("new".to_owned(), json!(new));
                 }
-                EditOperation::Replace { path, .. } | EditOperation::Insert { path, .. } => {
+                EditOperation::Replace { path, .. }
+                | EditOperation::Insert { path, .. }
+                | EditOperation::Create { path, .. } => {
                     object.insert("path".to_owned(), json!(path));
                 }
+            }
+            // An identical replace (E17-47): its count held, nothing changed.
+            if operation.unchanged {
+                object.insert("unchanged".to_owned(), json!(true));
+                object.insert("matched".to_owned(), json!(operation.matched));
             }
             if let Some(rename) = &operation.rename {
                 object.insert("scope".to_owned(), json!(rename.scope));
@@ -451,6 +482,20 @@ pub fn report_payload(
     if outside > 0 {
         payload["outside_scope_whole_total"] = json!(outside);
     }
+    // Call-level totals (E17-47), present only when not zero so earlier
+    // reports are unchanged; no report cut drops a top-level total.
+    let created = report.files.iter().filter(|file| file.created).count();
+    if created > 0 {
+        payload["files_created"] = json!(created);
+    }
+    let unchanged = report
+        .operations
+        .iter()
+        .filter(|operation| operation.unchanged)
+        .count();
+    if unchanged > 0 {
+        payload["unchanged_operations"] = json!(unchanged);
+    }
     payload
 }
 
@@ -548,6 +593,8 @@ pub fn fit(
                     matches!(
                         key.as_str(),
                         "op" | "sites"
+                            | "unchanged"
+                            | "matched"
                             | "old"
                             | "new"
                             | "path"

@@ -11,12 +11,16 @@
 //!   times (default 1).
 //! * `rename`: whole-identifier rename across the indexed files of a scope.
 //! * `insert`: text before or after a literal anchor that occurs exactly once.
+//! * `create` (E17-47, D112): a new file in an existing directory; refused
+//!   when anything exists at the path.
 //!
-//! One call applies up to [`EDIT_MAX_OPERATIONS`] operations in order, all or
-//! nothing: every operation is validated and applied in memory first, and no
-//! file is written unless all of them succeed. No regular expression is ever
-//! evaluated, no file is created or deleted, no shell command runs, and no
-//! network request is made.
+//! One call applies up to [`EDIT_MAX_OPERATIONS`] operations carrying at
+//! most [`EDIT_MAX_REQUEST_BYTES`] of text in order, all or nothing: every
+//! operation is validated and applied in memory first, and no file is
+//! written unless all of them succeed. A `replace` whose `old` and `new` are
+//! identical still checks its count and is reported `unchanged`. No regular
+//! expression is ever evaluated, no file is deleted or moved, no shell
+//! command runs, and no network request is made.
 //!
 //! # Identifier boundaries
 //!
@@ -46,7 +50,18 @@
 //! component (the [`resolve_under_root`] gate shared with every read), inside
 //! the repository root, outside `.git` and any protected directory (the
 //! Compresso store), valid UTF-8, and no larger than [`EDIT_MAX_FILE_BYTES`]
-//! before and after the edit.
+//! before and after the edit. A `replace` or `insert` target that exists on
+//! disk but is not indexed (created since the last index) makes the call
+//! refresh the index once first, as a rename always does; the target is then
+//! edited only if the scanner indexed it, so it passed every check an
+//! indexed file passed.
+//!
+//! A `create` target is judged by the same path rules before it exists: not
+//! a secret path, not `.git`, not a control file, not excluded by the
+//! scanner (judged on both the requested and the canonical spelling of its
+//! directory), not protected, every directory component a real directory
+//! (no symbolic link) inside the root and writable, and nothing at the path.
+//! Its content may not contain NUL, so the scanner indexes it.
 //!
 //! # Writes
 //!
@@ -60,6 +75,10 @@
 //! was restored and what was not. Line endings (LF or CRLF) and a UTF-8 byte
 //! order mark are preserved: `old`, `new`, anchors, and inserted text written
 //! with `\n` are converted to the file's CRLF endings.
+//!
+//! A created file is staged the same way and then hard-linked into place,
+//! which fails if anything appeared at the path, so it never replaces a file;
+//! a rollback removes it only while it still holds exactly the created bytes.
 //!
 //! A residual window remains between the last verification and the rename
 //! itself: the standard library offers no directory-handle-relative rename, so
@@ -80,9 +99,13 @@ use crate::indexer::Indexer;
 use crate::queries::{QueryError, ResolvedEntry, canonical_query_root, resolve_under_root};
 use crate::scanner::{DEFAULT_MAX_FILE_BYTES, ScannerExclusions, is_secret_path};
 
-/// Most operations one call applies.
-pub const EDIT_MAX_OPERATIONS: usize = 16;
-/// Largest `old`, `new`, anchor, or inserted text, in bytes.
+/// Most operations one call applies (E17-47, D112; 16 before).
+pub const EDIT_MAX_OPERATIONS: usize = 64;
+/// Most bytes of path and text (`path`, `old`, `new`, `anchor`, `text`,
+/// `content`) one call carries, across its operations: the size of the
+/// operations document `compresso edit --operations` reads.
+pub const EDIT_MAX_REQUEST_BYTES: u64 = 4 * 1024 * 1024;
+/// Largest `old`, `new`, anchor, inserted text, or created content, in bytes.
 pub const EDIT_MAX_TEXT_BYTES: usize = 64 * 1024;
 /// Longest identifier a rename accepts, in bytes.
 pub const EDIT_MAX_IDENTIFIER_BYTES: usize = 256;
@@ -148,6 +171,9 @@ pub enum EditOperation {
         position: InsertPosition,
         expected_hash: Option<String>,
     },
+    /// Creates `path` holding `content` (E17-47, D112). Refused when
+    /// anything exists at the path or its directory does not exist.
+    Create { path: String, content: String },
 }
 
 impl EditOperation {
@@ -157,7 +183,22 @@ impl EditOperation {
             Self::Replace { .. } => "replace",
             Self::Rename { .. } => "rename",
             Self::Insert { .. } => "insert",
+            Self::Create { .. } => "create",
         }
+    }
+
+    /// Bytes of path and text the operation carries (see
+    /// [`EDIT_MAX_REQUEST_BYTES`]).
+    fn request_bytes(&self) -> u64 {
+        let parts: [&str; 3] = match self {
+            Self::Replace { path, old, new, .. } => [path, old, new],
+            Self::Rename { old, new, path, .. } => [old, new, path.as_deref().unwrap_or("")],
+            Self::Insert {
+                path, anchor, text, ..
+            } => [path, anchor, text],
+            Self::Create { path, content } => [path, content, ""],
+        };
+        parts.iter().map(|part| part.len() as u64).sum()
     }
 }
 
@@ -222,6 +263,9 @@ pub struct FileChange {
     /// Re-read after the write and found to hold exactly the edited bytes.
     /// Always `false` for a dry run.
     pub verified: bool,
+    /// The call created the file (E17-47); `bytes_before` is 0 and
+    /// `hash_before` is empty.
+    pub created: bool,
 }
 
 /// Why a file in a rename scope was not searched.
@@ -243,6 +287,11 @@ pub enum Refusal {
     ReadOnly,
     /// The file belongs to another user; replacing it would change its owner.
     ForeignOwner,
+    /// `create`: something already exists at the path.
+    Exists,
+    /// `create`: a directory on the path is missing, is not a directory, or
+    /// is a symbolic link.
+    NoDirectory,
 }
 
 impl Refusal {
@@ -259,6 +308,8 @@ impl Refusal {
             Self::ControlFile => "control_file",
             Self::ReadOnly => "read_only",
             Self::ForeignOwner => "foreign_owner",
+            Self::Exists => "exists",
+            Self::NoDirectory => "no_directory",
         }
     }
 
@@ -267,7 +318,9 @@ impl Refusal {
             Self::InvalidPath => "the path must be repository-relative with forward slashes",
             Self::NotFound => "the file was not found",
             Self::Excluded => "the scanner excludes the path (for example it is gitignored)",
-            Self::NotIndexed => "the file is not in the repository index",
+            Self::NotIndexed => {
+                "the file is not in the repository index (the scanner skips binary files and files over its size limit)"
+            }
             Self::NotAFile => "the path is not a regular file",
             Self::TooLarge => "the file is over the 1 MB edit limit",
             Self::NotUtf8 => "the file is not valid UTF-8",
@@ -277,6 +330,12 @@ impl Refusal {
             }
             Self::ReadOnly => "the file is not writable by this user",
             Self::ForeignOwner => "the file belongs to another user",
+            Self::Exists => {
+                "something already exists at the path; create makes new files only (edit an existing file with replace or insert)"
+            }
+            Self::NoDirectory => {
+                "a directory on the path does not exist, is not a directory, or is a symbolic link; create writes into existing directories only"
+            }
         }
     }
 }
@@ -335,6 +394,12 @@ pub struct OperationOutcome {
     pub sites: usize,
     pub files: Vec<String>,
     pub rename: Option<RenameOutcome>,
+    /// A `replace` whose `old` and `new` are identical (E17-47): its count
+    /// was checked and nothing changed. `sites` is 0 and `matched` holds
+    /// the count.
+    pub unchanged: bool,
+    /// Matches an `unchanged` replace found; 0 otherwise.
+    pub matched: usize,
 }
 
 /// Whether the index reflects the edit.
@@ -371,6 +436,10 @@ pub enum EditBound {
     WriteBytes,
     FileBytes,
     ScanBytes,
+    /// Operations in one call (E17-47).
+    Operations,
+    /// Bytes of path and text one call carries (E17-47).
+    RequestBytes,
 }
 
 impl EditBound {
@@ -381,7 +450,35 @@ impl EditBound {
             Self::WriteBytes => "write_bytes",
             Self::FileBytes => "file_bytes",
             Self::ScanBytes => "scan_bytes",
+            Self::Operations => "operations",
+            Self::RequestBytes => "request_bytes",
         }
+    }
+
+    /// What the caller can do about it, for the bounds a smaller call fixes.
+    const fn advice(self) -> &'static str {
+        match self {
+            Self::Operations
+            | Self::RequestBytes
+            | Self::Files
+            | Self::Sites
+            | Self::WriteBytes => {
+                "; split the operations into several calls (each call is all or nothing)"
+            }
+            Self::FileBytes | Self::ScanBytes => "",
+        }
+    }
+}
+
+fn operation_prefix(operation: Option<usize>) -> String {
+    operation.map_or_else(String::new, |number| format!("operation {number}: "))
+}
+
+fn earlier_note(edited_earlier: bool) -> &'static str {
+    if edited_earlier {
+        " in the text as an earlier operation of this call left it (operations apply in order)"
+    } else {
+        ""
     }
 }
 
@@ -395,16 +492,26 @@ pub enum EditError {
     NotIndexed,
     #[error("path {path:?} resolves outside the repository root")]
     OutsideRoot { path: String },
-    #[error("refused to edit {path:?}: {}", reason.describe())]
-    Refused { path: String, reason: Refusal },
+    #[error("{}refused to edit {path:?}: {}", operation_prefix(*operation), reason.describe())]
+    Refused {
+        path: String,
+        reason: Refusal,
+        /// The operation whose target this is, when one operation names it
+        /// (E17-47); `None` for a file a rename sweep or the commit reached.
+        operation: Option<usize>,
+    },
     #[error(
-        "operation {operation} expected {expected} match(es) but found {actual}; nothing was written"
+        "operation {operation} expected {expected} match(es) but found {actual}{}; nothing was written",
+        earlier_note(*edited_earlier)
     )]
     CountMismatch {
         operation: usize,
         expected: usize,
         actual: usize,
         locations: Vec<EditLocation>,
+        /// An earlier operation of the call already changed this file, so
+        /// the count was taken in its edited text (E17-47).
+        edited_earlier: bool,
     },
     #[error(
         "operation {operation}: the rename found no whole-identifier match; nothing was written"
@@ -425,7 +532,7 @@ pub enum EditError {
     },
     #[error("{path:?} does not have the expected content hash; nothing was written")]
     HashMismatch { path: String, actual: String },
-    #[error("the edit exceeds the {} bound ({actual} > {limit}); nothing was written", bound.as_str())]
+    #[error("the edit exceeds the {} bound ({actual} > {limit}){}; nothing was written", bound.as_str(), bound.advice())]
     Bound {
         bound: EditBound,
         limit: u64,
@@ -461,6 +568,29 @@ pub enum EditError {
 impl From<AtlasError> for EditError {
     fn from(error: AtlasError) -> Self {
         Self::Atlas(Box::new(error))
+    }
+}
+
+impl EditError {
+    /// Names operation `number` in a failure that one operation caused but
+    /// that does not say which (E17-47): in a large batch the caller could
+    /// not otherwise tell which operation to fix.
+    fn at_operation(self, number: usize) -> Self {
+        match self {
+            Self::Invalid { reason } if !reason.starts_with("operation ") => Self::Invalid {
+                reason: format!("operation {number}: {reason}"),
+            },
+            Self::Refused {
+                path,
+                reason,
+                operation: None,
+            } => Self::Refused {
+                path,
+                reason,
+                operation: Some(number),
+            },
+            other => other,
+        }
     }
 }
 
@@ -626,20 +756,31 @@ pub(crate) fn apply_edits_with_hook(
     if repository.last_indexed_at.is_none() {
         return Err(EditError::NotIndexed);
     }
+    let load_indexed = || -> Result<BTreeMap<String, FileRecord>, EditError> {
+        Ok(store
+            .indexed_files(repository.id)?
+            .into_iter()
+            .map(|record| (record.path.clone(), record))
+            .collect())
+    };
+    let mut indexed = load_indexed()?;
     // A rename's scope is the indexed file list, so files created or changed
     // since the last index must be indexed first or they would be missed.
-    // This writes only the index (also on a dry run), never a repository file.
+    // A replace or insert target that exists on disk but is not indexed
+    // (created since the last index, E17-47) needs the same refresh: after
+    // it the target is edited only if the scanner indexed it. This writes
+    // only the index (also on a dry run), never a repository file.
     let has_rename = request
         .operations
         .iter()
         .any(|operation| matches!(operation, EditOperation::Rename { .. }));
-    let index_refreshed = !has_rename || Indexer::new(store, counter).index(&root, |_| {}).is_ok();
-    let indexed = store
-        .indexed_files(repository.id)?
-        .into_iter()
-        .map(|record| (record.path.clone(), record))
-        .collect::<BTreeMap<_, _>>();
     let exclusions = ScannerExclusions::load(&root);
+    let refresh =
+        has_rename || has_unindexed_target(&root, &exclusions, &request.operations, &indexed);
+    let index_refreshed = !refresh || Indexer::new(store, counter).index(&root, |_| {}).is_ok();
+    if refresh {
+        indexed = load_indexed()?;
+    }
     let gate = Gate {
         root: &root,
         exclusions: &exclusions,
@@ -653,6 +794,7 @@ pub(crate) fn apply_edits_with_hook(
     let mut scanned = 0_u64;
     let mut outcomes = Vec::with_capacity(request.operations.len());
     let mut total_sites = 0_usize;
+    // Bounded by EDIT_MAX_OPERATIONS (validated above).
     for (index, operation) in request.operations.iter().enumerate() {
         let number = index + 1;
         let outcome = match operation {
@@ -663,7 +805,8 @@ pub(crate) fn apply_edits_with_hook(
                 expected_count,
                 expected_hash,
             } => {
-                let file = load_into(&gate, &mut working, path)?;
+                let file =
+                    load_into(&gate, &mut working, path).map_err(|e| e.at_operation(number))?;
                 check_hash(file, path, expected_hash.as_deref())?;
                 apply_replace(file, path, old, new, *expected_count, number)?
             }
@@ -674,9 +817,26 @@ pub(crate) fn apply_edits_with_hook(
                 position,
                 expected_hash,
             } => {
-                let file = load_into(&gate, &mut working, path)?;
+                let file =
+                    load_into(&gate, &mut working, path).map_err(|e| e.at_operation(number))?;
                 check_hash(file, path, expected_hash.as_deref())?;
                 apply_insert(file, path, anchor, text, *position, number)?
+            }
+            EditOperation::Create { path, content } => {
+                if working.contains_key(path) {
+                    return Err(refused(path, Refusal::Exists).at_operation(number));
+                }
+                let file = create_working(&gate, path, content)
+                    .map_err(|error| error.at_operation(number))?;
+                working.insert(path.clone(), file);
+                OperationOutcome {
+                    kind: "create",
+                    sites: 0,
+                    files: vec![path.clone()],
+                    rename: None,
+                    unchanged: false,
+                    matched: 0,
+                }
             }
             EditOperation::Rename {
                 old,
@@ -727,9 +887,10 @@ pub(crate) fn apply_edits_with_hook(
         rename.outside_unsearched = outside.unsearched;
     }
 
+    // A created file is written even when empty.
     let changed = working
         .into_iter()
-        .filter(|(_, file)| file.edited_bytes() != file.original)
+        .filter(|(_, file)| file.created.is_some() || file.edited_bytes() != file.original)
         .collect::<Vec<_>>();
     bound(
         EditBound::Files,
@@ -744,9 +905,12 @@ pub(crate) fn apply_edits_with_hook(
     }
     bound(EditBound::WriteBytes, EDIT_MAX_WRITE_BYTES, bytes_written)?;
     // Only the files that will change are asked, and in a dry run too, so
-    // both runs refuse alike.
-    for (path, _) in &changed {
-        if let Some(reason) = os_write_refusal(&root.join(path)) {
+    // both runs refuse alike. A created file's directory was asked when the
+    // operation ran.
+    for (path, file) in &changed {
+        if file.created.is_none()
+            && let Some(reason) = os_write_refusal(&root.join(path))
+        {
             return Err(refused(path, reason));
         }
     }
@@ -768,7 +932,7 @@ pub(crate) fn apply_edits_with_hook(
         for (path, file) in &changed {
             let original = String::from_utf8_lossy(&file.original);
             let edited = String::from_utf8_lossy(&file.edited_bytes()).into_owned();
-            if !append_diff(&mut diff, path, &original, &edited) {
+            if !append_diff(&mut diff, path, &original, &edited, file.created.is_some()) {
                 diff_truncated = true;
                 break;
             }
@@ -836,11 +1000,33 @@ fn invalid(reason: impl Into<String>) -> EditError {
 }
 
 fn validate_request(request: &EditRequest) -> Result<(), EditError> {
-    if request.operations.is_empty() || request.operations.len() > EDIT_MAX_OPERATIONS {
+    if request.operations.is_empty() {
         return Err(invalid(format!(
             "a call carries 1 to {EDIT_MAX_OPERATIONS} operations"
         )));
     }
+    bound(
+        EditBound::Operations,
+        EDIT_MAX_OPERATIONS as u64,
+        request.operations.len() as u64,
+    )?;
+    let request_bytes = request
+        .operations
+        .iter()
+        .map(EditOperation::request_bytes)
+        .fold(0_u64, u64::saturating_add);
+    bound(
+        EditBound::RequestBytes,
+        EDIT_MAX_REQUEST_BYTES,
+        request_bytes,
+    )?;
+    for (index, operation) in request.operations.iter().enumerate() {
+        validate_operation(operation).map_err(|error| error.at_operation(index + 1))?;
+    }
+    Ok(())
+}
+
+fn validate_operation(operation: &EditOperation) -> Result<(), EditError> {
     let text = |name: &str, value: &str, allow_empty: bool| -> Result<(), EditError> {
         if !allow_empty && value.is_empty() {
             return Err(invalid(format!("'{name}' must not be empty")));
@@ -870,66 +1056,68 @@ fn validate_request(request: &EditRequest) -> Result<(), EditError> {
             _ => Ok(()),
         }
     };
-    for operation in &request.operations {
-        match operation {
-            EditOperation::Replace {
-                path,
-                old,
-                new,
-                expected_count,
-                expected_hash,
-            } => {
-                validate_path(path)?;
-                text("old", old, false)?;
-                text("new", new, true)?;
-                if old == new {
-                    return Err(invalid("'old' and 'new' are identical"));
-                }
-                if !(1..=EDIT_MAX_SITES).contains(expected_count) {
-                    return Err(invalid(format!(
-                        "'expected_count' must be from 1 through {EDIT_MAX_SITES}"
-                    )));
-                }
-                hash(expected_hash.as_deref())?;
+    match operation {
+        EditOperation::Replace {
+            path,
+            old,
+            new,
+            expected_count,
+            expected_hash,
+        } => {
+            validate_path(path)?;
+            text("old", old, false)?;
+            text("new", new, true)?;
+            // Identical texts are a reported no-op (E17-47), not an error.
+            if !(1..=EDIT_MAX_SITES).contains(expected_count) {
+                return Err(invalid(format!(
+                    "'expected_count' must be from 1 through {EDIT_MAX_SITES}"
+                )));
             }
-            EditOperation::Rename {
-                old,
-                new,
-                path,
-                expected_count,
-                ..
-            } => {
-                for (name, value) in [("old", old), ("new", new)] {
-                    if !is_identifier(value) {
-                        return Err(invalid(format!(
-                            "rename '{name}' must be an identifier: letters, digits, or '_', not starting with a digit, at most {EDIT_MAX_IDENTIFIER_BYTES} bytes"
-                        )));
-                    }
-                }
-                if old == new {
-                    return Err(invalid("'old' and 'new' are identical"));
-                }
-                if let Some(filter) = path {
-                    PathFilter::parse(filter).map_err(|error| invalid(error.to_string()))?;
-                }
-                if expected_count.is_some_and(|count| !(1..=EDIT_MAX_SITES).contains(&count)) {
+            hash(expected_hash.as_deref())?;
+        }
+        EditOperation::Rename {
+            old,
+            new,
+            path,
+            expected_count,
+            ..
+        } => {
+            for (name, value) in [("old", old), ("new", new)] {
+                if !is_identifier(value) {
                     return Err(invalid(format!(
-                        "'expected_count' must be from 1 through {EDIT_MAX_SITES}"
+                        "rename '{name}' must be an identifier: letters, digits, or '_', not starting with a digit, at most {EDIT_MAX_IDENTIFIER_BYTES} bytes"
                     )));
                 }
             }
-            EditOperation::Insert {
-                path,
-                anchor,
-                text: inserted,
-                expected_hash,
-                ..
-            } => {
-                validate_path(path)?;
-                text("anchor", anchor, false)?;
-                text("text", inserted, false)?;
-                hash(expected_hash.as_deref())?;
+            if old == new {
+                return Err(invalid("'old' and 'new' are identical"));
             }
+            if let Some(filter) = path {
+                PathFilter::parse(filter).map_err(|error| invalid(error.to_string()))?;
+            }
+            if expected_count.is_some_and(|count| !(1..=EDIT_MAX_SITES).contains(&count)) {
+                return Err(invalid(format!(
+                    "'expected_count' must be from 1 through {EDIT_MAX_SITES}"
+                )));
+            }
+        }
+        EditOperation::Insert {
+            path,
+            anchor,
+            text: inserted,
+            expected_hash,
+            ..
+        } => {
+            validate_path(path)?;
+            text("anchor", anchor, false)?;
+            text("text", inserted, false)?;
+            hash(expected_hash.as_deref())?;
+        }
+        EditOperation::Create { path, content } => {
+            validate_path(path)?;
+            // Empty is allowed (an empty module file); NUL is not, so the
+            // scanner never sniffs the new file as binary.
+            text("content", content, true)?;
         }
     }
     Ok(())
@@ -947,10 +1135,7 @@ fn validate_path(path: &str) -> Result<(), EditError> {
     if valid {
         Ok(())
     } else {
-        Err(EditError::Refused {
-            path: path.to_owned(),
-            reason: Refusal::InvalidPath,
-        })
+        Err(refused(path, Refusal::InvalidPath))
     }
 }
 
@@ -970,7 +1155,9 @@ struct WorkingFile {
     original: Vec<u8>,
     hash_before: String,
     identity: Option<(u64, u64)>,
-    permissions: fs::Permissions,
+    /// The original file's permissions, kept by the replacement; `None` for
+    /// a created file, which gets the default mode under the umask.
+    permissions: Option<fs::Permissions>,
     bom: bool,
     line_ending: LineEnding,
     stale: bool,
@@ -983,6 +1170,18 @@ struct WorkingFile {
     owner: Option<u32>,
     /// How identifiers are matched in this file.
     language: SourceLanguage,
+    /// Where a file this call creates goes; `None` for an existing file.
+    created: Option<NewFile>,
+}
+
+/// The place a `create` operation writes: a path with nothing at it inside
+/// a real directory of the repository.
+#[derive(Clone, Debug)]
+struct NewFile {
+    /// The absolute target, under the canonical directory.
+    target: PathBuf,
+    /// Device and inode of the directory (Unix), re-checked before writing.
+    directory_identity: Option<(u64, u64)>,
 }
 
 impl WorkingFile {
@@ -1014,6 +1213,7 @@ impl WorkingFile {
             hash_before: self.hash_before.clone(),
             hash_after: blake3::hash(&edited).to_hex().to_string(),
             verified: false,
+            created: self.created.is_some(),
         }
     }
 
@@ -1043,6 +1243,7 @@ fn refused(path: &str, reason: Refusal) -> EditError {
     EditError::Refused {
         path: path.to_owned(),
         reason,
+        operation: None,
     }
 }
 
@@ -1065,9 +1266,8 @@ fn load(gate: &Gate<'_>, path: &str) -> Result<WorkingFile, EditError> {
     if gate.exclusions.excludes(gate.root, relative) {
         return Err(refused(path, Refusal::Excluded));
     }
-    let Some(record) = gate.indexed.get(path) else {
-        return Err(refused(path, Refusal::NotIndexed));
-    };
+    // Resolved before the index lookup (which stays a hard gate) so a
+    // missing or linked unindexed path reports what it is.
     let resolved = match resolve_under_root(gate.root, path) {
         Ok(ResolvedEntry::File(resolved)) => resolved,
         // Like the read gate, a path through a symbolic link reads as missing.
@@ -1081,6 +1281,9 @@ fn load(gate: &Gate<'_>, path: &str) -> Result<WorkingFile, EditError> {
             return Err(refused(path, Refusal::NotAFile));
         }
         Err(error) => return Err(error.into()),
+    };
+    let Some(record) = gate.indexed.get(path) else {
+        return Err(refused(path, Refusal::NotIndexed));
     };
     if gate
         .protected
@@ -1126,7 +1329,7 @@ fn load(gate: &Gate<'_>, path: &str) -> Result<WorkingFile, EditError> {
         original,
         hash_before,
         identity: resolved.identity(),
-        permissions: metadata.permissions(),
+        permissions: Some(metadata.permissions()),
         bom,
         stale,
         text,
@@ -1134,6 +1337,171 @@ fn load(gate: &Gate<'_>, path: &str) -> Result<WorkingFile, EditError> {
         site_offsets: Vec::new(),
         owner: file_owner(&metadata),
         language: SourceLanguage::for_path(path),
+        created: None,
+    })
+}
+
+/// Whether a `replace` or `insert` names a path that exists on disk but is
+/// not indexed, and that no earlier `create` of the call makes: the call
+/// then refreshes the index first (E17-47). A path the gates refuse anyway
+/// (secret, `.git`, control file, scanner-excluded) does not cost a refresh.
+/// Bounded by the operation count.
+fn has_unindexed_target(
+    root: &Path,
+    exclusions: &ScannerExclusions,
+    operations: &[EditOperation],
+    indexed: &BTreeMap<String, FileRecord>,
+) -> bool {
+    let mut created = BTreeSet::new();
+    for operation in operations {
+        match operation {
+            EditOperation::Create { path, .. } => {
+                created.insert(path.as_str());
+            }
+            EditOperation::Replace { path, .. } | EditOperation::Insert { path, .. }
+                if !indexed.contains_key(path)
+                    && !created.contains(path.as_str())
+                    && validate_path(path).is_ok()
+                    && !is_secret_path(Path::new(path))
+                    && !has_git_component(Path::new(path))
+                    && !is_control_path(Path::new(path))
+                    && !exclusions.excludes(root, Path::new(path))
+                    && fs::symlink_metadata(root.join(path)).is_ok() =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Whether any component of `relative` is `.git`, in any case (a create on
+/// a case-insensitive file system must not reach `.GIT/config`).
+fn has_git_component(relative: &Path) -> bool {
+    relative
+        .components()
+        .any(|component| component.as_os_str().eq_ignore_ascii_case(".git"))
+}
+
+/// Resolves where `create` would write `path`: every directory component
+/// below the root must be a real directory (no symbolic link), the
+/// directory's canonical form must lie inside the root, and nothing may
+/// exist at the path. Returns the target under the canonical directory and
+/// the directory's repository-relative canonical form. Bounded by the path's
+/// components ([`MAX_PATH_BYTES`]).
+fn resolve_new_file(root: &Path, path: &str) -> Result<(NewFile, PathBuf), EditError> {
+    let relative = Path::new(path);
+    let (Some(parent), Some(name)) = (relative.parent(), relative.file_name()) else {
+        return Err(refused(path, Refusal::InvalidPath));
+    };
+    let mut directory = root.to_path_buf();
+    for component in parent.components() {
+        directory.push(component);
+        match fs::symlink_metadata(&directory) {
+            Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+            Ok(_) => return Err(refused(path, Refusal::NoDirectory)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Err(refused(path, Refusal::NoDirectory));
+            }
+            Err(source) => {
+                return Err(EditError::Read {
+                    path: path.to_owned(),
+                    source,
+                });
+            }
+        }
+    }
+    let canonical = fs::canonicalize(&directory).map_err(|source| EditError::Read {
+        path: path.to_owned(),
+        source,
+    })?;
+    let Ok(canonical_relative) = canonical.strip_prefix(root) else {
+        return Err(EditError::OutsideRoot {
+            path: path.to_owned(),
+        });
+    };
+    let canonical_relative = canonical_relative.join(name);
+    let target = canonical.join(name);
+    match fs::symlink_metadata(&target) {
+        // A dangling link, a directory, or a file in another case on a
+        // case-insensitive file system all exist.
+        Ok(_) => return Err(refused(path, Refusal::Exists)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(EditError::Read {
+                path: path.to_owned(),
+                source,
+            });
+        }
+    }
+    Ok((
+        NewFile {
+            target,
+            directory_identity: file_identity(&canonical),
+        },
+        canonical_relative,
+    ))
+}
+
+/// Checks a `create` of `path` against every path rule an indexed file
+/// passes (see the module docs) and returns its working file. Nothing is
+/// written.
+fn create_working(gate: &Gate<'_>, path: &str, content: &str) -> Result<WorkingFile, EditError> {
+    validate_path(path)?;
+    let relative = Path::new(path);
+    // Judged on the requested spelling first, so a refusal never depends on
+    // what exists on disk.
+    let judge = |relative: &Path| -> Result<(), EditError> {
+        if is_secret_path(relative) {
+            return Err(refused(path, Refusal::Excluded));
+        }
+        if has_git_component(relative) {
+            return Err(refused(path, Refusal::Protected));
+        }
+        if is_control_path(relative) {
+            return Err(refused(path, Refusal::ControlFile));
+        }
+        if gate.exclusions.excludes(gate.root, relative) {
+            return Err(refused(path, Refusal::Excluded));
+        }
+        Ok(())
+    };
+    judge(relative)?;
+    let (new_file, canonical_relative) = resolve_new_file(gate.root, path)?;
+    // The canonical spelling of the directory too: on a case-insensitive
+    // file system `Ignored/x` is inside the ignored directory `ignored/`.
+    judge(&canonical_relative)?;
+    if gate
+        .protected
+        .iter()
+        .any(|protected| new_file.target.starts_with(protected))
+    {
+        return Err(refused(path, Refusal::Protected));
+    }
+    if let Some(reason) = new_file.target.parent().and_then(directory_write_refusal) {
+        return Err(refused(path, reason));
+    }
+    let (bom, text) = match content.strip_prefix('\u{feff}') {
+        Some(rest) => (true, rest.to_owned()),
+        None => (false, content.to_owned()),
+    };
+    Ok(WorkingFile {
+        line_ending: line_ending(&text),
+        original: Vec::new(),
+        hash_before: String::new(),
+        identity: None,
+        // A created file gets what any new file in the directory gets: the
+        // default mode under the process umask, never executable.
+        permissions: None,
+        bom,
+        stale: false,
+        text,
+        sites: 0,
+        site_offsets: Vec::new(),
+        owner: None,
+        language: SourceLanguage::for_path(path),
+        created: Some(new_file),
     })
 }
 
@@ -1253,34 +1621,44 @@ fn ownership_refusal(owner: u32, mode: u32, euid: u32) -> Option<Refusal> {
 /// directories refuse the edit up front. A path that vanished or became a
 /// link reads as not found.
 #[cfg(unix)]
-fn os_write_refusal(path: &Path) -> Option<Refusal> {
+fn os_access_refusal(path: &Path, mode: libc::c_int) -> Option<Refusal> {
     use std::os::unix::ffi::OsStrExt as _;
-    let check = |path: &Path, mode: libc::c_int| -> Option<Refusal> {
-        let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
-            return Some(Refusal::ReadOnly);
-        };
-        // SAFETY: `path` is a valid NUL-terminated string for the whole call
-        // and faccessat only reads it.
-        let status =
-            unsafe { libc::faccessat(libc::AT_FDCWD, path.as_ptr(), mode, libc::AT_EACCESS) };
-        if status == 0 {
-            return None;
-        }
-        Some(match io::Error::last_os_error().raw_os_error() {
-            Some(libc::ENOENT | libc::ELOOP | libc::ENOTDIR) => Refusal::NotFound,
-            _ => Refusal::ReadOnly,
-        })
+    let Ok(path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return Some(Refusal::ReadOnly);
     };
-    check(path, libc::W_OK).or_else(|| {
-        path.parent()
-            .and_then(|directory| check(directory, libc::W_OK | libc::X_OK))
+    // SAFETY: `path` is a valid NUL-terminated string for the whole call
+    // and faccessat only reads it.
+    let status = unsafe { libc::faccessat(libc::AT_FDCWD, path.as_ptr(), mode, libc::AT_EACCESS) };
+    if status == 0 {
+        return None;
+    }
+    Some(match io::Error::last_os_error().raw_os_error() {
+        Some(libc::ENOENT | libc::ELOOP | libc::ENOTDIR) => Refusal::NotFound,
+        _ => Refusal::ReadOnly,
     })
+}
+
+#[cfg(unix)]
+fn os_write_refusal(path: &Path) -> Option<Refusal> {
+    os_access_refusal(path, libc::W_OK).or_else(|| path.parent().and_then(directory_write_refusal))
+}
+
+/// Asks the OS whether this process may create and rename files in
+/// `directory` (`W_OK | X_OK`), opening nothing; used alone for `create`.
+#[cfg(unix)]
+fn directory_write_refusal(directory: &Path) -> Option<Refusal> {
+    os_access_refusal(directory, libc::W_OK | libc::X_OK)
 }
 
 #[cfg(not(unix))]
 fn os_write_refusal(path: &Path) -> Option<Refusal> {
     let writable = matches!(fs::metadata(path), Ok(metadata) if !metadata.permissions().readonly());
     (!writable).then_some(Refusal::ReadOnly)
+}
+
+#[cfg(not(unix))]
+fn directory_write_refusal(directory: &Path) -> Option<Refusal> {
+    os_write_refusal(directory)
 }
 
 fn write_refusal(metadata: &fs::Metadata) -> Option<Refusal> {
@@ -1445,6 +1823,18 @@ fn apply_replace(
             expected,
             actual: offsets.len(),
             locations: locations(path, &file.text, &offsets),
+            edited_earlier: file.sites > 0,
+        });
+    }
+    // Identical texts (E17-47): the count above still held, nothing changes.
+    if old == new {
+        return Ok(OperationOutcome {
+            kind: "replace",
+            sites: 0,
+            files: Vec::new(),
+            rename: None,
+            unchanged: true,
+            matched: offsets.len(),
         });
     }
     let sites = splice_sites(file, &offsets, old.len(), &new);
@@ -1453,6 +1843,8 @@ fn apply_replace(
         sites,
         files: vec![path.to_owned()],
         rename: None,
+        unchanged: false,
+        matched: 0,
     })
 }
 
@@ -1477,6 +1869,7 @@ fn apply_insert(
             expected: 1,
             actual: offsets.len(),
             locations: locations(path, &file.text, &offsets),
+            edited_earlier: file.sites > 0,
         });
     }
     let at = match position {
@@ -1489,6 +1882,8 @@ fn apply_insert(
         sites: 1,
         files: vec![path.to_owned()],
         rename: None,
+        unchanged: false,
+        matched: 0,
     })
 }
 
@@ -1594,16 +1989,23 @@ fn apply_rename(
         Some(filter) => PathFilter::parse(filter).map_err(|error| invalid(error.to_string()))?,
         None => None,
     };
+    // The indexed files, and files an earlier operation of this call
+    // created (E17-47), which are not indexed until the call writes them.
+    let created = working
+        .iter()
+        .filter(|(_, file)| file.created.is_some())
+        .map(|(path, _)| path);
     let scope = gate
         .indexed
         .keys()
+        .chain(created)
         .filter(|path| {
             path_filter
                 .as_ref()
                 .is_none_or(|filter| filter.matches(path))
         })
         .cloned()
-        .collect::<Vec<_>>();
+        .collect::<BTreeSet<_>>();
     let mut scan = RenameScan::default();
     for path in scope {
         let loaded = if working.contains_key(&path) {
@@ -1716,6 +2118,7 @@ fn apply_rename(
             expected,
             actual: total,
             locations: listed,
+            edited_earlier: false,
         });
     }
     if new_name_preexisting > 0 && !spec.allow_existing {
@@ -1767,6 +2170,8 @@ fn apply_rename(
         kind: "rename",
         sites: total,
         files,
+        unchanged: false,
+        matched: 0,
         rename: Some(RenameOutcome {
             scope: spec.filter.map(str::to_owned),
             files_searched: searched.len(),
@@ -1880,6 +2285,20 @@ fn outside_matches(
             outside.locations.extend(locations(path, text, &whole));
         }
     }
+    // Files this call created are not indexed yet (E17-47); bounded by the
+    // operation count.
+    for (path, file) in working
+        .iter()
+        .filter(|(path, file)| file.created.is_some() && !filter.matches(path))
+    {
+        let whole = identifier_occurrences(&file.text, old, file.language).whole;
+        outside.total += whole.len();
+        if outside.locations.len() < EDIT_MAX_LISTED_LOCATIONS {
+            outside
+                .locations
+                .extend(locations(path, &file.text, &whole));
+        }
+    }
     outside.locations.truncate(EDIT_MAX_LISTED_LOCATIONS);
     outside
 }
@@ -1943,19 +2362,22 @@ fn temp_beside(target: &Path, role: &str) -> io::Result<PathBuf> {
 }
 
 /// Creates `temp` (never over an existing file) holding `bytes` with
-/// `permissions`, synced to disk.
-fn write_temp(temp: &Path, bytes: &[u8], permissions: &fs::Permissions) -> io::Result<()> {
+/// `permissions`, synced to disk. Without `permissions` (a created file) it
+/// gets the default mode for a new file under the process umask.
+fn write_temp(temp: &Path, bytes: &[u8], permissions: Option<&fs::Permissions>) -> io::Result<()> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
+        options.mode(if permissions.is_some() { 0o600 } else { 0o666 });
     }
     let mut file = options.open(temp)?;
     let written = (|| {
         file.write_all(bytes)?;
-        file.set_permissions(permissions.clone())?;
+        if let Some(permissions) = permissions {
+            file.set_permissions(permissions.clone())?;
+        }
         file.sync_all()
     })();
     if written.is_err() {
@@ -1983,27 +2405,49 @@ struct Staged<'a> {
     file: &'a WorkingFile,
     target: PathBuf,
     edited: PathBuf,
-    original: PathBuf,
+    /// The copy of the original bytes; `None` for a created file, which has
+    /// none: undoing it removes it.
+    original: Option<PathBuf>,
     hash_after: String,
+}
+
+/// Resolves where `file` is written and confirms the target is still what
+/// was validated: an existing file through the read gate with the same
+/// identity and bytes ([`reverify`]); for a created file, the same real
+/// directory (identity on Unix) with still nothing at the path.
+fn recheck(root: &Path, path: &str, file: &WorkingFile) -> io::Result<PathBuf> {
+    let Some(new_file) = &file.created else {
+        return reverify(root, path, file.identity, &file.hash_before);
+    };
+    let changed = || io::Error::other("the path changed after it was validated");
+    let (again, _) = resolve_new_file(root, path).map_err(|_| changed())?;
+    if again.target != new_file.target || again.directory_identity != new_file.directory_identity {
+        return Err(changed());
+    }
+    Ok(again.target)
 }
 
 /// Commits the changed files all or nothing.
 ///
-/// 1. Every file is re-verified (same gate, identity, and content hash).
-/// 2. For every file, the edited bytes and a copy of the original bytes are
-///    written to temporary files beside it and synced, so no later step
-///    needs new disk space. A failure here changes no repository file.
+/// 1. Every file is re-verified (same gate, identity, and content hash; for
+///    a created file, same directory and nothing at the path).
+/// 2. For every file, the edited bytes and a copy of the original bytes (an
+///    existing file only) are written to temporary files beside it and
+///    synced, so no later step needs new disk space. A failure here changes
+///    no repository file.
 /// 3. Each target is re-verified once more and the edited file renamed over
-///    it. If one rename fails, every file already renamed is restored by
-///    renaming its original copy back (no allocation), after checking it
-///    still holds exactly the edited bytes.
+///    it, or, for a created file, hard-linked to the path, which fails if
+///    anything appeared there. If one step fails, every file already
+///    written is undone after checking it still holds exactly the edited
+///    bytes: an existing file by renaming its original copy back (no
+///    allocation), a created file by removing it.
 fn commit(
     root: &Path,
     changed: &[(String, WorkingFile)],
     before_write: &mut dyn FnMut(usize, &Path) -> io::Result<()>,
 ) -> Result<(), EditError> {
     for (path, file) in changed {
-        if reverify(root, path, file.identity, &file.hash_before).is_err() {
+        if recheck(root, path, file).is_err() {
             return Err(EditError::Changed { path: path.clone() });
         }
     }
@@ -2013,17 +2457,19 @@ fn commit(
     let cleanup = |staged: &[Staged<'_>], keep: &[usize]| {
         for (index, entry) in staged.iter().enumerate() {
             let _ = fs::remove_file(&entry.edited);
-            if !keep.contains(&index) {
-                let _ = fs::remove_file(&entry.original);
+            if !keep.contains(&index)
+                && let Some(original) = &entry.original
+            {
+                let _ = fs::remove_file(original);
             }
         }
     };
     for (path, file) in changed {
         let prepared = (|| {
-            let target = reverify(root, path, file.identity, &file.hash_before)?;
+            let target = recheck(root, path, file)?;
             let edited_bytes = file.edited_bytes();
             let edited = temp_beside(&target, "new")?;
-            write_temp(&edited, &edited_bytes, &file.permissions)?;
+            write_temp(&edited, &edited_bytes, file.permissions.as_ref())?;
             // A replacement is owned by this process's user; refuse rather than
             // change the owner of another user's file.
             if file.owner.is_some()
@@ -2038,11 +2484,17 @@ fn commit(
                     FOREIGN_OWNER,
                 ));
             }
-            let original = temp_beside(&target, "old")?;
-            if let Err(error) = write_temp(&original, &file.original, &file.permissions) {
-                let _ = fs::remove_file(&edited);
-                return Err(error);
-            }
+            let original = if file.created.is_some() {
+                None
+            } else {
+                let original = temp_beside(&target, "old")?;
+                if let Err(error) = write_temp(&original, &file.original, file.permissions.as_ref())
+                {
+                    let _ = fs::remove_file(&edited);
+                    return Err(error);
+                }
+                Some(original)
+            };
             Ok(Staged {
                 path,
                 file,
@@ -2072,17 +2524,20 @@ fn commit(
     let mut renamed = Vec::<(usize, Option<(u64, u64)>)>::new();
     for (index, entry) in staged.iter().enumerate() {
         let outcome = before_write(index, &entry.target).and_then(|()| {
-            // The last check before the rename: same gate, file, and bytes.
-            let again = reverify(
-                root,
-                entry.path,
-                entry.file.identity,
-                &entry.file.hash_before,
-            )?;
+            // The last check before the write: same gate, file, and bytes, or
+            // the same directory with nothing at the path.
+            let again = recheck(root, entry.path, entry.file)?;
             if again != entry.target {
                 return Err(io::Error::other("the file changed after it was validated"));
             }
-            fs::rename(&entry.edited, &entry.target)
+            if entry.file.created.is_some() {
+                // Never over an existing path: a link fails if one appeared.
+                fs::hard_link(&entry.edited, &entry.target)?;
+                let _ = fs::remove_file(&entry.edited);
+                Ok(())
+            } else {
+                fs::rename(&entry.edited, &entry.target)
+            }
         });
         match outcome {
             Ok(()) => {
@@ -2095,8 +2550,13 @@ fn commit(
                 let mut kept = Vec::new();
                 for (done, identity) in renamed.into_iter().rev() {
                     let entry = &staged[done];
-                    let back = reverify(root, entry.path, identity, &entry.hash_after)
-                        .and_then(|_| fs::rename(&entry.original, &entry.target));
+                    let back =
+                        reverify(root, entry.path, identity, &entry.hash_after).and_then(|_| {
+                            match &entry.original {
+                                Some(original) => fs::rename(original, &entry.target),
+                                None => fs::remove_file(&entry.target),
+                            }
+                        });
                     match back {
                         Ok(()) => {
                             sync_directory(&entry.target);
@@ -2117,6 +2577,7 @@ fn commit(
                     .filter_map(|index| {
                         staged[*index]
                             .original
+                            .as_ref()?
                             .strip_prefix(root)
                             .ok()
                             .map(|path| path.to_string_lossy().into_owned())
@@ -2152,8 +2613,11 @@ fn on_disk_hash(root: &Path, path: &str) -> Option<String> {
 
 /// Appends a compact unified diff of `before` to `after`; returns `false`
 /// when it would exceed [`EDIT_MAX_DIFF_BYTES`] (nothing is appended then).
-fn append_diff(out: &mut String, path: &str, before: &str, after: &str) -> bool {
-    let diff = unified_diff(path, before, after);
+fn append_diff(out: &mut String, path: &str, before: &str, after: &str, created: bool) -> bool {
+    let mut diff = unified_diff(path, before, after);
+    if created {
+        diff = diff.replacen(&format!("--- a/{path}\n"), "--- /dev/null\n", 1);
+    }
     if out.len() + diff.len() > EDIT_MAX_DIFF_BYTES {
         return false;
     }
@@ -2770,6 +3234,114 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
             .count();
         assert_eq!(leftovers, 0);
+    }
+
+    fn create(path: &str, content: &str) -> EditOperation {
+        EditOperation::Create {
+            path: path.to_owned(),
+            content: content.to_owned(),
+        }
+    }
+
+    /// E17-47: undoing a created file removes it.
+    #[test]
+    fn test_a_created_file_is_removed_when_a_later_write_fails() {
+        let fixture = Fixture::new(&[("b.rs", "fn b() {}\n")]);
+        let error = fixture
+            .apply(
+                vec![
+                    create("a.rs", "fn a() {}\n"),
+                    replace("b.rs", "fn b", "fn bb"),
+                ],
+                &mut |index, _| {
+                    if index == 1 {
+                        Err(io::Error::other("injected"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .expect_err("second write fails");
+        match error {
+            EditError::WriteFailed {
+                path,
+                restored,
+                unrestored,
+                ..
+            } => {
+                assert_eq!(path, "b.rs");
+                assert_eq!(restored, ["a.rs"]);
+                assert!(unrestored.is_empty());
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(
+            !fixture.root.join("a.rs").exists(),
+            "the created file is gone"
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.root.join("b.rs")).unwrap(),
+            "fn b() {}\n"
+        );
+        let leftovers = fs::read_dir(&fixture.root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0, "no temporary file is left behind");
+    }
+
+    /// E17-47: a file that appears at a create target after validation is
+    /// never overwritten, and a created file another writer changed is not
+    /// removed by the rollback.
+    #[test]
+    fn test_a_create_never_overwrites_a_file_that_appeared_after_validation() {
+        let fixture = Fixture::new(&[("b.rs", "fn b() {}\n")]);
+        let error = fixture
+            .apply(vec![create("a.rs", "fn mine() {}\n")], &mut |_, path| {
+                fs::write(path, "fn theirs() {}\n")
+            })
+            .expect_err("the path is taken");
+        assert!(matches!(error, EditError::WriteFailed { .. }), "{error:?}");
+        assert_eq!(
+            fs::read_to_string(fixture.root.join("a.rs")).unwrap(),
+            "fn theirs() {}\n"
+        );
+
+        let error = fixture
+            .apply(
+                vec![
+                    create("a_new.rs", "fn c() {}\n"),
+                    replace("b.rs", "fn b", "fn bb"),
+                ],
+                &mut |index, _| {
+                    if index == 1 {
+                        fs::write(fixture.root.join("a_new.rs"), "fn edited() {}\n")?;
+                        Err(io::Error::other("injected"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .expect_err("second write fails");
+        match error {
+            EditError::WriteFailed {
+                restored,
+                unrestored,
+                backups,
+                ..
+            } => {
+                assert!(restored.is_empty());
+                assert_eq!(unrestored, ["a_new.rs"]);
+                assert!(backups.is_empty(), "a created file has no original copy");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(
+            fs::read_to_string(fixture.root.join("a_new.rs")).unwrap(),
+            "fn edited() {}\n",
+            "another writer's content is kept"
+        );
     }
 
     #[test]

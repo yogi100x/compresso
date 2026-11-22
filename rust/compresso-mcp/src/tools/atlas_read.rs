@@ -137,12 +137,13 @@ fn read_tool(
             "max_tokens",
             "gate",
         ],
-    )?;
+    )
+    .map_err(with_read_arguments)?;
     if let Some(ranges) = arguments.remove("ranges") {
         return read_ranges_tool(store, repository_root, arguments, ranges, form);
     }
     let root = optional_string(&mut arguments, "root", false)?;
-    let path = required_string(&mut arguments, "path")?;
+    let path = required_string(&mut arguments, "path").map_err(with_read_arguments)?;
     let start_line = optional_u32(&mut arguments, "start_line", 1, u32::MAX)?;
     let end_line = optional_u32(&mut arguments, "end_line", 1, u32::MAX)?;
     let max_tokens = token_budget(&mut arguments, READ_DEFAULT_TOKENS)?;
@@ -694,10 +695,22 @@ pub(crate) fn read_ranges(
 
 pub(crate) type RangeArgument = (String, Option<u32>, Option<u32>);
 
+/// The read arguments in one line (E17-47), added to an error about which
+/// arguments a read takes so the next call can be right: the lean schema
+/// advertises only `ranges`, and callers guess `file_path` or `offset`.
+pub(crate) const READ_ARGUMENTS_HINT: &str = "compresso_read takes {\"path\": \"src/a.rs\", \"start_line\": 10, \"end_line\": 40} (lines optional, 1-based, inclusive) or {\"ranges\": [{\"path\": ..., \"start_line\": ..., \"end_line\": ...}]} with up to 8 ranges, plus optional max_tokens.";
+
+fn with_read_arguments(failure: ToolFailure) -> ToolFailure {
+    ToolFailure::new(
+        failure.code(),
+        format!("{} {READ_ARGUMENTS_HINT}", failure.message()),
+    )
+}
+
 fn ranges_argument(ranges: Value) -> Result<Vec<RangeArgument>, ToolFailure> {
     let invalid = || {
         ToolFailure::invalid(format!(
-            "argument 'ranges' must be an array of 1 to {READ_MAX_RANGES} objects with 'path' and optional 'start_line' and 'end_line'."
+            "argument 'ranges' must be an array of 1 to {READ_MAX_RANGES} objects with 'path' and optional 'start_line' and 'end_line'. {READ_ARGUMENTS_HINT}"
         ))
     };
     let Value::Array(ranges) = ranges else {
@@ -712,8 +725,9 @@ fn ranges_argument(ranges: Value) -> Result<Vec<RangeArgument>, ToolFailure> {
             let Value::Object(range) = range else {
                 return Err(invalid());
             };
-            let mut range = checked_arguments(Some(range), &["path", "start_line", "end_line"])?;
-            let path = required_string(&mut range, "path")?;
+            let mut range = checked_arguments(Some(range), &["path", "start_line", "end_line"])
+                .map_err(with_read_arguments)?;
+            let path = required_string(&mut range, "path").map_err(with_read_arguments)?;
             let start_line = optional_u32(&mut range, "start_line", 1, u32::MAX)?;
             let end_line = optional_u32(&mut range, "end_line", 1, u32::MAX)?;
             Ok((path, start_line, end_line))

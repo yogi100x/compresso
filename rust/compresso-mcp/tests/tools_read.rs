@@ -1494,3 +1494,57 @@ async fn test_read_ranges_reads_several_ranges_under_one_budget_and_gates_each()
     assert!(result["ranges"][1]["content"].is_string());
     harness.close().await;
 }
+
+/// E17-47: a read called with the wrong arguments says, in one line, which
+/// arguments it takes, so one retry succeeds instead of a shell `cat`.
+#[tokio::test]
+async fn test_read_argument_errors_name_the_arguments_that_work() {
+    let fixture = IndexedFixture::new();
+    let mut harness = Harness::start(fixture.store.clone()).await;
+    let root = fixture.root.to_string_lossy().into_owned();
+    for arguments in [
+        json!({ "root": root, "file_path": "src/sample.rs" }),
+        json!({ "root": root, "path": "src/sample.rs", "offset": 1, "limit": 5 }),
+        json!({ "root": root }),
+        json!({ "root": root, "ranges": [{ "file": "src/sample.rs" }] }),
+        json!({ "root": root, "ranges": "src/sample.rs" }),
+    ] {
+        let response = harness.call("compresso_read", arguments.clone()).await;
+        assert_tool_error(&response, "invalid_arguments");
+        let text = response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text");
+        assert!(!text.contains('\n'), "one line: {text}");
+        for named in ["\"path\"", "\"start_line\"", "\"end_line\"", "\"ranges\""] {
+            assert!(
+                text.contains(named),
+                "{arguments}: {named} missing in {text}"
+            );
+        }
+    }
+    // A path given absolutely or with `./` is answered with the path to pass.
+    for path in [
+        format!("{root}/src/sample.rs"),
+        "./src/sample.rs".to_owned(),
+    ] {
+        let response = harness
+            .call("compresso_read", json!({ "root": root, "path": path }))
+            .await;
+        assert_tool_error(&response, "invalid_arguments");
+        let text = response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text");
+        assert!(text.contains("pass 'src/sample.rs'"), "{path}: {text}");
+    }
+    // The retry the hint describes succeeds.
+    let result = successful_json(
+        harness
+            .call(
+                "compresso_read",
+                json!({ "root": root, "path": "src/sample.rs", "start_line": 1, "end_line": 3 }),
+            )
+            .await,
+    );
+    assert_eq!(result["path"], "src/sample.rs");
+    harness.close().await;
+}

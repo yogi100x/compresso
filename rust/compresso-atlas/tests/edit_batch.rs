@@ -1,0 +1,606 @@
+//! E17-47 (D112): large edit batches. The operation limit and the call's
+//! byte bound, files created since the last index, identical replace texts,
+//! and errors that name the operation that failed.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use compresso_atlas::{
+    EDIT_MAX_OPERATIONS, EDIT_MAX_TEXT_BYTES, EditError, EditOperation, EditReport, EditRequest,
+    Indexer, InsertPosition, Refusal, apply_edits,
+};
+use compresso_core::{TokenProvider, counter_for};
+use compresso_store::Store;
+use tempfile::TempDir;
+
+struct Fixture {
+    _directory: TempDir,
+    root: PathBuf,
+    store: Store,
+}
+
+impl Fixture {
+    fn new(files: &[(&str, &[u8])]) -> Self {
+        let directory = TempDir::new().expect("temporary directory");
+        let root = fs::canonicalize(directory.path())
+            .expect("canonical temp")
+            .join("repo");
+        fs::create_dir_all(&root).expect("repo");
+        for (path, contents) in files {
+            write(&root, path, contents);
+        }
+        let store = Store::open(&directory.path().join("store.db")).expect("store");
+        Indexer::new(&store, counter_for(TokenProvider::OpenAiO200k))
+            .index(&root, |_| {})
+            .expect("index");
+        Self {
+            _directory: directory,
+            root,
+            store,
+        }
+    }
+
+    fn apply(&self, operations: Vec<EditOperation>) -> Result<EditReport, EditError> {
+        self.apply_dry(operations, false)
+    }
+
+    fn apply_dry(
+        &self,
+        operations: Vec<EditOperation>,
+        dry_run: bool,
+    ) -> Result<EditReport, EditError> {
+        apply_edits(
+            &self.store,
+            &self.root,
+            &EditRequest {
+                operations,
+                dry_run,
+                protected: Vec::new(),
+            },
+            counter_for(TokenProvider::OpenAiO200k),
+        )
+    }
+
+    fn read(&self, path: &str) -> Vec<u8> {
+        fs::read(self.root.join(path)).expect("file")
+    }
+
+    fn text(&self, path: &str) -> String {
+        String::from_utf8(self.read(path)).expect("utf-8")
+    }
+
+    fn indexed(&self, path: &str) -> bool {
+        let repo = self
+            .store
+            .repo_by_root(&self.root)
+            .expect("store")
+            .expect("repo")
+            .id;
+        self.store
+            .indexed_file(repo, path)
+            .expect("store")
+            .is_some()
+    }
+}
+
+fn write(root: &Path, path: &str, contents: &[u8]) {
+    let target = root.join(path);
+    fs::create_dir_all(target.parent().expect("parent")).expect("parent dir");
+    fs::write(target, contents).expect("file");
+}
+
+fn replace(path: &str, old: &str, new: &str, expected_count: usize) -> EditOperation {
+    EditOperation::Replace {
+        path: path.to_owned(),
+        old: old.to_owned(),
+        new: new.to_owned(),
+        expected_count,
+        expected_hash: None,
+    }
+}
+
+fn refusal(error: EditError) -> Refusal {
+    match error {
+        EditError::Refused { reason, .. } => reason,
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+/// One line per operation: `value_00 = 0;` ...
+fn numbered(count: usize) -> String {
+    (0..count)
+        .map(|index| format!("value_{index:02} = 0;\n"))
+        .collect()
+}
+
+#[test]
+fn test_a_call_carries_sixty_four_operations_and_the_limit_error_names_both_counts() {
+    assert_eq!(EDIT_MAX_OPERATIONS, 64);
+    let fixture = Fixture::new(&[("values.txt", numbered(65).as_bytes())]);
+    let operations = |count: usize| {
+        (0..count)
+            .map(|index| {
+                replace(
+                    "values.txt",
+                    &format!("value_{index:02} = 0;"),
+                    &format!("value_{index:02} = 1;"),
+                    1,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let error = fixture
+        .apply(operations(65))
+        .expect_err("65 is over the limit");
+    let message = error.to_string();
+    assert!(
+        message.contains("64") && message.contains("65"),
+        "the error names the limit and the count sent: {message}"
+    );
+    assert!(message.contains("nothing was written"), "{message}");
+    assert_eq!(fixture.text("values.txt"), numbered(65));
+
+    let report = fixture.apply(operations(64)).expect("64 operations apply");
+    assert_eq!(report.operations.len(), 64);
+    assert_eq!(
+        fixture.text("values.txt").matches(" = 1;").count(),
+        64,
+        "all 64 applied"
+    );
+}
+
+#[test]
+fn test_the_call_text_is_bounded_in_total_bytes() {
+    let fixture = Fixture::new(&[("values.txt", numbered(64).as_bytes())]);
+    // 64 operations of 64 KiB each: every operation is within its own limit,
+    // but the call carries 4 MiB of text.
+    let operations = (0..64)
+        .map(|index| EditOperation::Insert {
+            path: "values.txt".to_owned(),
+            anchor: format!("value_{index:02} = 0;"),
+            text: "x".repeat(EDIT_MAX_TEXT_BYTES),
+            position: InsertPosition::After,
+            expected_hash: None,
+        })
+        .collect();
+    let error = fixture.apply(operations).expect_err("over the byte bound");
+    let message = error.to_string();
+    assert!(
+        message.contains("4194304"),
+        "the error names the byte bound: {message}"
+    );
+    assert_eq!(fixture.text("values.txt"), numbered(64));
+}
+
+#[test]
+fn test_a_file_created_after_the_last_index_is_edited_and_indexed() {
+    let fixture = Fixture::new(&[("kept.rs", b"fn kept() {}\n")]);
+    write(&fixture.root, "src/late.rs", b"fn late() {}\n");
+    assert!(!fixture.indexed("src/late.rs"));
+
+    // A dry run edits nothing but already sees the file.
+    let dry = fixture
+        .apply_dry(vec![replace("src/late.rs", "fn late", "fn later", 1)], true)
+        .expect("the dry run sees the new file");
+    assert_eq!(dry.files.len(), 1);
+    assert_eq!(fixture.text("src/late.rs"), "fn late() {}\n");
+
+    let report = fixture
+        .apply(vec![
+            replace("src/late.rs", "fn late", "fn later", 1),
+            EditOperation::Insert {
+                path: "src/late.rs".to_owned(),
+                anchor: "fn later() {}\n".to_owned(),
+                text: "fn next() {}\n".to_owned(),
+                position: InsertPosition::After,
+                expected_hash: None,
+            },
+        ])
+        .expect("an unindexed file that passes every gate is edited");
+    assert_eq!(report.files[0].path, "src/late.rs");
+    assert!(report.index_refreshed);
+    assert_eq!(fixture.text("src/late.rs"), "fn later() {}\nfn next() {}\n");
+    assert!(fixture.indexed("src/late.rs"), "the edit leaves it indexed");
+}
+
+#[test]
+fn test_an_unindexed_file_passes_the_same_gates_as_an_indexed_one() {
+    let fixture = Fixture::new(&[(".gitignore", b"ignored/\n"), ("kept.rs", b"fn x() {}\n")]);
+    write(&fixture.root, "ignored/new.rs", b"fn x() {}\n");
+    write(&fixture.root, ".env.local", b"KEY=x\n");
+    write(&fixture.root, "blob.txt", b"fn x() {}\n\0");
+    write(&fixture.root, "huge.txt", "x\n".repeat(600_000).as_bytes());
+    write(&fixture.root, ".github/workflows/new.yml", b"x: 1\n");
+    write(&fixture.root, ".git/new", b"x\n");
+    let cases: &[(&str, Refusal)] = &[
+        ("ignored/new.rs", Refusal::Excluded),
+        (".env.local", Refusal::NotFound),
+        ("blob.txt", Refusal::NotIndexed),
+        ("huge.txt", Refusal::NotIndexed),
+        (".github/workflows/new.yml", Refusal::ControlFile),
+        (".git/new", Refusal::Protected),
+    ];
+    for (path, expected) in cases {
+        let error = fixture
+            .apply(vec![replace(path, "x", "y", 1)])
+            .expect_err(path);
+        assert_eq!(refusal(error), *expected, "{path}");
+    }
+    #[cfg(unix)]
+    {
+        let outside = fixture.root.parent().expect("parent").join("outside.rs");
+        fs::write(&outside, "fn x() {}\n").expect("outside");
+        std::os::unix::fs::symlink(&outside, fixture.root.join("link.rs")).expect("link");
+        fs::create_dir_all(fixture.root.join("real")).expect("dir");
+        fs::write(fixture.root.join("real/inner.rs"), "fn x() {}\n").expect("inner");
+        std::os::unix::fs::symlink(fixture.root.join("real"), fixture.root.join("alias"))
+            .expect("dir link");
+        let error = fixture
+            .apply(vec![replace("link.rs", "x", "y", 1)])
+            .expect_err("a link out of the root");
+        // The scanner never indexes a link, so it stays unindexed.
+        assert!(
+            matches!(
+                error,
+                EditError::OutsideRoot { .. }
+                    | EditError::Refused {
+                        reason: Refusal::NotIndexed | Refusal::NotFound,
+                        ..
+                    }
+            ),
+            "{error:?}"
+        );
+        assert_eq!(
+            refusal(
+                fixture
+                    .apply(vec![replace("alias/inner.rs", "x", "y", 1)])
+                    .expect_err("through a linked directory")
+            ),
+            Refusal::NotFound
+        );
+        assert_eq!(
+            fs::read_to_string(&outside).expect("outside"),
+            "fn x() {}\n"
+        );
+    }
+    assert_eq!(fixture.text("ignored/new.rs"), "fn x() {}\n");
+    assert_eq!(fixture.text(".env.local"), "KEY=x\n");
+    assert_eq!(fixture.read("blob.txt"), b"fn x() {}\n\0");
+}
+
+#[test]
+fn test_identical_old_and_new_is_a_reported_no_op_that_still_checks_its_count() {
+    let fixture = Fixture::new(&[("a.rs", b"fn a() {}\nfn b() {}\n")]);
+    let report = fixture
+        .apply(vec![
+            replace("a.rs", "fn a", "fn a", 1),
+            replace("a.rs", "fn b", "fn c", 1),
+        ])
+        .expect("a no-op does not fail the batch");
+    assert_eq!(report.operations[0].sites, 0);
+    assert!(report.operations[0].unchanged);
+    assert!(report.operations[0].files.is_empty());
+    assert!(!report.operations[1].unchanged);
+    assert_eq!(report.operations[1].sites, 1);
+    assert_eq!(fixture.text("a.rs"), "fn a() {}\nfn c() {}\n");
+
+    // Alone, it writes nothing and reports no file.
+    let report = fixture
+        .apply(vec![replace("a.rs", "fn a", "fn a", 1)])
+        .expect("a lone no-op");
+    assert!(report.files.is_empty());
+    assert!(report.operations[0].unchanged);
+
+    // The expected count is still an assertion about the file.
+    let error = fixture
+        .apply(vec![
+            replace("a.rs", "fn c", "fn d", 1),
+            replace("a.rs", "fn", "fn", 1),
+        ])
+        .expect_err("the count differs");
+    assert!(
+        matches!(
+            error,
+            EditError::CountMismatch {
+                operation: 2,
+                expected: 1,
+                actual: 2,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(fixture.text("a.rs"), "fn a() {}\nfn c() {}\n");
+}
+
+#[test]
+fn test_request_errors_name_the_operation_that_failed() {
+    let fixture = Fixture::new(&[("a.rs", b"fn a() {}\n")]);
+    let error = fixture
+        .apply(vec![
+            replace("a.rs", "fn a", "fn b", 1),
+            replace("a.rs", "fn b", "fn c", 1),
+            replace("a.rs", "", "x", 1),
+        ])
+        .expect_err("empty old");
+    assert!(error.to_string().contains("operation 3"), "{error}");
+    let error = fixture
+        .apply(vec![
+            replace("a.rs", "fn a", "fn b", 1),
+            replace("missing.rs", "x", "y", 1),
+        ])
+        .expect_err("missing file");
+    assert!(error.to_string().contains("operation 2"), "{error}");
+    assert!(
+        matches!(
+            error,
+            EditError::Refused {
+                reason: Refusal::NotFound,
+                operation: Some(2),
+                ..
+            }
+        ),
+        "a missing unindexed path reads as missing: {error:?}"
+    );
+    assert_eq!(fixture.text("a.rs"), "fn a() {}\n");
+}
+
+#[test]
+fn test_a_count_mismatch_after_an_earlier_operation_says_the_text_was_already_edited() {
+    let fixture = Fixture::new(&[("a.rs", b"fn a() {}\n")]);
+    let error = fixture
+        .apply(vec![
+            replace("a.rs", "fn a", "fn b", 1),
+            replace("a.rs", "fn a", "fn c", 1),
+        ])
+        .expect_err("the first operation consumed the match");
+    assert!(error.to_string().contains("earlier operation"), "{error}");
+    // Without an earlier edit of the file the message is unchanged.
+    let error = fixture
+        .apply(vec![replace("a.rs", "fn z", "fn c", 1)])
+        .expect_err("no match");
+    assert!(!error.to_string().contains("earlier operation"), "{error}");
+}
+
+fn create(path: &str, content: &str) -> EditOperation {
+    EditOperation::Create {
+        path: path.to_owned(),
+        content: content.to_owned(),
+    }
+}
+
+#[test]
+fn test_create_makes_a_new_file_reports_it_and_indexes_it() {
+    let fixture = Fixture::new(&[("src/lib.rs", b"pub mod made;\n")]);
+    let dry = fixture
+        .apply_dry(vec![create("src/made.rs", "pub fn made() {}\n")], true)
+        .expect("dry run");
+    assert!(
+        !fixture.root.join("src/made.rs").exists(),
+        "a dry run writes nothing"
+    );
+    let diff = dry.diff.expect("diff");
+    assert!(
+        diff.starts_with("--- /dev/null\n+++ b/src/made.rs\n"),
+        "{diff}"
+    );
+    assert!(diff.contains("+pub fn made() {}"), "{diff}");
+    assert!(dry.files[0].created);
+
+    let report = fixture
+        .apply(vec![
+            create("src/made.rs", "pub fn made() {}\n"),
+            create("src/empty.rs", ""),
+        ])
+        .expect("created");
+    assert_eq!(fixture.text("src/made.rs"), "pub fn made() {}\n");
+    assert_eq!(
+        fixture.text("src/empty.rs"),
+        "",
+        "an empty file is created too"
+    );
+    assert_eq!(report.files.len(), 2);
+    assert!(
+        report
+            .files
+            .iter()
+            .all(|file| file.created && file.verified)
+    );
+    assert_eq!(report.operations[0].kind, "create");
+    assert!(fixture.indexed("src/made.rs") && fixture.indexed("src/empty.rs"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = fs::metadata(fixture.root.join("src/made.rs"))
+            .expect("metadata")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o111, 0, "a created file is never executable");
+        assert_ne!(mode & 0o200, 0, "the owner can write it");
+    }
+}
+
+#[test]
+fn test_create_refuses_any_existing_path() {
+    let fixture = Fixture::new(&[("a.rs", b"fn a() {}\n"), ("dir/b.rs", b"fn b() {}\n")]);
+    for path in ["a.rs", "dir"] {
+        let error = fixture.apply(vec![create(path, "x\n")]).expect_err(path);
+        assert_eq!(refusal(error), Refusal::Exists, "{path}");
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(fixture.root.join("nowhere"), fixture.root.join("dangling"))
+            .expect("link");
+        assert_eq!(
+            refusal(fixture.apply(vec![create("dangling", "x\n")]).unwrap_err()),
+            Refusal::Exists,
+            "a dangling link exists"
+        );
+        assert!(!fixture.root.join("nowhere").exists());
+    }
+    // Twice in one call: the second names its operation.
+    let error = fixture
+        .apply(vec![create("new.rs", "x\n"), create("new.rs", "y\n")])
+        .expect_err("created twice");
+    assert!(error.to_string().contains("operation 2"), "{error}");
+    assert!(!fixture.root.join("new.rs").exists());
+    assert_eq!(fixture.text("a.rs"), "fn a() {}\n");
+}
+
+#[test]
+fn test_create_keeps_every_path_gate_an_indexed_file_has() {
+    let fixture = Fixture::new(&[
+        (".gitignore", b"ignored/\n"),
+        ("ignored/keep.txt", b"x\n"),
+        ("src/a.rs", b"fn a() {}\n"),
+        ("store/db.txt", b"x\n"),
+        (".github/workflows/ci.yml", b"x: 1\n"),
+    ]);
+    let cases: &[(&str, Refusal)] = &[
+        ("ignored/new.rs", Refusal::Excluded),
+        (".env", Refusal::Excluded),
+        ("src/.env.local", Refusal::Excluded),
+        (".git/hooks/pre-commit", Refusal::Protected),
+        (".GIT/config", Refusal::Protected),
+        (".github/workflows/new.yml", Refusal::ControlFile),
+        ("src/.gitignore", Refusal::ControlFile),
+        ("AGENTS.md", Refusal::ControlFile),
+        ("missing/new.rs", Refusal::NoDirectory),
+        ("src/a.rs/new.rs", Refusal::NoDirectory),
+        ("../outside.rs", Refusal::InvalidPath),
+        ("/abs.rs", Refusal::InvalidPath),
+    ];
+    for (path, expected) in cases {
+        let error = fixture.apply(vec![create(path, "x\n")]).expect_err(path);
+        assert_eq!(refusal(error), *expected, "{path}");
+    }
+    let protected = apply_edits(
+        &fixture.store,
+        &fixture.root,
+        &EditRequest {
+            operations: vec![create("store/new.txt", "x\n")],
+            dry_run: false,
+            protected: vec![fixture.root.join("store")],
+        },
+        counter_for(TokenProvider::OpenAiO200k),
+    )
+    .expect_err("protected");
+    assert_eq!(refusal(protected), Refusal::Protected);
+    #[cfg(unix)]
+    {
+        let outside = fixture.root.parent().expect("parent").join("elsewhere");
+        fs::create_dir_all(&outside).expect("outside dir");
+        std::os::unix::fs::symlink(&outside, fixture.root.join("out")).expect("link");
+        std::os::unix::fs::symlink(fixture.root.join("src"), fixture.root.join("alias"))
+            .expect("link");
+        for path in ["out/new.rs", "alias/new.rs"] {
+            assert_eq!(
+                refusal(fixture.apply(vec![create(path, "x\n")]).unwrap_err()),
+                Refusal::NoDirectory,
+                "{path}: a directory reached through a link"
+            );
+        }
+        assert_eq!(fs::read_dir(&outside).expect("outside").count(), 0);
+    }
+    // On a case-insensitive file system `Ignored/` is the ignored directory.
+    if fixture.root.join("IGNORED").exists() {
+        assert_eq!(
+            refusal(
+                fixture
+                    .apply(vec![create("Ignored/new.rs", "x\n")])
+                    .unwrap_err()
+            ),
+            Refusal::Excluded
+        );
+    }
+    for path in [
+        "ignored/new.rs",
+        "missing",
+        "src/a.rs/new.rs",
+        "store/new.txt",
+    ] {
+        assert!(!fixture.root.join(path).exists(), "{path}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_create_refuses_an_unwritable_directory_in_dry_runs_too() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let fixture = Fixture::new(&[("locked/a.rs", b"fn a() {}\n")]);
+    let locked = fixture.root.join("locked");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o555)).expect("chmod");
+    // Root may write anywhere; the OS answer is what is asserted.
+    let writable = fs::write(locked.join(".probe"), b"").is_ok();
+    let _ = fs::remove_file(locked.join(".probe"));
+    for dry_run in [true, false] {
+        let result = fixture.apply_dry(vec![create("locked/new.rs", "x\n")], dry_run);
+        if writable {
+            assert!(result.is_ok() || dry_run);
+        } else {
+            assert_eq!(refusal(result.unwrap_err()), Refusal::ReadOnly);
+        }
+    }
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).expect("chmod back");
+}
+
+#[test]
+fn test_create_is_all_or_nothing_with_the_other_operations() {
+    let fixture = Fixture::new(&[("a.rs", b"fn a() {}\n")]);
+    let error = fixture
+        .apply(vec![
+            create("new.rs", "fn new() {}\n"),
+            replace("a.rs", "fn missing", "fn x", 1),
+        ])
+        .expect_err("the replace fails");
+    assert!(
+        matches!(error, EditError::CountMismatch { .. }),
+        "{error:?}"
+    );
+    assert!(!fixture.root.join("new.rs").exists(), "nothing was created");
+
+    // A later operation edits the created text; a rename sees it too.
+    let report = fixture
+        .apply(vec![
+            create("new.rs", "fn new() { a(); }\n"),
+            EditOperation::Insert {
+                path: "new.rs".to_owned(),
+                anchor: "fn new()".to_owned(),
+                text: "// made\n".to_owned(),
+                position: InsertPosition::Before,
+                expected_hash: None,
+            },
+            EditOperation::Rename {
+                old: "a".to_owned(),
+                new: "renamed".to_owned(),
+                path: None,
+                expected_count: Some(2),
+                allow_existing: false,
+            },
+        ])
+        .expect("applied together");
+    assert_eq!(fixture.text("new.rs"), "// made\nfn new() { renamed(); }\n");
+    assert_eq!(fixture.text("a.rs"), "fn renamed() {}\n");
+    let rename = report.operations[2].rename.as_ref().expect("rename");
+    assert!(rename.complete);
+    assert_eq!(report.operations[2].files, ["a.rs", "new.rs"]);
+}
+
+#[test]
+fn test_create_content_is_bounded_text() {
+    let fixture = Fixture::new(&[("a.rs", b"fn a() {}\n")]);
+    for content in ["a\0b".to_owned(), "x".repeat(EDIT_MAX_TEXT_BYTES + 1)] {
+        let error = fixture
+            .apply(vec![
+                replace("a.rs", "fn a", "fn b", 1),
+                create("new.txt", &content),
+            ])
+            .expect_err("refused");
+        assert!(
+            matches!(&error, EditError::Invalid { reason } if reason.starts_with("operation 2:")),
+            "{error:?}"
+        );
+    }
+    assert!(!fixture.root.join("new.txt").exists());
+    assert_eq!(fixture.text("a.rs"), "fn a() {}\n");
+}
