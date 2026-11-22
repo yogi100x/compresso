@@ -1,0 +1,24 @@
+rust/compresso-sql/tests/gate_review.rs
+  s_89a704cfae63f5::t_d5561893732281 1-112
+  s_89a704cfae63f5::t_6c75761599f496 113-115
+rust/compresso-sql/src/gate.rs
+  s_89a704cfae63f5::t_c59bbbf280b12e 4-18,20-26,268-274,282-286,289-292,294-303,305-313,317-319,323,328,340-352,354,361-362,375-379,382-386,389-390,393-402,404,408-411,413-414,417,419-425,427,429-455,462,464,487,514,521,523,671,673-676,678-680
+rust/compresso-sql/tests/sqlite.rs
+  s_89a704cfae63f5::t_a4e108e671601e 154-161
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a964744e45b95d722b746ac22261cdd68a4b0d51",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
