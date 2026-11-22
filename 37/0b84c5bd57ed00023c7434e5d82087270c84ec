@@ -1,0 +1,24 @@
+rust/compresso-sql/tests/live.rs
+  s_89a704cfae63f5::t_1854f8142c4062 1-330
+  s_89a704cfae63f5::t_419c7b98418d55 331-375
+.github/workflows/ci.yml
+  s_89a704cfae63f5::t_30ca68f6887a6a 197-245
+rust/compresso-sql/tests/network.rs
+  s_89a704cfae63f5::t_c96a9c8bddec7f 3,5-6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "370b84c5bd57ed00023c7434e5d82087270c84ec",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
