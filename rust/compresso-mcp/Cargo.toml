@@ -13,6 +13,7 @@ chrono.workspace = true
 compresso-atlas.workspace = true
 compresso-core.workspace = true
 compresso-recall.workspace = true
+compresso-sql.workspace = true
 compresso-store.workspace = true
 rmcp.workspace = true
 serde.workspace = true

@@ -1,0 +1,359 @@
+//! `compresso_sql` against scratch SQLite files, through the public service.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use compresso_sql::{
+    MAX_CELL_CHARS, MAX_RESULT_BYTES, SqlAction, SqlEngine, SqlOutcome, SqlRequest, SqlService,
+    SqlSettings, Truncation,
+};
+use rusqlite::Connection;
+use serde_json::Value;
+
+const ENV: &str = "COMPRESSO_SQL_TEST";
+
+fn create(path: &Path, sql: &str) {
+    let connection = Connection::open(path).expect("create database");
+    connection.execute_batch(sql).expect("schema");
+}
+
+fn service(path: &Path, protected: Vec<PathBuf>) -> SqlService {
+    let value = format!("sqlite:{}", path.display());
+    SqlService::new(&SqlSettings::with_value(ENV, Some(&value)), protected)
+}
+
+fn query(
+    service: &SqlService,
+    sql: &str,
+) -> Result<compresso_sql::QueryResult, compresso_sql::SqlError> {
+    match service.execute(&SqlRequest::new(SqlAction::Query(sql.to_owned())))? {
+        SqlOutcome::Query(result) => Ok(result),
+        other => panic!("unexpected outcome {other:?}"),
+    }
+}
+
+fn shop(directory: &Path) -> PathBuf {
+    let path = directory.join("shop.db");
+    create(
+        &path,
+        "CREATE TABLE customers (id INTEGER PRIMARY KEY, name TEXT NOT NULL, note TEXT DEFAULT 'none');
+         CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER REFERENCES customers(id), total REAL, receipt BLOB);
+         CREATE UNIQUE INDEX orders_receipt ON orders (receipt);
+         CREATE VIEW big_orders AS SELECT * FROM orders WHERE total > 10;
+         INSERT INTO customers (name) VALUES ('ada'), ('grace');
+         INSERT INTO orders (customer_id, total, receipt) VALUES (1, 12.5, x'00010203'), (2, 3.0, NULL);",
+    );
+    path
+}
+
+#[test]
+fn test_sqlite_query_returns_typed_bounded_rows() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let service = service(&shop(directory.path()), Vec::new());
+    assert_eq!(service.engine(), Some(SqlEngine::Sqlite));
+    let result = query(
+        &service,
+        "SELECT o.id, c.name, o.total, o.receipt, o.customer_id IS NULL AS orphan, NULL AS empty FROM orders o JOIN customers c ON c.id = o.customer_id ORDER BY o.id",
+    )
+    .expect("query");
+    assert_eq!(
+        result.columns,
+        ["id", "name", "total", "receipt", "orphan", "empty"]
+    );
+    assert_eq!(
+        result.rows[0],
+        vec![
+            Value::from(1),
+            Value::from("ada"),
+            Value::from(12.5),
+            Value::from("<binary 4 bytes>"),
+            Value::from(0),
+            Value::Null,
+        ]
+    );
+    assert_eq!(result.row_count, 2);
+    assert!(!result.truncated);
+}
+
+#[test]
+fn test_sqlite_writes_are_refused_and_the_file_is_unchanged() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = shop(directory.path());
+    let before = fs::read(&path).expect("bytes");
+    let service = service(&path, Vec::new());
+    for sql in [
+        "INSERT INTO customers (name) VALUES ('eve')",
+        "UPDATE customers SET name = 'x'",
+        "DELETE FROM orders",
+        "DROP TABLE orders",
+        "CREATE TABLE x (a)",
+        "PRAGMA query_only = 0",
+        "PRAGMA writable_schema = ON",
+        "ATTACH DATABASE ':memory:' AS other",
+        "VACUUM",
+        "REPLACE INTO customers (id, name) VALUES (1, 'x')",
+        "WITH x AS (SELECT 1) INSERT INTO customers (name) SELECT 'x' FROM x",
+    ] {
+        let error = query(&service, sql).expect_err(sql);
+        assert_eq!(error.code(), "sql_refused", "{sql}: {error}");
+    }
+    assert_eq!(fs::read(&path).expect("bytes"), before);
+    assert_eq!(
+        query(&service, "SELECT count(*) FROM customers")
+            .unwrap()
+            .rows[0][0],
+        Value::from(2)
+    );
+}
+
+#[test]
+fn test_sqlite_wal_database_is_read_without_changing_the_main_file() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("wal.db");
+    create(
+        &path,
+        "PRAGMA journal_mode = WAL; CREATE TABLE t (a); INSERT INTO t VALUES (1), (2);",
+    );
+    // A writer still holds the database open with frames in the log.
+    let writer = Connection::open(&path).expect("writer");
+    writer
+        .execute("INSERT INTO t VALUES (3)", [])
+        .expect("insert");
+    let before = fs::read(&path).expect("bytes");
+    let wal_before = fs::read(directory.path().join("wal.db-wal")).expect("wal");
+    let service = service(&path, Vec::new());
+    assert_eq!(
+        query(&service, "SELECT count(*) FROM t").unwrap().rows[0][0],
+        Value::from(3)
+    );
+    assert!(query(&service, "INSERT INTO t VALUES (4)").is_err());
+    assert_eq!(fs::read(&path).expect("bytes"), before);
+    assert_eq!(
+        fs::read(directory.path().join("wal.db-wal")).expect("wal"),
+        wal_before
+    );
+    drop(writer);
+}
+
+#[test]
+fn test_sqlite_stacked_statements_are_refused() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let service = service(&shop(directory.path()), Vec::new());
+    for sql in [
+        "SELECT 1; SELECT 2",
+        "SELECT 1; DELETE FROM orders",
+        "SELECT 1;/* x */;",
+    ] {
+        assert_eq!(
+            query(&service, sql).expect_err(sql).code(),
+            "sql_refused",
+            "{sql}"
+        );
+    }
+    assert!(query(&service, "SELECT 1; -- trailing comment").is_ok());
+}
+
+#[test]
+fn test_sqlite_runaway_query_stops_at_its_deadline() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let service = service(&shop(directory.path()), Vec::new());
+    let request = SqlRequest {
+        action: SqlAction::Query(
+            "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT count(*) FROM c"
+                .to_owned(),
+        ),
+        max_rows: 10,
+        timeout: Duration::from_millis(200),
+    };
+    let started = Instant::now();
+    let error = service.execute(&request).expect_err("runaway");
+    assert_eq!(error.code(), "sql_timeout", "{error}");
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn test_sqlite_rows_cells_and_bytes_are_bounded() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("wide.db");
+    create(&path, "CREATE TABLE w (body TEXT);");
+    let connection = Connection::open(&path).expect("open");
+    let body = "x".repeat(MAX_CELL_CHARS * 3);
+    for _ in 0..400 {
+        connection
+            .execute("INSERT INTO w VALUES (?1)", [&body])
+            .expect("row");
+    }
+    drop(connection);
+    let service = service(&path, Vec::new());
+
+    let request = SqlRequest {
+        action: SqlAction::Query("SELECT rowid FROM w".to_owned()),
+        max_rows: 7,
+        timeout: Duration::from_secs(5),
+    };
+    let SqlOutcome::Query(rows) = service.execute(&request).expect("rows") else {
+        panic!("query");
+    };
+    assert_eq!(rows.row_count, 7);
+    assert_eq!(rows.truncation_reason, Some(Truncation::MaxRows));
+
+    let request = SqlRequest {
+        action: SqlAction::Query("SELECT body, body, body FROM w".to_owned()),
+        max_rows: 1_000,
+        timeout: Duration::from_secs(5),
+    };
+    let SqlOutcome::Query(wide) = service.execute(&request).expect("wide") else {
+        panic!("query");
+    };
+    let Value::String(cell) = &wide.rows[0][0] else {
+        panic!("text cell");
+    };
+    assert!(cell.ends_with(&format!("... [+{} chars]", MAX_CELL_CHARS * 2)));
+    assert_eq!(wide.truncation_reason, Some(Truncation::MaxBytes));
+    assert!(wide.row_count < 400);
+    assert!(serde_json::to_string(&wide.rows).unwrap().len() <= MAX_RESULT_BYTES);
+
+    let exact = query(&service, "SELECT rowid FROM w LIMIT 100").expect("exact");
+    assert!(!exact.truncated);
+}
+
+#[test]
+fn test_sqlite_store_paths_are_refused_directly_and_through_links() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data = directory.path().join("compresso");
+    fs::create_dir(&data).expect("data dir");
+    let store = data.join("compresso.db");
+    create(&store, "CREATE TABLE operations (id TEXT);");
+    let protected = vec![store.clone(), data.clone()];
+
+    let error = query(&service(&store, protected.clone()), "SELECT 1").expect_err("store");
+    assert_eq!(error.code(), "sql_refused");
+
+    #[cfg(unix)]
+    {
+        let link = directory.path().join("innocent.db");
+        std::os::unix::fs::symlink(&store, &link).expect("symlink");
+        let error = query(&service(&link, protected.clone()), "SELECT 1").expect_err("symlink");
+        assert_eq!(error.code(), "sql_refused");
+
+        let hard = directory.path().join("hard.db");
+        fs::hard_link(&store, &hard).expect("hard link");
+        let error = query(&service(&hard, vec![store.clone()]), "SELECT 1").expect_err("hard link");
+        assert_eq!(error.code(), "sql_refused");
+    }
+
+    let elsewhere = shop(directory.path());
+    assert!(query(&service(&elsewhere, protected), "SELECT 1").is_ok());
+}
+
+#[test]
+fn test_sqlite_hostile_schema_cannot_reach_outside_the_read() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("hostile.db");
+    create(
+        &path,
+        "CREATE TABLE t (a);
+         INSERT INTO t VALUES (1);
+         CREATE TRIGGER spread AFTER INSERT ON t BEGIN INSERT INTO t VALUES (NEW.a + 1); END;",
+    );
+    // A view whose body calls a function the gate never sees in the query
+    // text. It is written through the schema table, as a crafted file would.
+    let connection = Connection::open(&path).expect("open");
+    connection
+        .execute_batch(
+            "PRAGMA writable_schema = ON;
+             INSERT INTO sqlite_schema (type, name, tbl_name, rootpage, sql) VALUES ('view', 'lure', 'lure', 0, 'CREATE VIEW lure AS SELECT load_extension(''/tmp/x'') AS a');
+             PRAGMA writable_schema = OFF;",
+        )
+        .expect("crafted view");
+    drop(connection);
+    let before = fs::read(&path).expect("bytes");
+    let service = service(&path, Vec::new());
+    let error = query(&service, "SELECT * FROM lure").expect_err("view");
+    assert!(
+        matches!(error.code(), "sql_refused" | "sql_error"),
+        "{error}"
+    );
+    assert!(query(&service, "INSERT INTO t VALUES (5)").is_err());
+    assert_eq!(fs::read(&path).expect("bytes"), before);
+    assert_eq!(
+        query(&service, "SELECT count(*) FROM t").unwrap().rows[0][0],
+        Value::from(1)
+    );
+}
+
+#[test]
+fn test_sqlite_tables_and_describe() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let service = service(&shop(directory.path()), Vec::new());
+    let SqlOutcome::Tables(tables) = service
+        .execute(&SqlRequest::new(SqlAction::Tables))
+        .expect("tables")
+    else {
+        panic!("tables");
+    };
+    let names = tables
+        .tables
+        .iter()
+        .map(|table| (table.name.as_str(), table.kind.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        names,
+        [
+            ("big_orders", "view"),
+            ("customers", "table"),
+            ("orders", "table")
+        ]
+    );
+
+    let SqlOutcome::Describe(orders) = service
+        .execute(&SqlRequest::new(SqlAction::Describe("orders".to_owned())))
+        .expect("describe")
+    else {
+        panic!("describe");
+    };
+    assert_eq!(orders.columns.len(), 4);
+    assert!(orders.columns[0].primary_key);
+    assert_eq!(orders.indexes[0].name, "orders_receipt");
+    assert!(orders.indexes[0].unique);
+    assert_eq!(orders.indexes[0].columns, ["receipt"]);
+    assert_eq!(orders.foreign_keys[0].references_table, "customers");
+    assert_eq!(orders.foreign_keys[0].columns, ["customer_id"]);
+
+    let SqlOutcome::Describe(customers) = service
+        .execute(&SqlRequest::new(SqlAction::Describe(
+            "customers".to_owned(),
+        )))
+        .expect("describe")
+    else {
+        panic!("describe");
+    };
+    assert!(!customers.columns[1].nullable);
+    assert_eq!(customers.columns[2].default.as_deref(), Some("'none'"));
+
+    let missing = service
+        .execute(&SqlRequest::new(SqlAction::Describe("nope".to_owned())))
+        .expect_err("missing");
+    assert_eq!(missing.code(), "sql_not_found");
+}
+
+#[test]
+fn test_unusable_settings_report_not_configured_without_the_value() {
+    let canary = concat!("canary", "-", "secret", "-path");
+    let directory = tempfile::tempdir().expect("tempdir");
+    let missing = directory.path().join(format!("{canary}.db"));
+    for settings in [
+        SqlSettings::with_value(ENV, None),
+        SqlSettings::with_value(ENV, Some(&format!("sqlite:relative/{canary}.db"))),
+        SqlSettings::with_value(ENV, Some(&format!("sqlite:{}", missing.display()))),
+        SqlSettings::with_value("DATABASE_URL", Some("sqlite:/tmp/x.db")),
+        SqlSettings::with_value(ENV, Some(&format!("ftp://{canary}@host/x"))),
+    ] {
+        let service = SqlService::new(&settings, Vec::new());
+        let error = query(&service, "SELECT 1").expect_err("unusable");
+        assert_eq!(error.code(), "sql_not_configured", "{error}");
+        assert!(!error.message().contains(canary), "{error}");
+        assert!(!format!("{settings:?} {service:?}").contains(canary));
+    }
+}
