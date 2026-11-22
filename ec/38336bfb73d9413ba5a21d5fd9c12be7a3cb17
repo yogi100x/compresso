@@ -1,0 +1,51 @@
+decisions.md
+  s_89a704cfae63f5::t_b2b4df31a325b9 111
+docs/adr/0035-opt-in-verified-edit-tool.md
+  s_89a704cfae63f5::t_9f36f04ae02fc2 240-241,249-250,282-305
+docs/plan/03-interfaces.md
+  s_89a704cfae63f5::t_16379b1d326f22 503
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_be529be3ad5d00 215-216,555,561
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_174a539d932291 2704,3605-3628,3664,3695
+rust/compresso-atlas/src/edit.rs
+  s_89a704cfae63f5::t_a84fa8f07a0221 14-15,62-82,148-155,200-202,322-323,329-336,357-358,383,391-396,487-489,504-509,522-524,535-536,539-542,551-556,575,579-582,625-633,679,684-697,909-910,949-965,1064-1067,1088,1101,1105,1122,1168-1169,1172-1175,1183-1216,1221-1246,1395-1396,1401-1404,1406-1429,1491,1778-1786,1793-1794,1796-1804,1807,1817,1821,1826-1857,1863-1865,1877-1889,1891-1919,1923-1956,1961-1980,1983,1986,1989,1991-1992,1994-2017,2019,2024-2066,2118-2119,3107-3116,3122-3138,3144-3249,3254-3259,3265-3268,3273,3275,3279-3283,3299,3341,3360,3408,3431-3434,3575-3590,4198,4200,4223-4499
+rust/compresso-atlas/src/grep.rs
+  s_89a704cfae63f5::t_8c6b57845438e8 22,204-241,1653-1827,1832-1889
+rust/compresso-atlas/src/lib.rs
+  s_89a704cfae63f5::t_0e45c4608ac2f9 26-27,35-40
+rust/compresso-atlas/src/scanner.rs
+  s_89a704cfae63f5::t_b2b655748efb71 710-733
+rust/compresso-atlas/tests/edit_batch.rs
+  s_89a704cfae63f5::t_9b4822eeb6f0c6 9-11,945-1373
+rust/compresso-atlas/tests/grep_outside_matches.rs
+  s_89a704cfae63f5::t_2329a183768bd7 1-214
+rust/compresso-mcp/src/server.rs
+  s_89a704cfae63f5::t_fd22e10c56b1fe 139
+rust/compresso-mcp/src/tools/atlas_grep.rs
+  s_89a704cfae63f5::t_532a9180dc1d49 174-180,211-212,248-250,271-274,456-472
+rust/compresso-mcp/src/tools/edit.rs
+  s_89a704cfae63f5::t_08838d79c3f6e1 278-280,493-497
+rust/compresso-mcp/src/tools/text.rs
+  s_89a704cfae63f5::t_7d722cb6321a0d 512-543,951-965,1265-1304
+rust/compresso-mcp/tests/tools_edit.rs
+  s_89a704cfae63f5::t_2d00d74f097c32 783-888
+rust/compresso-mcp/tests/tools_grep.rs
+  s_89a704cfae63f5::t_9a7d3124f388f3 559-593
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ec38336bfb73d9413ba5a21d5fd9c12be7a3cb17",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
