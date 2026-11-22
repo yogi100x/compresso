@@ -64,7 +64,6 @@ fn test_optimizer_hints_and_every_comment_form_are_refused() {
 #[test]
 fn test_prefixed_and_escaped_strings_are_refused() {
     for (sql, engine) in [
-        ("SELECT 1e'\\'' , pg_terminate_backend(1) --'", Postgres),
         ("SELECT E'a'", Postgres),
         ("SELECT N'a'", MySql),
         ("SELECT X'00'", MySql),
@@ -74,6 +73,12 @@ fn test_prefixed_and_escaped_strings_are_refused() {
         refused(sql, engine, "prefixed string");
     }
     refused("SELECT U&'\\0041'", Postgres, "prefixed string");
+    // A quote glued to a number (`1e'...'`) is refused as a glued number.
+    refused(
+        "SELECT 1e'\\'' , pg_terminate_backend(1) --'",
+        Postgres,
+        "space after",
+    );
     refused("SELECT U&\"x\"", Postgres, "prefixed");
     for (sql, engine) in [
         ("SELECT '\u{4e2d}\\' , GET_LOCK('x',1), '", MySql),
@@ -112,4 +117,36 @@ fn test_plain_sql_still_passes() {
     assert!(check_statement("SELECT `order` FROM t", MySql).is_ok());
     assert!(check_statement("SELECT @a := 1", MySql).is_ok());
     assert!(check_statement("SHOW CREATE TABLE orders", MySql).is_ok());
+}
+
+#[test]
+fn test_a_word_glued_to_a_number_is_refused() {
+    for engine in [Sqlite, Postgres, MySql] {
+        for sql in [
+            "SELECT 1FROM t",
+            "SELECT 1e5pg_sleep(1)",
+            "SELECT 1.e1UNION SELECT 2",
+            "SELECT 1UNION SELECT 2",
+            "SELECT 1_000",
+            "SELECT 1e",
+            "SELECT 1.5.5",
+            "SELECT 2DELETE",
+        ] {
+            refused(sql, engine, "space after");
+        }
+        for sql in [
+            "SELECT 1, 2.5, 3e2, 4.0e-3, 5E+2, .5 FROM t",
+            "SELECT (1)+2*3",
+            "SELECT 'a'||'b'",
+            "SELECT x.y FROM s.t",
+        ] {
+            assert!(check_statement(sql, engine).is_ok(), "{engine:?}: {sql}");
+        }
+    }
+    // The denied names are still seen behind a number.
+    refused(
+        "SELECT 1 + pg_sleep(1) FROM pg_terminate_backend(1)",
+        Postgres,
+        "pg_terminate_backend",
+    );
 }

@@ -320,11 +320,13 @@ fn lex(sql: &str, engine: SqlEngine) -> Result<Vec<Token>, String> {
                 index = end;
             }
             '`' if engine != SqlEngine::Postgres => {
+                refuse_prefix(&chars, index)?;
                 let end = quoted_identifier(&chars, index, '`')?;
                 tokens.push(Token::Quoted(quoted_text(&chars, index, end)));
                 index = end;
             }
             '[' if engine == SqlEngine::Sqlite => {
+                refuse_prefix(&chars, index)?;
                 let end = quoted_identifier(&chars, index, ']')?;
                 tokens.push(Token::Quoted(quoted_text(&chars, index, end)));
                 index = end;
@@ -344,9 +346,7 @@ fn lex(sql: &str, engine: SqlEngine) -> Result<Vec<Token>, String> {
                             .to_owned(),
                     );
                 }
-                while at(index).is_some_and(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_') {
-                    index += 1;
-                }
+                index = number_end(&chars, index)?;
                 tokens.push(Token::Other);
             }
             c if c.is_ascii_alphabetic() || c == '_' => {
@@ -370,6 +370,48 @@ fn lex(sql: &str, engine: SqlEngine) -> Result<Vec<Token>, String> {
         }
     }
     Ok(tokens)
+}
+
+/// The end of a number: digits, an optional `.` and digits, an optional
+/// exponent (`e`, an optional sign, digits), and nothing glued after it.
+/// Engines split `1FROM` or `1e5pg_sleep` differently, so a letter, digit,
+/// `_`, `.`, or quote right after a number is refused.
+fn number_end(chars: &[char], start: usize) -> Result<usize, String> {
+    let digit = |index: usize| chars.get(index).is_some_and(char::is_ascii_digit);
+    let glued = || {
+        "put a space after numbers: a letter, `_`, `.`, or quote directly after a number is read differently by different engines"
+            .to_owned()
+    };
+    let mut index = start;
+    while digit(index) {
+        index += 1;
+    }
+    if chars.get(index) == Some(&'.') {
+        index += 1;
+        while digit(index) {
+            index += 1;
+        }
+    }
+    if matches!(chars.get(index), Some('e' | 'E')) {
+        index += 1;
+        if matches!(chars.get(index), Some('+' | '-')) {
+            index += 1;
+        }
+        if !digit(index) {
+            return Err(glued());
+        }
+        while digit(index) {
+            index += 1;
+        }
+    }
+    match chars.get(index) {
+        Some(next)
+            if next.is_ascii_alphanumeric() || matches!(next, '_' | '.' | '\'' | '"' | '`') =>
+        {
+            Err(glued())
+        }
+        _ => Ok(index),
+    }
 }
 
 fn control(character: char) -> String {
