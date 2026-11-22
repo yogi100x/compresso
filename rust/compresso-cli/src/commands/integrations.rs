@@ -11,8 +11,8 @@ use compresso_integrations::{
     CursorDiscovery, CursorIntegration, DeferredInstallAuthorization, Detection,
     ExploreAgentIntegration, FileReceiptStore, InstallCtx, InstallReceipt, Integration,
     IntegrationError, LegacyProjectHook, MutationPlan, PlanApproval, PlanClock, PlanManager,
-    ReceiptStore, Scope, VerificationCheck, VerificationReport, read_configured_server,
-    receipt_authenticates_server,
+    ReceiptStore, Scope, SessionCommandsIntegration, VerificationCheck, VerificationReport,
+    read_configured_server, receipt_authenticates_server,
 };
 use compresso_store::{ReceiptRecord, Store};
 
@@ -693,13 +693,19 @@ fn execute_mutation(
             "--edits applies only to `integrations install`; uninstall removes the whole Compresso entry",
         ));
     }
+    if arguments.no_session_commands && action == MutationAction::Uninstall {
+        return Err(IntegrationCliError::new(
+            "invalid_arguments",
+            "--no-session-commands applies only to `integrations install`; use --session-commands to remove only the session command skill",
+        ));
+    }
     if arguments.edits && arguments.client != IntegrationClientArg::ClaudeCode {
         return Err(IntegrationCliError::new(
             "unsupported",
             "--edits is available for claude-code only; other clients can run `compresso mcp serve --edits` from their own configuration",
         ));
     }
-    let requested_scope = if arguments.explore_agent {
+    let requested_scope = if arguments.explore_agent || arguments.session_commands {
         explore_agent_scope(arguments.project.as_deref(), &environment.cwd)?
     } else {
         resolve_scope(arguments.project.as_deref(), &environment.cwd)?
@@ -719,6 +725,8 @@ fn execute_mutation(
     };
     let selected = if arguments.explore_agent {
         SelectedIntegration::explore_agent(arguments.client, environment, &scope, arguments.edits)?
+    } else if arguments.session_commands {
+        SelectedIntegration::session_commands(arguments.client, environment, &scope)?
     } else if arguments.edits {
         SelectedIntegration::claude_code_with_edits(environment, &scope)?
     } else {
@@ -771,6 +779,17 @@ fn execute_mutation(
     let migration = migration_root
         .as_deref()
         .and_then(|root| plan_legacy_hook_migration(arguments.client, root, environment));
+    let mut companion_warnings = Vec::new();
+    let companion = plan_session_commands_companion(
+        action,
+        &arguments,
+        environment,
+        &scope,
+        &manager,
+        &receipts,
+        launcher_path.as_deref(),
+        &mut companion_warnings,
+    );
 
     if arguments.dry_run {
         return render_plan(
@@ -781,9 +800,11 @@ fn execute_mutation(
                 dry_run: true,
                 plan: &plan,
                 result: None,
-                warnings: &[],
+                warnings: &companion_warnings,
                 migration: migration.as_ref(),
                 migration_outcome: None,
+                session_commands: companion.as_ref().map(|companion| &companion.plan),
+                session_commands_result: None,
                 json: arguments.output.json,
             },
         );
@@ -794,6 +815,9 @@ fn execute_mutation(
         writeln!(output, "# Plan hash: {}", plan.plan_hash)?;
         if let Some(migration) = &migration {
             migration.write_preview(output)?;
+        }
+        if let Some(companion) = &companion {
+            write_session_commands_preview(output, &companion.plan)?;
         }
     }
     if !arguments.yes {
@@ -806,9 +830,11 @@ fn execute_mutation(
                     dry_run: false,
                     plan: &plan,
                     result: None,
-                    warnings: &[],
+                    warnings: &companion_warnings,
                     migration: migration.as_ref(),
                     migration_outcome: None,
+                    session_commands: companion.as_ref().map(|companion| &companion.plan),
+                    session_commands_result: None,
                     json: true,
                 },
             )?;
@@ -853,7 +879,28 @@ fn execute_mutation(
             MutationResult::Uninstall(selected.adapter.uninstall(&manager, &approval, &receipts)?)
         }
     };
-    let mut warnings = Vec::new();
+    // The session command skill is applied only after the main entry, and
+    // its failure never fails the command (its own plan and receipt).
+    let session_commands_result = companion.as_ref().map(|companion| {
+        let approval = PlanApproval::from(&companion.plan);
+        match action {
+            MutationAction::Install => companion
+                .selected
+                .adapter
+                .install(&manager, &approval, &receipts)
+                .map(MutationResult::Install),
+            MutationAction::Uninstall => companion
+                .selected
+                .adapter
+                .uninstall(&manager, &approval, &receipts)
+                .map(MutationResult::Uninstall),
+        }
+        .map_err(|error| IntegrationCliError::from(error).message)
+    });
+    let mut warnings = companion_warnings;
+    if let Some(Err(message)) = &session_commands_result {
+        warnings.push(format!("session_commands_failed: {message}"));
+    }
     project_canonical_receipts(&receipts, environment, &mut warnings);
     if action == MutationAction::Install && arguments.explore_agent {
         let adapter = ExploreAgentIntegration::new(
@@ -866,7 +913,10 @@ fn execute_mutation(
             );
         }
     }
-    if action == MutationAction::Uninstall && !arguments.explore_agent {
+    if action == MutationAction::Uninstall
+        && !arguments.explore_agent
+        && !arguments.session_commands
+    {
         if arguments.compaction_hook {
             if matches!(scope, Scope::User)
                 && matches!(&result, MutationResult::Uninstall(report) if !report.removed_keys.is_empty())
@@ -908,6 +958,10 @@ fn execute_mutation(
             warnings: &warnings,
             migration: migration.as_ref(),
             migration_outcome: migration_outcome.as_ref(),
+            session_commands: companion.as_ref().map(|companion| &companion.plan),
+            session_commands_result: session_commands_result
+                .as_ref()
+                .and_then(|result| result.as_ref().ok()),
             json: arguments.output.json,
         },
     )
@@ -977,7 +1031,7 @@ fn execute_status(
     let receipts = FileReceiptStore::new(environment.receipt_store_path());
     let receipt = receipts.active_for(arguments.client.as_str(), &selected.config_path)?;
     let active_receipt = receipt.is_some();
-    if arguments.compaction_hook || arguments.explore_agent {
+    if arguments.compaction_hook || arguments.explore_agent || arguments.session_commands {
         let agent = arguments.explore_agent.then(|| {
             let adapter = ExploreAgentIntegration::new(
                 environment.home_dir.clone(),
@@ -1004,6 +1058,13 @@ fn execute_status(
         );
     }
     let detection = selected.adapter.detect(&scope);
+    // A Claude Code project install also writes the session command skill.
+    let session_commands = (arguments.client == IntegrationClientArg::ClaudeCode
+        && matches!(scope, Scope::Project(_)))
+    .then(|| {
+        SelectedIntegration::session_commands(arguments.client, environment, &scope)
+            .is_ok_and(|skill| skill.adapter.verify(&scope).verified)
+    });
     let server = mcp_server_health(
         arguments.client,
         &selected.config_path,
@@ -1012,9 +1073,8 @@ fn execute_status(
         environment.mcp_probe_timeout,
     );
     if arguments.output.json {
-        serde_json::to_writer(
-            &mut *output,
-            &serde_json::json!({
+        serde_json::to_writer(&mut *output, &{
+            let mut document = serde_json::json!({
                 "schema_version": 1,
                 "data": {
                     "action": "status",
@@ -1024,8 +1084,12 @@ fn execute_status(
                     "canonical_receipt_active": active_receipt,
                     "mcp_server": server.to_json(),
                 }
-            }),
-        )?;
+            });
+            if let Some(installed) = session_commands {
+                document["data"]["session_commands_installed"] = installed.into();
+            }
+            document
+        })?;
         writeln!(output)?;
     } else {
         writeln!(output, "client: {}", arguments.client.as_str())?;
@@ -1042,6 +1106,17 @@ fn execute_status(
             server.state.code(),
             server.detail
         )?;
+        if let Some(installed) = session_commands {
+            writeln!(
+                output,
+                "session commands: {}",
+                if installed {
+                    "installed (/compresso)"
+                } else {
+                    "not installed (`compresso integrations install claude-code --session-commands --project DIR`)"
+                }
+            )?;
+        }
         match server.state.severity() {
             Severity::Ok => {}
             Severity::Warning => writeln!(output, "warning: {}", server.fix)?,
@@ -1092,6 +1167,8 @@ fn render_hook_status(
     if arguments.output.json {
         let (surface, installed_key) = if arguments.explore_agent {
             ("explore_agent", "agent_installed")
+        } else if arguments.session_commands {
+            ("session_commands", "session_commands_installed")
         } else {
             ("compaction_hook", "hook_installed")
         };
@@ -1124,6 +1201,8 @@ fn render_hook_status(
             "surface: {}",
             if arguments.explore_agent {
                 "exploration agent definition"
+            } else if arguments.session_commands {
+                "session command skill (/compresso)"
             } else {
                 "post-compaction routing-reminder hook"
             }
@@ -1134,6 +1213,8 @@ fn render_hook_status(
             "{}: {}",
             if arguments.explore_agent {
                 "agent"
+            } else if arguments.session_commands {
+                "session commands"
             } else {
                 "hook"
             },
@@ -1209,6 +1290,7 @@ fn execute_verify(
     if arguments.client == IntegrationClientArg::ClaudeCode
         && !arguments.compaction_hook
         && !arguments.explore_agent
+        && !arguments.session_commands
     {
         report.checks.push(VerificationCheck {
             name: "live_client_evidence".to_owned(),
@@ -1368,6 +1450,138 @@ impl SelectedIntegration {
     }
 }
 
+impl SelectedIntegration {
+    /// Selects the Claude Code in-session command skill adapter (E17-48).
+    fn session_commands(
+        client: IntegrationClientArg,
+        environment: &IntegrationEnvironment,
+        scope: &Scope,
+    ) -> Result<Self, IntegrationCliError> {
+        if client != IntegrationClientArg::ClaudeCode {
+            return Err(IntegrationCliError::new(
+                "unsupported",
+                "the session commands are a Claude Code project skill; use claude-code",
+            ));
+        }
+        let adapter = SessionCommandsIntegration::new(environment.home_dir.clone());
+        let config_path = adapter.config_path(scope)?;
+        Ok(Self {
+            adapter: Box::new(adapter),
+            config_path,
+        })
+    }
+}
+
+/// The in-session command skill planned with a Claude Code MCP entry install
+/// or uninstall (E17-48, D113): its own plan and receipt beside the entry's.
+struct SessionCommandsCompanion {
+    selected: SelectedIntegration,
+    plan: MutationPlan,
+}
+
+/// Plans the session command skill that goes with a plain Claude Code
+/// install (unless `--no-session-commands`) or uninstall (when its receipt is
+/// active). It is a project file: a user-scope install adds a note instead.
+/// Any refusal, such as a user file of the same name, becomes a warning and
+/// never stops the MCP entry change.
+#[allow(clippy::too_many_arguments)]
+fn plan_session_commands_companion(
+    action: MutationAction,
+    arguments: &IntegrationMutationArgs,
+    environment: &IntegrationEnvironment,
+    scope: &Scope,
+    manager: &PlanManager,
+    receipts: &FileReceiptStore,
+    launcher_path: Option<&Path>,
+    warnings: &mut Vec<String>,
+) -> Option<SessionCommandsCompanion> {
+    if arguments.client != IntegrationClientArg::ClaudeCode
+        || arguments.explore_agent
+        || arguments.compaction_hook
+        || arguments.session_commands
+        || arguments.no_session_commands
+    {
+        return None;
+    }
+    let install = action == MutationAction::Install;
+    if !matches!(scope, Scope::Project(_)) {
+        if install {
+            warnings.push(
+                "session_commands_not_installed: the /compresso session commands are a project skill; install with --project DIR to add them to a repository".to_owned(),
+            );
+        }
+        return None;
+    }
+    let mut skipped = |message: String| {
+        if install {
+            warnings.push(format!(
+                "session_commands_skipped: {message}; the MCP entry is installed without /compresso"
+            ));
+        }
+    };
+    let selected = match SelectedIntegration::session_commands(arguments.client, environment, scope)
+    {
+        Ok(selected) => selected,
+        Err(error) => {
+            skipped(error.message);
+            return None;
+        }
+    };
+    if !arguments.dry_run
+        && let Err(error) = manager.recover(&selected.config_path, receipts)
+    {
+        skipped(IntegrationCliError::from(error).message);
+        return None;
+    }
+    let plan = match action {
+        MutationAction::Install => selected.adapter.plan_install(
+            manager,
+            &InstallCtx {
+                compresso_bin: launcher_path?.to_path_buf(),
+                scope: scope.clone(),
+                session_recall: !arguments.no_recall,
+            },
+        ),
+        MutationAction::Uninstall => {
+            let receipt = receipts
+                .active_for(arguments.client.as_str(), &selected.config_path)
+                .ok()
+                .flatten()?;
+            selected.adapter.plan_uninstall(manager, &receipt)
+        }
+    };
+    match plan {
+        Ok(plan) => Some(SessionCommandsCompanion { selected, plan }),
+        Err(IntegrationError::UserFilePresent { path }) => {
+            skipped(format!(
+                "{} is a file Compresso did not write, so it is left unchanged",
+                path.display()
+            ));
+            None
+        }
+        Err(error) => {
+            if install {
+                skipped(IntegrationCliError::from(error).message);
+            } else {
+                warnings.push(format!(
+                    "session_commands_not_removed: {}; remove it with `compresso integrations uninstall claude-code --session-commands`",
+                    IntegrationCliError::from(error).message
+                ));
+            }
+            None
+        }
+    }
+}
+
+fn write_session_commands_preview(
+    output: &mut impl Write,
+    plan: &MutationPlan,
+) -> Result<(), IntegrationCliError> {
+    output.write_all(plan.unified_diff.as_bytes())?;
+    writeln!(output, "# Session commands plan hash: {}", plan.plan_hash)?;
+    Ok(())
+}
+
 /// Compresso tools the exploration agent may call: the lean allowlist without
 /// `compresso_recall`, which a server serves only with `--recall-source`, and
 /// without `compresso_edit` unless the operator opted into edits.
@@ -1394,6 +1608,12 @@ fn select_for_read(
         let scope = explore_agent_scope(arguments.project.as_deref(), &environment.cwd)?;
         let selected =
             SelectedIntegration::explore_agent(arguments.client, environment, &scope, false)?;
+        return Ok((scope, selected));
+    }
+    if arguments.session_commands {
+        let scope = explore_agent_scope(arguments.project.as_deref(), &environment.cwd)?;
+        let selected =
+            SelectedIntegration::session_commands(arguments.client, environment, &scope)?;
         return Ok((scope, selected));
     }
     let scope = resolve_scope(arguments.project.as_deref(), &environment.cwd)?;
@@ -1475,7 +1695,21 @@ struct PlanRendering<'a> {
     /// A legacy project-level reminder hook this install migrates away.
     migration: Option<&'a LegacyHookMigration>,
     migration_outcome: Option<&'a LegacyHookOutcome>,
+    /// The in-session command skill changed with the MCP entry (E17-48).
+    session_commands: Option<&'a MutationPlan>,
+    session_commands_result: Option<&'a MutationResult>,
     json: bool,
+}
+
+fn outcome_json(result: Option<&MutationResult>) -> Result<serde_json::Value, IntegrationCliError> {
+    Ok(match result {
+        Some(MutationResult::Install(receipt)) => serde_json::json!({
+            "installed": true,
+            "plan_hash": receipt.plan_hash,
+        }),
+        Some(MutationResult::Uninstall(report)) => serde_json::to_value(report)?,
+        None => serde_json::Value::Null,
+    })
 }
 
 fn render_plan(
@@ -1483,14 +1717,7 @@ fn render_plan(
     rendering: &PlanRendering<'_>,
 ) -> Result<(), IntegrationCliError> {
     if rendering.json {
-        let outcome = match rendering.result {
-            Some(MutationResult::Install(receipt)) => serde_json::json!({
-                "installed": true,
-                "plan_hash": receipt.plan_hash,
-            }),
-            Some(MutationResult::Uninstall(report)) => serde_json::to_value(report)?,
-            None => serde_json::Value::Null,
-        };
+        let outcome = outcome_json(rendering.result)?;
         let mut document = serde_json::json!({
             "schema_version": 1,
             "data": {
@@ -1508,6 +1735,12 @@ fn render_plan(
                 "result": rendering.migration_outcome.map(LegacyHookOutcome::to_json),
             });
         }
+        if let Some(plan) = rendering.session_commands {
+            document["data"]["session_commands"] = serde_json::json!({
+                "plan": plan.public_preview(),
+                "result": outcome_json(rendering.session_commands_result)?,
+            });
+        }
         serde_json::to_writer(&mut *output, &document)?;
         writeln!(output)?;
     } else if rendering.dry_run {
@@ -1515,6 +1748,9 @@ fn render_plan(
         writeln!(output, "# Plan hash: {}", rendering.plan.plan_hash)?;
         if let Some(migration) = rendering.migration {
             migration.write_preview(output)?;
+        }
+        if let Some(plan) = rendering.session_commands {
+            write_session_commands_preview(output, plan)?;
         }
     } else {
         writeln!(
@@ -1528,6 +1764,19 @@ fn render_plan(
         }
         if let Some(outcome) = rendering.migration_outcome {
             writeln!(output, "{}", outcome.human_line())?;
+        }
+        match rendering.session_commands_result {
+            Some(MutationResult::Install(_)) => writeln!(
+                output,
+                "session commands: installed; type /compresso in a Claude Code session in this project"
+            )?,
+            Some(MutationResult::Uninstall(report)) => {
+                writeln!(output, "session commands: removed")?;
+                for warning in &report.warnings {
+                    writeln!(output, "warning: {warning}")?;
+                }
+            }
+            None => {}
         }
         if let Some(MutationResult::Uninstall(report)) = rendering.result {
             for warning in &report.warnings {

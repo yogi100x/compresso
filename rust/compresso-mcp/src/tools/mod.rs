@@ -6,6 +6,7 @@ pub(crate) mod common;
 pub(crate) mod edit;
 pub(crate) mod engine_tools;
 pub(crate) mod recall;
+pub(crate) mod report;
 pub(crate) mod text;
 
 use std::path::Path;
@@ -85,6 +86,14 @@ pub(crate) fn handles(name: &str) -> bool {
         || engine_tools::handles(name)
         || recall::handles(name)
         || edit::handles(name)
+        || report::handles(name)
+}
+
+/// Remembers the failed call's tool and code for `compresso_report`, then
+/// returns the failure unchanged.
+fn failed(session: &SessionRuntime, name: &str, error: common::ToolFailure) -> CallToolResult {
+    session.record_failure(name, error.code());
+    error.into_result()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -119,7 +128,7 @@ pub(crate) fn dispatch(
             format == McpResultFormat::Text,
         ) {
             Ok((success, sent)) => send(success, sent, session, session_id, repository_id, counter),
-            Err(error) => error.into_result(),
+            Err(error) => failed(session, name, error),
         };
     }
     let run = |form: Form, arguments: Option<JsonObject>| {
@@ -137,6 +146,19 @@ pub(crate) fn dispatch(
                 .and_then(|payload| retrieval_outcome(payload, name, engine.mode(), repository_id))
         } else if recall::handles(name) {
             recall::dispatch(recall_options, repository_root, engine.mode(), arguments)
+        } else if report::handles(name) {
+            report::run(
+                &report::ReportContext {
+                    store,
+                    session,
+                    repository_root,
+                    recall_enabled: recall_options.is_some_and(|options| options.is_enabled()),
+                    edits_enabled,
+                    profile,
+                    mode: engine.mode(),
+                },
+                arguments,
+            )
         } else {
             engine_tools::dispatch(store, engine, config, repository_root, name, arguments)
         }
@@ -150,7 +172,7 @@ pub(crate) fn dispatch(
     let (success, sent) = loop {
         let mut success = match run(form, arguments.clone()) {
             Ok(success) => success,
-            Err(error) => return error.into_result(),
+            Err(error) => return failed(session, name, error),
         };
         let max_tokens = success
             .payload

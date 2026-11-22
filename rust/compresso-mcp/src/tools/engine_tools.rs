@@ -388,7 +388,7 @@ fn explain_tool(
     )
 }
 
-fn retrieval_success(
+pub(crate) fn retrieval_success(
     mut payload: Value,
     tool: &'static str,
     mode: Mode,
@@ -483,7 +483,7 @@ fn parse_since(value: &str, now: i64) -> Result<i64, ToolFailure> {
         })
 }
 
-fn unix_timestamp() -> Result<i64, ToolFailure> {
+pub(crate) fn unix_timestamp() -> Result<i64, ToolFailure> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()
@@ -491,7 +491,7 @@ fn unix_timestamp() -> Result<i64, ToolFailure> {
         .ok_or_else(ToolFailure::internal)
 }
 
-fn format_timestamp(timestamp: i64) -> Result<String, ToolFailure> {
+pub(crate) fn format_timestamp(timestamp: i64) -> Result<String, ToolFailure> {
     DateTime::<Utc>::from_timestamp(timestamp, 0)
         .map(|timestamp| timestamp.to_rfc3339_opts(SecondsFormat::Secs, true))
         .ok_or_else(ToolFailure::internal)
