@@ -861,6 +861,9 @@ fn test_a_target_the_scanner_would_refuse_never_costs_a_refresh() {
     write(&fixture.root, "blob.txt", b"x\n\0");
     write(&fixture.root, "huge.txt", "x\n".repeat(600_000).as_bytes());
     write(&fixture.root, "ignored/x.rs", b"x\n");
+    // Only mutated on Unix, where links are made (a Windows build denies the
+    // unused `mut`).
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut targets = vec!["blob.txt", "huge.txt", "ignored/x.rs"];
     #[cfg(unix)]
     {

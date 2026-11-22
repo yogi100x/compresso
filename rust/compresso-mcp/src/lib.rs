@@ -1,5 +1,7 @@
-//! MCP server and tool-handler boundaries. Every tool is read-only except
-//! the operator-enabled `compresso_edit` (E17-32, D97, ADR-0035).
+//! MCP server and tool-handler boundaries. No tool changes the repository
+//! except the operator-enabled `compresso_edit` (E17-32, D97, ADR-0035);
+//! `compresso_report` saves bug and feedback reports as local files beside
+//! the Compresso database (E17-48, D113).
 
 mod framing;
 mod profile;

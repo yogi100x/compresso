@@ -16,7 +16,7 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
-const DEFAULT_TOOLS: [&str; 12] = [
+const DEFAULT_TOOLS: [&str; 13] = [
     "compresso_repo_map",
     "compresso_search",
     "compresso_grep",
@@ -29,6 +29,7 @@ const DEFAULT_TOOLS: [&str; 12] = [
     "compresso_compress",
     "compresso_stats",
     "compresso_explain",
+    "compresso_report",
 ];
 const LEAN_TOOLS: [&str; 8] = [
     "compresso_context",
@@ -184,7 +185,7 @@ async fn test_default_profile_tool_list_and_instructions_are_unchanged() {
 
     let (tools, instructions) = advertised_surface(McpToolProfile::Full, false);
     assert_eq!(instructions, server_instructions());
-    assert_eq!(tools.len(), 12);
+    assert_eq!(tools.len(), 13);
     assert_eq!(McpServeOptions::default().tools, McpToolProfile::Full);
 }
 

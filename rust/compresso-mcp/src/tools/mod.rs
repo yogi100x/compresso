@@ -6,6 +6,7 @@ pub(crate) mod common;
 pub(crate) mod edit;
 pub(crate) mod engine_tools;
 pub(crate) mod recall;
+pub(crate) mod report;
 pub(crate) mod text;
 
 use std::path::Path;
@@ -85,6 +86,14 @@ pub(crate) fn handles(name: &str) -> bool {
         || engine_tools::handles(name)
         || recall::handles(name)
         || edit::handles(name)
+        || report::handles(name)
+}
+
+/// Remembers the failed call's tool and code for `compresso_report`, then
+/// returns the failure unchanged.
+fn failed(session: &SessionRuntime, name: &str, error: common::ToolFailure) -> CallToolResult {
+    session.record_failure(name, error.code());
+    error.into_result()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -119,7 +128,25 @@ pub(crate) fn dispatch(
             format == McpResultFormat::Text,
         ) {
             Ok((success, sent)) => send(success, sent, session, session_id, repository_id, counter),
-            Err(error) => error.into_result(),
+            Err(error) => failed(session, name, error),
+        };
+    }
+    if report::handles(name) {
+        // Not written to the ledger (see `report::run`).
+        let context = report::ReportContext {
+            store,
+            session,
+            repository_root,
+            recall_enabled: recall_options.is_some_and(|options| options.is_enabled()),
+            edits_enabled,
+            profile,
+        };
+        return match report::run(&context, arguments) {
+            Ok(payload) => match serde_json::to_string(&payload) {
+                Ok(sent) => common::success_text(sent),
+                Err(_) => failed(session, name, common::ToolFailure::internal()),
+            },
+            Err(error) => failed(session, name, error),
         };
     }
     let run = |form: Form, arguments: Option<JsonObject>| {
@@ -150,7 +177,7 @@ pub(crate) fn dispatch(
     let (success, sent) = loop {
         let mut success = match run(form, arguments.clone()) {
             Ok(success) => success,
-            Err(error) => return error.into_result(),
+            Err(error) => return failed(session, name, error),
         };
         let max_tokens = success
             .payload

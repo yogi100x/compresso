@@ -247,7 +247,7 @@ async fn test_recall_tool_is_absent_and_refused_until_an_operator_enables_a_sour
 
     for server in [&mut default_server, &mut cursor_only] {
         let names = server.tool_names().await;
-        assert_eq!(names.len(), 12);
+        assert_eq!(names.len(), 13);
         assert!(!names.iter().any(|name| name == "compresso_recall"));
         let (is_error, text) = server
             .call("compresso_recall", json!({ "query": "lease" }))

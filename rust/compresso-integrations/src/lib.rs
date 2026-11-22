@@ -29,6 +29,7 @@ mod explore_agent;
 mod plan;
 mod receipt;
 mod server_entry;
+mod session_commands;
 mod text_fidelity;
 
 use std::path::PathBuf;
@@ -59,6 +60,7 @@ pub use server_entry::{
     ConfiguredServer, read_configured_server, recall_source_for_client,
     receipt_authenticates_server, server_enables_edits, server_recall_source,
 };
+pub use session_commands::{SESSION_COMMANDS, SESSION_COMMANDS_SKILL, SessionCommandsIntegration};
 
 /// Adapter contract shared by Claude Code, Codex, and Cursor.
 ///
