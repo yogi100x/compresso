@@ -202,7 +202,16 @@ keychain credentials, a SQL parser, and mutation stay in E15.
    also checked in the real process environment for settings built with an
    explicit value, and a built options object carrying `PGOPTIONS` is
    refused. `SSL_CERT_FILE` and `SSL_CERT_DIR`, which the native certificate
-   loader reads, make any network target unusable the same way. A private
+   loader reads, refuse a target only where certificates are verified
+   (a remote host, or loopback with `verify-ca`/`verify-full`): they
+   change nothing for SQLite, plain-text, or unverified prefer/require
+   local connections, and stock environments such as GitHub's Ubuntu
+   runner image set `SSL_CERT_FILE`. With a private CA named in the URL the
+   variable is still refused, because sqlx loads the system roots (which
+   the variable replaces) in addition to the named file and offers no way
+   to skip them; the message names the variable and the parameter. All
+   environment reads happen once, when the settings are made from the
+   process environment; settings built with an explicit value read none. A private
    CA is configured through the one variable instead: `sslrootcert`
    (Postgres) or `ssl-ca` (MySQL/MariaDB) names an absolute path to a
    regular, readable PEM file of at most 1 MiB holding a certificate, not a

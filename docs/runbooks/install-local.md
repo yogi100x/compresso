@@ -154,8 +154,10 @@ CREATE USER 'sql_reader'@'%' IDENTIFIED BY '...';
 GRANT SELECT ON app.* TO 'sql_reader'@'%';
 ```
 
-`SSL_CERT_FILE` and `SSL_CERT_DIR` must not be set where the client
-starts, as for `PG*` variables. A server with a private CA is trusted
+For a connection that verifies certificates (any remote host, or
+loopback with `verify-ca`/`verify-full`), `SSL_CERT_FILE` and
+`SSL_CERT_DIR` must not be set where the client starts; SQLite and
+plain-text loopback targets are not affected. A server with a private CA is trusted
 through the URL alone: `sslrootcert=/absolute/ca.pem` (Postgres) or
 `ssl-ca=/absolute/ca.pem` (MySQL/MariaDB), an absolute path to a PEM file of
 at most 1 MiB that is not a symbolic link. It is added to the operating
