@@ -379,14 +379,6 @@ impl SqlTarget {
         if let Some(password) = &password {
             secrets.add(password);
         }
-        if let Some(variable) = TRUST_ANCHOR_ENVIRONMENT
-            .iter()
-            .find(|name| ambient(name).is_some())
-        {
-            return Err(format!(
-                "{variable} is set; it would change which servers TLS trusts, so unset it in the server's environment (the connection is configured only by the --sql-env variable)"
-            ));
-        }
         let (options, local) = match engine {
             SqlEngine::Postgres => {
                 if let Some(variable) = POSTGRES_UNOVERRIDABLE.iter().find(|name| {
@@ -466,6 +458,24 @@ impl SqlTarget {
             }
         };
         let tls = tls_policy(engine, local, mode)?;
+        // SSL_CERT_FILE / SSL_CERT_DIR replace the operating system's roots
+        // the driver loads for a verified connection, and sqlx loads those
+        // roots even when sslrootcert / ssl-ca names a file. They matter only
+        // where certificates are verified: never for SQLite, plain-text, or
+        // prefer/require (unverified) local connections.
+        let verifies = matches!(
+            tls,
+            Tls::VerifyFull | Tls::Local(LocalTls::VerifyFull | LocalTls::VerifyCa)
+        );
+        if verifies
+            && let Some(variable) = TRUST_ANCHOR_ENVIRONMENT
+                .iter()
+                .find(|name| ambient(name).is_some())
+        {
+            return Err(format!(
+                "{variable} is set; it would replace the trusted roots of this verified TLS connection, so unset it in the server's environment (state a private CA with sslrootcert= or ssl-ca= in the URL; the system roots are still loaded, so the variable is refused even then)"
+            ));
+        }
         let options = match options {
             DriverOptions::Postgres(options) => {
                 DriverOptions::Postgres(options.ssl_mode(match tls {

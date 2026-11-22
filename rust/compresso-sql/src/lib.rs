@@ -276,7 +276,8 @@ pub(crate) trait Connector {
 pub struct SqlSettings {
     env_name: String,
     value: Option<String>,
-    /// The Postgres variables ([`POSTGRES_ENVIRONMENT`]) set where the
+    /// The connection-affecting variables ([`POSTGRES_ENVIRONMENT`],
+    /// [`POSTGRES_UNOVERRIDABLE`], [`TRUST_ANCHOR_ENVIRONMENT`]) set where the
     /// value was read: their names only, never their values.
     postgres_environment: Vec<String>,
 }
@@ -290,6 +291,8 @@ impl SqlSettings {
             value: std::env::var(env_name).ok(),
             postgres_environment: POSTGRES_ENVIRONMENT
                 .iter()
+                .chain(POSTGRES_UNOVERRIDABLE)
+                .chain(TRUST_ANCHOR_ENVIRONMENT)
                 .filter(|name| std::env::var_os(name).is_some())
                 .map(|name| (*name).to_owned())
                 .collect(),
@@ -304,6 +307,13 @@ impl SqlSettings {
             value: value.map(str::to_owned),
             postgres_environment: Vec::new(),
         }
+    }
+
+    /// The same settings as if the named variables (Postgres or
+    /// `SSL_CERT_*`) were set where the value was read. Settings never read
+    /// the process environment after they are made, so tests are hermetic.
+    pub fn with_environment(self, names: &[&str]) -> Self {
+        self.with_postgres_environment(names)
     }
 
     /// The same settings as if the named Postgres variables were set.
@@ -361,7 +371,13 @@ impl SqlService {
                             .any(|set| set == name)
                             .then(String::new)
                     },
-                    |name| std::env::var_os(name).map(|_| String::new()),
+                    |name| {
+                        settings
+                            .postgres_environment
+                            .iter()
+                            .any(|set| set == name)
+                            .then(String::new)
+                    },
                 ),
             }
         };

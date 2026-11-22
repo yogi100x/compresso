@@ -228,3 +228,33 @@ fn test_a_call_from_inside_an_async_context_does_not_panic() {
         .expect_err("refused");
     assert_eq!(error.code(), "sql_connection", "{error}");
 }
+
+#[test]
+fn test_ssl_cert_file_in_the_environment_matters_only_for_verified_tls() {
+    // A CI-shaped environment: SSL_CERT_FILE set (as on GitHub's Linux
+    // runners). SQLite and a loopback target without TLS still work.
+    let directory = tempfile::tempdir().expect("tempdir");
+    let path = directory.path().join("plain.db");
+    std::fs::write(&path, b"").expect("empty database");
+    let sqlite = format!("sqlite:{}", path.display());
+    let loopback =
+        format!("postgres://{USER}:{PASSWORD}@127.0.0.1:5432/{DATABASE}?sslmode=disable");
+    let remote = format!("postgres://{USER}:{PASSWORD}@db.example.com/{DATABASE}");
+    let with = |url: &str| {
+        SqlService::new(
+            &SqlSettings::with_value(ENV, Some(url)).with_environment(&["SSL_CERT_FILE"]),
+            Vec::new(),
+        )
+    };
+    assert_eq!(with(&sqlite).engine(), Some(SqlEngine::Sqlite));
+    assert!(query(&with(&sqlite), "SELECT 1").is_ok());
+    assert_eq!(with(&loopback).engine(), Some(SqlEngine::Postgres));
+    let refused = with(&remote);
+    let reason = refused
+        .configuration_problem()
+        .expect("verified TLS refused");
+    assert!(reason.starts_with("SSL_CERT_FILE is set"), "{reason}");
+    assert!(reason.contains("sslrootcert"), "{reason}");
+    // Settings with an explicit value never read the process environment.
+    assert_eq!(service(&remote).engine(), Some(SqlEngine::Postgres));
+}

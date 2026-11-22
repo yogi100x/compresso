@@ -47,17 +47,26 @@ fn test_connection_settings_come_only_from_the_named_variable() {
     unset("PGOPTIONS");
     assert_eq!(problem(&explicit), None);
 
-    // The native certificate loader reads SSL_CERT_FILE and SSL_CERT_DIR.
+    // The native certificate loader reads SSL_CERT_FILE and SSL_CERT_DIR;
+    // they refuse only a connection that verifies certificates.
     for name in ["SSL_CERT_FILE", "SSL_CERT_DIR"] {
         set(name, "/tmp/elsewhere");
-        for url in [POSTGRES, MYSQL] {
-            let reason = problem(&SqlSettings::with_value(ENV, Some(url)));
+        for url in [
+            "postgres://u:p@db.example.com:5432/app",
+            "mysql://u:p@db.example.com:3306/app",
+        ] {
+            set(ENV, url);
+            let reason = problem(&SqlSettings::from_env(ENV));
             assert!(
                 reason
                     .as_deref()
                     .is_some_and(|reason| reason.starts_with(&format!("{name} is set"))),
                 "{url}: {reason:?}"
             );
+        }
+        for url in [POSTGRES, MYSQL] {
+            set(ENV, url);
+            assert_eq!(problem(&SqlSettings::from_env(ENV)), None, "{url}");
         }
         unset(name);
     }
