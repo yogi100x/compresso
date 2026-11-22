@@ -534,7 +534,7 @@ fn grep(payload: &Value, out: &mut Out) {
                     String::new()
                 },
                 if at_least {
-                    "; the outside scan stopped at its bound, so there may be more"
+                    "; at least; the outside scan stopped early"
                 } else {
                     ""
                 }
@@ -1296,7 +1296,7 @@ mod tests {
         }));
         assert!(
             text.contains(
-                "[also matches outside this path: a.ts (1); the outside scan stopped at its bound, so there may be more]"
+                "[also matches outside this path: a.ts (1); at least; the outside scan stopped early]"
             ),
             "{text}"
         );

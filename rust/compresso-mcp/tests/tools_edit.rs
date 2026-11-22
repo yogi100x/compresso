@@ -858,3 +858,31 @@ async fn test_lean_grep_text_names_a_file_outside_the_path_filter() {
     assert!(!is_error, "{text}");
     harness.close().await;
 }
+
+/// E17-49 review, lean text form: when the outside scan stops early (here
+/// after its matching-file bound), the note says the counts are lower
+/// bounds.
+#[tokio::test]
+async fn test_lean_grep_text_says_at_least_when_the_outside_scan_stops_early() {
+    let fixture = Fixture::new();
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean, true)).await;
+    let creates = (0..=compresso_atlas::GREP_OUTSIDE_MATCHING_FILES)
+        .map(|index| json!({ "op": "create", "path": format!("out/f{index:02}.rs"), "content": "pub fn f() { format_utc(1); }\n" }))
+        .collect::<Vec<_>>();
+    let (text, is_error) = harness
+        .call("compresso_edit", &json!({ "operations": creates }))
+        .await;
+    assert!(!is_error, "{text}");
+    let (text, is_error) = harness
+        .call(
+            "compresso_grep",
+            &json!({ "patterns": ["format_utc("], "path": "src/lib.rs" }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    assert!(
+        text.contains("at least; the outside scan stopped early]"),
+        "{text}"
+    );
+    harness.close().await;
+}

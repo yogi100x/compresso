@@ -33,11 +33,11 @@ pub use edit::{
 pub use grep::{
     GREP_MAX_CONTEXT_LINES, GREP_MAX_FILES_LIMIT, GREP_MAX_MATCHES_PER_FILE_LIMIT,
     GREP_MAX_PATTERN_BYTES, GREP_MAX_PATTERNS, GREP_OUTSIDE_FILES_NAMED,
-    GREP_OUTSIDE_SCAN_MAX_BYTES, GREP_OUTSIDE_SCAN_MAX_FILES, GREP_REGEX_MAX_BYTES_PER_PATTERN,
-    GREP_ROW_CANDIDATES, GREP_UNLISTED_FILES_NAMED, GREP_UNLISTED_LINES_NAMED, GrepContextLine,
-    GrepError, GrepFile, GrepLine, GrepOptions, GrepPatternResult, GrepReport, OutsideMatches,
-    UnmatchedPath, grep, literal_alternation_source, literal_alternatives, matches_outside_filter,
-    validate_grep,
+    GREP_OUTSIDE_MATCHING_FILES, GREP_OUTSIDE_SCAN_MAX_BYTES, GREP_OUTSIDE_SCAN_MAX_FILES,
+    GREP_REGEX_MAX_BYTES_PER_PATTERN, GREP_ROW_CANDIDATES, GREP_UNLISTED_FILES_NAMED,
+    GREP_UNLISTED_LINES_NAMED, GrepContextLine, GrepError, GrepFile, GrepLine, GrepOptions,
+    GrepPatternResult, GrepReport, OutsideMatches, UnmatchedPath, grep, literal_alternation_source,
+    literal_alternatives, matches_outside_filter, validate_grep,
 };
 pub use indexer::{IndexError, IndexProgress, IndexReport, Indexer};
 pub use queries::{

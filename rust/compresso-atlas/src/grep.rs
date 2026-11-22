@@ -208,6 +208,14 @@ pub const GREP_OUTSIDE_SCAN_MAX_FILES: usize = 2_000;
 pub const GREP_OUTSIDE_SCAN_MAX_BYTES: u64 = 32 * 1024 * 1024;
 /// Files outside the filter named by path, the most matches first (E17-49).
 pub const GREP_OUTSIDE_FILES_NAMED: usize = 3;
+/// Files read per batch by the outside scan, and threads reading a batch.
+const OUTSIDE_BATCH: usize = 64;
+const OUTSIDE_WORKERS: usize = 4;
+/// Matching files outside the filter after which [`matches_outside_filter`]
+/// stops and reports its totals as lower bounds (E17-49 review): enough to
+/// name the most-matching files without reading the rest of a large
+/// repository.
+pub const GREP_OUTSIDE_MATCHING_FILES: usize = 25;
 
 /// Where the call's patterns also match in indexed files outside its path
 /// filter (E17-49, D114).
@@ -220,8 +228,9 @@ pub struct OutsideMatches {
     /// The first [`GREP_OUTSIDE_FILES_NAMED`] as `(path, matching lines)`,
     /// most matches first, then by path.
     pub files: Vec<(String, usize)>,
-    /// The scan stopped at its file or byte bound: the totals are lower
-    /// bounds.
+    /// The scan stopped at its file or byte bound, or after
+    /// [`GREP_OUTSIDE_MATCHING_FILES`] matching files: the totals are lower
+    /// bounds and files later in path order are not named.
     pub at_least: bool,
     /// Files read and bytes read by the scan (at most
     /// [`GREP_OUTSIDE_SCAN_MAX_FILES`] and about
@@ -1714,29 +1723,26 @@ fn matches_outside_filter_within(
         bytes_scanned: 0,
     };
     let mut found = Vec::<(String, usize)>::new();
-    for record in store.indexed_files(repo)? {
-        let patterns = searched
-            .iter()
-            .copied()
-            .filter(|index| !inside(*index, &record.path))
-            .collect::<Vec<_>>();
-        if patterns.is_empty() || is_secret_path(Path::new(&record.path)) {
-            continue;
-        }
-        if outside.files_scanned == max_files || outside.bytes_scanned >= max_bytes {
-            outside.at_least = true;
-            break;
-        }
+    let candidates = store
+        .indexed_files(repo)?
+        .into_iter()
+        .filter(|record| !is_secret_path(Path::new(&record.path)))
+        .filter_map(|record| {
+            let patterns = searched
+                .iter()
+                .copied()
+                .filter(|index| !inside(*index, &record.path))
+                .collect::<Vec<_>>();
+            (!patterns.is_empty()).then_some((record, patterns))
+        })
+        .collect::<Vec<_>>();
+    // Matching lines and bytes read of one file; `None` when the read gate
+    // refuses it or it is not UTF-8 text.
+    let count = |(record, patterns): &(FileRecord, Vec<usize>)| -> Option<(usize, u64)> {
         let Ok(ResolvedEntry::File(resolved)) = resolve_under_root(&root, &record.path) else {
-            continue;
+            return None;
         };
-        let Ok(source) = read_utf8(&resolved) else {
-            continue;
-        };
-        outside.files_scanned += 1;
-        outside.bytes_scanned = outside
-            .bytes_scanned
-            .saturating_add(u64::try_from(source.len()).unwrap_or(u64::MAX));
+        let source = read_utf8(&resolved).ok()?;
         let matches = patterns
             .iter()
             .map(|index| {
@@ -1747,15 +1753,66 @@ fn matches_outside_filter_within(
                 }
             })
             .sum::<usize>();
-        if matches == 0 {
-            continue;
+        Some((matches, u64::try_from(source.len()).unwrap_or(u64::MAX)))
+    };
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .min(OUTSIDE_WORKERS);
+    // Files are taken in index path order, a batch at a time, within the
+    // file bound and the byte bound (judged on the indexed sizes before any
+    // read); each batch is read by up to OUTSIDE_WORKERS threads and its
+    // results are taken in path order, so the answer does not depend on
+    // timing. A stop mid-batch has read at most OUTSIDE_BATCH extra files.
+    let (mut next, mut planned_files, mut planned_bytes) = (0, 0_usize, 0_u64);
+    'batches: while next < candidates.len() {
+        let mut end = next;
+        while end < candidates.len()
+            && end - next < OUTSIDE_BATCH
+            && planned_files < max_files
+            && planned_bytes < max_bytes
+        {
+            planned_files += 1;
+            planned_bytes = planned_bytes.saturating_add(candidates[end].0.size_bytes);
+            end += 1;
         }
-        // The index row may be older than the ignore rules.
-        let exclusions = exclusions.get_or_insert_with(|| ScannerExclusions::load(&root));
-        if exclusions.excludes(&root, Path::new(&record.path)) {
-            continue;
+        if end == next {
+            outside.at_least = true;
+            break;
         }
-        found.push((record.path, matches));
+        let batch = &candidates[next..end];
+        let chunk = batch.len().div_ceil(workers);
+        let counts = std::thread::scope(|scope| {
+            let handles = batch
+                .chunks(chunk)
+                .map(|part| scope.spawn(move || part.iter().map(count).collect::<Vec<_>>()))
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .flat_map(|handle| handle.join().unwrap_or_default())
+                .collect::<Vec<_>>()
+        });
+        for ((record, _), counted) in batch.iter().zip(counts) {
+            let Some((matches, bytes)) = counted else {
+                continue;
+            };
+            outside.files_scanned += 1;
+            outside.bytes_scanned = outside.bytes_scanned.saturating_add(bytes);
+            if matches == 0 {
+                continue;
+            }
+            // The index row may be older than the ignore rules.
+            let exclusions = exclusions.get_or_insert_with(|| ScannerExclusions::load(&root));
+            if exclusions.excludes(&root, Path::new(&record.path)) {
+                continue;
+            }
+            found.push((record.path.clone(), matches));
+            if found.len() == GREP_OUTSIDE_MATCHING_FILES {
+                // Enough is known; the rest would cost a read each.
+                outside.at_least = true;
+                break 'batches;
+            }
+        }
+        next = end;
     }
     if found.is_empty() {
         return Ok(None);
