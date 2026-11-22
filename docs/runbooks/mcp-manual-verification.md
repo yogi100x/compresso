@@ -93,8 +93,9 @@ required rejection excerpt.
 
 `compresso_sql` (served only by `compresso mcp serve --sql-env NAME`,
 ADR-0036) has not been verified in a live client session. The release binary
-answered a SQLite query and refused a `DELETE` over raw stdio, and Postgres
-and MySQL/MariaDB have not been run against a live server.
+answered a SQLite query and refused a `DELETE` over raw stdio. Postgres
+16.4, MariaDB 11.4.3, and MySQL 8.4 are exercised by the CI live job
+(`tests/live.rs`), not by a client session.
 
 ## Opt-in edit tool (E17-32)
 

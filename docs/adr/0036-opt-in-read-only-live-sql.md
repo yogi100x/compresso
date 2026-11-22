@@ -189,17 +189,19 @@ keychain credentials, a SQL parser, and mutation stay in E15.
      `SHOW WARNINGS`), or whose run reached its deadline (within 2% or
      10 ms), answers `sql_timeout` instead of a result: a cut result is never
      presented as complete, at the cost of refusing a query that finishes
-     just at its limit. Observed on MariaDB 11.4.3 (CI, 2026-11-23): a
-     `BENCHMARK` cut at the limit returns 0 with no interruption warning the
-     check sees, so only the deadline rule catches it; a cut `SLEEP` is also
-     caught by the deadline rule; a cut table scan fails with an error. The
-     live suite prints what `SHOW WARNINGS` reports for each shape on each
-     engine (`test_live_mysql_report_what_the_server_signals_for_a_cut`); the
-     run on 62709ca passed on both engines but captured no output, so the
-     per-shape facts for MySQL 8.4 (and the warning codes on MariaDB) are
-     not recorded yet; the job now runs with `--nocapture` so the next run
-     logs them. Both rules stay on, and either one
-     answers `sql_timeout`.
+     just at its limit. Observed in CI on 0245a34 with a 500 ms limit
+     (`test_live_mysql_report_what_the_server_signals_for_a_cut`):
+
+     | Engine | `SELECT BENCHMARK(...)` | `SELECT SLEEP(5)` | 3-way `information_schema.COLUMNS` `COUNT` |
+     |---|---|---|---|
+     | MariaDB 11.4.3 | 1 row, no error, no warning (about 500 ms) | error 1969 (70100) "Query execution was interrupted (max_statement_time exceeded)" | error 1969 |
+     | MySQL 8.4 | 1 row, no error, no warning | 1 row, no error, no warning | error 3024 (HY000) "Query execution was interrupted, maximum statement execution time exceeded" |
+
+     On both engines a function-only statement cut by the limit is detectable
+     only by the deadline-proximity rule. The tool answers `sql_timeout` in
+     all six cases because either rule triggers it, and a statement that
+     genuinely finishes within 2% or 10 ms of its limit is also reported as a
+     timeout. The live job logged `SSL_CERT_FILE: not set` on its runner.
    - One connection per call means nothing a statement leaves in the session
      (advisory or named locks, `set_config`, user variables, temporary
      objects) survives the call.
