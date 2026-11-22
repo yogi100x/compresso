@@ -340,6 +340,39 @@ async fn test_sql_server_reads_a_sqlite_file_and_refuses_writes() {
     assert_eq!(bounded["truncated"], true);
     assert_eq!(bounded["truncation_reason"], "max_tokens");
 
+    // Column names count too: a 99,000-character expression name and 1,500
+    // columns both fit max_tokens (E17-50 review).
+    for statement in [
+        format!("SELECT '{}'", "a".repeat(99_000)),
+        format!(
+            "SELECT {}",
+            (0..1_500)
+                .map(|index| format!("{index} AS c{index:045}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    ] {
+        let (text, is_error) = harness
+            .call(
+                "compresso_sql",
+                &json!({ "action": "query", "query": statement, "max_tokens": 300 }),
+            )
+            .await;
+        assert!(!is_error, "{}", &text[..text.len().min(300)]);
+        assert!(
+            counter_for(TokenProvider::OpenAiO200k).count(&text) <= 300,
+            "{} characters",
+            text.len()
+        );
+        let bounded: Value = serde_json::from_str(&text).expect("json");
+        let columns = bounded["columns"].as_array().expect("columns");
+        assert!(columns.iter().all(|name| name.as_str().unwrap().chars().count() < 100));
+        if statement.contains(" AS c") {
+            assert_eq!(bounded["truncated"], true);
+            assert!(bounded["columns_omitted"].as_u64().unwrap() > 0);
+        }
+    }
+
     // Nothing reaches the ledger, and the file is unchanged.
     assert_eq!(fixture.operations(), operations);
     assert_eq!(fs::read(&fixture.database).expect("bytes"), before);

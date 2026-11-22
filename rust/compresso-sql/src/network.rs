@@ -326,7 +326,7 @@ async fn postgres_call(
                 .map(|column| column.name().to_owned())
                 .collect::<Vec<_>>();
             let started = Instant::now();
-            let mut rows = RowCollector::new(request.max_rows);
+            let mut rows = RowCollector::new(request.max_rows, columns);
             {
                 let mut stream = raw_sql(owned_sql(sql)).fetch(&mut *connection);
                 while let Some(row) = stream.try_next().await.map_err(error)? {
@@ -336,10 +336,7 @@ async fn postgres_call(
                 }
             }
             let clean = !rows.is_truncated();
-            Ok((
-                SqlOutcome::Query(rows.finish(columns, elapsed_ms(started))),
-                clean,
-            ))
+            Ok((SqlOutcome::Query(rows.finish(elapsed_ms(started))), clean))
         }
         SqlAction::Tables => {
             let limit = i64::try_from(MAX_TABLES + 1).unwrap_or(i64::MAX);
@@ -751,7 +748,7 @@ async fn mysql_call(
                 .map(|column| column.name().to_owned())
                 .collect::<Vec<_>>();
             let started = Instant::now();
-            let mut rows = RowCollector::new(request.max_rows);
+            let mut rows = RowCollector::new(request.max_rows, columns);
             {
                 let mut stream = raw_sql(owned_sql(sql)).fetch(&mut *connection);
                 while let Some(row) = stream.try_next().await.map_err(error)? {
@@ -761,10 +758,7 @@ async fn mysql_call(
                 }
             }
             let clean = !rows.is_truncated();
-            Ok((
-                SqlOutcome::Query(rows.finish(columns, elapsed_ms(started))),
-                clean,
-            ))
+            Ok((SqlOutcome::Query(rows.finish(elapsed_ms(started))), clean))
         }
         SqlAction::Tables => {
             let limit = i64::try_from(MAX_TABLES + 1).unwrap_or(i64::MAX);

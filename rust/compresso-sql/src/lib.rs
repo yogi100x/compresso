@@ -34,7 +34,9 @@ use std::time::Duration;
 use serde::Serialize;
 use serde_json::Value;
 
-pub use cells::{MAX_CELL_CHARS, MAX_RESULT_BYTES};
+pub use cells::{
+    MAX_CELL_CHARS, MAX_COLUMNS, MAX_METADATA_CHARS, MAX_NAME_CHARS, MAX_RESULT_BYTES,
+};
 pub use target::{SqlEngine, is_valid_env_name};
 
 /// Prefix every operator-chosen variable name carries.
@@ -152,18 +154,28 @@ pub enum Truncation {
     MaxBytes,
     /// The caller's token budget was reached (set by the MCP layer).
     MaxTokens,
+    /// The statement returned more than [`MAX_COLUMNS`] columns.
+    MaxColumns,
 }
 
 /// Rows of one query.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct QueryResult {
+    /// At most [`MAX_COLUMNS`] names, each cut to [`MAX_NAME_CHARS`].
     pub columns: Vec<String>,
+    /// Columns the statement returned beyond [`MAX_COLUMNS`].
+    #[serde(skip_serializing_if = "is_zero")]
+    pub columns_omitted: usize,
     pub rows: Vec<Vec<Value>>,
     /// Rows returned (after every cap).
     pub row_count: usize,
     pub truncated: bool,
     pub truncation_reason: Option<Truncation>,
     pub elapsed_ms: u64,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 impl QueryResult {
@@ -391,7 +403,9 @@ impl SqlService {
                 .run(request, gated)
             }
         };
-        outcome.map_err(|error| target.scrub(error))
+        outcome
+            .map(bound_metadata)
+            .map_err(|error| target.scrub(error))
     }
 }
 
@@ -444,4 +458,45 @@ fn validate_request(request: &SqlRequest) -> Result<(), SqlError> {
         ));
     }
     Ok(())
+}
+
+/// Cuts every name in a `tables` or `describe` result to [`MAX_NAME_CHARS`]
+/// and every other metadata value to [`MAX_METADATA_CHARS`] (SQLite names
+/// have no length limit).
+fn bound_metadata(outcome: SqlOutcome) -> SqlOutcome {
+    use cells::cut;
+    let name = |value: &str| cut(value, MAX_NAME_CHARS);
+    let names = |values: &[String]| values.iter().map(|value| name(value)).collect::<Vec<_>>();
+    match outcome {
+        SqlOutcome::Tables(mut tables) => {
+            for table in &mut tables.tables {
+                table.schema = table.schema.as_deref().map(name);
+                table.name = name(&table.name);
+                table.kind = name(&table.kind);
+            }
+            SqlOutcome::Tables(tables)
+        }
+        SqlOutcome::Describe(mut describe) => {
+            describe.table = cut(&describe.table, MAX_METADATA_CHARS);
+            for column in &mut describe.columns {
+                column.name = name(&column.name);
+                column.data_type = cut(&column.data_type, MAX_METADATA_CHARS);
+                column.default = column
+                    .default
+                    .as_deref()
+                    .map(|value| cut(value, MAX_METADATA_CHARS));
+            }
+            for index in &mut describe.indexes {
+                index.name = name(&index.name);
+                index.columns = names(&index.columns);
+            }
+            for key in &mut describe.foreign_keys {
+                key.columns = names(&key.columns);
+                key.references_table = cut(&key.references_table, MAX_METADATA_CHARS);
+                key.references_columns = names(&key.references_columns);
+            }
+            SqlOutcome::Describe(describe)
+        }
+        query => query,
+    }
 }

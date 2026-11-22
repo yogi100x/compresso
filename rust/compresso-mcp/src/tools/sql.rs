@@ -230,11 +230,43 @@ fn fit(
         }
     }
     keep(&mut outcome, low);
+    // Column names count too: with no rows left, drop trailing columns.
+    if !fits(&outcome)
+        && let SqlOutcome::Query(result) = &outcome
+    {
+        let (mut low, mut high) = (0, result.columns.len());
+        while low < high {
+            let middle = (low + high).div_ceil(2);
+            let mut candidate = outcome.clone();
+            keep_columns(&mut candidate, middle);
+            if fits(&candidate) {
+                low = middle;
+            } else {
+                high = middle - 1;
+            }
+        }
+        keep_columns(&mut outcome, low);
+    }
     let mut value = payload(&outcome, engine);
     if let (SqlOutcome::Describe(_), Value::Object(object)) = (&outcome, &mut value) {
         object.insert("truncated".to_owned(), Value::Bool(true));
     }
     value.to_string()
+}
+
+/// Keeps the first `count` columns (and their cells) of a query result.
+fn keep_columns(outcome: &mut SqlOutcome, count: usize) {
+    if let SqlOutcome::Query(result) = outcome
+        && count < result.columns.len()
+    {
+        result.columns_omitted += result.columns.len() - count;
+        result.columns.truncate(count);
+        for row in &mut result.rows {
+            row.truncate(count);
+        }
+        result.truncated = true;
+        result.truncation_reason = Some(Truncation::MaxTokens);
+    }
 }
 
 #[cfg(test)]
@@ -247,6 +279,7 @@ mod tests {
         let counter = counter_for(TokenProvider::OpenAiO200k);
         let result = QueryResult {
             columns: vec!["body".to_owned()],
+            columns_omitted: 0,
             rows: (0..200)
                 .map(|index| vec![Value::from(format!("row {index} with some words in it"))])
                 .collect(),

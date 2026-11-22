@@ -235,7 +235,7 @@ fn query(
         .collect::<Vec<_>>();
     let width = columns.len();
     let mut rows = statement.query([]).map_err(map_error)?;
-    let mut collector = RowCollector::new(max_rows);
+    let mut collector = RowCollector::new(max_rows, columns);
     while let Some(row) = rows.next().map_err(map_error)? {
         let cells = (0..width)
             .map(|index| row.get_ref(index).map(cell))
@@ -246,7 +246,7 @@ fn query(
         }
     }
     let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    Ok(collector.finish(columns, elapsed))
+    Ok(collector.finish(elapsed))
 }
 
 fn tables(connection: &Connection) -> Result<TablesResult, SqlError> {

@@ -364,3 +364,28 @@ fn test_unusable_settings_report_not_configured_without_the_value() {
         assert!(!format!("{settings:?} {service:?}").contains(canary));
     }
 }
+
+#[test]
+fn test_sqlite_column_names_and_counts_are_bounded() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let service = service(&shop(directory.path()), Vec::new());
+    // An unaliased column is named after its expression.
+    let long = format!("SELECT '{}'", "a".repeat(99_000));
+    let result = query(&service, &long).expect("long name");
+    assert!(result.columns[0].chars().count() <= compresso_sql::MAX_NAME_CHARS + 32);
+    assert!(serde_json::to_string(&result).unwrap().len() < 4_000);
+
+    let many = format!(
+        "SELECT {}",
+        (0..2_000)
+            .map(|index| format!("{index} AS c{index:045}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let result = query(&service, &many).expect("many columns");
+    assert_eq!(result.columns.len(), compresso_sql::MAX_COLUMNS);
+    assert_eq!(result.rows[0].len(), compresso_sql::MAX_COLUMNS);
+    assert_eq!(result.columns_omitted, 2_000 - compresso_sql::MAX_COLUMNS);
+    assert!(result.truncated);
+    assert!(serde_json::to_string(&result).unwrap().len() <= compresso_sql::MAX_RESULT_BYTES);
+}
