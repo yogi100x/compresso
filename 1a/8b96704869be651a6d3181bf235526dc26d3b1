@@ -1,0 +1,39 @@
+scripts/check-crate-capabilities.test.ts
+  s_89a704cfae63f5::t_e6d8a3d5a15a9b 321-336
+scripts/check-crate-capabilities.ts
+  s_89a704cfae63f5::t_2813e59aaac9e6 771-773,775,813-898,1122-1144
+scripts/fixtures/crate-capabilities/denied-pure-local-feature-through-sql/Cargo.lock
+  s_89a704cfae63f5::t_03aca030efb651 1-53
+scripts/fixtures/crate-capabilities/denied-pure-local-feature-through-sql/Cargo.toml
+  s_89a704cfae63f5::t_884f25b3c07690 1-4
+scripts/fixtures/crate-capabilities/denied-pure-local-feature-through-sql/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_fa34f5b0ddfab7 1-8
+scripts/fixtures/crate-capabilities/denied-pure-local-feature-through-sql/crates/compresso-core/Cargo.toml
+  s_89a704cfae63f5::t_edc004f378b491 1-10
+scripts/fixtures/crate-capabilities/denied-pure-local-feature-through-sql/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_9675bc0fbfdb13 1-9
+scripts/fixtures/crate-capabilities/denied-pure-local-feature-through-sql/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_38b8fd8b58e4ef 1-8
+scripts/fixtures/crate-capabilities/denied-pure-local-feature-through-sql/deps/foo/Cargo.toml
+  s_89a704cfae63f5::t_eb145efffbb6cf 1-10
+scripts/fixtures/crate-capabilities/denied-pure-local-feature-through-sql/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_ea6f648f413848 1-4
+scripts/fixtures/crate-capabilities/denied-pure-local-feature-through-sql/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_37efe504f55892 1-10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1a8b96704869be651a6d3181bf235526dc26d3b1",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
