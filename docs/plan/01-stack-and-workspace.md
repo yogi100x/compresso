@@ -107,7 +107,7 @@ Crate dependency rule: `core` has no internal dependencies; `store → core type
 | browser, terminal | No direct socket API | No direct spawn API | All capabilities delegated through sandbox |
 | desktop webview | none | none | Typed Rust local-API bridge only |
 
-CI parses every `Cargo.toml` and source dependency tree against this table, judging each crate on its own resolved dependency tree (`cargo tree -p`). One exception (owner decision 2026-11-22, D115, ADR-0036): `mcp` and `cli` may reach network-capable packages only through `compresso-sql`; the check resolves them again in a copy of the workspace without that crate and fails if any network package is still reachable. New capability requires an ADR, matrix update, threat-model update, and a deliberate failing-then-passing boundary test.
+CI parses every `Cargo.toml` and source dependency tree against this table, judging each crate on its own resolved dependency tree (`cargo tree -p`). One exception (owner decision 2026-11-22, D115, ADR-0036): `mcp` and `cli` may reach network-capable packages only through `compresso-sql`; the check resolves them again in a copy of the workspace without that crate and fails if any network package is still reachable, and fails if any path to a network package in their real tree passes through a workspace crate other than `compresso-sql` (or the other exempt crate). New capability requires an ADR, matrix update, threat-model update, and a deliberate failing-then-passing boundary test.
 
 A `bounded-local` crate's exact Cargo integration-test target under `tests/` may use `std::process` to execute test artifacts; network APIs, process-capable dependencies, and process use in library, binary, build, example, or benchmark targets remain denied.
 

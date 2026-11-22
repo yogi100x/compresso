@@ -107,7 +107,10 @@ for a different target.
 
 ## Optional: read-only live SQL queries
 
-`compresso_sql` (E17-50, ADR-0036) is off unless you turn it on. Put the
+`compresso_sql` (E17-50, ADR-0036) is off unless you turn it on.
+**Postgres and MySQL/MariaDB support has not yet been run against a live
+server**; only SQLite has been exercised. Enable it for those engines
+knowing that. Put the
 database URL in an environment variable whose name starts with
 `COMPRESSO_SQL_`, in the environment your coding client starts from (your
 shell profile or the client's own launch environment; Compresso never reads
@@ -120,11 +123,21 @@ compresso integrations install claude-code --sql-env COMPRESSO_SQL_APP
 
 The entry stores only the name. Other clients can start
 `compresso mcp serve --sql-env COMPRESSO_SQL_APP` from their own
-configuration. Accepted values: `sqlite:/absolute/path.db`,
-`postgres://...`, `mysql://...`. Use a role that can only read: Compresso
-refuses a Postgres superuser or a member of the server-file or
-server-program roles, and a MySQL account with FILE, SUPER, or ALL
-PRIVILEGES on `*.*`. Any host other than loopback or a local socket needs
+configuration. Accepted values: `sqlite:/absolute/path.db` (no
+parameters), `postgres://user[:password]@host[:port]/database`, and
+`mysql://user[:password]@host[:port]/database`; user, host, and database are
+required, and only the TLS parameters (and MySQL `socket`) are accepted. The
+connection comes only from that URL: while any `PG*` variable such as
+`PGPASSWORD` or `PGHOST` is set in the client's environment, a Postgres
+target is refused, and `~/.pgpass` is never read. Use a role that can only
+read: Compresso refuses a Postgres superuser or a member of the server-file,
+server-program, or `pg_signal_backend` roles, and a MySQL/MariaDB account
+with FILE, SUPER, PROCESS, CONNECTION_ADMIN, PROXY, or ALL PRIVILEGES on
+`*.*`, directly or through roles. Statements must be plain SQL: no comments,
+`$`, backslashes, or non-ASCII outside `'...'` strings. Compresso answers one
+tool call at a time, so a slow query delays its other tools until it ends
+(at most the statement's `timeout_ms` plus about 16 s). Reading a WAL-mode
+SQLite database may create its `-wal` and `-shm` files beside it. Any host other than loopback or a local socket needs
 TLS with certificate verification (`sslmode=verify-full`,
 `ssl-mode=VERIFY_IDENTITY`, or no mode at all). Results go to your coding
 client and may be sent to its model provider.
