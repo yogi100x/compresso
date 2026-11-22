@@ -516,48 +516,165 @@ pub(crate) enum GrantLine {
     Unknown,
 }
 
-/// Classifies one `SHOW GRANTS` line (MySQL or MariaDB syntax).
-pub(crate) fn classify_grant(line: &str) -> GrantLine {
-    let line = line.trim();
-    let upper = line.to_ascii_uppercase();
-    if upper.starts_with("SET DEFAULT ROLE") {
-        return GrantLine::Ordinary;
-    }
-    let Some(rest) = line.get(6..).filter(|_| upper.starts_with("GRANT ")) else {
-        return GrantLine::Unknown;
-    };
-    let upper_rest = &upper[6..];
-    if upper_rest.starts_with("PROXY ON ") {
-        return GrantLine::Privileged("PROXY".to_owned());
-    }
-    if let Some(on) = upper_rest.find(" ON ") {
-        let privileges = &upper_rest[..on];
-        let global = upper_rest[on + 4..].trim_start().starts_with("*.*");
-        for privilege in privileges.split(',') {
-            let name = privilege.trim().trim_matches('`').replace('_', " ");
-            let name = name.split('(').next().unwrap_or_default().trim().to_owned();
-            let everything = name.starts_with("ALL");
-            if PRIVILEGED_GRANTS.contains(&name.as_str()) && (global || !everything) {
-                return GrantLine::Privileged(name);
+/// One token of a grant line: a quoted name (kept with its quotes), an
+/// unquoted word, or punctuation.
+#[derive(Debug, PartialEq, Eq)]
+enum GrantToken {
+    Quoted(String),
+    Word(String),
+    Punct(char),
+}
+
+/// Splits a grant line, honouring `...`, '...', and "..." quotes with their
+/// doubled-quote escape. `None` if a quote is not closed.
+fn grant_tokens(line: &str) -> Option<Vec<GrantToken>> {
+    let chars = line.chars().collect::<Vec<_>>();
+    let mut tokens = Vec::new();
+    let mut index = 0;
+    while let Some(&character) = chars.get(index) {
+        match character {
+            c if c.is_whitespace() => index += 1,
+            '`' | '\'' | '"' => {
+                let start = index;
+                index += 1;
+                loop {
+                    match chars.get(index) {
+                        None => return None,
+                        Some(&c) if c == character && chars.get(index + 1) == Some(&character) => {
+                            index += 2;
+                        }
+                        Some(&c) if c == character => {
+                            index += 1;
+                            break;
+                        }
+                        Some(_) => index += 1,
+                    }
+                }
+                tokens.push(GrantToken::Quoted(chars[start..index].iter().collect()));
+            }
+            c if c.is_alphanumeric() || c == '_' || c == '*' => {
+                let start = index;
+                while chars
+                    .get(index)
+                    .is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '*'))
+                {
+                    index += 1;
+                }
+                tokens.push(GrantToken::Word(
+                    chars[start..index]
+                        .iter()
+                        .collect::<String>()
+                        .to_ascii_uppercase(),
+                ));
+            }
+            c => {
+                tokens.push(GrantToken::Punct(c));
+                index += 1;
             }
         }
-        return GrantLine::Ordinary;
     }
-    let Some(to) = upper_rest.find(" TO ") else {
+    Some(tokens)
+}
+
+/// Classifies one `SHOW GRANTS` line (MySQL or MariaDB syntax). Quoted names
+/// are never read as keywords, so a role called `read ON all` is a role.
+pub(crate) fn classify_grant(line: &str) -> GrantLine {
+    let Some(tokens) = grant_tokens(line) else {
         return GrantLine::Unknown;
     };
-    let mut roles = Vec::new();
-    for role in rest[..to].split(',').map(str::trim) {
-        let plain = role.chars().all(|character| {
-            character.is_ascii_alphanumeric()
-                || matches!(character, '`' | '\'' | '@' | '%' | '_' | '-' | '.')
-        });
-        if role.is_empty() || !plain {
-            return GrantLine::Unknown;
-        }
-        roles.push(role.to_owned());
+    let word = |index: usize, expected: &str| matches!(tokens.get(index), Some(GrantToken::Word(word)) if word == expected);
+    if word(0, "SET") && word(1, "DEFAULT") && word(2, "ROLE") {
+        return GrantLine::Ordinary;
     }
-    GrantLine::Roles(roles)
+    if !word(0, "GRANT") {
+        return GrantLine::Unknown;
+    }
+    let keyword = |name: &str| {
+        tokens
+            .iter()
+            .position(|token| matches!(token, GrantToken::Word(word) if word == name))
+    };
+    let Some(to) = keyword("TO") else {
+        return GrantLine::Unknown;
+    };
+    if word(1, "PROXY") && word(2, "ON") {
+        return GrantLine::Privileged("PROXY".to_owned());
+    }
+    match keyword("ON").filter(|on| *on < to) {
+        Some(on) => {
+            if on == 1 {
+                return GrantLine::Unknown;
+            }
+            let global = matches!(tokens.get(on + 1), Some(GrantToken::Word(scope)) if scope == "*")
+                && matches!(tokens.get(on + 2), Some(GrantToken::Punct('.')))
+                && matches!(tokens.get(on + 3), Some(GrantToken::Word(scope)) if scope == "*");
+            // Privileges: words separated by commas, a column list in
+            // parentheses allowed after a privilege.
+            let mut names = Vec::new();
+            let mut current = Vec::new();
+            let mut depth = 0usize;
+            for token in &tokens[1..on] {
+                match token {
+                    GrantToken::Punct('(') => depth += 1,
+                    GrantToken::Punct(')') => depth = depth.saturating_sub(1),
+                    GrantToken::Punct(',') if depth == 0 => {
+                        names.push(current.join(" "));
+                        current.clear();
+                    }
+                    GrantToken::Word(word) if depth == 0 => current.push(word.replace('_', " ")),
+                    GrantToken::Quoted(name) if depth == 0 && name.starts_with('`') => {
+                        // MySQL quotes some dynamic privileges.
+                        current.push(
+                            name.trim_matches('`')
+                                .to_ascii_uppercase()
+                                .replace('_', " "),
+                        );
+                    }
+                    _ if depth > 0 => {}
+                    _ => return GrantLine::Unknown,
+                }
+            }
+            names.push(current.join(" "));
+            if names.iter().any(String::is_empty) {
+                return GrantLine::Unknown;
+            }
+            for name in names {
+                let everything = name.starts_with("ALL");
+                if PRIVILEGED_GRANTS.contains(&name.as_str()) && (global || !everything) {
+                    return GrantLine::Privileged(name);
+                }
+            }
+            GrantLine::Ordinary
+        }
+        None => {
+            // GRANT role[@host][, role[@host]...] TO account
+            let mut roles = Vec::new();
+            let mut current = String::new();
+            let mut expect_name = true;
+            for token in &tokens[1..to] {
+                match token {
+                    GrantToken::Quoted(name) | GrantToken::Word(name) if expect_name => {
+                        current.push_str(name);
+                        expect_name = false;
+                    }
+                    GrantToken::Punct('@') if !expect_name && !current.contains('@') => {
+                        current.push('@');
+                        expect_name = true;
+                    }
+                    GrantToken::Punct(',') if !expect_name => {
+                        roles.push(std::mem::take(&mut current));
+                        expect_name = true;
+                    }
+                    _ => return GrantLine::Unknown,
+                }
+            }
+            if expect_name || current.is_empty() {
+                return GrantLine::Unknown;
+            }
+            roles.push(current);
+            GrantLine::Roles(roles)
+        }
+    }
 }
 
 /// Checks a set of grant lines: the first privileged or unknown line fails
@@ -1034,6 +1151,32 @@ mod tests {
             classify_grant("GRANT `r`;DROP TABLE x TO `u`@`%`"),
             GrantLine::Unknown
         );
+    }
+
+    #[test]
+    fn test_quoted_role_names_cannot_pass_for_privilege_grants() {
+        // A MariaDB role whose name contains " ON " is a role grant.
+        assert_eq!(
+            classify_grant("GRANT `read ON all` TO `u`@`%`"),
+            GrantLine::Roles(vec!["`read ON all`".to_owned()])
+        );
+        assert_eq!(
+            classify_grant("GRANT `x TO y`@`%` TO `u`@`%`"),
+            GrantLine::Roles(vec!["`x TO y`@`%`".to_owned()])
+        );
+        // A quoted privilege-looking name is not a privilege.
+        assert_eq!(
+            classify_grant("GRANT SELECT ON `FILE`.* TO `u`@`%`"),
+            GrantLine::Ordinary
+        );
+        for unknown in [
+            "GRANT `unterminated TO `u`@`%`",
+            "GRANT TO `u`@`%`",
+            "GRANT SELECT ON",
+            "GRANT `r` `s` TO `u`@`%`",
+        ] {
+            assert_eq!(classify_grant(unknown), GrantLine::Unknown, "{unknown}");
+        }
     }
 
     #[test]
