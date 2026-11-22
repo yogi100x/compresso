@@ -1,0 +1,23 @@
+rust/compresso-core/tests/workspace_boundaries.rs
+  s_89a704cfae63f5::t_1196c8e5809c64 5,15
+rust/compresso-mcp/tests/golden/sql_surfaces.txt
+  s_89a704cfae63f5::t_c6edece67bbb4f 33-38,88,107-112,162,181-186,236,272-277,327,347-352,402,422-427,477
+rust/compresso-mcp/tests/tools_sql.rs
+  s_89a704cfae63f5::t_c68446d3c4de8d 450-451,458-473
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "226da3da18bc989aeb2e8510f13990da7c08cb16",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
