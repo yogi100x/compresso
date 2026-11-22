@@ -110,6 +110,7 @@ impl SqliteTarget {
         Ok(canonical)
     }
 
+    #[cfg(test)]
     fn open(&self, timeout: Duration) -> Result<Connection, SqlError> {
         self.open_bounded(timeout).map(|(connection, _)| connection)
     }
