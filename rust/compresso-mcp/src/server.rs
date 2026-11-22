@@ -130,7 +130,7 @@ const TRACE_DESCRIPTION: &str = "Answers who calls X, what X calls, or how A rea
 const COMPRESS_DESCRIPTION: &str = "Compresses arbitrary text (logs, transcripts, search dumps, tool output) using Compresso's safe, deterministic strategy pipeline, and returns the compressed string with before/after token counts per provider. Safe mode is deterministic and rule-based (dedup, log collapsing, structured compaction, budget packing): removals are whole units, every removal is enumerated in the operation trace, protected content is never altered, and any failure returns the original text unchanged. It is not lossless; request passthrough mode for byte-exact needs. Use before passing long text to a sub-agent or follow-up prompt. Does not require an indexed repository.";
 const STATS_DESCRIPTION: &str = "Returns local applied-compression and modeled-retrieval savings with aggregate, per-tool, per-repository, and bounded per-operation results. Exact retrieval pack tokens remain separate from estimated raw-source tokens and modeled follow-up calls avoided. Historical rows without a baseline claim zero retrieval avoidance. All figures come from local SQLite; optional filters narrow by time window or session.";
 /// `compresso_report` (E17-48, D113): the in-session commands' local reports.
-const REPORT_DESCRIPTION: &str = "Local reports for the /compresso session commands: status (version, server options, index state, recent failed calls), update (running version and manual update steps; Compresso never updates itself), share (savings summary to copy), bug and feedback (redacted report saved to a local file). Sends nothing anywhere; returns no repository content.";
+const REPORT_DESCRIPTION: &str = "Local reports for the /compresso session commands: status (version, server options, index state, recent failed calls), update (running version and manual update steps; Compresso never updates itself), share (savings summary to copy), bug and feedback (version, options, operation ids, and error codes, then the note as given, scrubbed on a best-effort basis; saved to a local file). Sends nothing anywhere.";
 
 const EXPLAIN_DESCRIPTION: &str = "Returns the full compression trace for one past operation: mode, strategies attempted and applied, per-strategy token deltas, safety-check outcomes, fallback status, and a human-readable explanation. Traces contain no raw content — only identifiers, kinds, counts, and explanations. Use it to understand exactly what Compresso did to a given result.";
 
@@ -1567,6 +1567,11 @@ mod tests {
         // E17-48: the report tool saves local files, so no tool but the
         // edit tool may be called read-only without qualification.
         assert!(!EDITS_CLAIM.contains("Every tool is read-only"));
+        // E17-48 final review: the report tool's description is true.
+        assert!(!REPORT_DESCRIPTION.contains("redacted"));
+        assert!(!REPORT_DESCRIPTION.contains("no repository content"));
+        assert!(REPORT_DESCRIPTION.contains("note as given"));
+        assert!(REPORT_DESCRIPTION.contains("scrubbed on a best-effort basis"));
         assert!(EDITS_CLAIM.contains("compresso_report saves local report files"));
         // Policy neutral (D92): it states what the tool does, not when to
         // prefer it over client tools.

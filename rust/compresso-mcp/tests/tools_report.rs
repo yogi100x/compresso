@@ -267,14 +267,28 @@ fn report_name(index: usize) -> String {
     format!("bug-{index}-01ARZ3NDEKTSV4RRFFQ69G5FAV.txt")
 }
 
-/// The call's error text, which must start with `[code]`.
+/// A bug report whose saving failed with `code`: the report text is still
+/// returned in full, with `saved: false` and the reason. Returns the reason's
+/// message.
 async fn failed_report(harness: &mut Harness, code: &str) -> String {
     let (failed, text) = harness
         .call("compresso_report", json!({ "kind": "bug", "note": "x" }))
         .await;
-    assert!(failed, "{text}");
-    assert!(text.starts_with(&format!("[{code}]")), "{text}");
-    text
+    assert!(!failed, "only saving failed, not the report: {text}");
+    let payload: Value = serde_json::from_str(&text).expect("report payload is JSON");
+    assert_eq!(payload["saved"], false, "{payload}");
+    assert!(payload["saved_to"].is_null(), "{payload}");
+    assert_eq!(payload["save_error"]["code"], code, "{payload}");
+    assert!(
+        payload["text"]
+            .as_str()
+            .is_some_and(|text| text.starts_with("Compresso bug report\n")),
+        "{payload}"
+    );
+    payload["save_error"]["message"]
+        .as_str()
+        .expect("reason message")
+        .to_owned()
 }
 
 #[tokio::test]
@@ -296,6 +310,7 @@ async fn test_the_cap_is_exactly_one_hundred_matching_reports() {
         saved["saved_to"].is_string(),
         "the 100th report is saved: {saved}"
     );
+    assert_eq!(saved["saved"], true, "{saved}");
     let text = failed_report(&mut harness, "report_limit_reached").await;
     assert!(text.contains("100"), "{text}");
     assert!(text.contains("delete"), "{text}");
@@ -366,6 +381,24 @@ async fn test_reports_directory_and_files_are_private() {
         .expect("one")
         .expect("entry");
     assert_eq!(mode(&file.path()), 0o600);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_an_existing_reports_directory_is_made_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::new();
+    fs::create_dir(fixture.reports()).expect("reports");
+    fs::set_permissions(fixture.reports(), fs::Permissions::from_mode(0o755)).expect("chmod");
+    let mut harness = Harness::start(fixture.store.clone(), None).await;
+    harness.report(json!({ "kind": "bug" })).await;
+    harness.close().await;
+    let mode = fs::metadata(fixture.reports())
+        .expect("metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o700);
 }
 
 #[cfg(unix)]

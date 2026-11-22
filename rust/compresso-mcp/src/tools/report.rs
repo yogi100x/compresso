@@ -127,16 +127,26 @@ pub(crate) fn run(
                 &facts(context)?,
                 note.as_deref().map(|note| clean_note(note, &roots)),
             );
-            match store_directory {
-                Some(directory) => {
-                    let saved = save_report(&directory, home.as_deref(), &kind, now, &text)?;
-                    payload["saved_to"] = Value::from(display_location(&saved, home.as_deref()));
+            // Only saving can fail here: the report text is returned either way.
+            let saved = match store_directory {
+                Some(directory) => save_report(&directory, home.as_deref(), &kind, now, &text),
+                None => Err(ToolFailure::new(
+                    "report_store_has_no_file",
+                    "The report was not saved: this server's store has no file. Copy it from this result.",
+                )),
+            };
+            match saved {
+                Ok(path) => {
+                    payload["saved"] = Value::Bool(true);
+                    payload["saved_to"] = Value::from(display_location(&path, home.as_deref()));
                 }
-                None => {
+                Err(failure) => {
+                    payload["saved"] = Value::Bool(false);
                     payload["saved_to"] = Value::Null;
-                    payload["save_note"] = Value::from(
-                        "this server's store has no file, so the report was not saved; copy it from this result",
-                    );
+                    payload["save_error"] = json!({
+                        "code": failure.code(),
+                        "message": failure.message(),
+                    });
                 }
             }
             payload["how_to_send"] = Value::from(HOW_TO_SEND);
@@ -403,7 +413,14 @@ fn path_starts(chars: &[char], index: usize) -> bool {
     let previous = index.checked_sub(1).map(|before| chars[before]);
     match chars[index] {
         ROOT_SENTINEL => true,
-        '/' | '\\' => !previous.is_some_and(is_name_character),
+        '/' | '\\' => {
+            !previous.is_some_and(is_name_character) || begins_with_top_directory(chars, index)
+        }
+        _ if previous.is_none_or(char::is_whitespace)
+            && begins_with_user_directory(chars, index) =>
+        {
+            true
+        }
         '~' => {
             let mut next = index + 1;
             while chars.get(next).is_some_and(|&c| is_name_character(c)) {
@@ -417,6 +434,56 @@ fn path_starts(chars: &[char], index: usize) -> bool {
         }
         _ => false,
     }
+}
+
+/// Well-known top-level directories: a separator followed by one of these
+/// starts a path even right after a name character (`-I/Users/...`).
+const TOP_DIRECTORIES: [&str; 12] = [
+    "Users", "home", "root", "var", "tmp", "private", "opt", "etc", "usr", "Volumes", "mnt", "srv",
+];
+
+/// Whether `chars[index..]` is `<separator><top directory><separator>`.
+fn begins_with_top_directory(chars: &[char], index: usize) -> bool {
+    let separator = chars[index];
+    TOP_DIRECTORIES.iter().any(|name| {
+        let end = index + 1 + name.chars().count();
+        chars
+            .get(index + 1..end)
+            .is_some_and(|word| word.iter().copied().eq(name.chars()))
+            && chars.get(end) == Some(&separator)
+    })
+}
+
+/// Whether `chars[index..]` is `Users/<name>` or `home/<name>` (either
+/// separator), read as absolute at the start of a word.
+fn begins_with_user_directory(chars: &[char], index: usize) -> bool {
+    ["Users", "home"].iter().any(|name| {
+        let end = index + name.chars().count();
+        chars
+            .get(index..end)
+            .is_some_and(|word| word.iter().copied().eq(name.chars()))
+            && chars.get(end).copied().is_some_and(is_separator)
+            && chars.get(end + 1).copied().is_some_and(is_name_character)
+    })
+}
+
+/// Whether `segment` is a user directory that ends at the user-name
+/// component (`/Users/jane`, `C:\Users\jane`, `home/jane`): the name may go on
+/// after a space, so the path cannot be delimited.
+fn ends_at_user_name(segment: &[char]) -> bool {
+    let text = segment.iter().collect::<String>();
+    let text = match text.as_bytes() {
+        [drive, b':', ..] if drive.is_ascii_alphabetic() => text[2..].to_owned(),
+        _ => text,
+    };
+    if text.ends_with(['/', '\\']) {
+        return false;
+    }
+    let parts = text
+        .split(['/', '\\'])
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    parts.len() == 2 && matches!(parts[0], "Users" | "home")
 }
 
 /// The closing character for an opening quote or bracket.
@@ -441,6 +508,23 @@ fn scrub_paths(text: &str) -> String {
     let mut cleaned = String::with_capacity(text.len());
     let mut index = 0;
     while index < chars.len() {
+        let word_start = index == 0 || chars[index - 1].is_whitespace();
+        if word_start && !chars[index].is_whitespace() {
+            let mut word_end = index;
+            while word_end < chars.len() && !chars[word_end].is_whitespace() {
+                word_end += 1;
+            }
+            let word = chars[index..word_end]
+                .iter()
+                .collect::<String>()
+                .to_lowercase();
+            if word.contains("%2f") || word.contains("%5c") {
+                // A percent-encoded separator: the whole word goes.
+                cleaned.push_str(PATH_MARKER);
+                index = word_end;
+                continue;
+            }
+        }
         if !path_starts(&chars, index) {
             cleaned.push(chars[index]);
             index += 1;
@@ -463,7 +547,26 @@ fn scrub_paths(text: &str) -> String {
             }
             end
         });
-        if closer.is_none() {
+        if let Some(closer) = closer {
+            // The rest of the word after the closing quote, when it still
+            // holds a separator (`'/Users/o'brien/x'`), goes too.
+            let mut word_end = closer + 1;
+            while word_end < chars.len() && !chars[word_end].is_whitespace() {
+                word_end += 1;
+            }
+            if chars[closer + 1..word_end]
+                .iter()
+                .copied()
+                .any(is_separator)
+            {
+                end = word_end;
+            }
+        } else if chars[index] != ROOT_SENTINEL && ends_at_user_name(&chars[index..end]) {
+            // A user name may hold spaces: remove through the end of the line.
+            while end < chars.len() && chars[end] != '\n' {
+                end += 1;
+            }
+        } else {
             // Following words on the same line that hold a separator belong
             // to the path (a space inside it).
             loop {
@@ -571,7 +674,20 @@ fn save_report(
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
             return Err(unusable());
         }
-        Ok(_) => {}
+        Ok(_) => {
+            // A directory an earlier build created with a wider mode (0755)
+            // is made private on use: group and other bits are removed
+            // (0755 becomes 0700); owner bits are never added.
+            #[cfg(unix)]
+            if let Ok(metadata) = fs::metadata(&directory) {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = metadata.permissions().mode();
+                if mode & 0o077 != 0 {
+                    let _ =
+                        fs::set_permissions(&directory, fs::Permissions::from_mode(mode & 0o700));
+                }
+            }
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let mut builder = fs::DirBuilder::new();
             #[cfg(unix)]
@@ -820,8 +936,10 @@ mod tests {
     #[test]
     fn test_clean_note_consumes_path_words_after_a_space() {
         for note in [
-            "x /Users/Jane Doe/other/x.rs and more",
-            "x /Users/Jane\u{a0}Doe/other/x.rs and more",
+            // Not a user directory: a user directory ending at the name is
+            // removed through the line end instead (final review rule C).
+            "x /srv/Jane Doe/other/x.rs and more",
+            "x /srv/Jane\u{a0}Doe/other/x.rs and more",
             "x \"/Users/Jane Doe/other x.rs\" and more",
         ] {
             let cleaned = clean_note(note, &[]);
@@ -886,6 +1004,46 @@ mod tests {
         assert!(text.contains("| version: 9.9.9"), "{text}");
         assert!(text.contains("best-effort"), "{text}");
         assert!(!text.contains("absolute paths removed"), "{text}");
+    }
+
+    /// Final review round: well-known top-level directories after a name
+    /// character, bare user directories, quoted tails, percent-encoding.
+    #[test]
+    fn test_clean_note_final_round_forms() {
+        for (note, kept) in [
+            ("cc -I/Users/jane/inc -L/home/jane/lib ok", "ok"),
+            ("a./Users/bob/x then ok", "ok"),
+            ("foo/Users/bob/x then ok", "ok"),
+            (r"foo\Users\bob\x then ok", "ok"),
+            ("see Users/jane/x then ok", "ok"),
+            ("see home/jane/x then ok", "ok"),
+            ("x /private/var/jane/y ok", "ok"),
+            ("'/Users/o'brien/secret/file' ok", "ok"),
+            ("open %2FUsers%2Fjane%2Fx ok", "ok"),
+            ("open ..%5cUsers%5Cjane ok", "ok"),
+        ] {
+            let cleaned = clean_note(note, &[]);
+            for leak in ["jane", "bob", "brien", "secret", "Users"] {
+                assert!(!cleaned.contains(leak), "{note:?} -> {cleaned:?}");
+            }
+            assert!(cleaned.ends_with(kept), "{note:?} -> {cleaned:?}");
+        }
+        // Relative paths are still kept.
+        assert_eq!(clean_note("see src/lib.rs ok", &[]), "see src/lib.rs ok");
+    }
+
+    #[test]
+    fn test_a_user_directory_without_a_further_separator_is_removed_to_the_line_end() {
+        for note in [
+            "a /Users/Jane Doe and it fails\nnext line",
+            "a C:\\Users\\Jane Doe then\nnext line",
+            "a /Users/Jane Doe\nnext line",
+        ] {
+            let cleaned = clean_note(note, &[]);
+            assert!(!cleaned.contains("Doe"), "{note:?} -> {cleaned:?}");
+            assert!(cleaned.ends_with("\nnext line"), "{note:?} -> {cleaned:?}");
+            assert!(cleaned.starts_with("a [path]"), "{note:?} -> {cleaned:?}");
+        }
     }
 
     #[test]
