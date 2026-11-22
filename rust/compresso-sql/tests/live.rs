@@ -251,19 +251,42 @@ fn test_live_postgres_privileged_role_and_role_settings() {
         )],
     ));
     assert_eq!(setting.expect("setting"), vec![vec![Value::from("on")]]);
-    runtime().block_on(pg_admin(
-        &admin,
-        &[format!("GRANT pg_signal_backend TO \"{role}\"")],
-    ));
-    let refused = gated(&service, "SELECT 1");
-    runtime().block_on(pg_admin(
-        &admin,
-        &[format!("REVOKE pg_signal_backend FROM \"{role}\"")],
-    ));
-    assert_eq!(
-        refused.expect_err("signal role").code(),
-        "sql_privileged_role"
-    );
+    // Each membership or attribute alone refuses the role.
+    for (grant, revoke) in [
+        (
+            format!("GRANT pg_signal_backend TO \"{role}\""),
+            format!("REVOKE pg_signal_backend FROM \"{role}\""),
+        ),
+        (
+            format!("GRANT pg_read_all_stats TO \"{role}\""),
+            format!("REVOKE pg_read_all_stats FROM \"{role}\""),
+        ),
+        (
+            format!("GRANT pg_monitor TO \"{role}\""),
+            format!("REVOKE pg_monitor FROM \"{role}\""),
+        ),
+        (
+            format!("ALTER ROLE \"{role}\" BYPASSRLS"),
+            format!("ALTER ROLE \"{role}\" NOBYPASSRLS"),
+        ),
+        (
+            // A NOINHERIT membership in a superuser role is still usable
+            // with SET ROLE.
+            format!(
+                "DO $$ BEGIN CREATE ROLE compresso_probe_super SUPERUSER NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$; GRANT compresso_probe_super TO \"{role}\" WITH INHERIT FALSE"
+            ),
+            format!("REVOKE compresso_probe_super FROM \"{role}\""),
+        ),
+    ] {
+        runtime().block_on(pg_admin(&admin, std::slice::from_ref(&grant)));
+        let refused = gated(&service, "SELECT 1");
+        runtime().block_on(pg_admin(&admin, &[revoke]));
+        assert_eq!(
+            refused.expect_err(&grant).code(),
+            "sql_privileged_role",
+            "{grant}"
+        );
+    }
 }
 
 #[test]

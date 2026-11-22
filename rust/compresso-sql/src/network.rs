@@ -277,7 +277,12 @@ fn text_cell(text: Option<&str>, bytes: Option<usize>, type_name: &str, binary: 
 
 /// Refuses a superuser or a member of a role that reads or writes server
 /// files or runs server programs.
-const POSTGRES_ROLE_CHECK: &str = "SELECT (r.rolsuper OR EXISTS (SELECT 1 FROM pg_catalog.pg_roles g WHERE g.rolname IN ('pg_read_server_files', 'pg_write_server_files', 'pg_execute_server_program', 'pg_signal_backend') AND pg_catalog.pg_has_role(r.oid, g.oid, 'MEMBER')))::text FROM pg_catalog.pg_roles r WHERE r.rolname = current_user";
+/// Names what makes the connected role unusable, or NULL: a superuser,
+/// BYPASSRLS, or membership (direct, inherited, or NOINHERIT and usable with
+/// SET ROLE; `pg_has_role(..., 'MEMBER')`) in a superuser or BYPASSRLS role
+/// or in a predefined role that reaches server files or programs, signals
+/// other sessions, or reads other sessions' statements and settings.
+const POSTGRES_ROLE_CHECK: &str = "SELECT CASE WHEN r.rolsuper THEN 'superuser' WHEN r.rolbypassrls THEN 'BYPASSRLS' ELSE (SELECT g.rolname::text FROM pg_catalog.pg_roles g WHERE g.oid <> r.oid AND (g.rolsuper OR g.rolbypassrls OR g.rolname IN ('pg_read_server_files', 'pg_write_server_files', 'pg_execute_server_program', 'pg_signal_backend', 'pg_read_all_stats', 'pg_read_all_settings', 'pg_monitor')) AND pg_catalog.pg_has_role(r.oid, g.oid, 'MEMBER') ORDER BY 1 LIMIT 1) END FROM pg_catalog.pg_roles r WHERE r.rolname = current_user";
 
 const POSTGRES_TABLES: &str = "SELECT n.nspname::text, c.relname::text, CASE c.relkind WHEN 'r' THEN 'table' WHEN 'p' THEN 'table' WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized_view' ELSE 'foreign_table' END, CASE WHEN c.reltuples >= 0 THEN c.reltuples::bigint::text END FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') AND NOT c.relispartition AND n.nspname <> 'information_schema' AND n.nspname NOT LIKE 'pg\\_%' ORDER BY 1, 2 LIMIT $1";
 
@@ -297,14 +302,16 @@ async fn postgres_call(
     gated: bool,
 ) -> Result<(SqlOutcome, bool), SqlError> {
     let error = |error| map_error(error, SqlEngine::Postgres);
-    let privileged: String = sqlx::query_scalar(POSTGRES_ROLE_CHECK)
+    let privileged: Option<String> = sqlx::query_scalar(POSTGRES_ROLE_CHECK)
         .fetch_one(&mut *connection)
         .await
         .map_err(error)?;
-    if privileged != "false" {
+    if let Some(reason) = privileged {
         return Err(SqlError::new(
             "sql_privileged_role",
-            "the configured Postgres role is a superuser or can read or write server files or run server programs; connect with a read-only role that has only SELECT on the tables it needs",
+            format!(
+                "the configured Postgres role is refused ({reason}): it is or can become a superuser, bypasses row security, or reaches server files, programs, or other sessions; connect with a read-only role that has only SELECT on the tables it needs"
+            ),
         ));
     }
     let millis = request.timeout.as_millis();
