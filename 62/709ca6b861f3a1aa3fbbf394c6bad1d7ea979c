@@ -1,0 +1,23 @@
+.github/workflows/ci.yml
+  s_89a704cfae63f5::t_7ffaaf59ab837d 293-301,306-308
+docs/adr/0036-opt-in-read-only-live-sql.md
+  s_89a704cfae63f5::t_82cbcf717bf18a 182-189
+rust/compresso-sql/tests/live.rs
+  s_89a704cfae63f5::t_f3611615a75e53 418-433,435-437,441-486,489-490,492-501,512-515
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "62709ca6b861f3a1aa3fbbf394c6bad1d7ea979c",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
