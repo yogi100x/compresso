@@ -1,0 +1,19 @@
+.github/workflows/ci.yml
+  s_89a704cfae63f5::t_d0c4702a9c7be4 206,233-244,255-280,282,288-300
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "24e0e05c2c132df676bc6e24c34b037d29e4dea1",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
