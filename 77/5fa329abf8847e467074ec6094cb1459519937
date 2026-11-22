@@ -1,0 +1,29 @@
+rust/compresso-atlas/src/edit.rs
+  s_89a704cfae63f5::t_e002af8e652ab4 1424-1429,3191,3196,3210-3233,3235-3238
+  s_89a704cfae63f5::t_2aec1d715bef2d 4378-4380
+  s_89a704cfae63f5::t_a17a3a566e0891 1901-1904,1907,1969-1971,1973-1974,1977-1981,1991,1997-2014,2036-2041,2043-2044,2046-2047,2050,2055
+decisions.md
+  s_89a704cfae63f5::t_b0303e1f39430d 110
+docs/adr/0035-opt-in-verified-edit-tool.md
+  s_89a704cfae63f5::t_933d1d1886f9c1 292-295
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_a1354983d15724 553
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_72af1b8b326bf1 3612,3622
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "775fa329abf8847e467074ec6094cb1459519937",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
