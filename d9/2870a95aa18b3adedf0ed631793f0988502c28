@@ -1,0 +1,77 @@
+scripts/check-crate-capabilities.ts
+  s_89a704cfae63f5::t_17b436e8ccee5c 822-837
+  s_89a704cfae63f5::t_fd69d07a525133 51
+  s_89a704cfae63f5::t_51350dd6efb1ce 5-15
+  s_89a704cfae63f5::t_f6128426180c91 990-996,999-1001,1003-1042
+  s_89a704cfae63f5::t_ee156dbc9d17bc 713,715,718,721,727-789,791-792,794-808,810-821,838-860,862-873,876-883,886-901
+scripts/check-crate-capabilities.test.ts
+  s_89a704cfae63f5::t_dc58d69a307723 257-303
+scripts/fixtures/crate-capabilities/allowed-mcp-network-through-sql/Cargo.lock
+  s_89a704cfae63f5::t_8caaf324e67449 1-37
+scripts/fixtures/crate-capabilities/allowed-mcp-network-through-sql/Cargo.toml
+  s_89a704cfae63f5::t_d9a11211c1896b 1-4
+scripts/fixtures/crate-capabilities/allowed-mcp-network-through-sql/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_ebe0697a62d05e 1-8
+scripts/fixtures/crate-capabilities/allowed-mcp-network-through-sql/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_8cbb6f3561f515 1-8
+scripts/fixtures/crate-capabilities/allowed-mcp-network-through-sql/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_91a40f8e594f44 1-7
+scripts/fixtures/crate-capabilities/allowed-mcp-network-through-sql/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_f6f7a8cacf5702 1-4
+scripts/fixtures/crate-capabilities/allowed-mcp-network-through-sql/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_1e2fafd7488037 1-10
+scripts/fixtures/crate-capabilities/denied-mcp-direct-network-beside-sql/Cargo.lock
+  s_89a704cfae63f5::t_695606091c2e01 1-29
+scripts/fixtures/crate-capabilities/denied-mcp-direct-network-beside-sql/Cargo.toml
+  s_89a704cfae63f5::t_cf8f8959a42c46 1-4
+scripts/fixtures/crate-capabilities/denied-mcp-direct-network-beside-sql/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_fae6b0a8fe7b5e 1-8
+scripts/fixtures/crate-capabilities/denied-mcp-direct-network-beside-sql/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_fa9ff01fbc797d 1-7
+scripts/fixtures/crate-capabilities/denied-mcp-direct-network-beside-sql/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_c5c55bfd837633 1-4
+scripts/fixtures/crate-capabilities/denied-mcp-direct-network-beside-sql/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_3b2e067ed34fab 1-10
+scripts/fixtures/crate-capabilities/denied-mcp-network-through-impostor-sql/Cargo.lock
+  s_89a704cfae63f5::t_92571c148efdd5 1-28
+scripts/fixtures/crate-capabilities/denied-mcp-network-through-impostor-sql/Cargo.toml
+  s_89a704cfae63f5::t_ff2241c670de1e 1-4
+scripts/fixtures/crate-capabilities/denied-mcp-network-through-impostor-sql/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_aefca06a9d600d 1-7
+scripts/fixtures/crate-capabilities/denied-mcp-network-through-impostor-sql/deps/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_b9aaba2631e954 1-7
+scripts/fixtures/crate-capabilities/denied-mcp-network-through-impostor-sql/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_64e0ec1bc20ba5 1-4
+scripts/fixtures/crate-capabilities/denied-mcp-network-through-impostor-sql/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_ddc95b92b9b08f 1-10
+scripts/fixtures/crate-capabilities/denied-store-network-through-sql/Cargo.lock
+  s_89a704cfae63f5::t_729defa915f78d 1-35
+scripts/fixtures/crate-capabilities/denied-store-network-through-sql/Cargo.toml
+  s_89a704cfae63f5::t_3c31c4b790aac8 1-4
+scripts/fixtures/crate-capabilities/denied-store-network-through-sql/crates/compresso-integrations/Cargo.toml
+  s_89a704cfae63f5::t_9f503175e47331 1-7
+scripts/fixtures/crate-capabilities/denied-store-network-through-sql/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_b6c4589120198f 1-7
+scripts/fixtures/crate-capabilities/denied-store-network-through-sql/crates/compresso-store/Cargo.toml
+  s_89a704cfae63f5::t_518aedc9cc6438 1-7
+scripts/fixtures/crate-capabilities/denied-store-network-through-sql/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_a8e1b1e0913c13 1-4
+scripts/fixtures/crate-capabilities/denied-store-network-through-sql/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_2c5fc59273611e 1-10
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d92870a95aa18b3adedf0ed631793f0988502c28",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
