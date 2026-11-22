@@ -556,3 +556,38 @@ async fn test_grep_tool_context_lines_surround_matches_within_the_token_cap() {
     }
     harness.close().await;
 }
+
+/// E17-49 (D114): a path filter that leaves matches out adds one bounded
+/// note naming where the pattern also matches; without a filter, or when
+/// nothing matches outside it, there is none.
+#[tokio::test]
+async fn test_grep_tool_names_files_outside_the_path_filter_that_also_match() {
+    let (mut harness, _temp, _root) = Fixture::new().harness().await;
+    let payload = successful_json(
+        &harness
+            .call(json!({ "pattern": "is_secret_path", "path": "src/scanner.rs" }))
+            .await,
+    );
+    assert_eq!(
+        payload["outside_matches"],
+        json!({
+            "files_total": 1,
+            "matches_total": 2,
+            "files": [{ "path": "src/queries.rs", "matches": 2 }]
+        }),
+        "{payload}"
+    );
+    for arguments in [
+        json!({ "pattern": "is_secret_path" }),
+        json!({ "pattern": "is_secret_path", "path": "src" }),
+        json!({ "pattern": "fn scan", "path": "src/scanner.rs" }),
+        json!({ "pattern": "ends_with", "path": "src/scanner.rs" }),
+    ] {
+        let payload = successful_json(&harness.call(arguments.clone()).await);
+        assert!(
+            payload.get("outside_matches").is_none(),
+            "{arguments}: {payload}"
+        );
+    }
+    harness.close().await;
+}

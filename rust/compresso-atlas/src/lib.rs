@@ -23,7 +23,8 @@ pub use cards::{
 pub use concurrency::{Concurrency, DEFAULT_MEMORY_BUDGET_BYTES};
 pub use edit::{
     EDIT_MAX_FILE_BYTES, EDIT_MAX_FILES, EDIT_MAX_IDENTIFIER_BYTES, EDIT_MAX_LISTED_LOCATIONS,
-    EDIT_MAX_OPERATIONS, EDIT_MAX_REQUEST_BYTES, EDIT_MAX_SCAN_BYTES, EDIT_MAX_SITES,
+    EDIT_MAX_NEW_DIRECTORIES, EDIT_MAX_NEW_DIRECTORY_DEPTH, EDIT_MAX_OPERATIONS,
+    EDIT_MAX_REQUEST_BYTES, EDIT_MAX_SCAN_BYTES, EDIT_MAX_SIBLING_ENTRIES, EDIT_MAX_SITES,
     EDIT_MAX_TEXT_BYTES, EDIT_MAX_WRITE_BYTES, EDIT_UNINDEXED_MEMO_ENTRIES, EditBound, EditError,
     EditLocation, EditOperation, EditReport, EditRequest, FileChange, IndexState, InsertPosition,
     LineEnding, Occurrences, OperationOutcome, Refusal, RenameOutcome, SkippedFile, SourceLanguage,
@@ -31,10 +32,12 @@ pub use edit::{
 };
 pub use grep::{
     GREP_MAX_CONTEXT_LINES, GREP_MAX_FILES_LIMIT, GREP_MAX_MATCHES_PER_FILE_LIMIT,
-    GREP_MAX_PATTERN_BYTES, GREP_MAX_PATTERNS, GREP_REGEX_MAX_BYTES_PER_PATTERN,
-    GREP_ROW_CANDIDATES, GREP_UNLISTED_FILES_NAMED, GREP_UNLISTED_LINES_NAMED, GrepContextLine,
-    GrepError, GrepFile, GrepLine, GrepOptions, GrepPatternResult, GrepReport, UnmatchedPath, grep,
-    literal_alternation_source, literal_alternatives, validate_grep,
+    GREP_MAX_PATTERN_BYTES, GREP_MAX_PATTERNS, GREP_OUTSIDE_FILES_NAMED,
+    GREP_OUTSIDE_MATCHING_FILES, GREP_OUTSIDE_SCAN_MAX_BYTES, GREP_OUTSIDE_SCAN_MAX_FILES,
+    GREP_REGEX_MAX_BYTES_PER_PATTERN, GREP_ROW_CANDIDATES, GREP_UNLISTED_FILES_NAMED,
+    GREP_UNLISTED_LINES_NAMED, GrepContextLine, GrepError, GrepFile, GrepLine, GrepOptions,
+    GrepPatternResult, GrepReport, OutsideMatches, UnmatchedPath, grep, literal_alternation_source,
+    literal_alternatives, matches_outside_filter, validate_grep,
 };
 pub use indexer::{IndexError, IndexProgress, IndexReport, Indexer};
 pub use queries::{

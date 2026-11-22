@@ -19,7 +19,7 @@ use crate::queries::{
     QueryError, ResolvedEntry, canonical_query_root, map_path_matches_focus, read_utf8,
     resolve_under_root, smallest_enclosing_symbol, validate_map_focus,
 };
-use crate::scanner::is_secret_path;
+use crate::scanner::{ScannerExclusions, is_secret_path};
 
 /// Most patterns one search accepts.
 pub const GREP_MAX_PATTERNS: usize = 8;
@@ -199,6 +199,44 @@ pub struct GrepPatternResult {
     /// among those past `max_files` or dropped to fit a token budget
     /// (E17-38, D103).
     pub files_unlisted: Vec<(String, usize)>,
+}
+
+/// Indexed files outside a path filter that [`matches_outside_filter`]
+/// reads before it stops (E17-49, D114).
+pub const GREP_OUTSIDE_SCAN_MAX_FILES: usize = 2_000;
+/// Bytes [`matches_outside_filter`] reads before it stops (E17-49).
+pub const GREP_OUTSIDE_SCAN_MAX_BYTES: u64 = 32 * 1024 * 1024;
+/// Files outside the filter named by path, the most matches first (E17-49).
+pub const GREP_OUTSIDE_FILES_NAMED: usize = 3;
+/// Files read per batch by the outside scan, and threads reading a batch.
+const OUTSIDE_BATCH: usize = 64;
+const OUTSIDE_WORKERS: usize = 4;
+/// Matching files outside the filter after which [`matches_outside_filter`]
+/// stops and reports its totals as lower bounds (E17-49 review): enough to
+/// name the most-matching files without reading the rest of a large
+/// repository.
+pub const GREP_OUTSIDE_MATCHING_FILES: usize = 25;
+
+/// Where the call's patterns also match in indexed files outside its path
+/// filter (E17-49, D114).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutsideMatches {
+    /// Files outside the filter with at least one matching line.
+    pub files_total: usize,
+    /// Matching lines in them, summed over the patterns.
+    pub matches_total: usize,
+    /// The first [`GREP_OUTSIDE_FILES_NAMED`] as `(path, matching lines)`,
+    /// most matches first, then by path.
+    pub files: Vec<(String, usize)>,
+    /// The scan stopped at its file or byte bound, or after
+    /// [`GREP_OUTSIDE_MATCHING_FILES`] matching files: the totals are lower
+    /// bounds and files later in path order are not named.
+    pub at_least: bool,
+    /// Files read and bytes read by the scan (at most
+    /// [`GREP_OUTSIDE_SCAN_MAX_FILES`] and about
+    /// [`GREP_OUTSIDE_SCAN_MAX_BYTES`]).
+    pub files_scanned: usize,
+    pub bytes_scanned: u64,
 }
 
 /// Unlisted files named per pattern (E17-38, D103).
@@ -1612,9 +1650,242 @@ pub fn literal_alternation_source(parts: &[String]) -> String {
         .join("|")
 }
 
+/// Where the patterns of a call with a path filter (the call's `path` or a
+/// pattern's own scope) that matched inside it also match in indexed files
+/// outside it (E17-49, D114); `None` without a filter, when no pattern
+/// matched inside it, or when nothing matches outside.
+///
+/// Files are read as a search reads them: indexed files in index path
+/// order through the same root resolution and read gate, never a secret
+/// path, and never a file the scanner now excludes (judged only for files
+/// that match). The scan stops after [`GREP_OUTSIDE_SCAN_MAX_FILES`] files or
+/// once [`GREP_OUTSIDE_SCAN_MAX_BYTES`] are read, and then says its totals
+/// are lower bounds.
+pub fn matches_outside_filter(
+    store: &Store,
+    repo: RepoId,
+    options: &GrepOptions<'_>,
+    report: &GrepReport,
+) -> Result<Option<OutsideMatches>, AtlasError> {
+    matches_outside_filter_within(
+        store,
+        repo,
+        options,
+        report,
+        GREP_OUTSIDE_SCAN_MAX_FILES,
+        GREP_OUTSIDE_SCAN_MAX_BYTES,
+    )
+}
+
+fn matches_outside_filter_within(
+    store: &Store,
+    repo: RepoId,
+    options: &GrepOptions<'_>,
+    report: &GrepReport,
+    max_files: usize,
+    max_bytes: u64,
+) -> Result<Option<OutsideMatches>, AtlasError> {
+    let matchers = compile_patterns(options)?;
+    let filter = match options.path {
+        Some(path) => PathFilter::parse(path)?,
+        None => None,
+    };
+    let scopes = scope_filters(options)?;
+    if filter.is_none() && scopes.iter().all(Option::is_none) {
+        return Ok(None);
+    }
+    // Only the patterns that matched inside the filter.
+    let searched = report
+        .results
+        .iter()
+        .enumerate()
+        .filter(|(_, result)| result.matches_total > 0)
+        .map(|(index, _)| index)
+        .filter(|index| *index < matchers.len())
+        .collect::<Vec<_>>();
+    if searched.is_empty() {
+        return Ok(None);
+    }
+    let inside = |index: usize, path: &str| {
+        filter.as_ref().is_none_or(|filter| filter.matches(path))
+            && scopes[index]
+                .as_ref()
+                .is_none_or(|scope| scope.matches(path))
+    };
+    let root = canonical_query_root(&store.repository(repo)?.root)?;
+    let mut exclusions = None;
+    let mut outside = OutsideMatches {
+        files_total: 0,
+        matches_total: 0,
+        files: Vec::new(),
+        at_least: false,
+        files_scanned: 0,
+        bytes_scanned: 0,
+    };
+    let mut found = Vec::<(String, usize)>::new();
+    let candidates = store
+        .indexed_files(repo)?
+        .into_iter()
+        .filter(|record| !is_secret_path(Path::new(&record.path)))
+        .filter_map(|record| {
+            let patterns = searched
+                .iter()
+                .copied()
+                .filter(|index| !inside(*index, &record.path))
+                .collect::<Vec<_>>();
+            (!patterns.is_empty()).then_some((record, patterns))
+        })
+        .collect::<Vec<_>>();
+    // Matching lines and bytes read of one file; `None` when the read gate
+    // refuses it or it is not UTF-8 text.
+    let count = |(record, patterns): &(FileRecord, Vec<usize>)| -> Option<(usize, u64)> {
+        let Ok(ResolvedEntry::File(resolved)) = resolve_under_root(&root, &record.path) else {
+            return None;
+        };
+        let source = read_utf8(&resolved).ok()?;
+        let matches = patterns
+            .iter()
+            .map(|index| {
+                if options.regex {
+                    matching_lines_by_line(&matchers[*index], &source, 0).0
+                } else {
+                    matching_lines(&matchers[*index], &source, 0).0
+                }
+            })
+            .sum::<usize>();
+        Some((matches, u64::try_from(source.len()).unwrap_or(u64::MAX)))
+    };
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .min(OUTSIDE_WORKERS);
+    // Files are taken in index path order, a batch at a time, within the
+    // file bound and the byte bound (judged on the indexed sizes before any
+    // read); each batch is read by up to OUTSIDE_WORKERS threads and its
+    // results are taken in path order, so the answer does not depend on
+    // timing. A stop mid-batch has read at most OUTSIDE_BATCH extra files.
+    let (mut next, mut planned_files, mut planned_bytes) = (0, 0_usize, 0_u64);
+    'batches: while next < candidates.len() {
+        let mut end = next;
+        while end < candidates.len()
+            && end - next < OUTSIDE_BATCH
+            && planned_files < max_files
+            && planned_bytes < max_bytes
+        {
+            planned_files += 1;
+            planned_bytes = planned_bytes.saturating_add(candidates[end].0.size_bytes);
+            end += 1;
+        }
+        if end == next {
+            outside.at_least = true;
+            break;
+        }
+        let batch = &candidates[next..end];
+        let chunk = batch.len().div_ceil(workers);
+        let counts = std::thread::scope(|scope| {
+            let handles = batch
+                .chunks(chunk)
+                .map(|part| scope.spawn(move || part.iter().map(count).collect::<Vec<_>>()))
+                .collect::<Vec<_>>();
+            handles
+                .into_iter()
+                .flat_map(|handle| handle.join().unwrap_or_default())
+                .collect::<Vec<_>>()
+        });
+        for ((record, _), counted) in batch.iter().zip(counts) {
+            let Some((matches, bytes)) = counted else {
+                continue;
+            };
+            outside.files_scanned += 1;
+            outside.bytes_scanned = outside.bytes_scanned.saturating_add(bytes);
+            if matches == 0 {
+                continue;
+            }
+            // The index row may be older than the ignore rules.
+            let exclusions = exclusions.get_or_insert_with(|| ScannerExclusions::load(&root));
+            if exclusions.excludes(&root, Path::new(&record.path)) {
+                continue;
+            }
+            found.push((record.path.clone(), matches));
+            if found.len() == GREP_OUTSIDE_MATCHING_FILES {
+                // Enough is known; the rest would cost a read each.
+                outside.at_least = true;
+                break 'batches;
+            }
+        }
+        next = end;
+    }
+    if found.is_empty() {
+        return Ok(None);
+    }
+    outside.files_total = found.len();
+    outside.matches_total = found.iter().map(|(_, matches)| matches).sum();
+    found.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    found.truncate(GREP_OUTSIDE_FILES_NAMED);
+    outside.files = found;
+    Ok(Some(outside))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// E17-49 (D114): the outside scan reads at most its file bound and then
+    /// says its totals are lower bounds.
+    #[test]
+    fn test_the_outside_scan_stops_at_its_file_and_byte_bounds() {
+        let directory = tempfile::TempDir::new().expect("temporary directory");
+        let root = directory.path().join("repo");
+        fs_write(&root.join("in/a.ts"), "needle\n");
+        for index in 0..5 {
+            fs_write(&root.join(format!("out/{index}.ts")), "needle\n");
+        }
+        let store = Store::open(&directory.path().join("store.db")).expect("store");
+        crate::Indexer::new(
+            &store,
+            compresso_core::counter_for(compresso_core::TokenProvider::Heuristic),
+        )
+        .index(&root, |_| {})
+        .expect("index");
+        let repo = store
+            .repo_by_root(&std::fs::canonicalize(&root).expect("root"))
+            .expect("store")
+            .expect("repo")
+            .id;
+        let patterns = ["needle".to_owned()];
+        let options = GrepOptions {
+            patterns: &patterns,
+            regex: false,
+            case_insensitive: false,
+            path: Some("in"),
+            max_files: 20,
+            max_matches_per_file: 5,
+            context_lines: 0,
+            scopes: &[],
+            select_rows: false,
+        };
+        let report = grep(&store, repo, &options).expect("grep");
+        let bounded = matches_outside_filter_within(&store, repo, &options, &report, 2, u64::MAX)
+            .expect("note")
+            .expect("matches outside");
+        assert_eq!(bounded.files_scanned, 2);
+        assert_eq!(bounded.files_total, 2);
+        assert!(bounded.at_least);
+        let by_bytes = matches_outside_filter_within(&store, repo, &options, &report, 100, 7)
+            .expect("note")
+            .expect("matches outside");
+        assert_eq!((by_bytes.files_scanned, by_bytes.bytes_scanned), (1, 7));
+        assert!(by_bytes.at_least);
+        let whole = matches_outside_filter(&store, repo, &options, &report)
+            .expect("note")
+            .expect("matches outside");
+        assert_eq!((whole.files_scanned, whole.files_total), (5, 5));
+        assert!(!whole.at_least);
+    }
+
+    fn fs_write(path: &Path, contents: &str) {
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("directory");
+        std::fs::write(path, contents).expect("file");
+    }
 
     #[test]
     fn test_literal_alternatives_split_on_unescaped_pipes_only() {
