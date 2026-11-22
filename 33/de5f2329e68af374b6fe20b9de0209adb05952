@@ -1,0 +1,25 @@
+README.md
+  s_89a704cfae63f5::t_3e8187901e45f1 14-15
+  s_89a704cfae63f5::t_5d774a42087f1c 16-17
+docs/runbooks/install-local.md
+  s_89a704cfae63f5::t_3e8187901e45f1 131-135
+  s_89a704cfae63f5::t_f99a956ed4f521 111-113
+docs/adr/0036-opt-in-read-only-live-sql.md
+  s_89a704cfae63f5::t_3e8187901e45f1 14-21,140-146,173-175
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "33de5f2329e68af374b6fe20b9de0209adb05952",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
