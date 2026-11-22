@@ -88,6 +88,9 @@ pub enum SkipReason {
     TooLarge,
     Symlink,
     UnsupportedFileType,
+    /// Text that is not valid UTF-8 (a Latin-1 source file, say): skipped
+    /// like a binary file, so the index continues (E17-47 review).
+    NotUtf8,
 }
 
 /// Atlas-level failures. Future Atlas modules share the path-boundary variant.
@@ -281,6 +284,9 @@ where
         }?;
         match inspection {
             FileInspection::Binary => skipped.push((PathBuf::from(relative), SkipReason::Binary)),
+            FileInspection::NotUtf8 => {
+                skipped.push((PathBuf::from(relative), SkipReason::NotUtf8));
+            }
             FileInspection::TooLarge => {
                 skipped.push((PathBuf::from(relative), SkipReason::TooLarge));
             }
@@ -1289,6 +1295,7 @@ fn ignore_error_path(error: &ignore::Error) -> Option<PathBuf> {
 
 enum FileInspection {
     Binary,
+    NotUtf8,
     TooLarge,
     Hash(String),
 }
@@ -1310,6 +1317,8 @@ fn inspect_file(path: &Path, max_file_bytes: u64) -> io::Result<FileInspection> 
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(&prefix);
+    let mut utf8 = Utf8Check::default();
+    utf8.feed(&prefix);
     let mut total = prefix.len() as u64;
     let mut buffer = [0_u8; HASH_BUFFER_BYTES];
     loop {
@@ -1322,8 +1331,51 @@ fn inspect_file(path: &Path, max_file_bytes: u64) -> io::Result<FileInspection> 
             return Ok(FileInspection::TooLarge);
         }
         hasher.update(&buffer[..read]);
+        utf8.feed(&buffer[..read]);
+    }
+    // The indexer reads candidates as UTF-8 text; one it cannot read is
+    // skipped here rather than failing the whole index (E17-47 review).
+    if !utf8.finish() {
+        return Ok(FileInspection::NotUtf8);
     }
     Ok(FileInspection::Hash(hasher.finalize().to_hex().to_string()))
+}
+
+/// Streaming UTF-8 validation over the chunks a file is read in: a
+/// character split across two chunks is carried over (at most 3 bytes).
+#[derive(Default)]
+struct Utf8Check {
+    carry: Vec<u8>,
+    invalid: bool,
+}
+
+impl Utf8Check {
+    fn feed(&mut self, chunk: &[u8]) {
+        if self.invalid {
+            return;
+        }
+        let joined;
+        let bytes = if self.carry.is_empty() {
+            chunk
+        } else {
+            joined = [self.carry.as_slice(), chunk].concat();
+            &joined
+        };
+        let carry = match std::str::from_utf8(bytes) {
+            Ok(_) => Vec::new(),
+            // Incomplete at the end: wait for the next chunk.
+            Err(error) if error.error_len().is_none() => bytes[error.valid_up_to()..].to_vec(),
+            Err(_) => {
+                self.invalid = true;
+                Vec::new()
+            }
+        };
+        self.carry = carry;
+    }
+
+    fn finish(self) -> bool {
+        !self.invalid && self.carry.is_empty()
+    }
 }
 
 #[derive(Clone, Default)]

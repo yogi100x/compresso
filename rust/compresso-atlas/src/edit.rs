@@ -328,7 +328,7 @@ impl Refusal {
             Self::NotFound => "the file was not found",
             Self::Excluded => "the scanner excludes the path (for example it is gitignored)",
             Self::NotIndexed => {
-                "the file is not in the repository index (the scanner skips binary files and files over its size limit)"
+                "the file is not in the repository index (the scanner skips binary files, text that is not UTF-8, and files over its size limit)"
             }
             Self::NotAFile => "the path is not a regular file",
             Self::TooLarge => "the file is over the 1 MB edit limit",
@@ -793,12 +793,16 @@ pub(crate) fn apply_edits_with_hook(
     let candidates = refresh_candidates(&root, &exclusions, &request.operations, &indexed);
     // At most one refresh per call.
     let refresh = has_rename || !candidates.is_empty();
+    #[cfg(test)]
+    if refresh {
+        tests::REFRESHES.with(|count| count.set(count.get() + 1));
+    }
     let index_refreshed = !refresh || Indexer::new(store, counter).index(&root, |_| {}).is_ok();
     if refresh {
         indexed = load_indexed()?;
-        if index_refreshed {
-            remember_unindexed(&root, &candidates, &indexed);
-        }
+        // Also after a failed refresh (review): an unchanged target does
+        // not repeat it on every call.
+        remember_unindexed(&root, &candidates, &indexed);
     }
     let gate = Gate {
         root: &root,
@@ -1409,7 +1413,8 @@ struct RefreshCandidate {
 /// the target is applied first, so such a target never costs a refresh:
 /// secret, `.git`, control file, scanner-excluded, any symbolic link on the
 /// path (judged without following links), not a regular file, over the
-/// edit limit, binary (a NUL in the first 8 KiB, the scanner's sniff), or
+/// edit limit, binary (a NUL in the first 8 KiB, the scanner's sniff) or
+/// not UTF-8 in those 8 KiB, or
 /// remembered unchanged from an earlier refresh that did not index it.
 /// Bounded by the operation count; reads at most 8 KiB per target.
 fn refresh_candidates(
@@ -1463,7 +1468,14 @@ fn refresh_candidates(
                 resolved
                     .open()
                     .and_then(|file| file.take(BINARY_SNIFF_BYTES).read_to_end(&mut prefix))
-                    .map_or(true, |_| prefix.contains(&0))
+                    .map_or(true, |_| {
+                        // A NUL, or bytes that are not UTF-8 (beyond a
+                        // character cut at the end of the sniff): the
+                        // scanner skips the file either way.
+                        prefix.contains(&0)
+                            || std::str::from_utf8(&prefix)
+                                .is_err_and(|error| error.error_len().is_some())
+                    })
             }
             _ => true,
         };
@@ -1671,11 +1683,21 @@ fn is_reserved_component(name: &str) -> bool {
         .next()
         .unwrap_or_default()
         .trim_end_matches(' ');
-    match stem.as_bytes() {
-        b"CON" | b"PRN" | b"AUX" | b"NUL" => true,
-        [b'C', b'O', b'M', digit] | [b'L', b'P', b'T', digit] => (b'1'..=b'9').contains(digit),
-        _ => false,
+    if matches!(stem, "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") {
+        return true;
     }
+    // COM1-9 and LPT1-9, and the superscript digits Windows also reserves.
+    let Some(number) = stem
+        .strip_prefix("COM")
+        .or_else(|| stem.strip_prefix("LPT"))
+    else {
+        return false;
+    };
+    let mut characters = number.chars();
+    matches!(
+        (characters.next(), characters.next()),
+        (Some('1'..='9' | '\u{b9}' | '\u{b2}' | '\u{b3}'), None)
+    )
 }
 
 /// The checks of `create` that follow the resolution of its directory,
@@ -1811,6 +1833,19 @@ const CONTROL_FILES: &[&str] = &[
     "bitbucket-pipelines.yaml",
     "azure-pipelines.yaml",
     ".travis.yaml",
+    // Final round of the review; the list stops here. It is defence in
+    // depth, not a boundary (see `is_control_path`).
+    "agents.override.md",
+    "crush.md",
+    "lefthook-local.yml",
+    "lefthook-local.yaml",
+    ".lefthook-local.yml",
+    ".lefthook-local.yaml",
+    "appveyor.yml",
+    "appveyor.yaml",
+    ".appveyor.yml",
+    ".appveyor.yaml",
+    "bunfig.toml",
 ];
 
 /// A path component as case-insensitive file systems and Windows compare it:
@@ -1825,9 +1860,12 @@ fn control_key(name: &str) -> String {
 /// starting with `.git` (`.gitignore`, `.gitattributes`, `.gitmodules`,
 /// `.gitlab-ci.yml`, ...) or `.aider` is included.
 ///
-/// This is a denylist of known control files, not a guarantee: build
-/// scripts and other code that a tool may later execute stay editable,
-/// because editing code is the tool's purpose. Names are compared after
+/// This is a denylist of known control files, defence in depth and not a
+/// boundary: ordinary code and build files that tools run (`build.rs`,
+/// `package.json`, `Makefile`, `conftest.py`, `eslint.config.js`,
+/// `go.work`) stay editable and creatable on purpose, because editing code
+/// is the tool's purpose; the client's approval of the edit tool is the
+/// boundary. Names are compared after
 /// ASCII case folding and trimming trailing dots and spaces; ASCII names
 /// have no other Unicode-equivalent spelling, and a look-alike name using
 /// other scripts names a different file, which clients do not load as the
@@ -1843,6 +1881,9 @@ pub fn is_control_path(relative: &Path) -> bool {
             || name.ends_with(".code-workspace")
             || CONTROL_DIRECTORIES.contains(&name.as_str())
             || CONTROL_FILES.contains(&name.as_str())
+            // `mise.<env>.toml` and `.mise.<env>.toml` configuration files.
+            || ((name.starts_with("mise.") || name.starts_with(".mise."))
+                && name.ends_with(".toml"))
             || (name == ".cargo"
                 && names
                     .get(index + 1)
@@ -2983,6 +3024,7 @@ mod tests {
     type AfterRecheck = Box<dyn FnMut(&Path)>;
 
     thread_local! {
+        pub(super) static REFRESHES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
         /// Runs between a created file's last re-check and its link step.
         static AFTER_RECHECK: std::cell::RefCell<Option<AfterRecheck>> =
             const { std::cell::RefCell::new(None) };
@@ -3510,6 +3552,48 @@ mod tests {
         EditOperation::Create {
             path: path.to_owned(),
             content: content.to_owned(),
+        }
+    }
+
+    /// Index refreshes this thread attempted (review: refresh memory).
+    fn refreshes() -> u64 {
+        REFRESHES.with(std::cell::Cell::get)
+    }
+
+    /// Final review item 2: an edit naming a non-UTF-8 text file is refused
+    /// without any refresh. Item 3: a failing refresh is remembered too.
+    #[test]
+    fn test_a_non_utf8_target_and_a_failed_refresh_cost_no_repeated_refresh() {
+        let fixture = Fixture::new(&[("a.rs", "fn a() {}\n")]);
+        fs::write(fixture.root.join("latin.py"), b"# caf\xe9\nx = 1\n").unwrap();
+        let before = refreshes();
+        let error = fixture
+            .apply(vec![replace("latin.py", "x = 1", "x = 2")], &mut |_, _| {
+                Ok(())
+            })
+            .map(|_| ())
+            .expect_err("not indexable");
+        assert!(matches!(error, EditError::Refused { .. }), "{error:?}");
+        assert_eq!(refreshes(), before, "no refresh for a non-UTF-8 target");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::write(fixture.root.join("new.rs"), "fn n() {}\n").unwrap();
+            let locked = fixture.root.join("locked");
+            fs::create_dir(&locked).unwrap();
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+            if fs::read_dir(&locked).is_ok() {
+                fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+                eprintln!("skipped: this process can read a 0o000 directory");
+                return;
+            }
+            let before = refreshes();
+            for _ in 0..3 {
+                let _ = fixture.apply(vec![replace("new.rs", "fn n", "fn m")], &mut |_, _| Ok(()));
+            }
+            fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(refreshes() - before, 1, "a failed refresh is not repeated");
         }
     }
 

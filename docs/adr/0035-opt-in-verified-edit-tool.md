@@ -265,7 +265,14 @@ through the client's own write path), `:` and Windows reserved device names,
 and two creates differing only by case; the control-file denylist grew (see
 D112); a path through a link is `not_found` whatever it points to; and the
 refresh for an unindexed target is skipped for targets the cheap checks
-refuse and for unchanged targets a refresh already left unindexed. Known
+refuse and for unchanged targets a refresh already left unindexed (also after
+a failed refresh). The control-file denylist is defence in depth, not a
+boundary, and stops growing after the final review round: ordinary code and
+build files that tools run (`build.rs`, `package.json`, `Makefile`,
+`conftest.py`, `eslint.config.js`, `go.work`) stay editable and creatable on
+purpose, and the client's approval of the edit tool is the boundary. A text
+file that is not UTF-8 is now skipped by the scanner instead of failing the
+whole index. Known
 gaps: no journal for a crash mid-commit, no automatic cleanup of leftover
 temporary files, hard links required for create, and the request byte bound
 checked after the MCP frame is parsed.

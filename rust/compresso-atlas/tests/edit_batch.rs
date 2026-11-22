@@ -637,6 +637,23 @@ const NEW_CONTROL_FILES: &[&str] = &[
     ".drone.yml",
     "bitbucket-pipelines.yml",
     "azure-pipelines.yaml",
+    // Final round of the review.
+    "AGENTS.override.md",
+    "docs/agents.OVERRIDE.md",
+    "CRUSH.md",
+    "lefthook-local.yml",
+    "lefthook-local.yaml",
+    ".lefthook-local.yml",
+    "sub/.lefthook-local.yaml",
+    "mise.dev.toml",
+    "sub/.mise.ci.toml",
+    "MISE.Local.Extra.toml",
+    "appveyor.yml",
+    ".appveyor.yml",
+    "appveyor.yaml",
+    ".appveyor.yaml",
+    "bunfig.toml",
+    "pkg/BUNFIG.TOML",
 ];
 
 #[test]
@@ -707,6 +724,11 @@ fn test_create_refuses_colons_and_reserved_device_names_everywhere() {
         "Aux.h",
         "prn.tar.gz",
         "src/com9.",
+        "CONIN$",
+        "src/conout$.txt",
+        "COM\u{b9}.rs",
+        "lpt\u{b2}",
+        "src/LPT\u{b3}.c",
     ] {
         let error = fixture
             .apply(vec![EditOperation::Create {
@@ -721,6 +743,8 @@ fn test_create_refuses_colons_and_reserved_device_names_everywhere() {
         "src/com10.rs",
         "src/auxiliary.rs",
         "src/nullable.rs",
+        "src/conin.rs",
+        "src/com\u{b4}.rs",
     ] {
         fixture
             .apply(vec![EditOperation::Create {
@@ -882,4 +906,36 @@ fn test_an_unchanged_target_a_refresh_did_not_index_is_remembered() {
         .apply(vec![replace(target, "x", "y", 1)])
         .expect_err("not indexed");
     assert!(fixture.indexed(&third), "a changed target is tried again");
+}
+
+/// Final review item 2: a text file that is not valid UTF-8 and holds no
+/// NUL (a Latin-1 source file) is skipped like a binary file, and the index
+/// continues.
+#[test]
+fn test_a_non_utf8_text_file_is_skipped_and_the_index_continues() {
+    let fixture = Fixture::new(&[
+        ("a.rs", b"fn a() {}\n"),
+        ("b.py", b"# caf\xe9\ndef f():\n    return 1\n"),
+    ]);
+    assert!(fixture.indexed("a.rs"));
+    assert!(!fixture.indexed("b.py"));
+    let repo = fixture
+        .store
+        .repo_by_root(&fixture.root)
+        .expect("store")
+        .expect("repo")
+        .id;
+    let scan = compresso_atlas::scan(&fixture.store, repo, &fixture.root).expect("scan");
+    let reasons = format!("{:?}", scan.skipped);
+    assert!(reasons.contains("\"b.py\", NotUtf8"), "{reasons}");
+    // A multi-byte character split across the scanner's read buffers is
+    // still valid UTF-8.
+    let mut long = "\u{e9}".repeat(70_000);
+    long.push('\n');
+    write(&fixture.root, "long.txt", long.as_bytes());
+    let probe = probe(&fixture, "utf8");
+    fixture
+        .apply(vec![replace("long.txt", "\u{e9}\n", "e\n", 1)])
+        .expect("a long valid UTF-8 file is indexed and edited");
+    assert!(fixture.indexed(&probe));
 }
