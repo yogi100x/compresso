@@ -37,7 +37,10 @@ use serde_json::Value;
 pub use cells::{
     MAX_CELL_CHARS, MAX_COLUMNS, MAX_METADATA_CHARS, MAX_NAME_CHARS, MAX_RESULT_BYTES,
 };
-pub use target::{POSTGRES_ENVIRONMENT, SqlEngine, is_valid_env_name};
+pub use target::{
+    POSTGRES_ENVIRONMENT, POSTGRES_UNOVERRIDABLE, SqlEngine, TRUST_ANCHOR_ENVIRONMENT,
+    is_valid_env_name,
+};
 
 /// Prefix every operator-chosen variable name carries.
 pub const ENV_PREFIX: &str = "COMPRESSO_SQL_";
@@ -347,15 +350,18 @@ impl SqlService {
         } else {
             match settings.value.as_deref() {
                 None => Err("the variable is not set".to_owned()),
-                Some(value) => {
-                    target::SqlTarget::parse_with_environment(value, protected, |name| {
+                Some(value) => target::SqlTarget::parse_with_environments(
+                    value,
+                    protected,
+                    |name| {
                         settings
                             .postgres_environment
                             .iter()
                             .any(|set| set == name)
                             .then(String::new)
-                    })
-                }
+                    },
+                    |name| std::env::var_os(name).map(|_| String::new()),
+                ),
             }
         };
         Self {

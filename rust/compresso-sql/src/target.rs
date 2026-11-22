@@ -74,6 +74,22 @@ pub const POSTGRES_ENVIRONMENT: &[&str] = &[
     "PGAPPNAME",
 ];
 
+/// Postgres variables the driver reads that no explicit option overrides:
+/// refused from the real process environment whatever the settings say.
+/// (`PGPASSWORD` counts only when the URL has no password.)
+pub const POSTGRES_UNOVERRIDABLE: &[&str] = &[
+    "PGHOSTADDR",
+    "PGOPTIONS",
+    "PGSSLROOTCERT",
+    "PGSSLCERT",
+    "PGSSLKEY",
+    "PGPASSWORD",
+];
+
+/// Variables the operating-system certificate loader reads (`rustls` native
+/// roots); either set would change which servers TLS trusts.
+pub const TRUST_ANCHOR_ENVIRONMENT: &[&str] = &["SSL_CERT_FILE", "SSL_CERT_DIR"];
+
 /// Transport security the driver is told to use.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Tls {
@@ -215,10 +231,23 @@ pub(crate) fn postgres_environment_conflict(
 impl SqlTarget {
     /// Parses one URL against the Postgres variables `environment` reports
     /// as set. The error never contains the URL or its parts.
+    #[cfg(test)]
     pub(crate) fn parse_with_environment(
         value: &str,
         protected: Vec<PathBuf>,
         environment: impl Fn(&str) -> Option<String>,
+    ) -> Result<Self, String> {
+        Self::parse_with_environments(value, protected, environment, |_| None)
+    }
+
+    /// `environment` is what the settings recorded (any PG* variable
+    /// refuses); `ambient` is the real process environment, which the
+    /// driver and the certificate loader read whatever the settings say.
+    pub(crate) fn parse_with_environments(
+        value: &str,
+        protected: Vec<PathBuf>,
+        environment: impl Fn(&str) -> Option<String>,
+        ambient: impl Fn(&str) -> Option<String>,
     ) -> Result<Self, String> {
         let value = value.trim();
         if let Some(rest) = value.strip_prefix("sqlite:") {
@@ -304,8 +333,23 @@ impl SqlTarget {
         if let Some(password) = &password {
             secrets.add(password);
         }
+        if let Some(variable) = TRUST_ANCHOR_ENVIRONMENT
+            .iter()
+            .find(|name| ambient(name).is_some())
+        {
+            return Err(format!(
+                "{variable} is set; it would change which servers TLS trusts, so unset it in the server's environment (the connection is configured only by the --sql-env variable)"
+            ));
+        }
         let (options, local) = match engine {
             SqlEngine::Postgres => {
+                if let Some(variable) = POSTGRES_UNOVERRIDABLE.iter().find(|name| {
+                    ambient(name).is_some() && (**name != "PGPASSWORD" || password.is_none())
+                }) {
+                    return Err(format!(
+                        "{variable} is set; the Postgres driver would read it, so unset it in the server's environment (the connection is configured only by the --sql-env variable)"
+                    ));
+                }
                 if let Some(variable) = postgres_environment_conflict(&environment) {
                     return Err(format!(
                         "{variable} is set; the Postgres connection must come only from the --sql-env variable, so unset it in the server's environment"
@@ -334,6 +378,12 @@ impl SqlTarget {
                 }
                 if let Some(path) = param("sslkey") {
                     options = options.ssl_client_key(path);
+                }
+                if options.get_options().is_some() {
+                    return Err(
+                        "PGOPTIONS is set; unset it in the server's environment (the connection is configured only by the --sql-env variable)"
+                            .to_owned(),
+                    );
                 }
                 // The policy reads the very object the driver connects with.
                 let local = options.get_socket().is_some() || is_loopback_text(options.get_host());
