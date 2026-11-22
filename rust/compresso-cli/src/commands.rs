@@ -192,6 +192,16 @@ pub struct IntegrationMutationArgs {
     /// `--explore-agent`, the agent may call `compresso_edit` instead.
     #[arg(long, conflicts_with = "compaction_hook")]
     pub edits: bool,
+    /// Manage only the Claude Code in-session command skill
+    /// (`.claude/skills/compresso/SKILL.md`, typed as `/compresso stats` and
+    /// so on) instead of the MCP server entry. Project scope: `--project`, or
+    /// else the working directory.
+    #[arg(long, conflicts_with_all = ["compaction_hook", "no_recall", "explore_agent", "edits"])]
+    pub session_commands: bool,
+    /// Leave out the in-session command skill that a Claude Code project
+    /// install adds by default.
+    #[arg(long, conflicts_with_all = ["compaction_hook", "explore_agent", "session_commands"])]
+    pub no_session_commands: bool,
 }
 
 #[derive(Args, Debug)]
@@ -213,6 +223,10 @@ pub struct IntegrationReadArgs {
     /// or else the working directory, instead of the MCP server entry.
     #[arg(long, conflicts_with = "compaction_hook")]
     pub explore_agent: bool,
+    /// Inspect the Claude Code in-session command skill in `--project`, or
+    /// else the working directory, instead of the MCP server entry.
+    #[arg(long, conflicts_with_all = ["compaction_hook", "explore_agent"])]
+    pub session_commands: bool,
 }
 
 #[derive(Args, Debug, Default)]

@@ -13,7 +13,13 @@ replacements, identifier renames, and anchored inserts in indexed files
 `compresso setup <claude-code|codex|cursor> <ROOT>` indexes and approves one
 repository and writes the Compresso MCP server entry into that client's
 configuration. `compresso integrations install <client>` writes only the
-server entry. Both show the exact plan first (`--dry-run` previews without
+server entry, except that a Claude Code install with `--project DIR` also
+writes the `/compresso` session command skill
+(`.claude/skills/compresso/SKILL.md`: `/compresso stats`, `status`, `recall`,
+`update`, `bug`, `feedback`, `share`; `--no-session-commands` leaves it out).
+The `bug` and `feedback` reports are saved locally; Compresso sends them
+nowhere (like every tool result, their text reaches the client's model
+provider). Both show the exact plan first (`--dry-run` previews without
 writing), keep a backup and a receipt, and are undone with
 `compresso integrations uninstall <client>`.
 

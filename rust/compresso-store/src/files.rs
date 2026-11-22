@@ -154,6 +154,18 @@ impl Store {
         raw.into_iter().map(decode_file_record).collect()
     }
 
+    /// Counts a repository's indexed files with one count query, loading no rows.
+    pub fn indexed_file_count(&self, repo: RepoId) -> Result<u64, StoreError> {
+        let connection = self.connection()?;
+        ensure_repo_exists(&connection, repo)?;
+        let count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM files WHERE repo_id = ?1",
+            [repo],
+            |row| row.get(0),
+        )?;
+        Ok(u64::try_from(count).unwrap_or_default())
+    }
+
     /// Loads one indexed file by its validated repository-relative path.
     pub fn indexed_file(&self, repo: RepoId, path: &str) -> Result<Option<FileRecord>, StoreError> {
         validate_relative_path(path)?;
@@ -341,6 +353,23 @@ mod tests {
             end_line: 2,
             token_estimate: 5,
         }
+    }
+
+    #[test]
+    fn test_indexed_file_count_counts_one_repository_without_loading_rows() {
+        let (directory, store, repo) = setup();
+        let other_root = directory.path().join("other");
+        fs::create_dir(&other_root).expect("other repository");
+        let other = store.approve_repo(&other_root).expect("other approves");
+        assert_eq!(store.indexed_file_count(repo).expect("count"), 0);
+        for path in ["a.rs", "b.rs", "src/c.rs"] {
+            store.upsert_file(repo, &file(path, "aa")).expect("file");
+        }
+        store
+            .upsert_file(other, &file("x.rs", "aa"))
+            .expect("other file");
+        assert_eq!(store.indexed_file_count(repo).expect("count"), 3);
+        assert_eq!(store.indexed_file_count(other).expect("count"), 1);
     }
 
     #[test]

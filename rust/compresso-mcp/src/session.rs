@@ -8,6 +8,9 @@ use tokio::sync::{Mutex, OnceCell, OwnedMutexGuard};
 
 const TRANSPORT: &str = "stdio";
 const UNKNOWN_CLIENT: &str = "unknown";
+/// Failed tool calls remembered per server process for `compresso_report`
+/// (E17-48, D113): tool name and error code only, never arguments or text.
+pub(crate) const MAX_RECENT_FAILURES: usize = 20;
 
 /// Persistence boundary used by [`SessionRuntime`].
 ///
@@ -73,6 +76,8 @@ struct SessionRuntimeInner {
     call_gate: Arc<Mutex<()>>,
     operation_writer: Arc<dyn OperationWriter>,
     diagnostics: Arc<dyn DiagnosticSink>,
+    /// Newest last; bounded by [`MAX_RECENT_FAILURES`]; memory only.
+    recent_failures: std::sync::Mutex<std::collections::VecDeque<(String, &'static str)>>,
 }
 
 /// Per-connection MCP session lifecycle and serialization boundary.
@@ -111,6 +116,7 @@ impl SessionRuntime {
                 call_gate: Arc::new(Mutex::new(())),
                 operation_writer,
                 diagnostics,
+                recent_failures: std::sync::Mutex::new(std::collections::VecDeque::new()),
             }),
         }
     }
@@ -147,6 +153,26 @@ impl SessionRuntime {
     /// Returns the initialized session id, if initialization has completed.
     pub(crate) fn current(&self) -> Option<SessionId> {
         self.inner.session_id.get().cloned()
+    }
+
+    /// Remembers that `tool` failed with `code`, keeping the newest
+    /// [`MAX_RECENT_FAILURES`] in memory. Nothing is persisted.
+    pub(crate) fn record_failure(&self, tool: &str, code: &'static str) {
+        if let Ok(mut failures) = self.inner.recent_failures.lock() {
+            if failures.len() == MAX_RECENT_FAILURES {
+                failures.pop_front();
+            }
+            failures.push_back((tool.to_owned(), code));
+        }
+    }
+
+    /// The failures remembered by [`Self::record_failure`], newest first.
+    pub(crate) fn recent_failures(&self) -> Vec<(String, &'static str)> {
+        self.inner
+            .recent_failures
+            .lock()
+            .map(|failures| failures.iter().rev().cloned().collect())
+            .unwrap_or_default()
     }
 
     /// Acquires the per-session tool-call serialization guard.
@@ -261,6 +287,25 @@ mod tests {
             trace_json: None,
             created_at,
         }
+    }
+
+    #[test]
+    fn test_recent_failures_keep_the_newest_codes_only() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let store = Store::open(&directory.path().join("compresso.db")).expect("store should open");
+        let runtime = SessionRuntime::new(store);
+        assert!(runtime.recent_failures().is_empty());
+        for index in 0..(MAX_RECENT_FAILURES + 5) {
+            runtime.record_failure(&format!("tool_{index}"), "invalid_arguments");
+        }
+        let failures = runtime.recent_failures();
+        assert_eq!(failures.len(), MAX_RECENT_FAILURES);
+        assert_eq!(
+            failures[0].0,
+            format!("tool_{}", MAX_RECENT_FAILURES + 4),
+            "newest first"
+        );
+        assert_eq!(failures[MAX_RECENT_FAILURES - 1].0, "tool_5");
     }
 
     #[tokio::test]
