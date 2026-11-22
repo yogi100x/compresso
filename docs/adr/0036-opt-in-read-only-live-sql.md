@@ -272,15 +272,15 @@ account that can read only what the model should see, for example:
 
 ```sql
 -- Postgres
-CREATE ROLE compresso_reader LOGIN PASSWORD '...';
-GRANT CONNECT ON DATABASE app TO compresso_reader;
-GRANT USAGE ON SCHEMA public TO compresso_reader;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO compresso_reader;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO compresso_reader;
+CREATE ROLE sql_reader LOGIN PASSWORD '...';
+GRANT CONNECT ON DATABASE app TO sql_reader;
+GRANT USAGE ON SCHEMA public TO sql_reader;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO sql_reader;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO sql_reader;
 
 -- MySQL / MariaDB
-CREATE USER 'compresso_reader'@'%' IDENTIFIED BY '...';
-GRANT SELECT ON app.* TO 'compresso_reader'@'%';
+CREATE USER 'sql_reader'@'%' IDENTIFIED BY '...';
+GRANT SELECT ON app.* TO 'sql_reader'@'%';
 ```
 
 ## Known gaps in the build gates
