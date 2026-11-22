@@ -245,7 +245,8 @@ of this record stands.
   directory), contains no NUL, and is at most 64 KiB. It is hard-linked into
   place, so a file that appears meanwhile is never replaced, and a rollback
   removes it only while it holds the created bytes. Deleting, moving, and
-  changing permissions stay out of scope, as do creating directories.
+  changing permissions stay out of scope; creating directories stayed out
+  until D114 (below).
 - **Unindexed targets (decision 5).** "Every target must already be an indexed
   file" stays a hard gate. A `replace` or `insert` target that exists on disk
   but is not indexed makes the call refresh the index once first, as a rename
@@ -276,6 +277,20 @@ whole index. Known
 gaps: no journal for a crash mid-commit, no automatic cleanup of leftover
 temporary files, hard links required for create, and the request byte bound
 checked after the MCP frame is parsed.
+
+D114 (E17-49, owner-approved 2026-11-22; its bounds and refusals await owner
+confirmation) amends the create item above: `create` makes missing parent
+directories inside the repository, at most 8 levels per create and 32
+directories per call. Each new directory passes the file's path rules (hidden,
+reserved, `.git`, control, secret, and scanner-excluded components are refused,
+naming the directory), a name that differs only by case from an entry beside it
+or from another create of the call is refused, and a symbolic link on the path
+is refused `no_directory` before anything follows it, whatever it points to.
+Directories are made with create-new calls after every target is re-verified;
+something that appears meanwhile stops the call. A failed call removes the
+directories it made, deepest first, only while each is still empty and still
+the directory made. A dry run creates nothing and reports what it would create.
+Directories get the platform default permissions.
 
 Threat model addition: injected repository content can now ask for a new file
 as well as an edit. A created file is reached through the same path gates and
