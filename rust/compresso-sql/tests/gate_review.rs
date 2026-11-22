@@ -150,3 +150,43 @@ fn test_a_word_glued_to_a_number_is_refused() {
         "pg_terminate_backend",
     );
 }
+
+#[test]
+fn test_confirmation_review_gate_cases() {
+    // Quoted EXPLAIN options are still options.
+    refused("EXPLAIN (\"analyze\") SELECT 1", Postgres, "ANALYZE");
+    refused(
+        "EXPLAIN (\"ANALYSE\" true) DELETE FROM t",
+        Postgres,
+        "ANALYZE",
+    );
+    // INTO and SHARE: SELECT ... INTO creates a table or sets variables;
+    // locking reads take row locks.
+    for (sql, engine) in [
+        ("SELECT 1 INTO t", Postgres),
+        ("SELECT * FROM t FOR SHARE", Postgres),
+        ("SELECT * FROM t FOR KEY SHARE", Postgres),
+        ("SELECT * FROM t FOR SHARE", MySql),
+        ("SELECT 1 INTO @a", MySql),
+    ] {
+        refused(sql, engine, "quote");
+    }
+    // MySQL SHOW with WHERE runs expressions outside max_execution_time.
+    refused("SHOW TABLES WHERE SLEEP(5)", MySql, "WHERE");
+    refused("SHOW PROCESSLIST WHERE 1 = 1", MySql, "WHERE");
+    assert!(check_statement("SHOW TABLES LIKE 'ord%'", MySql).is_ok());
+    // Refusals say what to do.
+    refused("SELECT 1 -- note", Postgres, "remove the comment");
+    refused("SELECT lock FROM t", Postgres, "\"lock\"");
+    refused("SELECT cluster FROM t", MySql, "`cluster`");
+}
+
+#[test]
+fn test_sqlite_alone_accepts_backslashes_in_plain_strings() {
+    let like = "SELECT name FROM t WHERE name LIKE 'a\\_%' ESCAPE '\\'";
+    assert!(check_statement(like, Sqlite).is_ok());
+    refused(like, Postgres, "backslash");
+    refused(like, MySql, "backslash");
+    // Still nowhere outside a string, and still no other escape.
+    refused("SELECT \\ 1", Sqlite, "backslash");
+}

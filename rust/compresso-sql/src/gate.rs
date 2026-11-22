@@ -73,6 +73,10 @@ const DENIED_WORDS: &[&str] = &[
     "DISCARD",
     "SECURITY",
     "IMPORT",
+    // SELECT ... INTO creates a table (Postgres) or sets variables or files
+    // (MySQL); FOR SHARE / FOR KEY SHARE / LOCK IN SHARE MODE take locks.
+    "INTO",
+    "SHARE",
 ];
 
 /// Functions refused in every dialect.
@@ -205,6 +209,17 @@ pub fn check_statement(sql: &str, engine: SqlEngine) -> Result<(), String> {
             "only read statements are allowed (SELECT, WITH, VALUES, TABLE, SHOW, EXPLAIN, DESCRIBE); `{keyword}` is refused"
         ));
     }
+    if engine == SqlEngine::MySql
+        && keyword == "SHOW"
+        && first
+            .iter()
+            .any(|token| matches!(token, Token::Word(word) if word == "WHERE"))
+    {
+        return Err(
+            "SHOW ... WHERE is refused in MySQL: its expressions run outside the statement time limit; use SHOW ... LIKE 'pattern' or query information_schema"
+                .to_owned(),
+        );
+    }
     if matches!(keyword.as_str(), "EXPLAIN" | "DESCRIBE" | "DESC") && explains_with_analyze(first) {
         return Err("EXPLAIN ANALYZE runs the statement; use EXPLAIN without ANALYZE".to_owned());
     }
@@ -226,8 +241,9 @@ pub fn check_statement(sql: &str, engine: SqlEngine) -> Result<(), String> {
         if let Token::Word(word) = token
             && DENIED_WORDS.contains(&word.as_str())
         {
+            let name = word.to_ascii_lowercase();
             return Err(format!(
-                "`{word}` is not allowed in a read-only query (quote an identifier with that name)"
+                "`{word}` is not allowed in a read-only query. If it is a column or table name, quote it: \"{name}\" in Postgres and SQLite, `{name}` in MySQL"
             ));
         }
     }
@@ -260,9 +276,12 @@ fn denied_function(name: &str, engine: SqlEngine) -> bool {
 /// refusing every unquoted use is simpler than parsing each dialect's
 /// option grammar.
 fn explains_with_analyze(tokens: &[Token]) -> bool {
-    tokens
-        .iter()
-        .any(|token| matches!(token, Token::Word(word) if word == "ANALYZE" || word == "ANALYSE"))
+    tokens.iter().any(|token| match token {
+        Token::Word(word) => word == "ANALYZE" || word == "ANALYSE",
+        // A quoted option name is still the option.
+        Token::Quoted(name) => name == "analyze" || name == "analyse",
+        _ => false,
+    })
 }
 
 /// The strict-subset lexer. Whitespace is ASCII space, tab, carriage return,
@@ -283,16 +302,22 @@ fn lex(sql: &str, engine: SqlEngine) -> Result<Vec<Token>, String> {
             c if c.is_control() => return Err(control(c)),
             c if !c.is_ascii() => return Err(non_ascii(c)),
             '-' if at(index + 1) == Some('-') => {
-                return Err("comments are refused (`--`); remove them".to_owned());
+                return Err(
+                    "comments are refused (`--`); remove the comment and send the statement alone"
+                        .to_owned(),
+                );
             }
             '/' if at(index + 1) == Some('*') => {
                 return Err(
-                    "comments are refused (`/* */`, including optimizer hints and `/*! */`); remove them"
+                    "comments are refused (`/* */`, including optimizer hints and `/*! */`); remove the comment and send the statement alone"
                         .to_owned(),
                 );
             }
             '#' if engine == SqlEngine::MySql => {
-                return Err("comments are refused (`#`); remove them".to_owned());
+                return Err(
+                    "comments are refused (`#`); remove the comment and send the statement alone"
+                        .to_owned(),
+                );
             }
             '$' => {
                 return Err(
@@ -303,14 +328,16 @@ fn lex(sql: &str, engine: SqlEngine) -> Result<Vec<Token>, String> {
             '\\' => return Err(backslash()),
             '\'' => {
                 refuse_prefix(&chars, index)?;
-                index = plain_string(&chars, index, '\'')?;
+                // SQLite never reads a backslash as an escape, so `LIKE ...
+                // ESCAPE '\'` is allowed there; Postgres and MySQL may.
+                index = plain_string(&chars, index, '\'', engine == SqlEngine::Sqlite)?;
                 tokens.push(Token::Other);
             }
             '"' if engine == SqlEngine::MySql => {
                 // With ANSI_QUOTES off (the connection pins it) MySQL reads
                 // "..." as a string; the same plain rules apply.
                 refuse_prefix(&chars, index)?;
-                index = plain_string(&chars, index, '"')?;
+                index = plain_string(&chars, index, '"', false)?;
                 tokens.push(Token::Other);
             }
             '"' => {
@@ -450,7 +477,12 @@ fn refuse_prefix(chars: &[char], index: usize) -> Result<(), String> {
 /// A plain string: `''` (or `""`) is the only escape; no backslash and no
 /// control character inside; any other character, non-ASCII included, is
 /// literal text.
-fn plain_string(chars: &[char], index: usize, quote: char) -> Result<usize, String> {
+fn plain_string(
+    chars: &[char],
+    index: usize,
+    quote: char,
+    literal_backslash: bool,
+) -> Result<usize, String> {
     let mut cursor = index + 1;
     while let Some(&character) = chars.get(cursor) {
         if character == quote {
@@ -460,7 +492,7 @@ fn plain_string(chars: &[char], index: usize, quote: char) -> Result<usize, Stri
             }
             return Ok(cursor + 1);
         }
-        if character == '\\' {
+        if character == '\\' && !literal_backslash {
             return Err(backslash());
         }
         if character.is_control() && !matches!(character, '\t' | '\n' | '\r') {
