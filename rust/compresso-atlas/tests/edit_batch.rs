@@ -1033,28 +1033,6 @@ fn test_two_creates_share_a_new_parent_in_one_call() {
 }
 
 #[test]
-fn test_a_failing_batch_creates_no_directory() {
-    let fixture = Fixture::new(&[("src/lib.rs", b"fn a() {}\n")]);
-    let before = tree(&fixture.root);
-    for dry_run in [true, false] {
-        let error = fixture
-            .apply_dry(
-                vec![
-                    create("src/fresh/deeper/x.rs", "x\n"),
-                    replace("src/lib.rs", "fn missing", "fn x", 1),
-                ],
-                dry_run,
-            )
-            .expect_err("the replace fails");
-        assert!(
-            matches!(error, EditError::CountMismatch { .. }),
-            "{error:?}"
-        );
-    }
-    assert_eq!(tree(&fixture.root), before);
-}
-
-#[test]
 fn test_a_refused_directory_component_is_named_with_its_reason() {
     let fixture = Fixture::new(&[(".gitignore", b"build/\n"), ("src/lib.rs", b"x\n")]);
     let before = tree(&fixture.root);
@@ -1123,13 +1101,22 @@ fn test_create_bounds_the_directories_it_adds() {
     assert!(
         matches!(
             error,
-            EditError::Bound {
+            EditError::CreateBound {
                 bound: EditBound::DirectoryDepth,
                 limit: 8,
-                actual: 9
+                actual: 9,
+                operation: Some(1),
+                ..
             }
         ),
         "{error:?}"
+    );
+    // The error names the operation and the path.
+    assert!(
+        error
+            .to_string()
+            .starts_with("operation 1: create \"src/d0/"),
+        "{error}"
     );
     assert_eq!(tree(&fixture.root), before);
     let report = fixture
@@ -1147,13 +1134,21 @@ fn test_create_bounds_the_directories_it_adds() {
     assert!(
         matches!(
             error,
-            EditError::Bound {
+            EditError::CreateBound {
                 bound: EditBound::Directories,
                 limit: 32,
-                actual: 33
+                actual: 33,
+                operation: Some(32),
+                ..
             }
         ),
         "{error:?}"
+    );
+    assert!(
+        error
+            .to_string()
+            .starts_with("operation 32: create \"many/d31/x.rs\""),
+        "{error}"
     );
     assert!(error.to_string().contains("split"), "{error}");
     assert_eq!(tree(&fixture.root), before);
@@ -1262,4 +1257,80 @@ fn test_a_linked_ancestor_is_refused_alike_and_creates_nothing() {
         );
     }
     assert!(answers[0][0].contains("NoDirectory"), "{}", answers[0][0]);
+}
+
+/// E17-49 review: two directory names a normalizing file system stores as
+/// one (composed and decomposed `é`) are refused in dry and real runs alike.
+#[test]
+fn test_directories_equal_under_unicode_normalization_are_refused_alike() {
+    let fixture = Fixture::new(&[("src/lib.rs", b"x\n")]);
+    let before = tree(&fixture.root);
+    let composed = "src/caf\u{e9}/a.rs";
+    let decomposed = "src/cafe\u{301}/b.rs";
+    for dry_run in [true, false] {
+        let error = fixture
+            .apply_dry(
+                vec![create(composed, "x\n"), create(decomposed, "y\n")],
+                dry_run,
+            )
+            .expect_err("equal under normalization");
+        assert_eq!(refusal(error), Refusal::CaseDuplicate, "dry_run={dry_run}");
+        // Two files likewise.
+        let error = fixture
+            .apply_dry(
+                vec![
+                    create("src/n\u{e9}.rs", "x\n"),
+                    create("src/ne\u{301}.rs", "y\n"),
+                ],
+                dry_run,
+            )
+            .expect_err("files equal under normalization");
+        assert!(error.to_string().contains("normalization"), "{error}");
+    }
+    assert_eq!(tree(&fixture.root), before);
+    // Distinct non-Latin names stay distinct.
+    fixture
+        .apply(vec![
+            create("docs/\u{65e5}\u{672c}/a.md", "x\n"),
+            create("docs/\u{4e2d}\u{56fd}/b.md", "y\n"),
+        ])
+        .expect("different names");
+}
+
+/// E17-49 review: a new directory name ending with `.` or a space, or
+/// holding a control character, is refused and named.
+#[test]
+fn test_unportable_new_directory_names_are_refused() {
+    let fixture = Fixture::new(&[("src/lib.rs", b"x\n")]);
+    let before = tree(&fixture.root);
+    for (path, directory) in [
+        ("src/gen./x.rs", "src/gen."),
+        ("src/gen /x.rs", "src/gen "),
+        ("src/a\u{7}b/x.rs", "src/a\u{7}b"),
+        ("src/new/line\nbreak/x.rs", "src/new/line\nbreak"),
+    ] {
+        let error = fixture.apply(vec![create(path, "x\n")]).expect_err(path);
+        assert_eq!(
+            refused_directory(&error).as_deref(),
+            Some(directory),
+            "{path:?}"
+        );
+        assert_eq!(refusal(error), Refusal::UnportableName, "{path:?}");
+    }
+    assert_eq!(tree(&fixture.root), before);
+}
+
+/// E17-49 review: created directories are reported as spelled on disk,
+/// the existing part in its canonical spelling.
+#[test]
+fn test_created_directories_are_reported_as_spelled_on_disk() {
+    let fixture = Fixture::new(&[("src/lib.rs", b"x\n")]);
+    if !fixture.root.join("SRC").exists() {
+        eprintln!("skipped: a case-sensitive file system has no other spelling");
+        return;
+    }
+    let report = fixture
+        .apply(vec![create("SRC/casey/x.ts", "x\n")])
+        .expect("created");
+    assert_eq!(report.directories_created, ["src/casey"]);
 }

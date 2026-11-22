@@ -275,7 +275,9 @@ pub fn edit_failure_message(error: &EditError) -> (&'static str, String) {
         EditError::HashMismatch { actual, .. } => {
             ("hash_mismatch", format!("{error}. Current hash: {actual}."))
         }
-        EditError::Bound { .. } => ("limit_exceeded", format!("{error}.")),
+        EditError::Bound { .. } | EditError::CreateBound { .. } => {
+            ("limit_exceeded", format!("{error}."))
+        }
         EditError::Changed { .. } => ("file_changed", format!("{error}. Read it again and retry.")),
         EditError::WriteFailed {
             path,

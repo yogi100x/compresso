@@ -328,6 +328,9 @@ pub enum Refusal {
     /// an existing entry beside it or from a path another create of the call
     /// adds.
     CaseDuplicate,
+    /// `create` (E17-49 review): a new directory name ends with `.` or a
+    /// space, or holds a control character.
+    UnportableName,
 }
 
 impl Refusal {
@@ -349,6 +352,7 @@ impl Refusal {
             Self::Hidden => "hidden",
             Self::ReservedName => "reserved_name",
             Self::CaseDuplicate => "case_duplicate",
+            Self::UnportableName => "unportable_name",
         }
     }
 
@@ -382,7 +386,10 @@ impl Refusal {
                 "a path component contains ':' or is a reserved device name (CON, PRN, AUX, NUL, COM1-9, LPT1-9, with or without an extension), which create refuses on every platform"
             }
             Self::CaseDuplicate => {
-                "a directory create would add differs only by case from an entry beside it or from a path another create of this call adds; a case-insensitive file system cannot hold both"
+                "a directory create would add differs only by case or Unicode normalization from an entry beside it or from a path another create of this call adds; a case-insensitive or normalizing file system cannot hold both"
+            }
+            Self::UnportableName => {
+                "a directory create would add ends with '.' or a space (Windows reads it as another name) or holds a control character"
             }
         }
     }
@@ -612,6 +619,15 @@ pub enum EditError {
         limit: u64,
         actual: u64,
     },
+    /// A create over a per-create or per-call directory bound (E17-49).
+    #[error("{}create {path:?} exceeds the {} bound ({actual} > {limit}){}; nothing was written", operation_prefix(*operation), bound.as_str(), bound.advice())]
+    CreateBound {
+        bound: EditBound,
+        limit: u64,
+        actual: u64,
+        path: String,
+        operation: Option<usize>,
+    },
     #[error("{path:?} changed while the edit was prepared; nothing was written")]
     Changed { path: String },
     #[error("writing {path:?} failed; restored {} file(s), could not restore {}; original copies kept at {backups:?}", restored.len(), unrestored.len())]
@@ -663,6 +679,19 @@ impl EditError {
                 path,
                 reason,
                 directory,
+                operation: Some(number),
+            },
+            Self::CreateBound {
+                bound,
+                limit,
+                actual,
+                path,
+                operation: None,
+            } => Self::CreateBound {
+                bound,
+                limit,
+                actual,
+                path,
                 operation: Some(number),
             },
             other => other,
@@ -921,11 +950,15 @@ pub(crate) fn apply_edits_with_hook(
                             .iter()
                             .map(|directory| directory.relative.clone()),
                     );
-                    bound(
-                        EditBound::Directories,
-                        EDIT_MAX_NEW_DIRECTORIES as u64,
-                        new_directories.len() as u64,
-                    )?;
+                    if new_directories.len() > EDIT_MAX_NEW_DIRECTORIES {
+                        return Err(EditError::CreateBound {
+                            bound: EditBound::Directories,
+                            limit: EDIT_MAX_NEW_DIRECTORIES as u64,
+                            actual: new_directories.len() as u64,
+                            path: path.clone(),
+                            operation: Some(number),
+                        });
+                    }
                 }
                 working.insert(path.clone(), file);
                 OperationOutcome {
@@ -1126,22 +1159,22 @@ fn validate_request(request: &EditRequest) -> Result<(), EditError> {
         EDIT_MAX_REQUEST_BYTES,
         request_bytes,
     )?;
-    // Two creates whose paths differ only by case would be one file on a
-    // case-insensitive file system; refused alike everywhere, dry runs too.
+    // Two creates whose paths differ only by case (or, E17-49, by Unicode
+    // normalization) would be one file on a case-insensitive or normalizing
+    // file system; refused alike everywhere, dry runs too.
     let mut created = BTreeMap::<String, (usize, &str)>::new();
-    // E17-49: the directories the creates name, by lowercased spelling.
+    // E17-49: the directories the creates name, by `name_key`.
     let mut directories = BTreeMap::<String, &str>::new();
     for (index, operation) in request.operations.iter().enumerate() {
         validate_operation(operation).map_err(|error| error.at_operation(index + 1))?;
         let EditOperation::Create { path, .. } = operation else {
             continue;
         };
-        if let Some((earlier, earlier_path)) =
-            created.insert(path.to_lowercase(), (index + 1, path))
+        if let Some((earlier, earlier_path)) = created.insert(name_key(path), (index + 1, path))
             && earlier_path != path
         {
             return Err(invalid(format!(
-                "operation {}: create path '{path}' differs only by case from operation {earlier}'s '{earlier_path}'; a case-insensitive file system cannot hold both",
+                "operation {}: create path '{path}' differs only by case or Unicode normalization from operation {earlier}'s '{earlier_path}'; a case-insensitive or normalizing file system cannot hold both",
                 index + 1
             )));
         }
@@ -1159,14 +1192,14 @@ fn validate_request(request: &EditRequest) -> Result<(), EditError> {
                 operation: Some(index + 1),
             })
         };
-        if let Some(other) = directories.get(&path.to_lowercase()) {
+        if let Some(other) = directories.get(&name_key(path)) {
             return clash(other, path);
         }
         let mut end = 0;
         while let Some(slash) = path[end..].find('/') {
             end += slash;
             let directory = &path[..end];
-            let key = directory.to_lowercase();
+            let key = name_key(directory);
             if let Some((_, file)) = created.get(&key) {
                 return clash(directory, file);
             }
@@ -1181,6 +1214,68 @@ fn validate_request(request: &EditRequest) -> Result<(), EditError> {
         }
     }
     Ok(())
+}
+
+/// A comparison key under which two names a case-insensitive or
+/// Unicode-normalizing file system may store as one compare equal (E17-49):
+/// lowercased, with every character that has a canonical decomposition in
+/// the common precomposed ranges (Latin, Greek, Cyrillic, Hangul syllables),
+/// and every character followed by a combining mark, replaced by one NUL
+/// (which no path holds). It is conservative: `café` in composed and
+/// decomposed form compare equal, and so do `café` and `cafè`, which a
+/// create call then refuses as a pair. No normalization table is needed, so
+/// no dependency is added.
+fn name_key(name: &str) -> String {
+    let mut key = Vec::<char>::with_capacity(name.len());
+    for character in name.chars() {
+        if is_combining(character) {
+            if let Some(last) = key.last_mut() {
+                *last = '\0';
+            }
+            continue;
+        }
+        if has_decomposition(character) {
+            key.push('\0');
+        } else {
+            key.extend(character.to_lowercase());
+        }
+    }
+    key.into_iter().collect()
+}
+
+/// Combining marks, and Hangul medial and final jamo, which compose with the
+/// character before them.
+const fn is_combining(character: char) -> bool {
+    matches!(character,
+        '\u{0300}'..='\u{036F}'
+        | '\u{0483}'..='\u{0489}'
+        | '\u{1160}'..='\u{11FF}'
+        | '\u{1AB0}'..='\u{1AFF}'
+        | '\u{1DC0}'..='\u{1DFF}'
+        | '\u{20D0}'..='\u{20FF}'
+        | '\u{3099}'..='\u{309A}'
+        | '\u{FE20}'..='\u{FE2F}')
+}
+
+/// Precomposed letters of the common ranges that decompose canonically.
+const fn has_decomposition(character: char) -> bool {
+    matches!(character,
+        '\u{00C0}'..='\u{00C5}' | '\u{00C7}'..='\u{00CF}' | '\u{00D1}'..='\u{00D6}'
+        | '\u{00D9}'..='\u{00DD}' | '\u{00E0}'..='\u{00E5}' | '\u{00E7}'..='\u{00EF}'
+        | '\u{00F1}'..='\u{00F6}' | '\u{00F9}'..='\u{00FD}' | '\u{00FF}'
+        | '\u{0100}'..='\u{0130}' | '\u{0134}'..='\u{0137}' | '\u{0139}'..='\u{013E}'
+        | '\u{0143}'..='\u{0148}' | '\u{014C}'..='\u{0151}' | '\u{0154}'..='\u{0165}'
+        | '\u{0168}'..='\u{017E}' | '\u{01A0}'..='\u{01A1}' | '\u{01AF}'..='\u{01B0}'
+        | '\u{01CD}'..='\u{01DC}' | '\u{01DE}'..='\u{01E3}' | '\u{01E6}'..='\u{01F0}'
+        | '\u{01F4}'..='\u{01F5}' | '\u{01F8}'..='\u{021B}' | '\u{021E}'..='\u{021F}'
+        | '\u{0226}'..='\u{0233}'
+        | '\u{0386}' | '\u{0388}'..='\u{038A}' | '\u{038C}' | '\u{038E}'..='\u{0390}'
+        | '\u{03AA}'..='\u{03B0}' | '\u{03CA}'..='\u{03CE}'
+        | '\u{0400}'..='\u{0401}' | '\u{0403}' | '\u{0407}' | '\u{040C}'..='\u{040E}'
+        | '\u{0419}' | '\u{0439}' | '\u{0450}'..='\u{0451}' | '\u{0453}' | '\u{0457}'
+        | '\u{045C}'..='\u{045E}'
+        | '\u{1E00}'..='\u{1EFF}' | '\u{1F00}'..='\u{1FFF}'
+        | '\u{AC00}'..='\u{D7A3}')
 }
 
 fn validate_operation(operation: &EditOperation) -> Result<(), EditError> {
@@ -1758,14 +1853,19 @@ fn resolve_new_file(root: &Path, path: &str) -> Result<(NewFile, PathBuf), EditE
     };
     let mut canonical_relative = anchor_relative.to_path_buf();
     let mut target = anchor.clone();
-    let parts = path.split('/').collect::<Vec<_>>();
-    let existing = parts.len() - 1 - missing.len();
+    // Reported as on disk (E17-49 review): the existing part in its
+    // canonical spelling, then the new components as requested.
+    let mut spelled = anchor_relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
     let mut new_directories = Vec::with_capacity(missing.len());
-    for (offset, component) in missing.iter().enumerate() {
+    for component in &missing {
         canonical_relative.push(component);
         target.push(component);
+        spelled.push(component.to_string_lossy().into_owned());
         new_directories.push(NewDirectory {
-            relative: parts[..=existing + offset].join("/"),
+            relative: spelled.join("/"),
             absolute: target.clone(),
         });
     }
@@ -1808,11 +1908,29 @@ fn create_working(gate: &Gate<'_>, path: &str, content: &str) -> Result<WorkingF
     // Then the link-free walk, before anything that could follow a link,
     // so a linked ancestor is answered alike whatever it points to.
     let (new_file, canonical_relative) = resolve_new_file(gate.root, path)?;
-    bound(
-        EditBound::DirectoryDepth,
-        EDIT_MAX_NEW_DIRECTORY_DEPTH as u64,
-        new_file.new_directories.len() as u64,
-    )?;
+    let depth = new_file.new_directories.len();
+    if depth > EDIT_MAX_NEW_DIRECTORY_DEPTH {
+        return Err(EditError::CreateBound {
+            bound: EditBound::DirectoryDepth,
+            limit: EDIT_MAX_NEW_DIRECTORY_DEPTH as u64,
+            actual: depth as u64,
+            path: path.to_owned(),
+            operation: None,
+        });
+    }
+    // A new directory name Windows reads as another name (trailing `.` or
+    // space) or that holds a control character (E17-49 review).
+    for directory in &new_file.new_directories {
+        let name = directory.relative.rsplit('/').next().unwrap_or_default();
+        if name.ends_with(['.', ' ']) || name.chars().any(char::is_control) {
+            return Err(EditError::Refused {
+                path: path.to_owned(),
+                reason: Refusal::UnportableName,
+                directory: Some(directory.relative.clone()),
+                operation: None,
+            });
+        }
+    }
     judge_create_excluded(gate, path, relative)?;
     if let Some(first) = new_file.new_directories.first() {
         check_case_siblings(path, &new_file.anchor, first)?;
@@ -1828,7 +1946,7 @@ fn check_case_siblings(path: &str, anchor: &Path, first: &NewDirectory) -> Resul
     let name = first
         .absolute
         .file_name()
-        .map(|name| name.to_string_lossy().to_lowercase())
+        .map(|name| name_key(&name.to_string_lossy()))
         .unwrap_or_default();
     let read = |source| EditError::Read {
         path: path.to_owned(),
@@ -1842,13 +1960,7 @@ fn check_case_siblings(path: &str, anchor: &Path, first: &NewDirectory) -> Resul
                 actual: count as u64 + 1,
             });
         }
-        if entry
-            .map_err(read)?
-            .file_name()
-            .to_string_lossy()
-            .to_lowercase()
-            == name
-        {
+        if name_key(&entry.map_err(read)?.file_name().to_string_lossy()) == name {
             return Err(EditError::Refused {
                 path: path.to_owned(),
                 reason: Refusal::CaseDuplicate,
@@ -4139,6 +4251,161 @@ mod tests {
             .expect_err("second write fails");
         assert!(matches!(error, EditError::WriteFailed { .. }), "{error:?}");
         assert_eq!(tree(&fixture.root), before, "nothing is left behind");
+    }
+
+    /// E17-49 review: a batch that fails after its directories exist (here
+    /// at the replace's write) and one that fails validation both leave no
+    /// directory behind.
+    #[test]
+    fn test_a_failing_batch_creates_no_directory() {
+        let fixture = Fixture::new(&[("z.rs", "fn z() {}\n")]);
+        let before = tree(&fixture.root);
+        let error = fixture
+            .apply(
+                vec![
+                    create("fresh/deeper/x.rs", "x\n"),
+                    replace("z.rs", "fn missing", "fn x"),
+                ],
+                &mut |_, _| Ok(()),
+            )
+            .expect_err("the replace fails validation");
+        assert!(
+            matches!(error, EditError::CountMismatch { .. }),
+            "{error:?}"
+        );
+        assert_eq!(tree(&fixture.root), before);
+        let mut seen = false;
+        let error = fixture
+            .apply(
+                vec![
+                    create("fresh/deeper/x.rs", "x\n"),
+                    replace("z.rs", "fn z", "fn zz"),
+                ],
+                &mut |index, _| {
+                    seen |= fixture.root.join("fresh/deeper").is_dir();
+                    if index == 1 {
+                        Err(io::Error::other("injected"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
+            .expect_err("the second write fails");
+        assert!(seen, "the failure came after the directories existed");
+        assert!(matches!(error, EditError::WriteFailed { .. }), "{error:?}");
+        assert_eq!(tree(&fixture.root), before);
+    }
+
+    /// E17-49 review: a directory staging needed is removed when staging
+    /// fails (another writer took a created file's path after the
+    /// directories were made); one that now holds the other writer's file
+    /// stays.
+    #[test]
+    fn test_a_staging_failure_removes_the_directories_the_call_made() {
+        let fixture = Fixture::new(&[("z.rs", "fn z() {}\n")]);
+        let root = fixture.root.clone();
+        BEFORE_DIRECTORY.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move |directory: &Path| {
+                if directory.ends_with("n") {
+                    fs::write(root.join("m/a.rs"), "theirs\n").expect("planted");
+                }
+            }));
+        });
+        let result = fixture.apply(
+            vec![create("m/a.rs", "mine\n"), create("n/b.rs", "mine\n")],
+            &mut |_, _| Ok(()),
+        );
+        BEFORE_DIRECTORY.with(|hook| *hook.borrow_mut() = None);
+        let error = result.expect_err("m/a.rs was taken");
+        assert!(matches!(error, EditError::WriteFailed { .. }), "{error:?}");
+        assert!(
+            !fixture.root.join("n").exists(),
+            "the empty directory is removed"
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.root.join("m/a.rs")).unwrap(),
+            "theirs\n"
+        );
+    }
+
+    /// E17-49 review: a rollback never removes a directory that replaced the
+    /// one the call made, even an empty one at the same path.
+    #[cfg(unix)]
+    #[test]
+    fn test_a_rollback_keeps_a_directory_that_replaced_the_one_made() {
+        let fixture = Fixture::new(&[("z.rs", "fn z() {}\n")]);
+        let root = fixture.root.clone();
+        let error = fixture
+            .apply(
+                vec![create("p/x.rs", "x\n"), replace("z.rs", "fn z", "fn zz")],
+                &mut |index, _| {
+                    if index == 1 {
+                        fs::remove_file(root.join("p/x.rs"))?;
+                        fs::remove_dir(root.join("p"))?;
+                        // Keep the old inode alive so the new one differs.
+                        fs::create_dir(root.join("held"))?;
+                        fs::create_dir(root.join("p"))?;
+                        return Err(io::Error::other("injected"));
+                    }
+                    Ok(())
+                },
+            )
+            .expect_err("second write fails");
+        assert!(matches!(error, EditError::WriteFailed { .. }), "{error:?}");
+        assert!(
+            fixture.root.join("p").is_dir(),
+            "another writer's directory stays"
+        );
+    }
+
+    /// E17-49 review: after creating a directory the call confirms it is a
+    /// real directory reached without a link; a parent swapped for a link
+    /// stops the call there, and the directory made through the link is
+    /// removed.
+    #[cfg(unix)]
+    #[test]
+    fn test_a_parent_swapped_for_a_link_stops_the_call_after_creation() {
+        let fixture = Fixture::new(&[("z.rs", "fn z() {}\n")]);
+        let outside = fixture.root.parent().unwrap().join("elsewhere");
+        fs::create_dir_all(&outside).unwrap();
+        let (root, target) = (fixture.root.clone(), outside.clone());
+        BEFORE_DIRECTORY.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move |directory: &Path| {
+                if directory.ends_with("q/r") {
+                    fs::remove_dir(root.join("q")).expect("made by the call, empty");
+                    std::os::unix::fs::symlink(&target, root.join("q")).expect("link");
+                }
+            }));
+        });
+        let result = fixture.apply(vec![create("q/r/x.rs", "x\n")], &mut |_, _| Ok(()));
+        BEFORE_DIRECTORY.with(|hook| *hook.borrow_mut() = None);
+        let error = result.expect_err("the parent became a link");
+        assert!(
+            matches!(&error, EditError::Changed { path } if path == "q/r"),
+            "{error:?}"
+        );
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+    }
+
+    /// E17-49 review: before writing, a created file's directory must still
+    /// be the directory the call made, not one swapped in with the same
+    /// contents.
+    #[cfg(unix)]
+    #[test]
+    fn test_a_made_directory_swapped_before_the_write_is_not_written_into() {
+        let fixture = Fixture::new(&[("z.rs", "fn z() {}\n")]);
+        let root = fixture.root.clone();
+        let result = fixture.apply(vec![create("p/x.rs", "x\n")], &mut |_, _| {
+            fs::rename(root.join("p"), root.join("p_old"))?;
+            fs::create_dir(root.join("p"))?;
+            for entry in fs::read_dir(root.join("p_old"))? {
+                let entry = entry?;
+                fs::rename(entry.path(), root.join("p").join(entry.file_name()))?;
+            }
+            Ok(())
+        });
+        assert!(result.is_err(), "{result:?}");
+        assert!(!fixture.root.join("p/x.rs").exists());
     }
 
     /// E17-49: a created directory another writer put a file into is not
