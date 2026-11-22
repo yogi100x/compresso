@@ -256,7 +256,7 @@ of this record stands.
   its count and is reported `unchanged` instead of failing the call.
 
 Measured surface after this amendment (o200k / Anthropic-calibrated): full with
-edits 4,778 / 5,496 tokens, lean with edits 2,573 / 2,960; without the tool,
+edits 4,781 / 5,499 tokens, lean with edits 2,573 / 2,960; without the tool,
 full 4,033 / 4,639 and lean 2,008 / 2,310 (unchanged).
 
 After an independent security review the same day, create also refuses any
