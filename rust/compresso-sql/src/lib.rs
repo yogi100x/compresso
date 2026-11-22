@@ -335,6 +335,7 @@ pub struct SqlService {
     target: Result<target::SqlTarget, String>,
     runtime: Mutex<Option<tokio::runtime::Runtime>>,
     connect_timeout: Duration,
+    cut_checks: network::CutChecks,
 }
 
 impl SqlService {
@@ -368,6 +369,7 @@ impl SqlService {
             target,
             runtime: Mutex::new(None),
             connect_timeout: CONNECT_TIMEOUT,
+            cut_checks: network::CutChecks::default(),
         }
     }
 
@@ -376,6 +378,17 @@ impl SqlService {
     #[doc(hidden)]
     pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
         self.connect_timeout = timeout.min(CONNECT_TIMEOUT);
+        self
+    }
+
+    /// The same service with one of the two MySQL/MariaDB time-limit cut
+    /// rules turned off (`warnings`: interruption warnings; `deadline`: a
+    /// run that reached its deadline), so a live test proves the other
+    /// alone. Built only with the `test-hooks` feature.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn with_cut_checks_for_tests(mut self, warnings: bool, deadline: bool) -> Self {
+        self.cut_checks = network::CutChecks { warnings, deadline };
         self
     }
 
@@ -431,6 +444,7 @@ impl SqlService {
                     network,
                     runtime,
                     connect_timeout: self.connect_timeout,
+                    cut_checks: self.cut_checks,
                 }
                 .run(request, gated)
             }

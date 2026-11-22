@@ -25,8 +25,17 @@ use sqlx::{AssertSqlSafe, Connection, Executor, raw_sql};
 
 const ENV: &str = "COMPRESSO_SQL_TEST";
 
+/// A variable a live test needs. With `COMPRESSO_SQL_TEST_REQUIRE_LIVE=1`
+/// (set in CI) a missing one fails the test instead of skipping it, so the
+/// live suite cannot pass without running.
 fn variable(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|value| !value.is_empty())
+    let value = std::env::var(name).ok().filter(|value| !value.is_empty());
+    if value.is_none()
+        && std::env::var("COMPRESSO_SQL_TEST_REQUIRE_LIVE").is_ok_and(|value| value == "1")
+    {
+        panic!("{name} is not set but COMPRESSO_SQL_TEST_REQUIRE_LIVE=1");
+    }
+    value
 }
 
 fn service(url: &str) -> SqlService {
@@ -391,11 +400,38 @@ fn test_live_mysql_a_statement_cut_by_the_time_limit_is_a_timeout() {
         "SELECT COUNT(*) FROM information_schema.COLUMNS a, information_schema.COLUMNS b, information_schema.COLUMNS c",
     ] {
         let started = Instant::now();
-        let result = service.execute(&request(sql, 500));
-        let error = result.expect_err(sql);
+        let error = service.execute(&request(sql, 500)).expect_err(sql);
         assert_eq!(error.code(), "sql_timeout", "{sql}: {error}");
         assert!(started.elapsed() < service.call_limit(Duration::from_millis(500)));
     }
+}
+
+#[test]
+fn test_live_mysql_the_interruption_warning_rule_alone_catches_a_cut() {
+    let Some((_, reader, _)) = mysql() else {
+        return;
+    };
+    // Deadline rule off: only an interruption warning can turn the cut
+    // BENCHMARK into a timeout.
+    let service = service(&reader).with_cut_checks_for_tests(true, false);
+    let error = service
+        .execute(&request("SELECT BENCHMARK(10000000000, MD5('a'))", 500))
+        .expect_err("cut BENCHMARK");
+    assert_eq!(error.code(), "sql_timeout", "{error}");
+}
+
+#[test]
+fn test_live_mysql_the_deadline_rule_alone_catches_a_cut() {
+    let Some((_, reader, _)) = mysql() else {
+        return;
+    };
+    // Warning rule off: only reaching the deadline can turn the cut SLEEP
+    // (which returns 1 with no error) into a timeout.
+    let service = service(&reader).with_cut_checks_for_tests(false, true);
+    let error = service
+        .execute(&request("SELECT SLEEP(5)", 500))
+        .expect_err("cut SLEEP");
+    assert_eq!(error.code(), "sql_timeout", "{error}");
 }
 
 #[test]

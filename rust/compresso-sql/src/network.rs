@@ -56,6 +56,25 @@ pub(crate) struct Bound<'a> {
     pub(crate) network: &'a NetworkTarget,
     pub(crate) runtime: &'a Runtime,
     pub(crate) connect_timeout: Duration,
+    pub(crate) cut_checks: CutChecks,
+}
+
+/// The two rules that turn a MySQL/MariaDB statement cut at its time limit
+/// into `sql_timeout`. Both are always on; the `test-hooks` feature can turn
+/// one off so a live test proves the other alone.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CutChecks {
+    pub(crate) warnings: bool,
+    pub(crate) deadline: bool,
+}
+
+impl Default for CutChecks {
+    fn default() -> Self {
+        Self {
+            warnings: true,
+            deadline: true,
+        }
+    }
 }
 
 /// Longest wait for `ROLLBACK` and a clean close before the connection is
@@ -115,9 +134,11 @@ impl Bound<'_> {
                     self.connect_timeout,
                 )
                 .await?;
-                let result =
-                    tokio::time::timeout(deadline, mysql_call(&mut connection, request, gated))
-                        .await;
+                let result = tokio::time::timeout(
+                    deadline,
+                    mysql_call(&mut connection, request, gated, self.cut_checks),
+                )
+                .await;
                 settle(connection, result, request.timeout).await
             }
         }
@@ -884,6 +905,7 @@ async fn mysql_call(
     connection: &mut MySqlConnection,
     request: &SqlRequest,
     gated: bool,
+    cut_checks: CutChecks,
 ) -> Result<(SqlOutcome, bool), SqlError> {
     let error = |error| map_error(error, SqlEngine::MySql);
     let version: String = sqlx::query_scalar("SELECT CAST(VERSION() AS CHAR)")
@@ -981,10 +1003,10 @@ async fn mysql_call(
             // (BENCHMARK returns 0, SLEEP returns 1). Such a result is never
             // passed off as complete: an interruption warning, or a run that
             // reached the deadline, answers sql_timeout.
-            if clean && mysql_interrupted(connection).await {
+            if cut_checks.warnings && clean && mysql_interrupted(connection).await {
                 return Err(SqlError::timeout(request.timeout));
             }
-            if reached_deadline(elapsed, request.timeout) {
+            if cut_checks.deadline && reached_deadline(elapsed, request.timeout) {
                 return Err(SqlError::timeout(request.timeout));
             }
             Ok((SqlOutcome::Query(rows.finish(elapsed_ms(started))), clean))
