@@ -504,6 +504,7 @@ dependencies = [
 name = "compresso-sql"
 version = "0.1.0"
 dependencies = [
+ "compresso-sql",
  "futures-util",
  "percent-encoding",
  "rusqlite",

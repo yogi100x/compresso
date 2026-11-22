@@ -18,5 +18,10 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["net", "rt", "time"] }
 url = "2.5"
 
+[features]
+# Only for this crate's own tests: a call that skips the statement gate.
+test-hooks = []
+
 [dev-dependencies]
+compresso-sql = { path = ".", features = ["test-hooks"] }
 tempfile.workspace = true

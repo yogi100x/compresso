@@ -1,11 +1,20 @@
-//! Parsing the operator's database URL and the transport-security policy.
+//! Parsing the operator's database URL into the exact driver options, and
+//! the transport-security policy decided from those same options.
+//!
+//! The connection comes only from the one named variable (D115): user, host,
+//! and database must be in the URL; every driver option is set explicitly;
+//! Postgres environment variables that would change the connection make the
+//! target unusable, and the password file is never read. Only a fixed list
+//! of URL parameters is accepted, each at most once.
 
 use std::fmt;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use percent_encoding::percent_decode_str;
-use url::{Host, Url};
+use sqlx::mysql::{MySqlConnectOptions, MySqlSslMode};
+use sqlx::postgres::{PgConnectOptions, PgSslMode};
+use url::Url;
 
 use crate::redact::Secrets;
 use crate::sqlite::SqliteTarget;
@@ -46,6 +55,25 @@ pub fn is_valid_env_name(name: &str) -> bool {
     })
 }
 
+/// Postgres environment variables the driver would read to change the
+/// connection (`libpq` names). Any of them set makes a Postgres target
+/// unusable, so the connection comes only from the operator's variable.
+pub const POSTGRES_ENVIRONMENT: &[&str] = &[
+    "PGHOST",
+    "PGHOSTADDR",
+    "PGPORT",
+    "PGUSER",
+    "PGPASSWORD",
+    "PGPASSFILE",
+    "PGDATABASE",
+    "PGOPTIONS",
+    "PGSSLMODE",
+    "PGSSLROOTCERT",
+    "PGSSLCERT",
+    "PGSSLKEY",
+    "PGAPPNAME",
+];
+
 /// Transport security the driver is told to use.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Tls {
@@ -66,10 +94,17 @@ pub(crate) enum LocalTls {
     VerifyFull,
 }
 
-/// A parsed network target. The URL itself stays private to the crate.
+/// The driver options a connection uses, built once from the URL.
+#[derive(Clone)]
+pub(crate) enum DriverOptions {
+    Postgres(PgConnectOptions),
+    MySql(MySqlConnectOptions),
+}
+
+/// A parsed network target. Nothing in it prints through `Debug`.
 pub(crate) struct NetworkTarget {
     pub(crate) engine: SqlEngine,
-    pub(crate) url: Url,
+    pub(crate) options: DriverOptions,
     pub(crate) tls: Tls,
 }
 
@@ -86,7 +121,7 @@ impl fmt::Debug for NetworkTarget {
 /// A usable target and the strings its error messages must never contain.
 pub(crate) enum SqlTarget {
     Sqlite(SqliteTarget),
-    Network(NetworkTarget, Secrets),
+    Network(Box<NetworkTarget>, Secrets),
 }
 
 impl fmt::Debug for SqlTarget {
@@ -95,58 +130,108 @@ impl fmt::Debug for SqlTarget {
     }
 }
 
-/// Query parameters a Postgres URL may carry. Anything else (notably
-/// `options`, which sets server parameters) is refused.
-const POSTGRES_PARAMS: &[&str] = &[
-    "sslmode",
-    "ssl-mode",
-    "sslrootcert",
-    "ssl-root-cert",
-    "sslcert",
-    "ssl-cert",
-    "sslkey",
-    "ssl-key",
-    "host",
-    "hostaddr",
-    "port",
-    "dbname",
-    "user",
-    "password",
-    "application_name",
-];
+/// One accepted URL parameter: its canonical name and its spellings.
+struct Param {
+    name: &'static str,
+    spellings: &'static [&'static str],
+}
 
-/// Query parameters a MySQL/MariaDB URL may carry.
-const MYSQL_PARAMS: &[&str] = &[
-    "sslmode", "ssl-mode", "sslca", "ssl-ca", "sslcert", "ssl-cert", "sslkey", "ssl-key", "socket",
-    "charset",
-];
+const SSL_MODE: Param = Param {
+    name: "sslmode",
+    spellings: &["sslmode", "ssl-mode"],
+};
+const SSL_ROOT: Param = Param {
+    name: "sslrootcert",
+    spellings: &["sslrootcert", "ssl-root-cert", "sslca", "ssl-ca"],
+};
+const SSL_CERT: Param = Param {
+    name: "sslcert",
+    spellings: &["sslcert", "ssl-cert"],
+};
+const SSL_KEY: Param = Param {
+    name: "sslkey",
+    spellings: &["sslkey", "ssl-key"],
+};
+const SOCKET: Param = Param {
+    name: "socket",
+    spellings: &["socket"],
+};
 
-/// Query parameters whose values are secret or locate secrets.
-const SECRET_PARAMS: &[&str] = &[
-    "password",
-    "user",
-    "host",
-    "hostaddr",
-    "dbname",
-    "socket",
-    "sslkey",
-    "ssl-key",
-    "sslcert",
-    "ssl-cert",
-    "sslrootcert",
-    "ssl-root-cert",
-    "sslca",
-    "ssl-ca",
-];
+/// Parameters a Postgres URL may carry. Host, port, user, password, and
+/// database come only from the URL's own parts; `options`, `host`,
+/// `hostaddr`, `application_name`, and everything else are refused.
+const POSTGRES_PARAMS: &[Param] = &[SSL_MODE, SSL_ROOT, SSL_CERT, SSL_KEY];
+/// Parameters a MySQL/MariaDB URL may carry. `charset` is refused: the
+/// connection is always utf8mb4 (a multibyte charset such as gbk can swallow
+/// a backslash).
+const MYSQL_PARAMS: &[Param] = &[SSL_MODE, SSL_ROOT, SSL_CERT, SSL_KEY, SOCKET];
+
+/// The accepted parameters of a URL by canonical name, each at most once.
+fn parameters(url: &Url, allowed: &[Param]) -> Result<Vec<(&'static str, String)>, String> {
+    let mut found: Vec<(&'static str, String)> = Vec::new();
+    for (key, value) in url.query_pairs() {
+        let Some(param) = allowed
+            .iter()
+            .find(|param| param.spellings.contains(&key.as_ref()))
+        else {
+            return Err(format!(
+                "the URL carries an unsupported parameter '{}' (accepted: {})",
+                printable_key(&key),
+                allowed
+                    .iter()
+                    .map(|param| param.name)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        };
+        if found.iter().any(|(name, _)| *name == param.name) {
+            return Err(format!(
+                "the URL gives the parameter '{}' more than once",
+                param.name
+            ));
+        }
+        found.push((param.name, value.into_owned()));
+    }
+    Ok(found)
+}
+
+fn decoded(text: &str, part: &str) -> Result<String, String> {
+    percent_decode_str(text)
+        .decode_utf8()
+        .map(|text| text.into_owned())
+        .map_err(|_| format!("the URL's {part} is not valid UTF-8"))
+}
+
+/// The first Postgres environment variable that is set, if any.
+pub(crate) fn postgres_environment_conflict(
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Option<&'static str> {
+    POSTGRES_ENVIRONMENT
+        .iter()
+        .copied()
+        .find(|name| lookup(name).is_some())
+}
 
 impl SqlTarget {
     /// Parses one URL. The error never contains the URL or its parts.
     pub(crate) fn parse(value: &str, protected: Vec<PathBuf>) -> Result<Self, String> {
+        Self::parse_with_environment(value, protected, |name| {
+            std::env::var_os(name).map(|_| String::new())
+        })
+    }
+
+    pub(crate) fn parse_with_environment(
+        value: &str,
+        protected: Vec<PathBuf>,
+        environment: impl Fn(&str) -> Option<String>,
+    ) -> Result<Self, String> {
         let value = value.trim();
         if let Some(rest) = value.strip_prefix("sqlite:") {
             let path = rest.strip_prefix("//").unwrap_or(rest);
-            if path.contains('\0') {
-                return Err("the SQLite path contains a NUL byte".to_owned());
+            if path.contains(['\0', '?', '#']) {
+                return Err(
+                    "a sqlite: URL holds only an absolute file path, with no parameters".to_owned(),
+                );
             }
             let path = Path::new(path);
             if !path.is_absolute() {
@@ -166,24 +251,156 @@ impl SqlTarget {
                 );
             }
         };
-        let allowed = match engine {
-            SqlEngine::Postgres => POSTGRES_PARAMS,
-            _ => MYSQL_PARAMS,
-        };
-        for (key, _) in url.query_pairs() {
-            if !allowed.contains(&key.as_ref()) {
-                return Err(format!(
-                    "the URL carries an unsupported parameter '{}'",
-                    printable_key(&key)
-                ));
-            }
-        }
         if url.fragment().is_some() {
             return Err("the URL must not carry a fragment".to_owned());
         }
-        let tls = tls_policy(engine, &url)?;
-        let secrets = Secrets::from_url(value, &url, SECRET_PARAMS);
-        Ok(Self::Network(NetworkTarget { engine, url, tls }, secrets))
+        let params = parameters(
+            &url,
+            if engine == SqlEngine::Postgres {
+                POSTGRES_PARAMS
+            } else {
+                MYSQL_PARAMS
+            },
+        )?;
+        let param = |name: &str| {
+            params
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| value.clone())
+        };
+        let user = decoded(url.username(), "user")?;
+        if user.is_empty() {
+            return Err("the URL must name its user (user@host)".to_owned());
+        }
+        let password = url
+            .password()
+            .map(|password| decoded(password, "password"))
+            .transpose()?;
+        let host = decoded(url.host_str().unwrap_or_default(), "host")?;
+        let socket = param("socket");
+        if host.is_empty() && socket.is_none() {
+            return Err("the URL must name its host".to_owned());
+        }
+        let database = decoded(url.path().trim_start_matches('/'), "database")?;
+        if database.is_empty() || database.contains('/') {
+            return Err("the URL must name exactly one database (…/database)".to_owned());
+        }
+        let mode = param("sslmode")
+            .map(|mode| parse_mode(engine, &mode))
+            .transpose()?;
+        let mut secrets = Secrets::from_url(
+            value,
+            &url,
+            &[
+                "sslkey",
+                "ssl-key",
+                "sslcert",
+                "ssl-cert",
+                "sslrootcert",
+                "ssl-root-cert",
+                "sslca",
+                "ssl-ca",
+                "socket",
+            ],
+        );
+        secrets.add(&user);
+        secrets.add(&host);
+        secrets.add(&database);
+        if let Some(password) = &password {
+            secrets.add(password);
+        }
+        let (options, local) = match engine {
+            SqlEngine::Postgres => {
+                if let Some(variable) = postgres_environment_conflict(&environment) {
+                    return Err(format!(
+                        "{variable} is set; the Postgres connection must come only from the --sql-env variable, so unset it in the server's environment"
+                    ));
+                }
+                // `new_without_pgpass` never reads the password file; with no
+                // PG* variable set, every field below is the URL's own.
+                let mut options = PgConnectOptions::new_without_pgpass()
+                    .port(url.port().unwrap_or(5432))
+                    .username(&user)
+                    .database(&database)
+                    .application_name("compresso");
+                options = if host.starts_with('/') {
+                    options.socket(&host)
+                } else {
+                    options.host(&host)
+                };
+                if let Some(password) = &password {
+                    options = options.password(password);
+                }
+                if let Some(path) = param("sslrootcert") {
+                    options = options.ssl_root_cert(path);
+                }
+                if let Some(path) = param("sslcert") {
+                    options = options.ssl_client_cert(path);
+                }
+                if let Some(path) = param("sslkey") {
+                    options = options.ssl_client_key(path);
+                }
+                // The policy reads the very object the driver connects with.
+                let local = options.get_socket().is_some() || is_loopback_text(options.get_host());
+                (DriverOptions::Postgres(options), local)
+            }
+            _ => {
+                let mut options = MySqlConnectOptions::new()
+                    .host(if host.is_empty() { "localhost" } else { &host })
+                    .port(url.port().unwrap_or(3306))
+                    .username(&user)
+                    .database(&database)
+                    .charset("utf8mb4")
+                    // Keep the server's own `||` and time zone, so results
+                    // match what the operator's own client shows.
+                    .pipes_as_concat(false)
+                    .timezone(None);
+                if let Some(password) = &password {
+                    options = options.password(password);
+                }
+                if let Some(socket) = &socket {
+                    options = options.socket(socket);
+                }
+                if let Some(path) = param("sslrootcert") {
+                    options = options.ssl_ca(path);
+                }
+                if let Some(path) = param("sslcert") {
+                    options = options.ssl_client_cert(path);
+                }
+                if let Some(path) = param("sslkey") {
+                    options = options.ssl_client_key(path);
+                }
+                let local = options.get_socket().is_some() || is_loopback_text(options.get_host());
+                (DriverOptions::MySql(options), local)
+            }
+        };
+        let tls = tls_policy(engine, local, mode)?;
+        let options = match options {
+            DriverOptions::Postgres(options) => {
+                DriverOptions::Postgres(options.ssl_mode(match tls {
+                    Tls::VerifyFull | Tls::Local(LocalTls::VerifyFull) => PgSslMode::VerifyFull,
+                    Tls::Local(LocalTls::VerifyCa) => PgSslMode::VerifyCa,
+                    Tls::Local(LocalTls::Require) => PgSslMode::Require,
+                    Tls::Local(LocalTls::Prefer) => PgSslMode::Prefer,
+                    Tls::Local(LocalTls::Disable) => PgSslMode::Disable,
+                }))
+            }
+            DriverOptions::MySql(options) => DriverOptions::MySql(options.ssl_mode(match tls {
+                Tls::VerifyFull | Tls::Local(LocalTls::VerifyFull) => MySqlSslMode::VerifyIdentity,
+                Tls::Local(LocalTls::VerifyCa) => MySqlSslMode::VerifyCa,
+                Tls::Local(LocalTls::Require) => MySqlSslMode::Required,
+                Tls::Local(LocalTls::Prefer) => MySqlSslMode::Preferred,
+                Tls::Local(LocalTls::Disable) => MySqlSslMode::Disabled,
+            })),
+        };
+        Ok(Self::Network(
+            Box::new(NetworkTarget {
+                engine,
+                options,
+                tls,
+            }),
+            secrets,
+        ))
     }
 
     pub(crate) fn engine(&self) -> SqlEngine {
@@ -217,29 +434,18 @@ fn printable_key(key: &str) -> String {
     }
 }
 
-/// Decides the transport security of a network URL: plain text is allowed
-/// only to a loopback address or a local socket, and any other host gets TLS
-/// with full certificate verification; a weaker mode for such a host is an
-/// error, not a silent upgrade.
-pub(crate) fn tls_policy(engine: SqlEngine, url: &Url) -> Result<Tls, String> {
-    let param = |name: &str| {
-        url.query_pairs()
-            .find(|(key, _)| key == name)
-            .map(|(_, value)| value.into_owned())
-    };
-    let mode = param("sslmode").or_else(|| param("ssl-mode"));
-    let local = match engine {
-        SqlEngine::Postgres => postgres_is_local(url, param("host"), param("hostaddr"))?,
-        _ => mysql_is_local(url, param("socket"))?,
-    };
-    let parsed = match mode.as_deref() {
-        None => None,
-        Some(mode) => Some(parse_mode(engine, mode)?),
-    };
+/// Plain text only to a loopback address or a local socket; any other host
+/// gets TLS with full certificate verification, and a weaker mode for such a
+/// host is an error, not a silent upgrade.
+pub(crate) fn tls_policy(
+    engine: SqlEngine,
+    local: bool,
+    mode: Option<LocalTls>,
+) -> Result<Tls, String> {
     if local {
-        return Ok(Tls::Local(parsed.unwrap_or(LocalTls::Prefer)));
+        return Ok(Tls::Local(mode.unwrap_or(LocalTls::Prefer)));
     }
-    match parsed {
+    match mode {
         None | Some(LocalTls::VerifyFull) => Ok(Tls::VerifyFull),
         Some(_) => Err(match engine {
             SqlEngine::Postgres => {
@@ -261,24 +467,14 @@ fn parse_mode(engine: SqlEngine, mode: &str) -> Result<LocalTls, String> {
         (SqlEngine::Postgres, "require") => LocalTls::Require,
         (SqlEngine::Postgres, "verify-ca") => LocalTls::VerifyCa,
         (SqlEngine::Postgres, "verify-full") => LocalTls::VerifyFull,
-        (_, "disabled") if engine != SqlEngine::Postgres => LocalTls::Disable,
-        (_, "preferred") if engine != SqlEngine::Postgres => LocalTls::Prefer,
-        (_, "required") if engine != SqlEngine::Postgres => LocalTls::Require,
-        (_, "verify-ca") if engine != SqlEngine::Postgres => LocalTls::VerifyCa,
-        (_, "verify-identity") if engine != SqlEngine::Postgres => LocalTls::VerifyFull,
+        (SqlEngine::MySql, "disabled") => LocalTls::Disable,
+        (SqlEngine::MySql, "preferred") => LocalTls::Prefer,
+        (SqlEngine::MySql, "required") => LocalTls::Require,
+        (SqlEngine::MySql, "verify-ca") => LocalTls::VerifyCa,
+        (SqlEngine::MySql, "verify-identity") => LocalTls::VerifyFull,
         _ => return Err("the URL's TLS mode is not recognized".to_owned()),
     };
     Ok(parsed)
-}
-
-fn is_loopback_host(host: Option<Host<&str>>) -> bool {
-    match host {
-        // Non-special schemes keep an IPv4 host as text.
-        Some(Host::Domain(domain)) => is_loopback_text(domain),
-        Some(Host::Ipv4(address)) => address.is_loopback(),
-        Some(Host::Ipv6(address)) => address.is_loopback(),
-        None => false,
-    }
 }
 
 fn is_loopback_text(host: &str) -> bool {
@@ -290,66 +486,19 @@ fn is_loopback_text(host: &str) -> bool {
             .is_ok_and(|address| address.is_loopback())
 }
 
-/// A Postgres URL is local when it names a socket directory (a host or
-/// `host` parameter starting with `/`) or a loopback host, and any
-/// `hostaddr` (from the URL or `PGHOSTADDR`, which the driver also reads) is
-/// loopback too. A URL without a host is refused: the driver would fall back
-/// to `PGHOST`, which this policy cannot see.
-fn postgres_is_local(
-    url: &Url,
-    host_param: Option<String>,
-    hostaddr_param: Option<String>,
-) -> Result<bool, String> {
-    let host = url
-        .host_str()
-        .map(|host| percent_decode_str(host).decode_utf8_lossy().into_owned());
-    let named = host_param
-        .clone()
-        .or(host.clone())
-        .filter(|host| !host.is_empty());
-    let Some(named) = named else {
-        return Err(
-            "a postgres URL must name its host (or a host=/socket/dir parameter)".to_owned(),
-        );
-    };
-    let hostaddr = hostaddr_param.or_else(|| std::env::var("PGHOSTADDR").ok());
-    if let Some(hostaddr) = hostaddr
-        && !is_loopback_text(&hostaddr)
-    {
-        return Ok(false);
-    }
-    if named.starts_with('/') {
-        return Ok(true);
-    }
-    if host_param.is_some() {
-        return Ok(is_loopback_text(&named));
-    }
-    Ok(is_loopback_host(url.host()))
-}
-
-/// A MySQL URL is local when it names a socket or a loopback host.
-fn mysql_is_local(url: &Url, socket: Option<String>) -> Result<bool, String> {
-    if socket.is_some_and(|socket| !socket.is_empty()) {
-        return Ok(true);
-    }
-    if url.host_str().is_none_or(str::is_empty) {
-        return Err("a mysql URL must name its host (or a socket parameter)".to_owned());
-    }
-    Ok(is_loopback_host(url.host()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn parse(value: &str) -> Result<SqlTarget, String> {
+        SqlTarget::parse_with_environment(value, Vec::new(), |_| None)
+    }
+
     fn tls(value: &str) -> Result<Tls, String> {
-        let url = Url::parse(value).expect("url");
-        let engine = if value.starts_with("mysql") {
-            SqlEngine::MySql
-        } else {
-            SqlEngine::Postgres
-        };
-        tls_policy(engine, &url)
+        match parse(value)? {
+            SqlTarget::Network(target, _) => Ok(target.tls),
+            SqlTarget::Sqlite(_) => panic!("network"),
+        }
     }
 
     #[test]
@@ -414,10 +563,6 @@ mod tests {
             Ok(Tls::Local(LocalTls::Prefer))
         );
         assert_eq!(
-            tls("postgres://u@db.example.com/app?host=/tmp/pg&sslmode=disable"),
-            Ok(Tls::Local(LocalTls::Disable))
-        );
-        assert_eq!(
             tls("mysql://u@localhost/app?ssl-mode=DISABLED"),
             Ok(Tls::Local(LocalTls::Disable))
         );
@@ -425,17 +570,6 @@ mod tests {
             tls("mysql://u@db.example.com/app?socket=/tmp/my.sock"),
             Ok(Tls::Local(LocalTls::Prefer))
         );
-    }
-
-    #[test]
-    fn test_a_remote_hostaddr_or_missing_host_is_not_local() {
-        assert_eq!(
-            tls("postgres://u@localhost/app?hostaddr=10.1.2.3"),
-            Ok(Tls::VerifyFull)
-        );
-        assert!(tls("postgres://u@localhost/app?hostaddr=10.1.2.3&sslmode=disable").is_err());
-        assert!(tls("postgres:///app").is_err());
-        assert!(tls("mysql:///app").is_err());
         // A host that merely starts with a loopback-looking label is remote.
         assert_eq!(
             tls("postgres://u@localhost.example.com/app"),
@@ -445,6 +579,103 @@ mod tests {
             tls("postgres://u@127.0.0.1.nip.io/app"),
             Ok(Tls::VerifyFull)
         );
+    }
+
+    #[test]
+    fn test_duplicate_or_aliased_parameters_cannot_downgrade_tls() {
+        for value in [
+            "postgres://u@localhost/app?host=localhost&host=db.remote&sslmode=disable",
+            "postgres://u@db.remote/app?sslmode=verify-full&sslmode=disable",
+            "postgres://u@db.remote/app?sslmode=verify-full&ssl-mode=disable",
+            "mysql://u@db.remote/app?ssl-mode=VERIFY_IDENTITY&sslmode=DISABLED",
+            "mysql://u@db.remote/app?socket=/tmp/a&socket=/tmp/b",
+        ] {
+            assert!(parse(value).is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn test_only_understood_parameters_are_accepted() {
+        for value in [
+            "postgres://u@localhost/app?host=/tmp",
+            "postgres://u@localhost/app?hostaddr=10.1.2.3",
+            "postgres://u@localhost/app?options=-c%20x%3D1",
+            "postgres://u@localhost/app?application_name=x",
+            "postgres://u@localhost/app?port=1",
+            "postgres://u@localhost/app?user=v",
+            "postgres://u@localhost/app?dbname=other",
+            "postgres://u@localhost/app?password=x",
+            "mysql://u@localhost/app?charset=gbk",
+            "mysql://u@localhost/app?timezone=%2B01:00",
+            "mysql://u@localhost/app?statement-cache-capacity=1",
+            "sqlite:/tmp/x.db?mode=rwc",
+        ] {
+            assert!(parse(value).is_err(), "{value}");
+        }
+        assert!(parse("postgres://u@localhost/app?sslmode=require&sslrootcert=/ca.pem").is_ok());
+        assert!(parse("mysql://u@localhost/app?ssl-ca=/ca.pem&ssl-mode=REQUIRED").is_ok());
+    }
+
+    #[test]
+    fn test_user_host_and_database_must_be_explicit() {
+        for value in [
+            "postgres:///app",
+            "postgres://localhost/app",
+            "postgres://u@localhost",
+            "postgres://u@localhost/",
+            "postgres://u@localhost/a/b",
+            "mysql://localhost/app",
+            "mysql://u@localhost",
+        ] {
+            assert!(parse(value).is_err(), "{value}");
+        }
+    }
+
+    #[test]
+    fn test_postgres_environment_variables_make_the_target_unusable() {
+        let error =
+            SqlTarget::parse_with_environment("postgres://u@localhost/app", Vec::new(), |name| {
+                (name == "PGPASSFILE").then(String::new)
+            })
+            .expect_err("environment");
+        assert!(error.starts_with("PGPASSFILE is set"), "{error}");
+        for name in POSTGRES_ENVIRONMENT {
+            assert_eq!(
+                postgres_environment_conflict(|candidate| (candidate == *name).then(String::new)),
+                Some(*name)
+            );
+        }
+        // MySQL reads no environment, so the same variables do not matter.
+        assert!(
+            SqlTarget::parse_with_environment("mysql://u@localhost/app", Vec::new(), |_| Some(
+                String::new()
+            ))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_the_policy_reads_the_options_the_driver_uses() {
+        let SqlTarget::Network(target, _) = parse("postgres://u:pw@localhost:6000/app").unwrap()
+        else {
+            panic!("network");
+        };
+        let DriverOptions::Postgres(options) = &target.options else {
+            panic!("postgres");
+        };
+        assert_eq!(options.get_host(), "localhost");
+        assert_eq!(options.get_port(), 6000);
+        assert_eq!(options.get_username(), "u");
+        assert_eq!(options.get_database(), Some("app"));
+        assert_eq!(options.get_application_name(), Some("compresso"));
+        assert_eq!(options.get_options(), None);
+        let SqlTarget::Network(target, _) = parse("mysql://u@localhost/app").unwrap() else {
+            panic!("network");
+        };
+        let DriverOptions::MySql(options) = &target.options else {
+            panic!("mysql");
+        };
+        assert_eq!(options.get_charset(), "utf8mb4");
     }
 
     #[test]
@@ -458,29 +689,8 @@ mod tests {
             format!("postgres://u:{canary}@db.example.com/app?sslmode=disable"),
             format!("sqlite:relative/{canary}.db"),
         ] {
-            let error = SqlTarget::parse(&value, Vec::new()).expect_err(&value);
+            let error = parse(&value).expect_err(&value);
             assert!(!error.contains(canary), "{error}");
-        }
-        let error = SqlTarget::parse(
-            &format!("postgres://u@localhost/app?{canary}=1"),
-            Vec::new(),
-        )
-        .expect_err("unknown key");
-        assert!(error.contains("unsupported parameter"), "{error}");
-    }
-
-    #[test]
-    fn test_parse_recognizes_each_engine() {
-        for (value, engine) in [
-            ("postgres://u@localhost/app", SqlEngine::Postgres),
-            ("postgresql://u@localhost/app", SqlEngine::Postgres),
-            ("mysql://u@localhost/app", SqlEngine::MySql),
-            ("mariadb://u@localhost/app", SqlEngine::MySql),
-        ] {
-            assert_eq!(
-                SqlTarget::parse(value, Vec::new()).expect(value).engine(),
-                engine
-            );
         }
     }
 }

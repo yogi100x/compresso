@@ -133,18 +133,18 @@ fn test_a_server_error_that_names_the_user_is_scrubbed() {
 }
 
 #[test]
-fn test_a_user_name_the_driver_takes_from_the_environment_is_scrubbed_too() {
-    let (port, server) = echoing_postgres_server();
-    // No user in the URL: the driver sends PGUSER or the operating-system
-    // user, which the server then names in its error.
-    let service = service(&format!(
-        "postgres://127.0.0.1:{port}/{DATABASE}?sslmode=disable"
-    ));
-    let error = query(&service, "SELECT 1").expect_err("rejected login");
-    let user = server.join().expect("server thread");
-    assert!(!user.is_empty());
-    assert!(!error.message().contains(&format!("\"{user}\"")), "{error}");
-    assert_no_canary(&error);
+fn test_a_url_without_user_host_or_database_is_not_configured() {
+    // The driver would fill them from PGUSER, the operating-system user,
+    // PGHOST, or PGDATABASE; the connection must come only from the URL.
+    for url in [
+        format!("postgres://127.0.0.1:5432/{DATABASE}?sslmode=disable"),
+        format!("postgres://{USER}@127.0.0.1:5432?sslmode=disable"),
+        format!("postgres://{USER}@:5432/{DATABASE}"),
+    ] {
+        let error = query(&service(&url), "SELECT 1").expect_err("unusable");
+        assert_eq!(error.code(), "sql_not_configured", "{error}");
+        assert_no_canary(&error);
+    }
 }
 
 #[test]
@@ -282,4 +282,37 @@ fn test_live_mysql_reads_and_refuses_writes() {
             "sql_privileged_role"
         );
     }
+}
+
+#[test]
+fn test_a_stalled_peer_cannot_hold_a_call_past_its_limit() {
+    // Accepts the connection and never answers.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("address").port();
+    let server = std::thread::spawn(move || {
+        let accepted = listener.accept();
+        std::thread::sleep(Duration::from_secs(3));
+        drop(accepted);
+    });
+    {
+        let url =
+            format!("postgres://{USER}:{PASSWORD}@127.0.0.1:{port}/{DATABASE}?sslmode=disable");
+        let service = service(&url).with_connect_timeout(Duration::from_millis(300));
+        let request = SqlRequest {
+            action: SqlAction::Query("SELECT 1".to_owned()),
+            max_rows: 1,
+            timeout: Duration::from_millis(200),
+        };
+        let started = std::time::Instant::now();
+        let error = service.execute(&request).expect_err("stalled");
+        let elapsed = started.elapsed();
+        assert!(
+            matches!(error.code(), "sql_connection" | "sql_timeout"),
+            "{error}"
+        );
+        assert!(elapsed < service.call_limit(request.timeout), "{elapsed:?}");
+        assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
+        assert_no_canary(&error);
+    }
+    server.join().expect("server thread");
 }

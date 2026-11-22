@@ -247,7 +247,9 @@ pub enum SqlOutcome {
 /// connector and an engine kind without reshaping the request, result, or
 /// error types.
 pub(crate) trait Connector {
-    fn run(&self, request: &SqlRequest) -> Result<SqlOutcome, SqlError>;
+    /// Runs one call. `gated` is false only for the test hook that checks a
+    /// database-level control alone.
+    fn run(&self, request: &SqlRequest, gated: bool) -> Result<SqlOutcome, SqlError>;
 }
 
 /// The operator's choice for one server process: which variable names the
@@ -299,6 +301,7 @@ impl fmt::Debug for SqlSettings {
 pub struct SqlService {
     target: Result<target::SqlTarget, String>,
     runtime: Mutex<Option<tokio::runtime::Runtime>>,
+    connect_timeout: Duration,
 }
 
 impl SqlService {
@@ -320,7 +323,23 @@ impl SqlService {
         Self {
             target,
             runtime: Mutex::new(None),
+            connect_timeout: CONNECT_TIMEOUT,
         }
+    }
+
+    /// The same service with a shorter connect deadline (tests of a stalled
+    /// peer). Never longer than [`CONNECT_TIMEOUT`].
+    #[doc(hidden)]
+    pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
+        self.connect_timeout = timeout.min(CONNECT_TIMEOUT);
+        self
+    }
+
+    /// The longest one call with `timeout` can take end to end, for a
+    /// network engine: connect, session setup, the statement with its client
+    /// grace, and closing. A SQLite call is bounded by `timeout` itself.
+    pub fn call_limit(&self, timeout: Duration) -> Duration {
+        network::call_limit(self.connect_timeout, timeout)
     }
 
     /// The configured engine, if the variable held a usable URL.
@@ -336,6 +355,19 @@ impl SqlService {
     /// Runs one call to completion on the calling thread. Calls are
     /// serialized: one statement at a time per server process.
     pub fn execute(&self, request: &SqlRequest) -> Result<SqlOutcome, SqlError> {
+        self.execute_gated(request, true)
+    }
+
+    /// Runs one call without the statement gate, so a test can prove that a
+    /// database-level control holds by itself. Built only with the
+    /// `test-hooks` feature, which nothing in the shipped binary enables.
+    #[cfg(feature = "test-hooks")]
+    #[doc(hidden)]
+    pub fn execute_ungated_for_tests(&self, request: &SqlRequest) -> Result<SqlOutcome, SqlError> {
+        self.execute_gated(request, false)
+    }
+
+    fn execute_gated(&self, request: &SqlRequest, gated: bool) -> Result<SqlOutcome, SqlError> {
         let target = self
             .target
             .as_ref()
@@ -343,7 +375,7 @@ impl SqlService {
         validate_request(request)?;
         let mut runtime = self.runtime.lock().unwrap_or_else(PoisonError::into_inner);
         let outcome = match target {
-            target::SqlTarget::Sqlite(sqlite) => sqlite.run(request),
+            target::SqlTarget::Sqlite(sqlite) => sqlite.run(request, gated),
             target::SqlTarget::Network(network, _) => {
                 if runtime.is_none() {
                     *runtime = Some(network::runtime()?);
@@ -351,7 +383,12 @@ impl SqlService {
                 let Some(runtime) = runtime.as_ref() else {
                     return Err(SqlError::new("internal", "SQL runtime unavailable"));
                 };
-                network::Bound { network, runtime }.run(request)
+                network::Bound {
+                    network,
+                    runtime,
+                    connect_timeout: self.connect_timeout,
+                }
+                .run(request, gated)
             }
         };
         outcome.map_err(|error| target.scrub(error))

@@ -22,10 +22,8 @@ use std::time::{Duration, Instant};
 
 use futures_util::TryStreamExt;
 use serde_json::Value;
-use sqlx::mysql::{
-    MySqlConnectOptions, MySqlConnection, MySqlDatabaseError, MySqlRow, MySqlSslMode,
-};
-use sqlx::postgres::{PgConnectOptions, PgConnection, PgRow, PgSslMode};
+use sqlx::mysql::{MySqlConnection, MySqlDatabaseError, MySqlRow};
+use sqlx::postgres::{PgConnection, PgRow};
 use sqlx::{
     AssertSqlSafe, Column, ConnectOptions, Connection, Executor, Row, SqlSafeStr, Statement,
     TypeInfo, ValueRef, raw_sql,
@@ -33,12 +31,10 @@ use sqlx::{
 use tokio::runtime::Runtime;
 
 use crate::cells::{self, RowCollector};
-use crate::redact::Secrets;
-use crate::target::{LocalTls, NetworkTarget, Tls};
+use crate::target::{DriverOptions, NetworkTarget};
 use crate::{
-    CONNECT_TIMEOUT, ColumnEntry, Connector, DescribeResult, ForeignKeyEntry, IndexEntry,
-    MAX_TABLES, SqlAction, SqlEngine, SqlError, SqlOutcome, SqlRequest, TableEntry, TablesResult,
-    gate,
+    ColumnEntry, Connector, DescribeResult, ForeignKeyEntry, IndexEntry, MAX_TABLES, SqlAction,
+    SqlEngine, SqlError, SqlOutcome, SqlRequest, TableEntry, TablesResult, gate,
 };
 
 /// Time the client waits past the server-side statement deadline.
@@ -59,102 +55,106 @@ pub(crate) fn runtime() -> Result<Runtime, SqlError> {
 pub(crate) struct Bound<'a> {
     pub(crate) network: &'a NetworkTarget,
     pub(crate) runtime: &'a Runtime,
+    pub(crate) connect_timeout: Duration,
 }
 
-/// What the driver fills in from the environment when the URL leaves it out
-/// (`PGUSER` or the operating-system user, `PGDATABASE`, `PGHOST`): scrubbed
-/// from errors like the URL's own parts.
-fn driver_secrets(target: &NetworkTarget) -> Secrets {
-    let mut secrets = Secrets::default();
-    match target.engine {
-        SqlEngine::Postgres => {
-            if let Ok(options) = PgConnectOptions::from_url(&target.url) {
-                secrets.add(options.get_username());
-                secrets.add(options.get_host());
-                if let Some(database) = options.get_database() {
-                    secrets.add(database);
-                }
-            }
-        }
-        _ => {
-            if let Ok(options) = MySqlConnectOptions::from_url(&target.url) {
-                secrets.add(options.get_username());
-                secrets.add(options.get_host());
-                if let Some(database) = options.get_database() {
-                    secrets.add(database);
-                }
-            }
-        }
-    }
-    secrets
+/// Longest wait for `ROLLBACK` and a clean close before the connection is
+/// dropped instead; a stalled peer is never awaited.
+const FINISH_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The longest one call can take, end to end: connect, setup, statement
+/// (with its client grace), and finish. Past it the whole call is dropped.
+pub(crate) fn call_limit(connect_timeout: Duration, timeout: Duration) -> Duration {
+    connect_timeout + timeout + CLIENT_GRACE + FINISH_TIMEOUT * 2
 }
 
 impl Connector for Bound<'_> {
-    fn run(&self, request: &SqlRequest) -> Result<SqlOutcome, SqlError> {
-        let secrets = driver_secrets(self.network);
-        self.run_unscrubbed(request)
-            .map_err(|error| SqlError::new(error.code(), secrets.scrub(error.message())))
-    }
-}
-
-impl Bound<'_> {
-    fn run_unscrubbed(&self, request: &SqlRequest) -> Result<SqlOutcome, SqlError> {
-        let deadline = request.timeout + CLIENT_GRACE;
+    fn run(&self, request: &SqlRequest, gated: bool) -> Result<SqlOutcome, SqlError> {
+        let limit = call_limit(self.connect_timeout, request.timeout);
         self.runtime.block_on(async {
-            match self.network.engine {
-                SqlEngine::Postgres => {
-                    let mut connection = postgres_connect(self.network).await?;
-                    match tokio::time::timeout(deadline, postgres_call(&mut connection, request))
-                        .await
-                    {
-                        Ok(Ok((outcome, clean))) => {
-                            finish(connection, clean).await;
-                            Ok(outcome)
-                        }
-                        Ok(Err(error)) => {
-                            let _ = connection.close_hard().await;
-                            Err(error)
-                        }
-                        Err(_) => {
-                            let _ = connection.close_hard().await;
-                            Err(SqlError::timeout(request.timeout))
-                        }
-                    }
-                }
-                _ => {
-                    let mut connection = mysql_connect(self.network).await?;
-                    match tokio::time::timeout(deadline, mysql_call(&mut connection, request)).await
-                    {
-                        Ok(Ok((outcome, clean))) => {
-                            finish(connection, clean).await;
-                            Ok(outcome)
-                        }
-                        Ok(Err(error)) => {
-                            let _ = connection.close_hard().await;
-                            Err(error)
-                        }
-                        Err(_) => {
-                            let _ = connection.close_hard().await;
-                            Err(SqlError::timeout(request.timeout))
-                        }
-                    }
-                }
-            }
+            tokio::time::timeout(limit, self.call(request, gated))
+                .await
+                .unwrap_or_else(|_| Err(SqlError::timeout(request.timeout)))
         })
     }
 }
 
-/// Rolls back and closes a connection whose last statement was read to the
-/// end; drops one that still has unread rows.
-async fn finish<C: Connection>(mut connection: C, clean: bool)
+impl Bound<'_> {
+    async fn call(&self, request: &SqlRequest, gated: bool) -> Result<SqlOutcome, SqlError> {
+        let deadline = request.timeout + CLIENT_GRACE;
+        match &self.network.options {
+            DriverOptions::Postgres(options) => {
+                let options = options.clone().disable_statement_logging();
+                let mut connection = timed_connect(
+                    PgConnection::connect_with(&options),
+                    SqlEngine::Postgres,
+                    self.connect_timeout,
+                )
+                .await?;
+                let result =
+                    tokio::time::timeout(deadline, postgres_call(&mut connection, request, gated))
+                        .await;
+                settle(connection, result, request.timeout).await
+            }
+            DriverOptions::MySql(options) => {
+                let options = options.clone().disable_statement_logging();
+                let mut connection = timed_connect(
+                    MySqlConnection::connect_with(&options),
+                    SqlEngine::MySql,
+                    self.connect_timeout,
+                )
+                .await?;
+                let result =
+                    tokio::time::timeout(deadline, mysql_call(&mut connection, request, gated))
+                        .await;
+                settle(connection, result, request.timeout).await
+            }
+        }
+    }
+}
+
+/// Ends a call: roll back and close a connection whose last statement was
+/// read to the end; drop any other. Never waits longer than
+/// [`FINISH_TIMEOUT`] for the peer.
+async fn settle<C: Connection>(
+    mut connection: C,
+    result: Result<Result<(SqlOutcome, bool), SqlError>, tokio::time::error::Elapsed>,
+    timeout: Duration,
+) -> Result<SqlOutcome, SqlError>
 where
     for<'c> &'c mut C: Executor<'c>,
 {
-    if clean && (&mut connection).execute(raw_sql("ROLLBACK")).await.is_ok() {
-        let _ = connection.close().await;
-    } else {
-        let _ = connection.close_hard().await;
+    match result {
+        Ok(Ok((outcome, true))) => {
+            let clean = tokio::time::timeout(FINISH_TIMEOUT, async {
+                (&mut connection).execute(raw_sql("ROLLBACK")).await.is_ok()
+            })
+            .await
+            .unwrap_or(false);
+            if clean {
+                let _ = tokio::time::timeout(FINISH_TIMEOUT, connection.close()).await;
+            } else {
+                drop_connection(connection).await;
+            }
+            Ok(outcome)
+        }
+        Ok(Ok((outcome, false))) => {
+            drop_connection(connection).await;
+            Ok(outcome)
+        }
+        Ok(Err(error)) => {
+            drop_connection(connection).await;
+            Err(error)
+        }
+        Err(_) => {
+            drop_connection(connection).await;
+            Err(SqlError::timeout(timeout))
+        }
     }
+}
+
+async fn drop_connection<C: Connection>(connection: C) {
+    let _ = tokio::time::timeout(FINISH_TIMEOUT, connection.close_hard()).await;
 }
 
 fn map_error(error: sqlx::Error, engine: SqlEngine) -> SqlError {
@@ -198,16 +198,23 @@ fn map_error(error: sqlx::Error, engine: SqlEngine) -> SqlError {
     }
 }
 
-async fn timed_connect<C, F>(future: F, engine: SqlEngine) -> Result<C, SqlError>
+async fn timed_connect<C, F>(
+    future: F,
+    engine: SqlEngine,
+    connect_timeout: Duration,
+) -> Result<C, SqlError>
 where
     F: Future<Output = Result<C, sqlx::Error>>,
 {
-    match tokio::time::timeout(CONNECT_TIMEOUT, future).await {
+    match tokio::time::timeout(connect_timeout, future).await {
         Ok(Ok(connection)) => Ok(connection),
         Ok(Err(error)) => Err(map_error(error, engine)),
         Err(_) => Err(SqlError::new(
             "sql_connection",
-            format!("could not connect within {} s", CONNECT_TIMEOUT.as_secs()),
+            format!(
+                "could not connect within {} ms",
+                connect_timeout.as_millis()
+            ),
         )),
     }
 }
@@ -259,7 +266,7 @@ fn text_cell(text: Option<&str>, bytes: Option<usize>, type_name: &str, binary: 
 
 /// Refuses a superuser or a member of a role that reads or writes server
 /// files or runs server programs.
-const POSTGRES_ROLE_CHECK: &str = "SELECT (r.rolsuper OR EXISTS (SELECT 1 FROM pg_catalog.pg_roles g WHERE g.rolname IN ('pg_read_server_files', 'pg_write_server_files', 'pg_execute_server_program') AND pg_catalog.pg_has_role(r.oid, g.oid, 'MEMBER')))::text FROM pg_catalog.pg_roles r WHERE r.rolname = current_user";
+const POSTGRES_ROLE_CHECK: &str = "SELECT (r.rolsuper OR EXISTS (SELECT 1 FROM pg_catalog.pg_roles g WHERE g.rolname IN ('pg_read_server_files', 'pg_write_server_files', 'pg_execute_server_program', 'pg_signal_backend') AND pg_catalog.pg_has_role(r.oid, g.oid, 'MEMBER')))::text FROM pg_catalog.pg_roles r WHERE r.rolname = current_user";
 
 const POSTGRES_TABLES: &str = "SELECT n.nspname::text, c.relname::text, CASE c.relkind WHEN 'r' THEN 'table' WHEN 'p' THEN 'table' WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized_view' ELSE 'foreign_table' END, CASE WHEN c.reltuples >= 0 THEN c.reltuples::bigint::text END FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f') AND NOT c.relispartition AND n.nspname <> 'information_schema' AND n.nspname NOT LIKE 'pg\\_%' ORDER BY 1, 2 LIMIT $1";
 
@@ -271,27 +278,12 @@ const POSTGRES_INDEXES: &str = "SELECT ic.relname::text, i.indisunique::text, pg
 
 const POSTGRES_FOREIGN_KEYS: &str = "SELECT pg_catalog.array_to_string(ARRAY(SELECT a.attname::text FROM pg_catalog.unnest(con.conkey) WITH ORDINALITY AS k(num, ord) JOIN pg_catalog.pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.num ORDER BY k.ord), chr(31)), con.confrelid::regclass::text, pg_catalog.array_to_string(ARRAY(SELECT a.attname::text FROM pg_catalog.unnest(con.confkey) WITH ORDINALITY AS k(num, ord) JOIN pg_catalog.pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.num ORDER BY k.ord), chr(31)) FROM pg_catalog.pg_constraint con WHERE con.conrelid = $1::text::oid AND con.contype = 'f' ORDER BY con.conname";
 
-async fn postgres_connect(target: &NetworkTarget) -> Result<PgConnection, SqlError> {
-    let mode = match target.tls {
-        Tls::VerifyFull | Tls::Local(LocalTls::VerifyFull) => PgSslMode::VerifyFull,
-        Tls::Local(LocalTls::VerifyCa) => PgSslMode::VerifyCa,
-        Tls::Local(LocalTls::Require) => PgSslMode::Require,
-        Tls::Local(LocalTls::Prefer) => PgSslMode::Prefer,
-        Tls::Local(LocalTls::Disable) => PgSslMode::Disable,
-    };
-    let options = PgConnectOptions::from_url(&target.url)
-        .map_err(|error| map_error(error, SqlEngine::Postgres))?
-        .ssl_mode(mode)
-        .application_name("compresso")
-        .disable_statement_logging();
-    timed_connect(PgConnection::connect_with(&options), SqlEngine::Postgres).await
-}
-
 /// Runs one call in a read-only transaction. The flag says whether the
 /// connection read everything it was sent (and may be rolled back cleanly).
 async fn postgres_call(
     connection: &mut PgConnection,
     request: &SqlRequest,
+    gated: bool,
 ) -> Result<(SqlOutcome, bool), SqlError> {
     let error = |error| map_error(error, SqlEngine::Postgres);
     let privileged: String = sqlx::query_scalar(POSTGRES_ROLE_CHECK)
@@ -321,7 +313,9 @@ async fn postgres_call(
         .map_err(error)?;
     match &request.action {
         SqlAction::Query(sql) => {
-            gate::check_statement(sql, SqlEngine::Postgres).map_err(SqlError::refused)?;
+            if gated {
+                gate::check_statement(sql, SqlEngine::Postgres).map_err(SqlError::refused)?;
+            }
             let statement = (&mut *connection)
                 .prepare(owned_sql(sql))
                 .await
@@ -466,43 +460,173 @@ const MYSQL_INDEXES: &str = "SELECT CAST(INDEX_NAME AS CHAR), CAST(NON_UNIQUE AS
 
 const MYSQL_FOREIGN_KEYS: &str = "SELECT CAST(CONSTRAINT_NAME AS CHAR), CAST(COLUMN_NAME AS CHAR), CAST(REFERENCED_TABLE_SCHEMA AS CHAR), CAST(REFERENCED_TABLE_NAME AS CHAR), CAST(REFERENCED_COLUMN_NAME AS CHAR) FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION";
 
-async fn mysql_connect(target: &NetworkTarget) -> Result<MySqlConnection, SqlError> {
-    let mode = match target.tls {
-        Tls::VerifyFull | Tls::Local(LocalTls::VerifyFull) => MySqlSslMode::VerifyIdentity,
-        Tls::Local(LocalTls::VerifyCa) => MySqlSslMode::VerifyCa,
-        Tls::Local(LocalTls::Require) => MySqlSslMode::Required,
-        Tls::Local(LocalTls::Prefer) => MySqlSslMode::Preferred,
-        Tls::Local(LocalTls::Disable) => MySqlSslMode::Disabled,
-    };
-    let options = MySqlConnectOptions::from_url(&target.url)
-        .map_err(|error| map_error(error, SqlEngine::MySql))?
-        .ssl_mode(mode)
-        // Keep the server's own `||` and time zone, so results match what
-        // the operator's own client shows.
-        .pipes_as_concat(false)
-        .timezone(None)
-        .disable_statement_logging();
-    timed_connect(MySqlConnection::connect_with(&options), SqlEngine::MySql).await
+/// Global privileges that reach outside a read-only session: server files,
+/// other sessions, or every privilege (`_` and space spellings both, for
+/// MySQL and MariaDB).
+const PRIVILEGED_GRANTS: &[&str] = &[
+    "ALL",
+    "ALL PRIVILEGES",
+    "FILE",
+    "SUPER",
+    "PROCESS",
+    "CONNECTION ADMIN",
+];
+
+/// One line of `SHOW GRANTS` output, classified.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum GrantLine {
+    /// A privilege the account must not hold, by name.
+    Privileged(String),
+    /// Roles granted by this line (`GRANT role[, role] TO account`).
+    Roles(Vec<String>),
+    /// Harmless: ordinary privileges, `SET DEFAULT ROLE`.
+    Ordinary,
+    /// Not understood; the account is refused.
+    Unknown,
 }
 
-/// Whether one `SHOW GRANTS` line gives FILE, SUPER, or every privilege on
-/// all databases.
-pub(crate) fn grant_is_privileged(grant: &str) -> bool {
-    let upper = grant.to_ascii_uppercase();
-    let Some(rest) = upper.strip_prefix("GRANT ") else {
-        return false;
-    };
-    let Some((privileges, scope)) = rest.split_once(" ON ") else {
-        return false;
-    };
-    if !scope.trim_start().starts_with("*.*") {
-        return false;
+/// Classifies one `SHOW GRANTS` line (MySQL or MariaDB syntax).
+pub(crate) fn classify_grant(line: &str) -> GrantLine {
+    let line = line.trim();
+    let upper = line.to_ascii_uppercase();
+    if upper.starts_with("SET DEFAULT ROLE") {
+        return GrantLine::Ordinary;
     }
-    privileges.contains("ALL PRIVILEGES")
-        || privileges
-            .split(',')
-            .map(str::trim)
-            .any(|privilege| matches!(privilege, "FILE" | "SUPER"))
+    let Some(rest) = line.get(6..).filter(|_| upper.starts_with("GRANT ")) else {
+        return GrantLine::Unknown;
+    };
+    let upper_rest = &upper[6..];
+    if upper_rest.starts_with("PROXY ON ") {
+        return GrantLine::Privileged("PROXY".to_owned());
+    }
+    if let Some(on) = upper_rest.find(" ON ") {
+        let privileges = &upper_rest[..on];
+        let global = upper_rest[on + 4..].trim_start().starts_with("*.*");
+        for privilege in privileges.split(',') {
+            let name = privilege.trim().trim_matches('`').replace('_', " ");
+            let name = name.split('(').next().unwrap_or_default().trim().to_owned();
+            let everything = name.starts_with("ALL");
+            if PRIVILEGED_GRANTS.contains(&name.as_str()) && (global || !everything) {
+                return GrantLine::Privileged(name);
+            }
+        }
+        return GrantLine::Ordinary;
+    }
+    let Some(to) = upper_rest.find(" TO ") else {
+        return GrantLine::Unknown;
+    };
+    let mut roles = Vec::new();
+    for role in rest[..to].split(',').map(str::trim) {
+        let plain = role.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || matches!(character, '`' | '\'' | '@' | '%' | '_' | '-' | '.')
+        });
+        if role.is_empty() || !plain {
+            return GrantLine::Unknown;
+        }
+        roles.push(role.to_owned());
+    }
+    GrantLine::Roles(roles)
+}
+
+/// Checks a set of grant lines: the first privileged or unknown line fails
+/// the account; otherwise returns the roles they grant.
+pub(crate) fn check_grants(lines: &[String]) -> Result<Vec<String>, SqlError> {
+    let mut roles = Vec::new();
+    for line in lines {
+        match classify_grant(line) {
+            GrantLine::Privileged(name) => {
+                return Err(SqlError::new(
+                    "sql_privileged_role",
+                    format!(
+                        "the configured MySQL account (directly or through a role) holds {name}; connect with an account that has only SELECT on the schemas it needs"
+                    ),
+                ));
+            }
+            GrantLine::Unknown => return Err(undetermined_grants()),
+            GrantLine::Roles(granted) => roles.extend(granted),
+            GrantLine::Ordinary => {}
+        }
+    }
+    Ok(roles)
+}
+
+fn undetermined_grants() -> SqlError {
+    SqlError::new(
+        "sql_privileged_role",
+        "could not fully determine the account's privileges (including those of its roles and roles granted to them); connect with an account without roles, or whose roles hold only SELECT",
+    )
+}
+
+/// The most role lookups one privilege check makes.
+const MAX_ROLE_LOOKUPS: usize = 32;
+
+/// Refuses an account that holds FILE, SUPER, PROCESS, CONNECTION_ADMIN,
+/// ALL on `*.*`, or PROXY, directly, through a role, or through a role
+/// granted to a role; refuses when that cannot be fully determined.
+async fn mysql_privilege_check(
+    connection: &mut MySqlConnection,
+    mariadb: bool,
+) -> Result<(), SqlError> {
+    let undetermined = |_| undetermined_grants();
+    let grants: Vec<String> = sqlx::query_scalar("SHOW GRANTS")
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(undetermined)?;
+    let direct = check_grants(&grants)?;
+    if direct.is_empty() {
+        return Ok(());
+    }
+    if mariadb {
+        // MariaDB lists a granted role's own grants, including the roles
+        // granted to it, so the role graph is walked.
+        let mut queue = direct;
+        let mut seen: Vec<String> = Vec::new();
+        while let Some(role) = queue.pop() {
+            if seen.contains(&role) {
+                continue;
+            }
+            if seen.len() == MAX_ROLE_LOOKUPS {
+                return Err(undetermined_grants());
+            }
+            let lines: Vec<String> =
+                sqlx::query_scalar(AssertSqlSafe(format!("SHOW GRANTS FOR {role}")))
+                    .fetch_all(&mut *connection)
+                    .await
+                    .map_err(undetermined)?;
+            seen.push(role);
+            queue.extend(check_grants(&lines)?);
+        }
+        return Ok(());
+    }
+    // MySQL shows a role's privileges only for roles granted to the account
+    // itself (`USING`); a role granted to a role cannot be listed without
+    // access to the `mysql` schema, so its presence refuses the account.
+    let applicable: Vec<String> = sqlx::query_scalar(
+        "SELECT CONCAT('`', ROLE_NAME, '`@`', ROLE_HOST, '`') FROM information_schema.APPLICABLE_ROLES",
+    )
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(undetermined)?;
+    let normalize = |role: &str| role.replace('\'', "`").to_ascii_lowercase();
+    let direct_normalized = direct
+        .iter()
+        .map(|role| normalize(role))
+        .collect::<Vec<_>>();
+    if applicable
+        .iter()
+        .any(|role| !direct_normalized.contains(&normalize(role)))
+    {
+        return Err(undetermined_grants());
+    }
+    let lines: Vec<String> = sqlx::query_scalar(AssertSqlSafe(format!(
+        "SHOW GRANTS FOR CURRENT_USER() USING {}",
+        direct.join(", ")
+    )))
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(undetermined)?;
+    check_grants(&lines).map(|_| ())
 }
 
 /// `sql_mode` entries that change how quotes and backslashes are read, so the
@@ -542,86 +666,29 @@ pub(crate) fn mode_is_lexable(mode: &str) -> bool {
         .all(|mode| !UNLEXED_SQL_MODES.contains(&mode))
 }
 
-/// Roles named by `GRANT role[, role] TO account` lines of `SHOW GRANTS`.
-/// Fails closed on a role list holding anything but quoted names.
-pub(crate) fn granted_roles(grants: &[String]) -> Result<Vec<String>, SqlError> {
-    let mut roles = Vec::new();
-    for grant in grants {
-        let Some(rest) = grant.strip_prefix("GRANT ") else {
-            continue;
-        };
-        if rest.contains(" ON ") {
-            continue;
-        }
-        let Some((list, _)) = rest.split_once(" TO ") else {
-            continue;
-        };
-        for role in list.split(',').map(str::trim) {
-            let plain = role.chars().all(|character| {
-                character.is_ascii_alphanumeric()
-                    || matches!(character, '`' | '\'' | '@' | '%' | '_' | '-' | '.')
-            });
-            if role.is_empty() || !plain {
-                return Err(SqlError::new(
-                    "sql_privileged_role",
-                    "could not read the account's granted roles to check their privileges; connect with an account whose roles have only SELECT",
-                ));
-            }
-            roles.push(role.to_owned());
-        }
-    }
-    Ok(roles)
-}
-
 async fn mysql_call(
     connection: &mut MySqlConnection,
     request: &SqlRequest,
+    gated: bool,
 ) -> Result<(SqlOutcome, bool), SqlError> {
     let error = |error| map_error(error, SqlEngine::MySql);
-    let grants: Vec<String> = sqlx::query_scalar("SHOW GRANTS")
-        .fetch_all(&mut *connection)
-        .await
-        .map_err(error)?;
     let version: String = sqlx::query_scalar("SELECT CAST(VERSION() AS CHAR)")
         .fetch_one(&mut *connection)
         .await
         .map_err(error)?;
     let mariadb = version.to_ascii_lowercase().contains("mariadb");
-    // Privileges reached through granted roles count too, active or not: a
-    // role's grants are listed by expanding each one (MySQL `USING`,
-    // MariaDB `SHOW GRANTS FOR role`). A role granted to a role is not
-    // expanded further (a documented gap).
-    let roles = granted_roles(&grants)?;
-    let mut expanded = grants.clone();
-    if !roles.is_empty() {
-        let statements = if mariadb {
-            roles
-                .iter()
-                .map(|role| format!("SHOW GRANTS FOR {role}"))
-                .collect::<Vec<_>>()
-        } else {
-            vec![format!(
-                "SHOW GRANTS FOR CURRENT_USER() USING {}",
-                roles.join(", ")
-            )]
-        };
-        for statement in statements {
-            let lines: Vec<String> = sqlx::query_scalar(AssertSqlSafe(statement))
-                .fetch_all(&mut *connection)
-                .await
-                .map_err(|_| {
-                    SqlError::new(
-                        "sql_privileged_role",
-                        "could not list the privileges of the account's granted roles; connect with an account whose roles can be checked and hold only SELECT",
-                    )
-                })?;
-            expanded.extend(lines);
-        }
-    }
-    if expanded.iter().any(|grant| grant_is_privileged(grant)) {
-        return Err(SqlError::new(
-            "sql_privileged_role",
-            "the configured MySQL account (directly or through a granted role) holds FILE, SUPER, or ALL PRIVILEGES on *.*; connect with an account that has only SELECT on the schemas it needs",
+    mysql_privilege_check(connection, mariadb).await?;
+    // utf8mb4 is pinned in the options; a multibyte charset such as gbk
+    // could otherwise swallow a quote's escape. Confirm the server agrees.
+    let charsets = sqlx::query(
+        "SELECT CAST(@@character_set_client AS CHAR), CAST(@@character_set_connection AS CHAR), CAST(@@character_set_results AS CHAR)",
+    )
+    .fetch_one(&mut *connection)
+    .await
+    .map_err(error)?;
+    if (0..3).any(|index| text_at(&charsets, index).as_deref() != Some("utf8mb4")) {
+        return Err(SqlError::refused(
+            "the server did not accept the utf8mb4 character set for this session; the statement gate reads only utf8mb4",
         ));
     }
     // The gate lexes quotes and backslashes the default way; take out the
@@ -671,7 +738,9 @@ async fn mysql_call(
         .map_err(error)?;
     match &request.action {
         SqlAction::Query(sql) => {
-            gate::check_statement(sql, SqlEngine::MySql).map_err(SqlError::refused)?;
+            if gated {
+                gate::check_statement(sql, SqlEngine::MySql).map_err(SqlError::refused)?;
+            }
             let statement = (&mut *connection)
                 .prepare(owned_sql(sql))
                 .await
@@ -876,24 +945,86 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_privileged_mysql_grants_are_recognized() {
-        for grant in [
-            "GRANT ALL PRIVILEGES ON *.* TO `root`@`localhost` WITH GRANT OPTION",
-            "GRANT SELECT, FILE ON *.* TO `u`@`%`",
-            "GRANT SUPER ON *.* TO 'u'@'%'",
-            "grant select, super on *.* to u",
+    fn test_privileged_mysql_and_mariadb_grants_are_recognized() {
+        for (grant, name) in [
+            (
+                "GRANT ALL PRIVILEGES ON *.* TO `root`@`localhost` WITH GRANT OPTION",
+                "ALL PRIVILEGES",
+            ),
+            ("GRANT SELECT, FILE ON *.* TO `u`@`%`", "FILE"),
+            ("GRANT SUPER ON *.* TO 'u'@'%'", "SUPER"),
+            ("grant select, super on *.* to u", "SUPER"),
+            ("GRANT PROCESS ON *.* TO `u`@`%`", "PROCESS"),
+            (
+                "GRANT CONNECTION_ADMIN ON *.* TO `u`@`%`",
+                "CONNECTION ADMIN",
+            ),
+            (
+                "GRANT CONNECTION ADMIN ON *.* TO `u`@`%`",
+                "CONNECTION ADMIN",
+            ),
+            (
+                "GRANT `CONNECTION_ADMIN`,SELECT ON *.* TO `u`@`%`",
+                "CONNECTION ADMIN",
+            ),
+            (
+                "GRANT PROXY ON ''@'%' TO 'root'@'localhost' WITH GRANT OPTION",
+                "PROXY",
+            ),
+            ("GRANT PROXY ON `app`@`%` TO `u`@`%`", "PROXY"),
         ] {
-            assert!(grant_is_privileged(grant), "{grant}");
+            assert_eq!(
+                classify_grant(grant),
+                GrantLine::Privileged(name.to_owned()),
+                "{grant}"
+            );
         }
         for grant in [
             "GRANT USAGE ON *.* TO `u`@`%`",
             "GRANT SELECT ON `app`.* TO `u`@`%`",
             "GRANT ALL PRIVILEGES ON `app`.* TO `u`@`%`",
             "GRANT SELECT (`file`) ON `app`.`t` TO `u`@`%`",
-            "GRANT `reader`@`%` TO `u`@`%`",
+            "GRANT USAGE ON *.* TO `u`@`%` IDENTIFIED BY PASSWORD '*AB'",
+            "SET DEFAULT ROLE `r` FOR `u`@`%`",
         ] {
-            assert!(!grant_is_privileged(grant), "{grant}");
+            assert_eq!(classify_grant(grant), GrantLine::Ordinary, "{grant}");
         }
+        assert_eq!(classify_grant("REVOKE x"), GrantLine::Unknown);
+        assert_eq!(
+            classify_grant("GRANT `r`;DROP TABLE x TO `u`@`%`"),
+            GrantLine::Unknown
+        );
+    }
+
+    #[test]
+    fn test_roles_from_either_engine_are_collected_and_privileges_through_them_refused() {
+        assert_eq!(
+            check_grants(&[
+                "GRANT USAGE ON *.* TO `u`@`%`".to_owned(),
+                "GRANT `reader`@`%`,`ops`@`localhost` TO `u`@`%`".to_owned(),
+                "GRANT `analyst` TO `u`@`%`".to_owned(),
+            ]),
+            Ok(vec![
+                "`reader`@`%`".to_owned(),
+                "`ops`@`localhost`".to_owned(),
+                "`analyst`".to_owned(),
+            ])
+        );
+        // A role's own grants (MySQL USING output, MariaDB SHOW GRANTS FOR
+        // role) holding a privileged grant refuse the account.
+        let error = check_grants(&[
+            "GRANT SELECT ON `app`.* TO `reader`@`%`".to_owned(),
+            "GRANT PROCESS ON *.* TO `reader`@`%`".to_owned(),
+        ])
+        .expect_err("role privilege");
+        assert_eq!(error.code(), "sql_privileged_role");
+        assert!(error.message().contains("PROCESS"));
+        assert_eq!(
+            check_grants(&["something unexpected".to_owned()])
+                .expect_err("unknown")
+                .code(),
+            "sql_privileged_role"
+        );
     }
 
     #[test]
@@ -914,27 +1045,6 @@ mod tests {
         ));
         assert!(!mode_is_lexable("ANSI_QUOTES"));
         assert!(!mode_is_lexable("ONLY_FULL_GROUP_BY,NO_BACKSLASH_ESCAPES"));
-    }
-
-    #[test]
-    fn test_granted_roles_are_found_in_grant_lines() {
-        assert_eq!(
-            granted_roles(&[
-                "GRANT USAGE ON *.* TO `u`@`%`".to_owned(),
-                "GRANT `reader`@`%`,`ops`@`localhost` TO `u`@`%`".to_owned(),
-                "GRANT `analyst` TO `u`@`%`".to_owned(),
-            ]),
-            Ok(vec![
-                "`reader`@`%`".to_owned(),
-                "`ops`@`localhost`".to_owned(),
-                "`analyst`".to_owned(),
-            ])
-        );
-        assert_eq!(
-            granted_roles(&["GRANT SELECT ON `app`.* TO `u`@`%`".to_owned()]),
-            Ok(vec![])
-        );
-        assert!(granted_roles(&["GRANT `r`;DROP TABLE x TO `u`@`%`".to_owned()]).is_err());
     }
 
     #[test]

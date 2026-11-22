@@ -202,11 +202,13 @@ fn cell(value: ValueRef<'_>) -> Value {
 }
 
 impl Connector for SqliteTarget {
-    fn run(&self, request: &SqlRequest) -> Result<SqlOutcome, SqlError> {
+    fn run(&self, request: &SqlRequest, gated: bool) -> Result<SqlOutcome, SqlError> {
         let connection = self.open(request.timeout)?;
         match &request.action {
             SqlAction::Query(sql) => {
-                gate::check_statement(sql, SqlEngine::Sqlite).map_err(SqlError::refused)?;
+                if gated {
+                    gate::check_statement(sql, SqlEngine::Sqlite).map_err(SqlError::refused)?;
+                }
                 query(&connection, sql, request.max_rows).map(SqlOutcome::Query)
             }
             SqlAction::Tables => tables(&connection).map(SqlOutcome::Tables),
