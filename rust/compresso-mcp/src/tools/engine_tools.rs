@@ -388,7 +388,7 @@ fn explain_tool(
     )
 }
 
-pub(crate) fn retrieval_success(
+fn retrieval_success(
     mut payload: Value,
     tool: &'static str,
     mode: Mode,

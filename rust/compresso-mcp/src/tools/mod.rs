@@ -131,6 +131,24 @@ pub(crate) fn dispatch(
             Err(error) => failed(session, name, error),
         };
     }
+    if report::handles(name) {
+        // Not written to the ledger (see `report::run`).
+        let context = report::ReportContext {
+            store,
+            session,
+            repository_root,
+            recall_enabled: recall_options.is_some_and(|options| options.is_enabled()),
+            edits_enabled,
+            profile,
+        };
+        return match report::run(&context, arguments) {
+            Ok(payload) => match serde_json::to_string(&payload) {
+                Ok(sent) => common::success_text(sent),
+                Err(_) => failed(session, name, common::ToolFailure::internal()),
+            },
+            Err(error) => failed(session, name, error),
+        };
+    }
     let run = |form: Form, arguments: Option<JsonObject>| {
         if atlas_nav::handles(name) {
             atlas_nav::dispatch(store, repository_root, name, arguments, form)
@@ -146,19 +164,6 @@ pub(crate) fn dispatch(
                 .and_then(|payload| retrieval_outcome(payload, name, engine.mode(), repository_id))
         } else if recall::handles(name) {
             recall::dispatch(recall_options, repository_root, engine.mode(), arguments)
-        } else if report::handles(name) {
-            report::run(
-                &report::ReportContext {
-                    store,
-                    session,
-                    repository_root,
-                    recall_enabled: recall_options.is_some_and(|options| options.is_enabled()),
-                    edits_enabled,
-                    profile,
-                    mode: engine.mode(),
-                },
-                arguments,
-            )
         } else {
             engine_tools::dispatch(store, engine, config, repository_root, name, arguments)
         }

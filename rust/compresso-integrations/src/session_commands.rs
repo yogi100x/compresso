@@ -8,9 +8,9 @@
 //! `/compresso feedback TEXT`, or `/compresso share` inside a session.
 //!
 //! One skill named `compresso` instead of seven skills named after each
-//! command: `stats`, `status`, `bug`, `feedback`, and `share` are names of the
-//! client's own built-in commands, and a project skill of the same name
-//! replaces the built-in one. One file is also one plan, one receipt, and one
+//! command: `status`, `bug`, and `feedback` are the client's own built-in
+//! commands and `stats`, `update`, and `share` are aliases of built-in ones,
+//! and a project skill of the same name replaces the built-in command. One file is also one plan, one receipt, and one
 //! symmetric uninstall.
 //!
 //! The skill only tells the model which Compresso MCP tool to call and how to

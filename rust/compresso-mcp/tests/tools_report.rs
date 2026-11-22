@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use compresso_core::{Config, Engine, TokenProvider, counter_for};
 use compresso_mcp::{McpDeps, serve_io, serve_io_for_root};
-use compresso_store::Store;
+use compresso_store::{StatsFilter, Store};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, ReadHalf, WriteHalf};
@@ -183,7 +183,13 @@ async fn test_bug_report_is_saved_locally_in_full_without_absolute_paths() {
         "{text}"
     );
     let saved = PathBuf::from(payload["saved_to"].as_str().expect("saved path"));
-    assert_eq!(saved.parent(), Some(fixture.reports().as_path()));
+    assert_eq!(
+        saved
+            .parent()
+            .map(|parent| fs::canonicalize(parent).expect("reports directory")),
+        Some(fs::canonicalize(fixture.reports()).expect("reports directory")),
+        "saved beside the database"
+    );
     assert_eq!(fs::read_to_string(&saved).expect("report file"), text);
     assert!(
         fs::read_dir(&fixture.root).expect("root").next().is_none(),
@@ -235,6 +241,17 @@ async fn test_status_update_and_share_write_no_file() {
         "only bug and feedback save a file"
     );
     harness.close().await;
+    let operations = fixture
+        .store
+        .detailed_stats(&StatsFilter {
+            since: None,
+            session_id: None,
+            operation_limit: Some(10),
+        })
+        .expect("stats")
+        .summary
+        .operations;
+    assert_eq!(operations, 0, "report calls are not written to the ledger");
 }
 
 #[tokio::test]

@@ -26,14 +26,12 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use compresso_atlas::repository_stale;
-use compresso_core::Mode;
 use compresso_store::{StatsFilter, StatsSummary, Store};
 use rmcp::model::JsonObject;
 use serde_json::{Value, json};
 
-use super::ToolSuccess;
 use super::common::{ToolFailure, checked_arguments, optional_string, required_string};
-use super::engine_tools::{format_timestamp, retrieval_success, unix_timestamp};
+use super::engine_tools::{format_timestamp, unix_timestamp};
 use crate::profile::McpToolProfile;
 use crate::session::SessionRuntime;
 
@@ -63,17 +61,19 @@ pub(crate) struct ReportContext<'a> {
     pub(crate) recall_enabled: bool,
     pub(crate) edits_enabled: bool,
     pub(crate) profile: McpToolProfile,
-    pub(crate) mode: Mode,
 }
 
 pub(crate) fn handles(name: &str) -> bool {
     name == TOOL_NAME
 }
 
+/// Builds the report. Unlike the other tools, a report call is not written
+/// to the operation ledger: it saves nothing, and a binary released before
+/// this tool would refuse to read a ledger row naming it.
 pub(crate) fn run(
     context: &ReportContext<'_>,
     arguments: Option<JsonObject>,
-) -> Result<ToolSuccess, ToolFailure> {
+) -> Result<Value, ToolFailure> {
     let mut arguments = checked_arguments(arguments, &["kind", "note"])?;
     let kind = required_string(&mut arguments, "kind")?;
     let note = optional_string(&mut arguments, "note", true)?;
@@ -123,7 +123,7 @@ pub(crate) fn run(
         }
     };
     payload["text"] = Value::from(text);
-    retrieval_success(payload, TOOL_NAME, context.mode)
+    Ok(payload)
 }
 
 /// `Compresso 0.1.0 (macos-aarch64, release build)`.
@@ -220,7 +220,7 @@ fn index_line(index: &IndexState) -> String {
         IndexState::Unbound => "none bound to this server".to_owned(),
         IndexState::NotIndexed => "bound, not indexed (run `compresso index`)".to_owned(),
         IndexState::Indexed { files, stale } => format!(
-            "bound, {files} indexed files, index {}",
+            "bound, indexed files: {files}, index {}",
             match stale {
                 Some(false) => "current",
                 Some(true) => "stale (run `compresso index`)",
@@ -462,7 +462,7 @@ mod tests {
         assert!(text.contains(std::env::consts::OS));
         assert!(text.contains("- 01JAAAAAAAAAAAAAAAAAAAAAAA compresso_grep 2026-11-22T10:00:00Z"));
         assert!(text.contains("- compresso_read: outside_root"));
-        assert!(text.contains("412 indexed files"));
+        assert!(text.contains("indexed files: 412"));
         assert!(!text.contains("/private/var"), "{text}");
         for line in text.lines() {
             assert!(!line.contains(" /"), "absolute path in {line:?}");
