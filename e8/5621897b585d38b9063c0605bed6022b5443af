@@ -1,0 +1,21 @@
+docs/adr/0036-opt-in-read-only-live-sql.md
+  s_89a704cfae63f5::t_79b1f1524d259a 212-214
+rust/compresso-sql/src/gate.rs
+  s_89a704cfae63f5::t_02d8e492444c44 210-224,684-696
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e85621897b585d38b9063c0605bed6022b5443af",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
