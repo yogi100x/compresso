@@ -277,17 +277,20 @@ fn text_cell(text: Option<&str>, bytes: Option<usize>, type_name: &str, binary: 
 
 /// Refuses a superuser or a member of a role that reads or writes server
 /// files or runs server programs.
-/// The connected role and every role it is a member of (direct, inherited,
-/// or NOINHERIT and usable with SET ROLE: `pg_has_role(..., 'MEMBER')`),
-/// itself included, with the attributes the check reads.
-const POSTGRES_ROLE_CHECK: &str = "SELECT g.rolname::text, g.rolsuper::text, g.rolbypassrls::text, g.rolcreaterole::text, g.rolreplication::text FROM pg_catalog.pg_roles g WHERE pg_catalog.pg_has_role(current_user, g.oid, 'MEMBER') ORDER BY g.rolname LIMIT 1000";
+/// The first role, in name order, that the connected role is or is a member
+/// of (direct, inherited, or NOINHERIT and usable with SET ROLE:
+/// `pg_has_role(..., 'MEMBER')`) and that is a superuser, BYPASSRLS,
+/// CREATEROLE, REPLICATION, or predefined (`pg_` prefix, tested without a
+/// LIKE pattern so no escape character is involved). The filter runs on the
+/// server, so no row cap can push a refused role out of view; no row means
+/// the role may connect, and any error refuses.
+const POSTGRES_ROLE_CHECK: &str = "SELECT g.rolname::text, g.rolsuper::text, g.rolbypassrls::text, g.rolcreaterole::text, g.rolreplication::text FROM pg_catalog.pg_roles g WHERE pg_catalog.pg_has_role(current_user, g.oid, 'MEMBER') AND (g.rolsuper OR g.rolbypassrls OR g.rolcreaterole OR g.rolreplication OR pg_catalog.left(g.rolname, 3) = 'pg_') ORDER BY 1 LIMIT 1";
 
-/// Predefined roles a role may hold: `pg_read_all_data` is the standard
-/// read-only role (it grants SELECT everywhere and does not bypass row
-/// security). Every other `pg_` role is refused, including ones a later
-/// Postgres adds and `pg_database_owner` (database owners can change
-/// objects and settings this tool should never reach).
-const POSTGRES_ALLOWED_PREDEFINED: &[&str] = &["pg_read_all_data"];
+/// Predefined roles a role may hold: none. Even `pg_read_all_data` reads
+/// every table, protected catalogs included (`pg_authid` password hashes,
+/// `pg_user_mapping`, `pg_subscription`, large objects), so the operator
+/// grants SELECT on the schemas and tables to be read instead.
+const POSTGRES_ALLOWED_PREDEFINED: &[&str] = &[];
 
 /// One role of the connected role's membership set.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -341,33 +344,32 @@ async fn postgres_call(
     gated: bool,
 ) -> Result<(SqlOutcome, bool), SqlError> {
     let error = |error| map_error(error, SqlEngine::Postgres);
-    let roles = sqlx::query(POSTGRES_ROLE_CHECK)
-        .fetch_all(&mut *connection)
+    let flagged = sqlx::query(POSTGRES_ROLE_CHECK)
+        .fetch_optional(&mut *connection)
         .await
-        .map_err(error)?
-        .iter()
-        .map(|row| {
-            let flag = |index| text_at(row, index).as_deref() == Some("true");
-            PostgresRole {
-                name: text_at(row, 0).unwrap_or_default(),
-                superuser: flag(1),
-                bypass_rls: flag(2),
-                create_role: flag(3),
-                replication: flag(4),
-            }
-        })
-        .collect::<Vec<_>>();
-    if roles.is_empty() {
-        return Err(SqlError::new(
-            "sql_privileged_role",
-            "could not read the configured Postgres role's memberships; connect with a role that has only SELECT (or pg_read_all_data)",
-        ));
-    }
-    if let Some(refusal) = postgres_refusal(&roles) {
+        .map_err(|_| {
+            SqlError::new(
+                "sql_privileged_role",
+                "could not check the configured Postgres role's memberships; connect with a role that has only SELECT on the tables it needs",
+            )
+        })?;
+    if let Some(row) = flagged {
+        let flag = |index| text_at(&row, index).as_deref() == Some("true");
+        let role = PostgresRole {
+            name: text_at(&row, 0).unwrap_or_default(),
+            superuser: flag(1),
+            bypass_rls: flag(2),
+            create_role: flag(3),
+            replication: flag(4),
+        };
+        // The server only returns refused roles; a row the decision does
+        // not refuse is an unexpected shape and refuses too.
+        let refusal =
+            postgres_refusal(std::slice::from_ref(&role)).unwrap_or_else(|| role.name.clone());
         return Err(SqlError::new(
             "sql_privileged_role",
             format!(
-                "the configured Postgres role is refused because it is or is a member of {refusal}; connect with a role that has only SELECT on the tables it needs (or pg_read_all_data) and no other predefined role"
+                "the configured Postgres role is refused because it is or is a member of {refusal}; connect with a role that has only SELECT on the schemas and tables it needs and no predefined pg_ role (not even pg_read_all_data)"
             ),
         ));
     }
@@ -1228,13 +1230,16 @@ mod tests {
     }
 
     #[test]
-    fn test_postgres_roles_are_refused_unless_plain_or_read_all_data() {
+    fn test_postgres_roles_are_refused_unless_plain() {
         let plain = [false; 4];
         assert_eq!(postgres_refusal(&[role("reader", plain)]), None);
-        assert_eq!(
-            postgres_refusal(&[role("reader", plain), role("pg_read_all_data", plain)]),
-            None
+        // pg_read_all_data reads protected catalogs (password hashes), so
+        // no predefined role is allowed.
+        assert!(
+            postgres_refusal(&[role("reader", plain), role("pg_read_all_data", plain)])
+                .is_some_and(|refusal| refusal.contains("pg_read_all_data"))
         );
+        assert!(POSTGRES_ALLOWED_PREDEFINED.is_empty());
         for (roles, reason) in [
             (
                 vec![role("reader", [true, false, false, false])],
@@ -1288,6 +1293,22 @@ mod tests {
             let refusal = postgres_refusal(&roles).expect("refused");
             assert!(refusal.contains(reason), "{refusal}");
         }
+    }
+
+    #[test]
+    fn test_the_postgres_role_check_filters_on_the_server_and_fails_closed() {
+        // The refusal filter is in the query itself; one row is enough, so
+        // no cap on membership rows can hide a refused role.
+        for clause in [
+            "pg_has_role(current_user, g.oid, 'MEMBER')",
+            "g.rolsuper OR g.rolbypassrls OR g.rolcreaterole OR g.rolreplication",
+            "left(g.rolname, 3) = 'pg_'",
+            "LIMIT 1",
+        ] {
+            assert!(POSTGRES_ROLE_CHECK.contains(clause), "{clause}");
+        }
+        assert!(!POSTGRES_ROLE_CHECK.contains('\\'));
+        assert!(!POSTGRES_ROLE_CHECK.contains("LIMIT 1000"));
     }
 
     #[test]

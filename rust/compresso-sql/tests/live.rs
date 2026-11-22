@@ -251,17 +251,6 @@ fn test_live_postgres_privileged_role_and_role_settings() {
         )],
     ));
     assert_eq!(setting.expect("setting"), vec![vec![Value::from("on")]]);
-    // pg_read_all_data alone is allowed.
-    runtime().block_on(pg_admin(
-        &admin,
-        &[format!("GRANT pg_read_all_data TO \"{role}\"")],
-    ));
-    let allowed = gated(&service, "SELECT 1");
-    runtime().block_on(pg_admin(
-        &admin,
-        &[format!("REVOKE pg_read_all_data FROM \"{role}\"")],
-    ));
-    allowed.expect("pg_read_all_data is allowed");
     // Each membership or attribute alone refuses the role.
     for (grant, revoke) in [
         (
@@ -275,6 +264,11 @@ fn test_live_postgres_privileged_role_and_role_settings() {
         (
             format!("GRANT pg_monitor TO \"{role}\""),
             format!("REVOKE pg_monitor FROM \"{role}\""),
+        ),
+        (
+            // Reads protected catalogs such as pg_authid.
+            format!("GRANT pg_read_all_data TO \"{role}\""),
+            format!("REVOKE pg_read_all_data FROM \"{role}\""),
         ),
         (
             format!("GRANT pg_write_all_data TO \"{role}\""),
