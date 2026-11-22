@@ -509,6 +509,33 @@ fn grep(payload: &Value, out: &mut Out) {
             None => format!("path {path} matched no indexed file"),
         });
     }
+    // E17-49 (D114): use sites of a listed definition that the path filter
+    // left out, the first two by path and line, then how many more.
+    if let Some(outside) = payload.get("outside_uses") {
+        let sites = array(outside, "sites")
+            .iter()
+            .map(|site| {
+                format!(
+                    "{}:{} {}",
+                    list_path(string(site, "path").unwrap_or_default()),
+                    number(site, "line"),
+                    list_path(string(site, "name").unwrap_or_default())
+                )
+            })
+            .collect::<Vec<_>>();
+        let more = number(outside, "total").saturating_sub(sites.len() as u64);
+        if !sites.is_empty() {
+            out.note(format!(
+                "used outside this path: {}{}",
+                sites.join(", "),
+                match (more, flag(outside, "at_least")) {
+                    (0, false) => String::new(),
+                    (more, false) => format!(" (+{more} more)"),
+                    (more, true) => format!(" (+{more} or more)"),
+                }
+            ));
+        }
+    }
     // E17-38 (D103): a literal `a|b` that matched nothing was searched as
     // its literal parts.
     // Shrunk to fit a small budget: pattern indexes only.
@@ -1229,6 +1256,46 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// E17-49 (D114): the use sites a path filter hid, in one line.
+    #[test]
+    fn test_grep_names_use_sites_outside_the_path_filter_in_one_line() {
+        let render = |outside: Value| {
+            render(
+                "compresso_grep",
+                &json!({ "results": [], "scan": {}, "outside_uses": outside }),
+            )
+            .expect("text")
+        };
+        let text = render(json!({
+            "total": 3,
+            "sites": [
+                { "path": "src/app.ts", "line": 4, "name": "handleLogin" },
+                { "path": "src/routes/auth.ts", "line": 12, "name": "handleLogin" }
+            ]
+        }));
+        assert!(
+            text.contains(
+                "used outside this path: src/app.ts:4 handleLogin, src/routes/auth.ts:12 handleLogin (+1 more)"
+            ),
+            "{text}"
+        );
+        let text = render(json!({
+            "total": 64,
+            "at_least": true,
+            "sites": [{ "path": "a.ts", "line": 1, "name": "f" }]
+        }));
+        assert!(
+            text.contains("used outside this path: a.ts:1 f (+63 or more)"),
+            "{text}"
+        );
+        let text =
+            render(json!({ "total": 1, "sites": [{ "path": "a.ts", "line": 1, "name": "f" }] }));
+        assert!(
+            text.contains("[used outside this path: a.ts:1 f]"),
+            "{text}"
+        );
+    }
 
     #[test]
     fn test_symbol_label_keeps_owner_and_drops_redundant_kind() {

@@ -171,6 +171,13 @@ pub(crate) fn dispatch(
             entry
         })
         .collect::<Vec<_>>();
+    // E17-49 (D114): use sites a path filter hid, both profiles. Bounded
+    // store work (see `use_sites_outside_filter`); never fails the call.
+    let outside =
+        compresso_atlas::use_sites_outside_filter(store, repository.id, &options, &report)
+            .ok()
+            .flatten()
+            .map(|outside| outside_value(&outside));
     let stale = repository_stale(store, repository.id).map_err(map_atlas_error)?;
     let operation_id = operation_identity().id;
     let counter = navigation_counter();
@@ -236,6 +243,9 @@ pub(crate) fn dispatch(
                 )
             };
         }
+        if full_notes && let Some(outside) = &outside {
+            payload["outside_uses"] = outside.clone();
+        }
         if lean && full_notes && !report.paths_unmatched.is_empty() {
             payload["paths_unmatched"] = report
                 .paths_unmatched
@@ -275,7 +285,10 @@ pub(crate) fn dispatch(
             line_names.next();
             continue;
         }
-        if full_notes && (!alternations.is_empty() || (lean && !report.paths_unmatched.is_empty()))
+        if full_notes
+            && (!alternations.is_empty()
+                || outside.is_some()
+                || (lean && !report.paths_unmatched.is_empty()))
         {
             full_notes = false;
             continue;
@@ -435,6 +448,22 @@ fn search_literal_alternations(
         notes.push(json!({ "index": index, "pattern": options.patterns[index], "parts": parts }));
     }
     notes
+}
+
+/// The `outside_uses` note (E17-49, D114): `at_least` only when true.
+fn outside_value(outside: &compresso_atlas::OutsideUses) -> Value {
+    let mut value = json!({
+        "total": outside.total,
+        "sites": outside
+            .sites
+            .iter()
+            .map(|site| json!({ "path": site.path, "line": site.line, "name": site.name }))
+            .collect::<Vec<_>>(),
+    });
+    if outside.at_least {
+        value["at_least"] = Value::Bool(true);
+    }
+    value
 }
 
 /// Names each scoped pattern's own path on its result (E17-36, D101).

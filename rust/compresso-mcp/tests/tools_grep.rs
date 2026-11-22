@@ -556,3 +556,39 @@ async fn test_grep_tool_context_lines_surround_matches_within_the_token_cap() {
     }
     harness.close().await;
 }
+
+/// E17-49 (D114): a path filter that hides a listed definition's use sites
+/// adds one bounded note naming them; without a filter, or when every use
+/// site is inside it, there is none.
+#[tokio::test]
+async fn test_grep_tool_names_use_sites_the_path_filter_hid() {
+    let (mut harness, _temp, _root) = Fixture::new().harness().await;
+    let payload = successful_json(
+        &harness
+            .call(json!({ "pattern": "fn is_secret_path", "path": "src/scanner.rs" }))
+            .await,
+    );
+    assert_eq!(
+        payload["outside_uses"],
+        json!({
+            "total": 2,
+            "sites": [
+                { "path": "src/queries.rs", "line": 2, "name": "is_secret_path" },
+                { "path": "src/queries.rs", "line": 6, "name": "is_secret_path" }
+            ]
+        }),
+        "{payload}"
+    );
+    for arguments in [
+        json!({ "pattern": "fn is_secret_path" }),
+        json!({ "pattern": "fn is_secret_path", "path": "src" }),
+        json!({ "pattern": "is_secret_path(path)", "path": "src/queries.rs" }),
+    ] {
+        let payload = successful_json(&harness.call(arguments.clone()).await);
+        assert!(
+            payload.get("outside_uses").is_none(),
+            "{arguments}: {payload}"
+        );
+    }
+    harness.close().await;
+}

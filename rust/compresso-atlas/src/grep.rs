@@ -19,7 +19,7 @@ use crate::queries::{
     QueryError, ResolvedEntry, canonical_query_root, map_path_matches_focus, read_utf8,
     resolve_under_root, smallest_enclosing_symbol, validate_map_focus,
 };
-use crate::scanner::is_secret_path;
+use crate::scanner::{ScannerExclusions, is_secret_path};
 
 /// Most patterns one search accepts.
 pub const GREP_MAX_PATTERNS: usize = 8;
@@ -199,6 +199,40 @@ pub struct GrepPatternResult {
     /// among those past `max_files` or dropped to fit a token budget
     /// (E17-38, D103).
     pub files_unlisted: Vec<(String, usize)>,
+}
+
+/// Definitions on listed lines whose use sites outside a path filter
+/// [`use_sites_outside_filter`] looks up (E17-49, D114).
+pub const GREP_OUTSIDE_DEFINITIONS: usize = 4;
+/// Call-site rows read per definition name (E17-49): one more is read to
+/// tell whether the count is a lower bound.
+pub const GREP_OUTSIDE_SITES_PER_NAME: usize = 64;
+/// Use sites outside the filter named by path and line (E17-49).
+pub const GREP_OUTSIDE_SITES_NAMED: usize = 2;
+
+/// One use site a path filter left out (E17-49).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutsideUseSite {
+    pub path: String,
+    pub line: u32,
+    /// The name of the definition it uses.
+    pub name: String,
+}
+
+/// Use sites, outside a call's path filter, of definitions the call listed
+/// inside it (E17-49, D114).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutsideUses {
+    /// Distinct use sites found.
+    pub total: usize,
+    /// A name had more than [`GREP_OUTSIDE_SITES_PER_NAME`] call sites, so
+    /// `total` is a lower bound.
+    pub at_least: bool,
+    /// The first [`GREP_OUTSIDE_SITES_NAMED`] in path and line order.
+    pub sites: Vec<OutsideUseSite>,
+    /// Call-site rows read from the store: at most
+    /// [`GREP_OUTSIDE_DEFINITIONS`] x ([`GREP_OUTSIDE_SITES_PER_NAME`] + 1).
+    pub rows_read: usize,
 }
 
 /// Unlisted files named per pattern (E17-38, D103).
@@ -1610,6 +1644,133 @@ pub fn literal_alternation_source(parts: &[String]) -> String {
         .map(|part| regex::escape(part))
         .collect::<Vec<_>>()
         .join("|")
+}
+
+/// Use sites outside the path filter of the definitions `report` lists
+/// inside it (E17-49, D114); `None` without a filter (the call's `path` or
+/// a pattern's own scope) or when there are none.
+///
+/// A use site is a stored call site naming the definition (a call, or the
+/// function passed as an argument), read through the callee-name index.
+/// The first [`GREP_OUTSIDE_DEFINITIONS`] definitions listed, in rank
+/// order, are looked up; a name defined more than once in the repository is
+/// skipped, since its call sites may reach another definition. Per name the
+/// store work is one symbol read of the defining file, one name lookup of
+/// at most two rows, and at most [`GREP_OUTSIDE_SITES_PER_NAME`] + 1
+/// call-site rows. Sites in secret paths, or in files the scanner now
+/// excludes (an index row can be stale), are never counted or named.
+pub fn use_sites_outside_filter(
+    store: &Store,
+    repo: RepoId,
+    options: &GrepOptions<'_>,
+    report: &GrepReport,
+) -> Result<Option<OutsideUses>, AtlasError> {
+    let filter = match options.path {
+        Some(path) => PathFilter::parse(path)?,
+        None => None,
+    };
+    let scopes = scope_filters(options)?;
+    if filter.is_none() && scopes.iter().all(Option::is_none) {
+        return Ok(None);
+    }
+    // Definitions on listed lines, in rank order, each with its pattern.
+    let mut definitions = Vec::<(usize, &str, &GrepLine)>::new();
+    'collect: for (index, result) in report.results.iter().enumerate() {
+        for file in result.files.iter().filter(|file| !file.stale) {
+            for line in file.lines.iter().filter(|line| line.definition) {
+                if definitions.len() == GREP_OUTSIDE_DEFINITIONS {
+                    break 'collect;
+                }
+                definitions.push((index, &file.path, line));
+            }
+        }
+    }
+    if definitions.is_empty() {
+        return Ok(None);
+    }
+    let mut symbols = std::collections::HashMap::<&str, Vec<SymbolRecord>>::new();
+    let mut names = Vec::<(usize, String)>::new();
+    for (index, path, line) in definitions {
+        let Some(qualified) = line.symbol.as_deref() else {
+            continue;
+        };
+        if !symbols.contains_key(path) {
+            symbols.insert(path, store.symbols_in_file(repo, path)?);
+        }
+        let Some(symbol) = symbols[path]
+            .iter()
+            .find(|symbol| symbol.start_line == line.line && symbol.qualified_name == qualified)
+        else {
+            continue;
+        };
+        if names.iter().any(|(_, name)| *name == symbol.name) {
+            continue;
+        }
+        // A name defined twice may be another definition's use site.
+        let defined = store
+            .symbols_named(repo, &symbol.name, 2)
+            .map_or(0, |hits| hits.len());
+        if defined == 1 {
+            names.push((index, symbol.name.clone()));
+        }
+    }
+    let mut root = None;
+    let mut exclusions = None;
+    let mut judged = std::collections::HashMap::<String, bool>::new();
+    let mut found = std::collections::BTreeMap::<(String, u32), String>::new();
+    let mut at_least = false;
+    let mut rows_read = 0;
+    for (index, name) in names {
+        let mut calls = store.call_sites_named(repo, &name, GREP_OUTSIDE_SITES_PER_NAME + 1)?;
+        rows_read += calls.len();
+        if calls.len() > GREP_OUTSIDE_SITES_PER_NAME {
+            at_least = true;
+            calls.truncate(GREP_OUTSIDE_SITES_PER_NAME);
+        }
+        for call in calls {
+            let inside = filter
+                .as_ref()
+                .is_none_or(|filter| filter.matches(&call.from_path))
+                && scopes[index]
+                    .as_ref()
+                    .is_none_or(|scope| scope.matches(&call.from_path));
+            if inside || is_secret_path(Path::new(&call.from_path)) {
+                continue;
+            }
+            let excluded = match judged.get(&call.from_path) {
+                Some(excluded) => *excluded,
+                None => {
+                    if root.is_none() {
+                        root = Some(canonical_query_root(&store.repository(repo)?.root)?);
+                    }
+                    let root = root.as_deref().expect("set above");
+                    let exclusions =
+                        exclusions.get_or_insert_with(|| ScannerExclusions::load(root));
+                    let excluded = exclusions.excludes(root, Path::new(&call.from_path));
+                    judged.insert(call.from_path.clone(), excluded);
+                    excluded
+                }
+            };
+            if !excluded {
+                found
+                    .entry((call.from_path, call.line))
+                    .or_insert_with(|| name.clone());
+            }
+        }
+    }
+    if found.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(OutsideUses {
+        total: found.len(),
+        at_least,
+        sites: found
+            .into_iter()
+            .take(GREP_OUTSIDE_SITES_NAMED)
+            .map(|((path, line), name)| OutsideUseSite { path, line, name })
+            .collect(),
+        rows_read,
+    }))
 }
 
 #[cfg(test)]
