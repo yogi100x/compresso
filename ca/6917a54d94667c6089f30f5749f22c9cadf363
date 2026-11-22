@@ -1,0 +1,19 @@
+rust/compresso-sql/src/target.rs
+  s_89a704cfae63f5::t_99f8d74c2f2e64 734,746,748,751-755
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ca6917a54d94667c6089f30f5749f22c9cadf363",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
