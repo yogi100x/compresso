@@ -17,7 +17,8 @@ fully tested (on Windows a hard link to a file in Compresso's data
 directory is not detected as one). Give it an account that can read only what the model should
 see (see the runbook for a least-privilege example): the tool refuses
 powerful roles, but a role that can read secret tables exposes them. A
-Postgres target is refused while any
+private CA goes in the URL (`sslrootcert=` / `ssl-ca=`), never in
+`SSL_CERT_FILE`. A Postgres target is refused while any
 `PG*` variable (such as `PGUSER`) is set where the client starts.
 
 ## Connecting a coding client

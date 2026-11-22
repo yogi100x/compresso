@@ -202,7 +202,14 @@ keychain credentials, a SQL parser, and mutation stay in E15.
    also checked in the real process environment for settings built with an
    explicit value, and a built options object carrying `PGOPTIONS` is
    refused. `SSL_CERT_FILE` and `SSL_CERT_DIR`, which the native certificate
-   loader reads, make any network target unusable the same way. Such
+   loader reads, make any network target unusable the same way. A private
+   CA is configured through the one variable instead: `sslrootcert`
+   (Postgres) or `ssl-ca` (MySQL/MariaDB) names an absolute path to a
+   regular, readable PEM file of at most 1 MiB holding a certificate, not a
+   symbolic link (checked at startup; the error names only "the configured
+   root certificate"). It is added to the operating system's roots, and
+   verification stays on (no option disables it); `sslcert`/`sslkey`
+   client files get the same checks. Such
    variables are common (Postgres installers; CI images set `PGUSER`).
 7. **Transport.** Plain text only to a loopback address or a local socket;
    any other host gets TLS with certificate and host-name verification

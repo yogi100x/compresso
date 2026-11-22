@@ -155,7 +155,11 @@ GRANT SELECT ON app.* TO 'sql_reader'@'%';
 ```
 
 `SSL_CERT_FILE` and `SSL_CERT_DIR` must not be set where the client
-starts, as for `PG*` variables. On macOS and Linux a SQLite file with more
+starts, as for `PG*` variables. A server with a private CA is trusted
+through the URL alone: `sslrootcert=/absolute/ca.pem` (Postgres) or
+`ssl-ca=/absolute/ca.pem` (MySQL/MariaDB), an absolute path to a PEM file of
+at most 1 MiB that is not a symbolic link. It is added to the operating
+system's roots; certificate and host-name verification stay on. On macOS and Linux a SQLite file with more
 than one hard link is refused. On Windows only the path checks apply: a
 hard link to a file in Compresso's data directory is not detected there, so
 do not point the variable at a hard link. Statements must be plain SQL: no comments,
