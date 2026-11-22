@@ -5,12 +5,16 @@
 //! mode on, untrusted schema (views and triggers may call only innocuous
 //! functions), `query_only`, no attached databases, an authorizer that allows
 //! only reads, a few metadata pragmas, and non-denied functions, and a
-//! progress handler that stops the statement at its deadline. Extension
+//! progress handler that stops the statement at its deadline or once
+//! SQLite's memory rises 256 MiB above the call's start (temporary tables
+//! and sorts are kept in memory, so they count). Extension
 //! loading is never enabled. A path that is, or resolves into, Compresso's
 //! own data is refused.
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
@@ -40,8 +44,14 @@ const ALLOWED_PRAGMAS: &[&str] = &[
 /// Largest string, blob, or statement one connection makes (16 MiB).
 const MAX_VALUE_BYTES: i32 = 16 * 1024 * 1024;
 
-/// Progress-handler interval, in virtual machine instructions.
-const PROGRESS_STEPS: i32 = 1_000;
+/// Progress-handler interval, in virtual machine instructions: small enough
+/// that a statement copying 1 MB values stops within about 100 ms of its
+/// deadline or memory budget.
+const PROGRESS_STEPS: i32 = 100;
+
+/// How far SQLite's memory may rise above its level at the start of a call
+/// before the statement is stopped (`sql_memory_limit`): 256 MiB.
+const MEMORY_BUDGET: i64 = 256 * 1024 * 1024;
 
 /// A local SQLite database file.
 pub(crate) struct SqliteTarget {
@@ -101,14 +111,20 @@ impl SqliteTarget {
     }
 
     fn open(&self, timeout: Duration) -> Result<Connection, SqlError> {
+        self.open_bounded(timeout).map(|(connection, _)| connection)
+    }
+
+    /// Opens and hardens the connection; the flag turns true when the
+    /// progress handler stopped a statement for memory, not time.
+    fn open_bounded(&self, timeout: Duration) -> Result<(Connection, Arc<AtomicBool>), SqlError> {
         let path = self.checked_path()?;
         // No SQLITE_OPEN_URI: the path is a path, never `file:...?mode=rwc`.
         let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
             | OpenFlags::SQLITE_OPEN_NOFOLLOW;
         let mut connection = Connection::open_with_flags(&path, flags).map_err(map_error)?;
-        harden(&mut connection, timeout).map_err(map_error)?;
-        Ok(connection)
+        let memory_stop = harden(&mut connection, timeout).map_err(map_error)?;
+        Ok((connection, memory_stop))
     }
 }
 
@@ -124,7 +140,15 @@ fn same_file(_metadata: &fs::Metadata, _other: &Path) -> bool {
     false
 }
 
-fn harden(connection: &mut Connection, timeout: Duration) -> rusqlite::Result<()> {
+/// SQLite's memory in use, process-wide (the library keeps the count).
+fn memory_used() -> i64 {
+    // SAFETY: sqlite3_memory_used takes no arguments, only reads a counter
+    // the library maintains under its own mutex, and is safe to call from
+    // any thread at any time.
+    unsafe { rusqlite::ffi::sqlite3_memory_used() }
+}
+
+fn harden(connection: &mut Connection, timeout: Duration) -> rusqlite::Result<Arc<AtomicBool>> {
     connection.set_db_config(DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)?;
     connection.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
     connection.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_FTS3_TOKENIZER, false)?;
@@ -138,12 +162,28 @@ fn harden(connection: &mut Connection, timeout: Duration) -> rusqlite::Result<()
     connection.set_limit(Limit::SQLITE_LIMIT_SQL_LENGTH, MAX_VALUE_BYTES)?;
     // Page cache for this connection at most 16 MiB.
     connection.pragma_update(None, "cache_size", -16_384)?;
+    // Temporary tables, sorts, and recursive queues stay in memory, where the
+    // progress handler below can bound them; on disk they grew 300-450 MB a
+    // second with no limit (E17-50 confirmation review).
+    connection.pragma_update(None, "temp_store", "MEMORY")?;
     connection.pragma_update(None, "query_only", true)?;
     connection.busy_timeout(timeout)?;
     connection.authorizer(Some(authorize))?;
     let deadline = Instant::now() + timeout;
-    connection.progress_handler(PROGRESS_STEPS, Some(move || Instant::now() >= deadline))?;
-    Ok(())
+    let baseline = memory_used();
+    let memory_stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&memory_stop);
+    connection.progress_handler(
+        PROGRESS_STEPS,
+        Some(move || {
+            if memory_used().saturating_sub(baseline) > MEMORY_BUDGET {
+                flag.store(true, Ordering::Relaxed);
+                return true;
+            }
+            Instant::now() >= deadline
+        }),
+    )?;
+    Ok(memory_stop)
 }
 
 fn authorize(context: AuthContext<'_>) -> Authorization {
@@ -224,16 +264,37 @@ fn cell(value: ValueRef<'_>) -> Value {
 
 impl Connector for SqliteTarget {
     fn run(&self, request: &SqlRequest, gated: bool) -> Result<SqlOutcome, SqlError> {
-        let connection = self.open(request.timeout)?;
+        let (connection, memory_stop) = self.open_bounded(request.timeout)?;
+        let outcome = self.run_on(&connection, request, gated);
+        outcome.map_err(|error| {
+            if error.code() == "sql_timeout" && memory_stop.load(Ordering::Relaxed) {
+                SqlError::new(
+                    "sql_memory_limit",
+                    "the statement needed more than 256 MiB of memory and was stopped; narrow it (filters, LIMIT, smaller values)",
+                )
+            } else {
+                error
+            }
+        })
+    }
+}
+
+impl SqliteTarget {
+    fn run_on(
+        &self,
+        connection: &Connection,
+        request: &SqlRequest,
+        gated: bool,
+    ) -> Result<SqlOutcome, SqlError> {
         match &request.action {
             SqlAction::Query(sql) => {
                 if gated {
                     gate::check_statement(sql, SqlEngine::Sqlite).map_err(SqlError::refused)?;
                 }
-                query(&connection, sql, request.max_rows).map(SqlOutcome::Query)
+                query(connection, sql, request.max_rows).map(SqlOutcome::Query)
             }
-            SqlAction::Tables => tables(&connection).map(SqlOutcome::Tables),
-            SqlAction::Describe(table) => describe(&connection, table).map(SqlOutcome::Describe),
+            SqlAction::Tables => tables(connection).map(SqlOutcome::Tables),
+            SqlAction::Describe(table) => describe(connection, table).map(SqlOutcome::Describe),
         }
     }
 }
@@ -450,6 +511,19 @@ mod tests {
             rows.rows,
             vec![vec![Value::from("a")], vec![Value::from("b")]]
         );
+    }
+
+    #[test]
+    fn test_temporary_tables_and_sorts_stay_in_memory() {
+        let (_directory, target, _) = database();
+        let (mut connection, _) = target.open_bounded(Duration::from_secs(5)).expect("open");
+        connection
+            .authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
+            .expect("authorizer off for the check");
+        let store: i64 = connection
+            .pragma_query_value(None, "temp_store", |row| row.get(0))
+            .expect("temp_store");
+        assert_eq!(store, 2, "temp_store must be MEMORY");
     }
 
     #[test]
