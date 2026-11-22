@@ -133,9 +133,10 @@ impl SqliteTarget {
 
 /// A database file has no reason to be hard-linked: on Unix any target with
 /// more than one link is refused, which covers a hard link to any of
-/// Compresso's files wherever it sits. Elsewhere file identity is not
-/// available from the standard library, so SQLite targets are refused
-/// outright (Compresso ships for macOS and Linux only).
+/// Compresso's files wherever it sits. On Windows the standard library gives
+/// neither a link count nor a file identity, so only the path checks apply
+/// there (owner decision 2026-11-23, D115): a hard link to a file in
+/// Compresso's data directory is not detected on Windows.
 #[cfg(unix)]
 fn refuse_hard_links(metadata: &fs::Metadata) -> Result<(), SqlError> {
     use std::os::unix::fs::MetadataExt;
@@ -149,9 +150,7 @@ fn refuse_hard_links(metadata: &fs::Metadata) -> Result<(), SqlError> {
 
 #[cfg(not(unix))]
 fn refuse_hard_links(_metadata: &fs::Metadata) -> Result<(), SqlError> {
-    Err(SqlError::not_configured(
-        "SQLite targets are supported on macOS and Linux only: this system cannot check whether the file is Compresso's own data",
-    ))
+    Ok(())
 }
 
 /// Entries the walk below reads at most before refusing.
@@ -163,6 +162,7 @@ const MAX_WALK_DEPTH: usize = 3;
 /// under `directory`. An extra check beside the link count; it fails
 /// closed: more than [`MAX_WALK_ENTRIES`] entries, a directory deeper than
 /// [`MAX_WALK_DEPTH`], or anything unreadable refuses the target.
+#[cfg(unix)]
 fn linked_into(metadata: &fs::Metadata, directory: &Path) -> Result<bool, SqlError> {
     let unaccounted = || {
         SqlError::refused(
@@ -199,6 +199,13 @@ fn same_file(metadata: &fs::Metadata, other: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
     fs::metadata(other)
         .is_ok_and(|other| other.dev() == metadata.dev() && other.ino() == metadata.ino())
+}
+
+/// Off Unix there is no file identity to compare (see `refuse_hard_links`);
+/// the canonical-path checks are all that apply.
+#[cfg(not(unix))]
+fn linked_into(_metadata: &fs::Metadata, _directory: &Path) -> Result<bool, SqlError> {
+    Ok(false)
 }
 
 #[cfg(not(unix))]
@@ -519,7 +526,7 @@ fn describe(connection: &Connection, table: &str) -> Result<DescribeResult, SqlE
     })
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     //! The database-level controls alone, with the statement gate bypassed:
     //! each must hold even if the gate let a statement through.

@@ -130,9 +130,11 @@ keychain credentials, a SQL parser, and mutation stay in E15.
      process-wide count is the call's own. The store is refused by path and
      directory; on Unix any target with more than one hard link is refused
      outright, and a walk of Compresso's data directory (at most 10,000
-     entries, 3 levels) refuses whatever it cannot fully check. Off Unix,
-     where the standard library gives no file identity, SQLite targets are
-     refused (Compresso ships for macOS and Linux only). Backslashes are
+     entries, 3 levels) refuses whatever it cannot fully check. On Windows
+     (owner decision 2026-11-23) SQLite targets are allowed with the path
+     checks only: the standard library gives neither a link count nor a
+     file identity there, so a hard link to a file in Compresso's data
+     directory is not detected on Windows. Backslashes are
      allowed inside plain SQLite strings (SQLite never reads them as
      escapes), so `LIKE ... ESCAPE '\'` works there.
    - *WAL databases*: a reader may create `-wal` and `-shm` beside the

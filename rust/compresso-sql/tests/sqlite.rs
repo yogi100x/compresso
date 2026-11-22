@@ -1,6 +1,4 @@
 //! `compresso_sql` against scratch SQLite files, through the public service.
-#![cfg(unix)]
-// SQLite targets are refused off Unix (no file identity in std).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -516,4 +514,20 @@ fn test_sqlite_protection_of_the_data_directory_fails_closed() {
     let result = query(&service(&elsewhere, vec![closed.clone()]), "SELECT 1");
     fs::set_permissions(closed.join("locked"), fs::Permissions::from_mode(0o755)).expect("unlock");
     assert_eq!(result.expect_err("unreadable").code(), "sql_refused");
+}
+
+#[cfg(windows)]
+#[test]
+fn test_sqlite_targets_are_accepted_on_windows() {
+    // Owner decision 2026-11-23 (D115): SQLite works on Windows with the
+    // path checks only; a hard link into Compresso's data is not detected.
+    let directory = tempfile::tempdir().expect("tempdir");
+    let service = service(&shop(directory.path()), Vec::new());
+    assert_eq!(service.engine(), Some(SqlEngine::Sqlite));
+    assert_eq!(
+        query(&service, "SELECT count(*) FROM customers")
+            .unwrap()
+            .rows[0][0],
+        Value::from(2)
+    );
 }

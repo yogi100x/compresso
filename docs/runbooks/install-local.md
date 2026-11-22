@@ -155,8 +155,10 @@ GRANT SELECT ON app.* TO 'sql_reader'@'%';
 ```
 
 `SSL_CERT_FILE` and `SSL_CERT_DIR` must not be set where the client
-starts, as for `PG*` variables. SQLite targets work on macOS and Linux
-only, and a SQLite file with more than one hard link is refused. Statements must be plain SQL: no comments,
+starts, as for `PG*` variables. On macOS and Linux a SQLite file with more
+than one hard link is refused. On Windows only the path checks apply: a
+hard link to a file in Compresso's data directory is not detected there, so
+do not point the variable at a hard link. Statements must be plain SQL: no comments,
 `$`, backslashes, or non-ASCII outside `'...'` strings. Compresso answers one
 tool call at a time, so a slow query delays its other tools until it ends
 (at most the statement's `timeout_ms` plus about 16 s). Reading a WAL-mode
