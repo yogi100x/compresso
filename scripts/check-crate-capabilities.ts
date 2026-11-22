@@ -2,7 +2,17 @@
 
 import { execFile } from "node:child_process";
 import type { Dirent } from "node:fs";
-import { readFile, readdir, stat } from "node:fs/promises";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
 import {
   basename,
   dirname,
@@ -38,6 +48,7 @@ type CargoTarget = {
 type CargoPackage = {
   id: string;
   name: string;
+  source?: string | null;
   manifest_path: string;
   dependencies: CargoDependency[];
   features: Record<string, string[]>;
@@ -699,66 +710,195 @@ function dependencyCapabilities(dependency: CargoDependency) {
   return capabilities;
 }
 
-function packageCapabilities(pkg: CargoPackage, node: CargoResolveNode) {
+function packageCapabilities(name: string, features: string[]) {
   const capabilities = new Set<Capability>();
-  if (networkDependencies.has(pkg.name)) {
+  if (networkDependencies.has(name)) {
     capabilities.add("network");
   }
-  if (processDependencies.has(pkg.name)) {
+  if (processDependencies.has(name)) {
     capabilities.add("process");
   }
-  if (pkg.name === "tokio" && node.features.includes("process")) {
+  if (name === "tokio" && features.includes("process")) {
     capabilities.add("process");
   }
   return capabilities;
 }
 
-function resolvedCapabilityPath(
-  metadata: CargoMetadata,
-  rootId: string,
-  capability: Capability,
-) {
-  if (!metadata.resolve) {
-    return undefined;
+/**
+ * The workspace crate through which `compresso-mcp` and `compresso-cli` may
+ * reach network-capable packages, and only it (D115, ADR-0036).
+ */
+const databaseNetworkCrate = "compresso-sql";
+const databaseNetworkConsumers = new Set(["compresso-mcp", "compresso-cli"]);
+
+type TreeLine = { depth: number; name: string; features: string[] };
+
+/**
+ * One member's own resolved dependency tree: the packages and features Cargo
+ * builds for that member alone (amendment (a), D115), not the
+ * workspace-unified resolution.
+ */
+async function memberTree(
+  manifestPath: string,
+  member: string,
+  locked: boolean,
+): Promise<TreeLine[]> {
+  const args = [
+    "tree",
+    locked ? "--locked" : "--offline",
+    "-p",
+    member,
+    "-e",
+    "normal,build,dev",
+    "--target",
+    "all",
+    "--prefix",
+    "depth",
+    "-f",
+    "{p}|{f}",
+    "--manifest-path",
+    manifestPath,
+  ];
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync("cargo", args, {
+      cwd: dirname(manifestPath),
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    }));
+  } catch (error) {
+    const stderr = (error as { stderr?: string }).stderr?.trim();
+    throw new Error(
+      `cargo tree failed for ${member}${stderr ? `: ${stderr}` : ""}`,
+      { cause: error },
+    );
   }
-
-  const packages = new Map(metadata.packages.map((pkg) => [pkg.id, pkg]));
-  const nodes = new Map(metadata.resolve.nodes.map((node) => [node.id, node]));
-  const root = packages.get(rootId);
-  const pending = [{ id: rootId, path: root ? [root.name] : [rootId] }];
-  const visited = new Set([rootId]);
-
-  while (pending.length > 0) {
-    const current = pending.shift();
-    if (!current) {
-      break;
-    }
-    const node = nodes.get(current.id);
-    if (!node) {
+  const lines: TreeLine[] = [];
+  for (const line of stdout.split("\n")) {
+    const match = line.match(/^(\d+)(\S+) v\S+[^|]*\|(.*)$/u);
+    if (!match) {
       continue;
     }
+    lines.push({
+      depth: Number(match[1]),
+      name: match[2],
+      features: match[3]
+        .replace(/ \(\*\)$/u, "")
+        .split(",")
+        .filter((feature) => feature.length > 0),
+    });
+  }
+  return lines;
+}
 
-    for (const dependency of node.deps) {
-      if (visited.has(dependency.pkg)) {
-        continue;
-      }
-      visited.add(dependency.pkg);
-      const dependencyPackage = packages.get(dependency.pkg);
-      const dependencyNode = nodes.get(dependency.pkg);
-      const dependencyName = dependencyPackage?.name ?? dependency.pkg;
-      const path = [...current.path, dependencyName];
-      if (
-        dependencyPackage &&
-        dependencyNode &&
-        packageCapabilities(dependencyPackage, dependencyNode).has(capability)
-      ) {
-        return path;
-      }
-      pending.push({ id: dependency.pkg, path });
+/** The first dependency path in `lines` that grants `capability`. */
+function treeCapabilityPath(lines: TreeLine[], capability: Capability) {
+  const stack: string[] = [];
+  for (const line of lines) {
+    stack.length = line.depth;
+    stack.push(line.name);
+    if (
+      line.depth > 0 &&
+      packageCapabilities(line.name, line.features).has(capability)
+    ) {
+      return [...stack];
     }
   }
-
   return undefined;
+}
+
+/**
+ * Copies the workspace's manifests (with stub target files) into a temporary
+ * directory with the database crate and every dependency on it removed, and
+ * returns that copy's root manifest. Resolving a member there shows what the
+ * member would reach if `compresso-sql` did not exist: a network package
+ * still reachable there reaches the member by some other route. Fails closed
+ * on any declaration of the crate it cannot remove.
+ */
+async function shadowWithoutDatabaseCrate(
+  workspaceRoot: string,
+  resolved: CargoMetadata,
+) {
+  if (
+    !resolved.packages.some(
+      (pkg) =>
+        pkg.name === databaseNetworkCrate &&
+        resolved.workspace_members.includes(pkg.id),
+    ) ||
+    resolved.packages.some(
+      (pkg) =>
+        pkg.name === databaseNetworkCrate &&
+        !resolved.workspace_members.includes(pkg.id),
+    )
+  ) {
+    throw new Error(
+      `${databaseNetworkCrate} must be exactly one workspace member to grant its network exception`,
+    );
+  }
+  const shadow = await mkdtemp(join(tmpdir(), "compresso-capabilities-"));
+  const strip = (text: string, source: string) => {
+    const kept = text
+      .split("\n")
+      .filter(
+        (line) =>
+          !new RegExp(`^\\s*${databaseNetworkCrate}\\s*(=|\\.workspace\\s*=)`, "u").test(
+            line,
+          ),
+      )
+      .join("\n")
+      .replace(new RegExp(`"[^"\\n]*${databaseNetworkCrate}"\\s*,?`, "gu"), "");
+    if (kept.includes(databaseNetworkCrate)) {
+      throw new Error(
+        `${source}: declare ${databaseNetworkCrate} on one inline dependency line so the capability check can remove it`,
+      );
+    }
+    return kept;
+  };
+  const place = async (source: string, contents?: string) => {
+    const relativePath = relative(workspaceRoot, source);
+    if (relativePath.startsWith("..") || isAbsolute(relativePath)) {
+      throw new Error(`${source}: local package outside the workspace root`);
+    }
+    const target = join(shadow, relativePath);
+    await mkdir(dirname(target), { recursive: true });
+    if (contents === undefined) {
+      await copyFile(source, target);
+    } else {
+      await writeFile(target, contents);
+    }
+  };
+  const rootManifest = join(workspaceRoot, "Cargo.toml");
+  let rootCopied = false;
+  for (const pkg of resolved.packages) {
+    if (pkg.source !== null && pkg.source !== undefined) {
+      continue;
+    }
+    if (pkg.name === databaseNetworkCrate) {
+      continue;
+    }
+    const manifest = resolve(pkg.manifest_path);
+    await place(manifest, strip(await readFile(manifest, "utf8"), manifest));
+    rootCopied ||= manifest === rootManifest;
+    for (const target of pkg.targets) {
+      await place(resolve(target.src_path), "");
+    }
+  }
+  if (!rootCopied) {
+    await place(
+      rootManifest,
+      strip(await readFile(rootManifest, "utf8"), rootManifest),
+    );
+  }
+  for (const name of ["Cargo.lock", "rust-toolchain.toml"]) {
+    const source = join(workspaceRoot, name);
+    try {
+      await stat(source);
+    } catch {
+      continue;
+    }
+    await place(source);
+  }
+  return shadow;
 }
 
 async function hasLockfile(root: string) {
@@ -847,28 +987,59 @@ export async function checkWorkspace(
 
   if (await hasLockfile(workspaceRoot)) {
     const resolved = await cargoMetadata(manifestPath, true);
-    for (const memberId of resolved.workspace_members) {
-      const pkg = resolved.packages.find(
-        (candidate) => candidate.id === memberId,
-      );
-      if (!pkg) {
-        continue;
-      }
-      const className = crateClasses.get(pkg.name);
-      if (!className) {
-        continue;
-      }
-      const capabilities = capabilityClasses[className];
-      for (const capability of ["network", "process"] as const) {
-        if (capabilities[capability]) {
+    let shadow: string | undefined;
+    try {
+      for (const memberId of resolved.workspace_members) {
+        const pkg = resolved.packages.find(
+          (candidate) => candidate.id === memberId,
+        );
+        if (!pkg) {
           continue;
         }
-        const path = resolvedCapabilityPath(resolved, memberId, capability);
-        if (path) {
-          violations.add(
-            `${pkg.name} (${className}): resolved dependency path ${path.join(" -> ")} grants ${capability} capability`,
-          );
+        const className = crateClasses.get(pkg.name);
+        if (!className) {
+          continue;
         }
+        const capabilities = capabilityClasses[className];
+        if (capabilities.network && capabilities.process) {
+          continue;
+        }
+        const tree = await memberTree(manifestPath, pkg.name, true);
+        for (const capability of ["network", "process"] as const) {
+          if (capabilities[capability]) {
+            continue;
+          }
+          let path = treeCapabilityPath(tree, capability);
+          let through = "";
+          if (
+            path &&
+            capability === "network" &&
+            databaseNetworkConsumers.has(pkg.name)
+          ) {
+            // Amendment (b), D115: these two crates may reach network
+            // packages only through compresso-sql. Resolve the member
+            // again with that crate removed; anything still reachable
+            // arrives by another route.
+            shadow ??= await shadowWithoutDatabaseCrate(
+              workspaceRoot,
+              resolved,
+            );
+            path = treeCapabilityPath(
+              await memberTree(join(shadow, "Cargo.toml"), pkg.name, false),
+              capability,
+            );
+            through = ` without ${databaseNetworkCrate}`;
+          }
+          if (path) {
+            violations.add(
+              `${pkg.name} (${className}): resolved dependency path ${path.join(" -> ")}${through} grants ${capability} capability`,
+            );
+          }
+        }
+      }
+    } finally {
+      if (shadow) {
+        await rm(shadow, { recursive: true, force: true });
       }
     }
   }

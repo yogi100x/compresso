@@ -1,0 +1,7 @@
+[package]
+name = "compresso-mcp"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+compresso-sql = { path = "../../deps/compresso-sql" }
