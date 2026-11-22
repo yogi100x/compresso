@@ -1,0 +1,27 @@
+decisions.md
+  s_89a704cfae63f5::t_bf2c918f376a34 110
+docs/adr/0035-opt-in-verified-edit-tool.md
+  s_89a704cfae63f5::t_998617e7ba1922 295-297
+docs/plan/03-interfaces.md
+  s_89a704cfae63f5::t_9673c34736178d 503
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_61895465119c5b 213,553
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_fca37f1c19e0ac 3609,3613,3619,3621
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "caf249a85cea9efad1ce2ddfaa84ceb838652422",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
