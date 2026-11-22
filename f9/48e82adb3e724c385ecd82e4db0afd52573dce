@@ -1,0 +1,31 @@
+README.md
+  s_89a704cfae63f5::t_87c7bb87019fa0 16-17
+decisions.md
+  s_89a704cfae63f5::t_3fb5c04251ef27 110
+docs/adr/0036-opt-in-read-only-live-sql.md
+  s_89a704cfae63f5::t_3efa651e049cde 133-137
+docs/runbooks/install-local.md
+  s_89a704cfae63f5::t_0ef9b2f8486cc3 158-161
+rust/compresso-mcp/tests/tools_sql.rs
+  s_89a704cfae63f5::t_0da53c6e34e4c5 409
+rust/compresso-sql/src/sqlite.rs
+  s_89a704cfae63f5::t_5307762c2d3e61 136-139,153,165,204-210,529
+rust/compresso-sql/tests/sqlite.rs
+  s_89a704cfae63f5::t_24894de49e877f 518-533
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f948e82adb3e724c385ecd82e4db0afd52573dce",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
