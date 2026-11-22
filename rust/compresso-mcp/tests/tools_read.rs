@@ -1536,6 +1536,23 @@ async fn test_read_argument_errors_name_the_arguments_that_work() {
             .expect("text");
         assert!(text.contains("pass 'src/sample.rs'"), "{path}: {text}");
     }
+    // Only a lexical match is answered: another spelling of the root (a
+    // link to it, such as `/var` for `/private/var` on macOS) or a `..`
+    // keeps the old answer, so the hint never reveals what a path resolves to.
+    let mut others = vec![format!("{root}/src/../src/sample.rs")];
+    if let Some(alias) = root.strip_prefix("/private") {
+        others.push(format!("{alias}/src/sample.rs"));
+    }
+    for path in others {
+        let response = harness
+            .call("compresso_read", json!({ "root": root, "path": path }))
+            .await;
+        assert_tool_error(&response, "invalid_arguments");
+        let text = response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text");
+        assert!(!text.contains("pass '"), "{path}: {text}");
+    }
     // The retry the hint describes succeeds.
     let result = successful_json(
         harness

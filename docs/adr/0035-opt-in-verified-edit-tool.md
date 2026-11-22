@@ -255,6 +255,10 @@ of this record stands.
 - **Identical texts.** A `replace` whose `old` and `new` are identical checks
   its count and is reported `unchanged` instead of failing the call.
 
+Measured surface after this amendment (o200k / Anthropic-calibrated): full with
+edits 4,778 / 5,496 tokens, lean with edits 2,573 / 2,960; without the tool,
+full 4,033 / 4,639 and lean 2,008 / 2,310 (unchanged).
+
 Threat model addition: injected repository content can now ask for a new file
 as well as an edit. A created file is reached through the same path gates and
 is listed in the report with `created: true`; the client's approval prompt

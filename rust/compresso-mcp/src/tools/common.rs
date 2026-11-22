@@ -260,25 +260,25 @@ pub(crate) enum PathState {
 
 pub(crate) fn validate_repo_path(root: &Path, requested: &str) -> Result<PathState, ToolFailure> {
     let path = Path::new(requested);
-    // Checked first (E17-47): an absolute path inside the root is answered
-    // with the repository-relative path to pass, so one retry succeeds.
-    if path.is_absolute() && !requested.contains('\0') {
-        let resolved_or_lexical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        let relative = path
-            .strip_prefix(root)
-            .ok()
-            .or_else(|| resolved_or_lexical.strip_prefix(root).ok())
-            .and_then(Path::to_str)
-            .filter(|relative| !relative.is_empty());
-        return match relative {
-            Some(relative) => Err(ToolFailure::invalid(format!(
-                "argument 'path' must be repository-relative: pass '{relative}'."
-            ))),
-            None if resolved_or_lexical.starts_with(root) => Err(ToolFailure::invalid(
-                "argument 'path' must be repository-relative.",
-            )),
-            None => Err(ToolFailure::outside_root()),
-        };
+    // Checked first (E17-47): an absolute path that names a file under the
+    // root lexically is answered with the repository-relative path to pass,
+    // so one retry succeeds. Lexical only: nothing is resolved, so the
+    // answer says nothing about what exists or where a link points; any
+    // other absolute path keeps the answer below.
+    if path.is_absolute()
+        && !requested.contains('\0')
+        && let Some(relative) =
+            path.strip_prefix(root)
+                .ok()
+                .and_then(Path::to_str)
+                .filter(|relative| {
+                    !relative.is_empty()
+                        && !relative.split('/').any(|part| part == ".." || part == ".")
+                })
+    {
+        return Err(ToolFailure::invalid(format!(
+            "argument 'path' must be repository-relative: pass '{relative}'."
+        )));
     }
     if requested.is_empty()
         || requested.contains('\0')
@@ -288,6 +288,16 @@ pub(crate) fn validate_repo_path(root: &Path, requested: &str) -> Result<PathSta
         return Err(ToolFailure::invalid(
             "argument 'path' must be a non-empty repository-relative forward-slash path.",
         ));
+    }
+    if path.is_absolute() {
+        let resolved_or_lexical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        return if resolved_or_lexical.starts_with(root) {
+            Err(ToolFailure::invalid(
+                "argument 'path' must be repository-relative.",
+            ))
+        } else {
+            Err(ToolFailure::outside_root())
+        };
     }
     for component in path.components() {
         match component {
