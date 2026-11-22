@@ -731,7 +731,7 @@ mod tests {
         std::fs::write(&big, format!("{PEM}{}", "x".repeat(2 * 1024 * 1024))).expect("big");
         let folder = directory.path().join("folder");
         std::fs::create_dir(&folder).expect("dir");
-        let mut refused = vec![
+        let refused = vec![
             "relative/ca.pem".to_owned(),
             directory
                 .path()
@@ -743,13 +743,16 @@ mod tests {
             big.to_str().unwrap().to_owned(),
             folder.to_str().unwrap().to_owned(),
         ];
+        // A symbolic link is refused too (Unix only: no portable way to make one).
         #[cfg(unix)]
-        {
+        let links = {
             let link = directory.path().join("link.pem");
             std::os::unix::fs::symlink(&ca, &link).expect("symlink");
-            refused.push(link.to_str().unwrap().to_owned());
-        }
-        for path in refused {
+            vec![link.to_str().unwrap().to_owned()]
+        };
+        #[cfg(not(unix))]
+        let links: Vec<String> = Vec::new();
+        for path in refused.into_iter().chain(links) {
             let encoded =
                 percent_encoding::utf8_percent_encode(&path, percent_encoding::NON_ALPHANUMERIC);
             for value in [
