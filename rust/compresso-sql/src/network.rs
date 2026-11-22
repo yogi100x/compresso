@@ -465,6 +465,74 @@ pub(crate) fn grant_is_privileged(grant: &str) -> bool {
             .any(|privilege| matches!(privilege, "FILE" | "SUPER"))
 }
 
+/// `sql_mode` entries that change how quotes and backslashes are read, so the
+/// gate's lexer would disagree with the server (`ANSI` implies
+/// `ANSI_QUOTES`).
+const UNLEXED_SQL_MODES: &[&str] = &["ANSI_QUOTES", "NO_BACKSLASH_ESCAPES", "ANSI"];
+
+/// The session's `sql_mode` without the modes the gate does not lex. Fails
+/// on anything that is not a plain mode list, so the result is safe to embed.
+pub(crate) fn lexable_sql_mode(current: &str) -> Result<String, SqlError> {
+    let mut kept = Vec::new();
+    for mode in current
+        .split(',')
+        .map(str::trim)
+        .filter(|mode| !mode.is_empty())
+    {
+        if !mode
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+        {
+            return Err(SqlError::refused(
+                "the server reported an sql_mode this tool cannot read safely",
+            ));
+        }
+        if !UNLEXED_SQL_MODES.contains(&mode) {
+            kept.push(mode);
+        }
+    }
+    Ok(kept.join(","))
+}
+
+/// Whether a reported `sql_mode` holds none of the modes the gate does not
+/// lex.
+pub(crate) fn mode_is_lexable(mode: &str) -> bool {
+    mode.split(',')
+        .map(str::trim)
+        .all(|mode| !UNLEXED_SQL_MODES.contains(&mode))
+}
+
+/// Roles named by `GRANT role[, role] TO account` lines of `SHOW GRANTS`.
+/// Fails closed on a role list holding anything but quoted names.
+pub(crate) fn granted_roles(grants: &[String]) -> Result<Vec<String>, SqlError> {
+    let mut roles = Vec::new();
+    for grant in grants {
+        let Some(rest) = grant.strip_prefix("GRANT ") else {
+            continue;
+        };
+        if rest.contains(" ON ") {
+            continue;
+        }
+        let Some((list, _)) = rest.split_once(" TO ") else {
+            continue;
+        };
+        for role in list.split(',').map(str::trim) {
+            let plain = role.chars().all(|character| {
+                character.is_ascii_alphanumeric()
+                    || matches!(character, '`' | '\'' | '@' | '%' | '_' | '-' | '.')
+            });
+            if role.is_empty() || !plain {
+                return Err(SqlError::new(
+                    "sql_privileged_role",
+                    "could not read the account's granted roles to check their privileges; connect with an account whose roles have only SELECT",
+                ));
+            }
+            roles.push(role.to_owned());
+        }
+    }
+    Ok(roles)
+}
+
 async fn mysql_call(
     connection: &mut MySqlConnection,
     request: &SqlRequest,
@@ -474,19 +542,75 @@ async fn mysql_call(
         .fetch_all(&mut *connection)
         .await
         .map_err(error)?;
-    if grants.iter().any(|grant| grant_is_privileged(grant)) {
-        return Err(SqlError::new(
-            "sql_privileged_role",
-            "the configured MySQL account holds FILE, SUPER, or ALL PRIVILEGES on *.*; connect with an account that has only SELECT on the schemas it needs",
-        ));
-    }
     let version: String = sqlx::query_scalar("SELECT CAST(VERSION() AS CHAR)")
         .fetch_one(&mut *connection)
         .await
         .map_err(error)?;
+    let mariadb = version.to_ascii_lowercase().contains("mariadb");
+    // Privileges reached through granted roles count too, active or not: a
+    // role's grants are listed by expanding each one (MySQL `USING`,
+    // MariaDB `SHOW GRANTS FOR role`). A role granted to a role is not
+    // expanded further (a documented gap).
+    let roles = granted_roles(&grants)?;
+    let mut expanded = grants.clone();
+    if !roles.is_empty() {
+        let statements = if mariadb {
+            roles
+                .iter()
+                .map(|role| format!("SHOW GRANTS FOR {role}"))
+                .collect::<Vec<_>>()
+        } else {
+            vec![format!(
+                "SHOW GRANTS FOR CURRENT_USER() USING {}",
+                roles.join(", ")
+            )]
+        };
+        for statement in statements {
+            let lines: Vec<String> = sqlx::query_scalar(AssertSqlSafe(statement))
+                .fetch_all(&mut *connection)
+                .await
+                .map_err(|_| {
+                    SqlError::new(
+                        "sql_privileged_role",
+                        "could not list the privileges of the account's granted roles; connect with an account whose roles can be checked and hold only SELECT",
+                    )
+                })?;
+            expanded.extend(lines);
+        }
+    }
+    if expanded.iter().any(|grant| grant_is_privileged(grant)) {
+        return Err(SqlError::new(
+            "sql_privileged_role",
+            "the configured MySQL account (directly or through a granted role) holds FILE, SUPER, or ALL PRIVILEGES on *.*; connect with an account that has only SELECT on the schemas it needs",
+        ));
+    }
+    // The gate lexes quotes and backslashes the default way; take out the
+    // modes that change that, then confirm the server agrees.
+    let mode: String = sqlx::query_scalar("SELECT CAST(@@SESSION.sql_mode AS CHAR)")
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(error)?;
+    if !mode_is_lexable(&mode) {
+        let lexable = lexable_sql_mode(&mode)?;
+        connection
+            .execute(raw_sql(AssertSqlSafe(format!(
+                "SET SESSION sql_mode = '{lexable}'"
+            ))))
+            .await
+            .map_err(error)?;
+        let confirmed: String = sqlx::query_scalar("SELECT CAST(@@SESSION.sql_mode AS CHAR)")
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(error)?;
+        if !mode_is_lexable(&confirmed) {
+            return Err(SqlError::refused(
+                "the server keeps ANSI_QUOTES or NO_BACKSLASH_ESCAPES on for this session; the statement gate cannot read statements safely under it",
+            ));
+        }
+    }
     let millis = request.timeout.as_millis();
     let seconds = request.timeout.as_secs().max(1);
-    let deadline = if version.to_ascii_lowercase().contains("mariadb") {
+    let deadline = if mariadb {
         format!(
             "SET SESSION max_statement_time = {}.{:03}, SESSION lock_wait_timeout = {seconds}",
             millis / 1_000,
@@ -730,6 +854,47 @@ mod tests {
         ] {
             assert!(!grant_is_privileged(grant), "{grant}");
         }
+    }
+
+    #[test]
+    fn test_sql_mode_drops_the_modes_the_gate_does_not_lex() {
+        assert_eq!(
+            lexable_sql_mode("STRICT_TRANS_TABLES,ANSI_QUOTES,NO_BACKSLASH_ESCAPES"),
+            Ok("STRICT_TRANS_TABLES".to_owned())
+        );
+        // ANSI re-enables ANSI_QUOTES, so it goes too.
+        assert_eq!(
+            lexable_sql_mode("REAL_AS_FLOAT,PIPES_AS_CONCAT,ANSI_QUOTES,IGNORE_SPACE,ANSI"),
+            Ok("REAL_AS_FLOAT,PIPES_AS_CONCAT,IGNORE_SPACE".to_owned())
+        );
+        assert_eq!(lexable_sql_mode(""), Ok(String::new()));
+        assert!(lexable_sql_mode("STRICT'; DROP TABLE t; --").is_err());
+        assert!(mode_is_lexable(
+            "STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION"
+        ));
+        assert!(!mode_is_lexable("ANSI_QUOTES"));
+        assert!(!mode_is_lexable("ONLY_FULL_GROUP_BY,NO_BACKSLASH_ESCAPES"));
+    }
+
+    #[test]
+    fn test_granted_roles_are_found_in_grant_lines() {
+        assert_eq!(
+            granted_roles(&[
+                "GRANT USAGE ON *.* TO `u`@`%`".to_owned(),
+                "GRANT `reader`@`%`,`ops`@`localhost` TO `u`@`%`".to_owned(),
+                "GRANT `analyst` TO `u`@`%`".to_owned(),
+            ]),
+            Ok(vec![
+                "`reader`@`%`".to_owned(),
+                "`ops`@`localhost`".to_owned(),
+                "`analyst`".to_owned(),
+            ])
+        );
+        assert_eq!(
+            granted_roles(&["GRANT SELECT ON `app`.* TO `u`@`%`".to_owned()]),
+            Ok(vec![])
+        );
+        assert!(granted_roles(&["GRANT `r`;DROP TABLE x TO `u`@`%`".to_owned()]).is_err());
     }
 
     #[test]

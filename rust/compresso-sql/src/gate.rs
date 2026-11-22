@@ -119,8 +119,20 @@ const DENIED_FUNCTIONS_POSTGRES: &[&str] = &[
     "pg_file_unlink",
     "query_to_xml",
     "query_to_xml_and_xmlschema",
+    "query_to_xmlschema",
     "cursor_to_xml",
     "table_to_xml",
+    "table_to_xmlschema",
+    "table_to_xml_and_xmlschema",
+    "cursor_to_xmlschema",
+    "database_to_xml",
+    "database_to_xmlschema",
+    "database_to_xml_and_xmlschema",
+    "schema_to_xml",
+    "schema_to_xmlschema",
+    "schema_to_xml_and_xmlschema",
+    "ts_stat",
+    "ts_rewrite",
 ];
 
 /// MySQL/MariaDB functions with effects outside this transaction or that read
@@ -307,6 +319,20 @@ fn lex(sql: &str, engine: SqlEngine) -> Result<Vec<Token>, String> {
                     .iter()
                     .collect::<String>()
                     .to_ascii_uppercase();
+                // `U&"..."` and `U&'...'` spell names and strings with escapes
+                // this lexer does not decode, so a denied name could hide in
+                // one: refuse them outright.
+                if engine == SqlEngine::Postgres
+                    && (word == "UESCAPE"
+                        || (word == "U"
+                            && at(index) == Some('&')
+                            && matches!(at(index + 1), Some('"' | '\''))))
+                {
+                    return Err(
+                        "Unicode-escaped names and strings (U&\"...\") are refused; write the name plainly"
+                            .to_owned(),
+                    );
+                }
                 // `E'...'` strings: the quote is lexed next with escapes.
                 tokens.push(Token::Word(word));
             }
@@ -384,10 +410,16 @@ fn skip_quoted(
     Err("a quoted string or identifier is not closed".to_owned())
 }
 
+/// A quoted identifier's name as the server reads it: the doubled closing
+/// quote is one quote character. Lower-cased, so a quoted name that differs
+/// from a denied one only in case is refused too (over-refusing is safe).
 fn quoted_text(chars: &[char], start: usize, end: usize) -> String {
+    let quote = chars[start];
+    let doubled = format!("{quote}{quote}");
     chars[start + 1..end.saturating_sub(1).max(start + 1)]
         .iter()
         .collect::<String>()
+        .replace(&doubled, &quote.to_string())
         .to_lowercase()
 }
 
@@ -559,6 +591,52 @@ mod tests {
         }
         // A column of that name (no call) is fine.
         assert!(allowed("SELECT nextval FROM t", SqlEngine::Postgres));
+    }
+
+    #[test]
+    fn test_postgres_unicode_escaped_names_and_strings_are_refused() {
+        for sql in [
+            "SELECT U&\"pg_read_file\"('/etc/passwd')",
+            "SELECT u&\"\\0070g_read_file\"('x')",
+            "SELECT U&\"!0070g_read_file\" UESCAPE '!' ('x')",
+            "SELECT U&'\\0041'",
+        ] {
+            assert!(!allowed(sql, SqlEngine::Postgres), "{sql}");
+        }
+        // A doubled quote inside a quoted name is one quote character.
+        assert!(!allowed(
+            "SELECT \"set_config\"('a', 'b', false)",
+            SqlEngine::Postgres
+        ));
+        assert!(allowed("SELECT \"a\"\"b\" FROM t", SqlEngine::Postgres));
+        // A name split from its parenthesis by a comment is still a call.
+        assert!(!allowed(
+            "SELECT pg_read_file /* x */ ('x')",
+            SqlEngine::Postgres
+        ));
+    }
+
+    #[test]
+    fn test_postgres_functions_that_run_query_text_are_refused() {
+        for name in [
+            "ts_stat",
+            "ts_rewrite",
+            "query_to_xmlschema",
+            "cursor_to_xmlschema",
+            "table_to_xmlschema",
+            "table_to_xml_and_xmlschema",
+            "database_to_xml",
+            "database_to_xmlschema",
+            "database_to_xml_and_xmlschema",
+            "schema_to_xml",
+            "schema_to_xmlschema",
+            "schema_to_xml_and_xmlschema",
+        ] {
+            assert!(
+                !allowed(&format!("SELECT {name}('x')"), SqlEngine::Postgres),
+                "{name}"
+            );
+        }
     }
 
     #[test]
