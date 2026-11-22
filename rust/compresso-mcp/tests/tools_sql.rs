@@ -72,6 +72,7 @@ impl Fixture {
         }
     }
 
+    #[cfg_attr(not(unix), allow(dead_code))]
     fn operations(&self) -> u64 {
         self.store
             .detailed_stats(&StatsFilter::default())
@@ -247,6 +248,8 @@ async fn test_servers_without_the_flag_and_lean_servers_never_serve_sql() {
     }
 }
 
+// SQLite targets are refused off Unix (no file identity in std).
+#[cfg(unix)]
 #[tokio::test]
 async fn test_sql_server_reads_a_sqlite_file_and_refuses_writes() {
     let fixture = Fixture::new();
@@ -406,7 +409,12 @@ async fn test_the_store_itself_is_refused_as_a_sqlite_target() {
         .call("compresso_sql", &query("SELECT * FROM operations"))
         .await;
     assert!(is_error);
-    assert!(text.starts_with("[sql_refused]"), "{text}");
+    // Off Unix every SQLite target is refused as not configured.
+    assert!(
+        text.starts_with("[sql_refused]")
+            || (cfg!(not(unix)) && text.starts_with("[sql_not_configured]")),
+        "{text}"
+    );
     harness.close().await;
 }
 

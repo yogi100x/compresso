@@ -1,4 +1,6 @@
 //! `compresso_sql` against scratch SQLite files, through the public service.
+#![cfg(unix)]
+// SQLite targets are refused off Unix (no file identity in std).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -476,4 +478,42 @@ fn test_sqlite_a_hard_link_to_any_file_in_the_data_directory_is_refused() {
     fs::hard_link(&other, &link).expect("hard link");
     let error = query(&service(&link, vec![store, data]), "SELECT 1").expect_err("hard link");
     assert_eq!(error.code(), "sql_refused", "{error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_sqlite_protection_of_the_data_directory_fails_closed() {
+    use std::os::unix::fs::PermissionsExt;
+    // Any hard-linked target is refused: a database has no reason to be.
+    let directory = tempfile::tempdir().expect("tempdir");
+    let data = directory.path().join("compresso");
+    fs::create_dir_all(&data).expect("data");
+    let store = data.join("compresso.db");
+    create(&store, "CREATE TABLE operations (id TEXT);");
+    let elsewhere = directory.path().join("plain.db");
+    create(&elsewhere, "CREATE TABLE t (a);");
+    let twin = directory.path().join("twin.db");
+    fs::hard_link(&elsewhere, &twin).expect("hard link");
+    for target in [&elsewhere, &twin] {
+        let error = query(&service(target, vec![data.clone()]), "SELECT 1").expect_err("linked");
+        assert_eq!(error.code(), "sql_refused", "{error}");
+    }
+    fs::remove_file(&twin).expect("unlink");
+    assert!(query(&service(&elsewhere, vec![data.clone()]), "SELECT 1").is_ok());
+
+    // A data directory the walk cannot fully account for refuses.
+    let crowded = directory.path().join("crowded");
+    fs::create_dir_all(&crowded).expect("crowded");
+    for index in 0..10_050 {
+        fs::write(crowded.join(format!("f{index}")), b"").expect("entry");
+    }
+    let error = query(&service(&elsewhere, vec![crowded]), "SELECT 1").expect_err("crowded");
+    assert_eq!(error.code(), "sql_refused", "{error}");
+
+    let closed = directory.path().join("closed");
+    fs::create_dir_all(closed.join("locked")).expect("closed");
+    fs::set_permissions(closed.join("locked"), fs::Permissions::from_mode(0o000)).expect("lock");
+    let result = query(&service(&elsewhere, vec![closed.clone()]), "SELECT 1");
+    fs::set_permissions(closed.join("locked"), fs::Permissions::from_mode(0o755)).expect("unlock");
+    assert_eq!(result.expect_err("unreadable").code(), "sql_refused");
 }

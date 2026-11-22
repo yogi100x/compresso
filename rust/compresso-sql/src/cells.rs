@@ -31,18 +31,46 @@ pub(crate) fn cut(value: &str, limit: usize) -> String {
     neutralise(&cut)
 }
 
-/// Whether a character is a C1 control or a bidirectional formatting
-/// character.
+/// Characters written as `\uXXXX` text in every returned value and name:
+/// C0 controls except tab, line feed, and carriage return (which JSON
+/// escapes visibly anyway), DEL and C1 controls, every character of general
+/// category Cf (format) as of Unicode 15.1, the line and paragraph
+/// separators, and the tag block. They can hide, reorder, or smuggle text a
+/// reader would not see. The zero-width joiner (U+200D, Cf) is escaped too,
+/// so an emoji ZWJ sequence shows as its parts: safety over prettiness.
+const HIDDEN_RANGES: &[(u32, u32)] = &[
+    (0x0000, 0x0008),
+    (0x000B, 0x000C),
+    (0x000E, 0x001F),
+    (0x007F, 0x009F),
+    (0x00AD, 0x00AD),
+    (0x0600, 0x0605),
+    (0x061C, 0x061C),
+    (0x06DD, 0x06DD),
+    (0x070F, 0x070F),
+    (0x0890, 0x0891),
+    (0x08E2, 0x08E2),
+    (0x180E, 0x180E),
+    (0x200B, 0x200F),
+    (0x2028, 0x202E),
+    (0x2060, 0x2064),
+    (0x2066, 0x206F),
+    (0xFEFF, 0xFEFF),
+    (0xFFF9, 0xFFFB),
+    (0x110BD, 0x110BD),
+    (0x110CD, 0x110CD),
+    (0x13430, 0x1343F),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0000, 0xE007F),
+];
+
+/// Whether a character is written as `\uXXXX` text (see [`HIDDEN_RANGES`]).
 fn is_hidden_control(character: char) -> bool {
-    matches!(
-        character,
-        '\u{80}'..='\u{9f}'
-            | '\u{61c}'
-            | '\u{200e}'
-            | '\u{200f}'
-            | '\u{202a}'..='\u{202e}'
-            | '\u{2066}'..='\u{2069}'
-    )
+    let code = u32::from(character);
+    HIDDEN_RANGES
+        .iter()
+        .any(|(start, end)| (*start..=*end).contains(&code))
 }
 
 fn neutralise(value: &str) -> String {
@@ -148,6 +176,50 @@ impl RowCollector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_hidden_characters_are_escaped_by_class_and_ordinary_text_is_kept() {
+        for (character, escaped) in [
+            ('\u{0}', "\\u0000"),
+            ('\u{1b}', "\\u001B"),
+            ('\u{7f}', "\\u007F"),
+            ('\u{85}', "\\u0085"),
+            ('\u{ad}', "\\u00AD"),
+            ('\u{600}', "\\u0600"),
+            ('\u{61c}', "\\u061C"),
+            ('\u{180e}', "\\u180E"),
+            ('\u{200b}', "\\u200B"),
+            ('\u{200d}', "\\u200D"),
+            ('\u{2028}', "\\u2028"),
+            ('\u{2029}', "\\u2029"),
+            ('\u{202e}', "\\u202E"),
+            ('\u{2060}', "\\u2060"),
+            ('\u{2069}', "\\u2069"),
+            ('\u{206f}', "\\u206F"),
+            ('\u{feff}', "\\uFEFF"),
+            ('\u{fffb}', "\\uFFFB"),
+            ('\u{1d173}', "\\u1D173"),
+            ('\u{e0001}', "\\uE0001"),
+            ('\u{e0041}', "\\uE0041"),
+            ('\u{e007f}', "\\uE007F"),
+        ] {
+            assert_eq!(cut(&format!("a{character}b"), 100), format!("a{escaped}b"));
+        }
+        for ordinary in [
+            "caf\u{e9} na\u{ef}ve",
+            "\u{4e2d}\u{6587}\u{6f22}\u{5b57}",
+            "\u{1f600}",
+            "tab\tline\nreturn\r",
+            "\u{1f468}",
+        ] {
+            assert_eq!(cut(ordinary, 100), ordinary);
+        }
+        // An emoji ZWJ sequence shows its joiner (safety over prettiness).
+        assert_eq!(
+            cut("\u{1f468}\u{200d}\u{1f469}", 100),
+            "\u{1f468}\\u200D\u{1f469}"
+        );
+    }
 
     #[test]
     fn test_text_cells_are_cut_on_a_character_boundary() {

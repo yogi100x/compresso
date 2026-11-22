@@ -1,5 +1,7 @@
 //! The SQLite memory budget, in a test binary of its own: SQLite counts
 //! memory per process, so a concurrent test would share the budget.
+#![cfg(unix)]
+// SQLite targets are refused off Unix (no file identity in std).
 
 use std::path::Path;
 use std::time::{Duration, Instant};

@@ -92,13 +92,14 @@ impl SqliteTarget {
                 "the SQLite path is not a regular file",
             ));
         }
+        refuse_hard_links(&metadata)?;
         for protected in &self.protected {
             let Ok(protected_canonical) = fs::canonicalize(protected) else {
                 continue;
             };
             let inside = protected_canonical.is_dir()
                 && (canonical.starts_with(&protected_canonical)
-                    || linked_into(&metadata, &protected_canonical));
+                    || linked_into(&metadata, &protected_canonical)?);
             if inside
                 || canonical == protected_canonical
                 || same_file(&metadata, &protected_canonical)
@@ -130,33 +131,67 @@ impl SqliteTarget {
     }
 }
 
+/// A database file has no reason to be hard-linked: on Unix any target with
+/// more than one link is refused, which covers a hard link to any of
+/// Compresso's files wherever it sits. Elsewhere file identity is not
+/// available from the standard library, so SQLite targets are refused
+/// outright (Compresso ships for macOS and Linux only).
+#[cfg(unix)]
+fn refuse_hard_links(metadata: &fs::Metadata) -> Result<(), SqlError> {
+    use std::os::unix::fs::MetadataExt;
+    if metadata.nlink() > 1 {
+        return Err(SqlError::refused(
+            "the SQLite file has more than one hard link, so it could be Compresso's own data under another name; copy it to a file of its own",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn refuse_hard_links(_metadata: &fs::Metadata) -> Result<(), SqlError> {
+    Err(SqlError::not_configured(
+        "SQLite targets are supported on macOS and Linux only: this system cannot check whether the file is Compresso's own data",
+    ))
+}
+
+/// Entries the walk below reads at most before refusing.
+const MAX_WALK_ENTRIES: usize = 10_000;
+/// Directory levels below a protected directory the walk reads.
+const MAX_WALK_DEPTH: usize = 3;
+
 /// Whether `metadata` is the same file (device and inode) as any file
-/// under `directory`, two levels deep and at most 10,000 entries, so a hard
-/// link to any of Compresso's own files is refused like the store itself.
-fn linked_into(metadata: &fs::Metadata, directory: &Path) -> bool {
-    let mut pending = vec![(directory.to_path_buf(), 0)];
+/// under `directory`. An extra check beside the link count; it fails
+/// closed: more than [`MAX_WALK_ENTRIES`] entries, a directory deeper than
+/// [`MAX_WALK_DEPTH`], or anything unreadable refuses the target.
+fn linked_into(metadata: &fs::Metadata, directory: &Path) -> Result<bool, SqlError> {
+    let unaccounted = || {
+        SqlError::refused(
+            "Compresso's data directory could not be fully checked against the SQLite target, so the target is refused",
+        )
+    };
+    let mut pending = vec![(directory.to_path_buf(), 0usize)];
     let mut seen = 0usize;
     while let Some((folder, depth)) = pending.pop() {
-        let Ok(entries) = fs::read_dir(&folder) else {
-            continue;
-        };
-        for entry in entries.flatten() {
+        let entries = fs::read_dir(&folder).map_err(|_| unaccounted())?;
+        for entry in entries {
+            let entry = entry.map_err(|_| unaccounted())?;
             seen += 1;
-            if seen > 10_000 {
-                return false;
+            if seen > MAX_WALK_ENTRIES {
+                return Err(unaccounted());
             }
             let path = entry.path();
-            let Ok(kind) = entry.file_type() else {
-                continue;
-            };
-            if kind.is_dir() && depth < 2 {
+            let kind = entry.file_type().map_err(|_| unaccounted())?;
+            if kind.is_dir() {
+                if depth >= MAX_WALK_DEPTH {
+                    return Err(unaccounted());
+                }
                 pending.push((path, depth + 1));
-            } else if kind.is_file() && same_file(metadata, &path) {
-                return true;
+            } else if same_file(metadata, &path) {
+                return Ok(true);
             }
         }
     }
-    false
+    Ok(false)
 }
 
 #[cfg(unix)]
@@ -484,7 +519,7 @@ fn describe(connection: &Connection, table: &str) -> Result<DescribeResult, SqlE
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     //! The database-level controls alone, with the statement gate bypassed:
     //! each must hold even if the gate let a statement through.
