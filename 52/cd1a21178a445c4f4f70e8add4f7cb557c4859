@@ -1,0 +1,37 @@
+AGENTS.md
+  s_89a704cfae63f5::t_994019d540faaf 58-61
+docs/adr/0036-opt-in-read-only-live-sql.md
+  s_89a704cfae63f5::t_324aab91fed089 1-216
+README.md
+  s_89a704cfae63f5::t_fea4b2f8317e48 10-14
+decisions.md
+  s_89a704cfae63f5::t_b65c08dfa2b154 110
+docs/plan/00-overview.md
+  s_89a704cfae63f5::t_d3c7e45df53f79 50
+docs/plan/03-interfaces.md
+  s_89a704cfae63f5::t_1b085acb97cbf5 554-562
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_042a1a3c0adda7 3,39-40,727-736,785
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_78d9b1d0c5077f 2240,2253,2704,3605-3622,3638
+docs/plan/08-ip-and-secure-deployment.md
+  s_89a704cfae63f5::t_d020690bf3910a 139
+docs/runbooks/install-local.md
+  s_89a704cfae63f5::t_aa3a98491e3e05 108-131
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "52cd1a21178a445c4f4f70e8add4f7cb557c4859",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
