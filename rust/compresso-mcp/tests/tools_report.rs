@@ -255,6 +255,29 @@ async fn test_status_update_and_share_write_no_file() {
 }
 
 #[tokio::test]
+async fn test_a_full_reports_directory_saves_no_more_reports() {
+    let fixture = Fixture::new();
+    fs::create_dir_all(fixture.reports()).expect("reports directory");
+    for index in 0..100 {
+        fs::write(fixture.reports().join(format!("old-{index}.txt")), "x").expect("old report");
+    }
+    let mut harness = Harness::start(fixture.store.clone(), None).await;
+    let payload = harness
+        .report(json!({ "kind": "feedback", "note": "hi" }))
+        .await;
+    assert!(payload["saved_to"].is_null(), "{payload}");
+    assert!(
+        payload["save_note"]
+            .as_str()
+            .expect("note")
+            .contains("100 reports")
+    );
+    assert!(payload["text"].as_str().expect("text").ends_with("hi\n"));
+    assert_eq!(fs::read_dir(fixture.reports()).expect("dir").count(), 100);
+    harness.close().await;
+}
+
+#[tokio::test]
 async fn test_report_arguments_are_checked() {
     let fixture = Fixture::new();
     let mut harness = Harness::start(fixture.store.clone(), None).await;

@@ -43,12 +43,15 @@ const RECENT_OPERATIONS: usize = 10;
 /// Directory beside the database that holds saved reports.
 const REPORTS_DIRECTORY: &str = "reports";
 const PATH_MARKER: &str = "[path]";
+/// Saved reports kept at most; past it a report is returned but not saved,
+/// so a model calling the tool in a loop cannot fill the disk.
+const MAX_SAVED_REPORTS: usize = 100;
 
 const UPDATE_STEPS: &str = "Compresso does not update itself and does not check for newer versions: it makes no network request. To update by hand:
 1. Get the newer release tarball for this platform with its SHA256SUMS and SHA256SUMS.sigstore.json from the Compresso release you were given.
 2. Run `installers/install-local.sh <tarball or https URL>`. It checks the checksum and the release signature before it writes anything, and keeps the current binary as ~/.local/bin/compresso.previous.
 3. Run `compresso --version` and `compresso doctor`.
-4. Restart the coding client (or reconnect its MCP servers) so it starts the new binary, then run `compresso integrations verify claude-code --project DIR`.
+4. Restart the coding client (or reconnect its MCP servers) so it starts the new binary, then run `compresso integrations status claude-code --project DIR`.
 If you installed Compresso another way, update it the same way you installed it.";
 
 const HOW_TO_SEND: &str = "Compresso sent this report nowhere. Read it first and remove anything you do not want to share; then, if you choose, paste it where your Compresso release asks for problem reports or feedback.";
@@ -102,7 +105,8 @@ pub(crate) fn run(
                 &kind,
                 &format_timestamp(now)?,
                 &facts(context)?,
-                note.as_deref(),
+                note.as_deref()
+                    .map(|note| clean_note(note, context.repository_root)),
             );
             let saved = save_report(context.store, &kind, now, &text);
             payload["saved_to"] = saved
@@ -110,7 +114,7 @@ pub(crate) fn run(
                 .map_or(Value::Null, |path| Value::from(path.display().to_string()));
             if saved.is_none() {
                 payload["save_note"] = Value::from(
-                    "the report could not be saved to a file; copy it from this result",
+                    "the report was not saved to a file (the reports directory may already hold 100 reports; delete old ones); copy it from this result",
                 );
             }
             payload["how_to_send"] = Value::from(HOW_TO_SEND);
@@ -259,7 +263,7 @@ fn status_text(facts: &Facts) -> String {
     text
 }
 
-fn report_text(kind: &str, created: &str, facts: &Facts, note: Option<&str>) -> String {
+fn report_text(kind: &str, created: &str, facts: &Facts, note: Option<String>) -> String {
     let title = if kind == "bug" {
         "Compresso bug report"
     } else {
@@ -286,7 +290,7 @@ fn report_text(kind: &str, created: &str, facts: &Facts, note: Option<&str>) -> 
         let _ = writeln!(text, "- {tool}: {code}");
     }
     text.push_str("description (secrets redacted, absolute paths removed):\n");
-    match note.map(clean_note).filter(|note| !note.trim().is_empty()) {
+    match note.filter(|note| !note.trim().is_empty()) {
         Some(note) => {
             text.push_str(note.trim_end());
             text.push('\n');
@@ -297,10 +301,30 @@ fn report_text(kind: &str, created: &str, facts: &Facts, note: Option<&str>) -> 
 }
 
 /// The user's description with secrets redacted by the recall redactor and
-/// every absolute path replaced by [`PATH_MARKER`]. Repository-relative
-/// paths are kept.
-fn clean_note(note: &str) -> String {
-    let redacted = compresso_recall::redact(note).text;
+/// absolute paths replaced by [`PATH_MARKER`]: first every occurrence of the
+/// bound repository's root (as given and canonical, so a root holding a
+/// space is caught whole), then every whitespace-separated word that is an
+/// absolute path. Repository-relative paths are kept. Limits: another
+/// absolute path that holds a space keeps the part after the space, and a
+/// one-segment path such as `/tmp` is kept.
+fn clean_note(note: &str, repository_root: Option<&Path>) -> String {
+    let mut redacted = compresso_recall::redact(note).text;
+    if let Some(root) = repository_root {
+        let canonical = fs::canonicalize(root).ok();
+        let mut roots = [Some(root), canonical.as_deref()]
+            .into_iter()
+            .flatten()
+            .filter_map(Path::to_str)
+            .filter(|root| root.len() > 1)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        // Longest first, so a canonical form that extends the given one is
+        // replaced whole.
+        roots.sort_by_key(|root| std::cmp::Reverse(root.len()));
+        for root in roots {
+            redacted = redacted.replace(&root, PATH_MARKER);
+        }
+    }
     let mut cleaned = String::with_capacity(redacted.len());
     for piece in redacted.split_inclusive(char::is_whitespace) {
         let word = piece.trim_end_matches(char::is_whitespace);
@@ -376,6 +400,14 @@ fn share_text(summary: &StatsSummary) -> String {
 fn save_report(store: &Store, kind: &str, now: i64, text: &str) -> Option<PathBuf> {
     let directory = store.database_path()?.parent()?.join(REPORTS_DIRECTORY);
     fs::create_dir_all(&directory).ok()?;
+    if fs::read_dir(&directory)
+        .ok()?
+        .take(MAX_SAVED_REPORTS)
+        .count()
+        >= MAX_SAVED_REPORTS
+    {
+        return None;
+    }
     let identity = compresso_core::operation_identity();
     let path = directory.join(format!("{kind}-{now}-{}.txt", identity.id));
     let mut options = fs::OpenOptions::new();
@@ -438,7 +470,7 @@ mod tests {
         let note = "crash reading /Users/someone/work/app/src/main.rs and C:\\Users\\someone\\app\\x.rs, \
                     see ~/notes.txt or file:///tmp/a; src/lib.rs is fine; key ghp_0123456789abcdefghijABCDEFGHIJ012345 \
                     path=/home/someone/repo";
-        let cleaned = clean_note(note);
+        let cleaned = clean_note(note, None);
         assert!(!cleaned.contains("/Users/"), "{cleaned}");
         assert!(!cleaned.contains("C:\\Users"), "{cleaned}");
         assert!(!cleaned.contains("~/notes"), "{cleaned}");
@@ -450,12 +482,26 @@ mod tests {
     }
 
     #[test]
+    fn test_clean_note_removes_a_repository_root_that_holds_a_space() {
+        let root = Path::new("/Users/Jane Doe/work/app");
+        let cleaned = clean_note(
+            "failed reading /Users/Jane Doe/work/app/src/x.rs twice",
+            Some(root),
+        );
+        assert_eq!(cleaned, "failed reading [path]/src/x.rs twice");
+        assert!(!cleaned.contains("Doe"), "{cleaned}");
+    }
+
+    #[test]
     fn test_bug_report_lists_ids_and_codes_and_holds_no_absolute_path() {
         let text = report_text(
             "bug",
             "2026-11-22T10:00:01Z",
             &sample_facts(),
-            Some("grep failed in /private/var/repo after edit"),
+            Some(clean_note(
+                "grep failed in /private/var/repo after edit",
+                None,
+            )),
         );
         assert!(text.starts_with("Compresso bug report\n"));
         assert!(text.contains(env!("CARGO_PKG_VERSION")));
