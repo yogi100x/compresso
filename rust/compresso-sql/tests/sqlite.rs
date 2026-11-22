@@ -389,3 +389,54 @@ fn test_sqlite_column_names_and_counts_are_bounded() {
     assert!(result.truncated);
     assert!(serde_json::to_string(&result).unwrap().len() <= compresso_sql::MAX_RESULT_BYTES);
 }
+
+#[test]
+fn test_sqlite_huge_values_fail_fast_instead_of_overrunning_the_deadline() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let service = service(&shop(directory.path()), Vec::new());
+    for sql in [
+        "SELECT randomblob(1000000000)",
+        "SELECT zeroblob(1000000000)",
+        "SELECT printf('%.*c', 900000000, 'x')",
+        "WITH RECURSIVE c(s) AS (SELECT 'x' UNION ALL SELECT s || s FROM c WHERE length(s) < 500000000) SELECT length(max(s)) FROM c",
+    ] {
+        let request = SqlRequest {
+            action: SqlAction::Query(sql.to_owned()),
+            max_rows: 5,
+            timeout: Duration::from_millis(3_000),
+        };
+        let started = Instant::now();
+        let error = service.execute(&request).expect_err(sql);
+        assert!(
+            matches!(error.code(), "sql_error" | "sql_timeout"),
+            "{sql}: {error}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(3_500),
+            "{sql}: {:?}",
+            started.elapsed()
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_sqlite_wal_database_in_a_read_only_directory_says_why() {
+    use std::os::unix::fs::PermissionsExt;
+    let directory = tempfile::tempdir().expect("tempdir");
+    let folder = directory.path().join("ro");
+    fs::create_dir(&folder).expect("dir");
+    let path = folder.join("wal.db");
+    create(
+        &path,
+        "PRAGMA journal_mode = WAL; CREATE TABLE t (a); INSERT INTO t VALUES (1);",
+    );
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o555)).expect("read-only dir");
+    let result = query(&service(&path, Vec::new()), "SELECT count(*) FROM t");
+    fs::set_permissions(&folder, fs::Permissions::from_mode(0o755)).expect("restore");
+    match result {
+        // Some SQLite builds read a clean WAL database without its index.
+        Ok(rows) => assert_eq!(rows.rows[0][0], Value::from(1)),
+        Err(error) => assert_eq!(error.code(), "sql_wal_unavailable", "{error}"),
+    }
+}

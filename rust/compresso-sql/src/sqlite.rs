@@ -37,6 +37,9 @@ const ALLOWED_PRAGMAS: &[&str] = &[
     "foreign_key_list",
 ];
 
+/// Largest string, blob, or statement one connection makes (16 MiB).
+const MAX_VALUE_BYTES: i32 = 16 * 1024 * 1024;
+
 /// Progress-handler interval, in virtual machine instructions.
 const PROGRESS_STEPS: i32 = 1_000;
 
@@ -126,6 +129,15 @@ fn harden(connection: &mut Connection, timeout: Duration) -> rusqlite::Result<()
     connection.set_db_config(DbConfig::SQLITE_DBCONFIG_TRUSTED_SCHEMA, false)?;
     connection.set_db_config(DbConfig::SQLITE_DBCONFIG_ENABLE_FTS3_TOKENIZER, false)?;
     connection.set_limit(Limit::SQLITE_LIMIT_ATTACHED, 0)?;
+    // One value or statement at most 16 MiB: a single huge allocation
+    // (randomblob, printf padding, doubling strings) fails at once instead of
+    // running past the deadline, which the progress handler only checks
+    // between instructions. A process-wide heap limit is not set: the same
+    // SQLite library also serves Compresso's store.
+    connection.set_limit(Limit::SQLITE_LIMIT_LENGTH, MAX_VALUE_BYTES)?;
+    connection.set_limit(Limit::SQLITE_LIMIT_SQL_LENGTH, MAX_VALUE_BYTES)?;
+    // Page cache for this connection at most 16 MiB.
+    connection.pragma_update(None, "cache_size", -16_384)?;
     connection.pragma_update(None, "query_only", true)?;
     connection.busy_timeout(timeout)?;
     connection.authorizer(Some(authorize))?;
@@ -171,6 +183,15 @@ fn map_error(error: rusqlite::Error) -> SqlError {
                     "SQLite refused the statement in this read-only session: {}",
                     message.as_deref().unwrap_or("not authorized")
                 ));
+            }
+            // A WAL database whose shared-memory index or log cannot be
+            // created or opened (a read-only directory, a recovery needed):
+            // the statement wrote nothing.
+            ErrorCode::ReadOnly if failure.extended_code != rusqlite::ffi::SQLITE_READONLY => {
+                return SqlError::new(
+                    "sql_wal_unavailable",
+                    "this WAL-mode database cannot be read read-only here: SQLite needs to create or update its -wal and -shm files beside it (a read-only directory, or a log that needs recovery). Checkpoint it (PRAGMA wal_checkpoint(TRUNCATE)) or switch it to journal_mode=DELETE, or make the directory writable.",
+                );
             }
             ErrorCode::ReadOnly => {
                 return SqlError::new(
@@ -429,6 +450,13 @@ mod tests {
             rows.rows,
             vec![vec![Value::from("a")], vec![Value::from("b")]]
         );
+    }
+
+    #[test]
+    fn test_the_connection_is_opened_read_only() {
+        let (_directory, target, _) = database();
+        let connection = target.open(Duration::from_secs(5)).expect("open");
+        assert!(connection.is_readonly(rusqlite::MAIN_DB).expect("main"));
     }
 
     #[test]
