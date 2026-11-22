@@ -1,0 +1,29 @@
+rust/compresso-integrations/src/session_commands.rs
+  s_89a704cfae63f5::t_1eecc195be233e 501,503-504
+decisions.md
+  s_89a704cfae63f5::t_1d9a04652d9aac 110
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_c7c33318a72175 37,704,710,712,715-716,718,853-854
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_8e96b814eb3eb8 3558,3565,3573-3574
+docs/plan/08-ip-and-secure-deployment.md
+  s_89a704cfae63f5::t_ca2e07f5d8e750 138
+docs/runbooks/mcp-manual-verification.md
+  s_89a704cfae63f5::t_ba4666f3a2c814 51
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d9a6bb39e777c4a777e086c12f060a4ef1cb7f1e",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
