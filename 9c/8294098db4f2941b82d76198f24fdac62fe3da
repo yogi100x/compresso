@@ -1,0 +1,52 @@
+rust/compresso-sql/src/cells.rs
+  s_89a704cfae63f5::t_1bcc6d86f3b0c7 1-127
+rust/compresso-sql/src/lib.rs
+  s_89a704cfae63f5::t_35ee90e42d1778 1-394
+rust/compresso-sql/tests/sqlite.rs
+  s_89a704cfae63f5::t_2eeba78ed4b6c6 1-325
+  s_89a704cfae63f5::t_a97da5441b2cf4 326-359
+rust/compresso-sql/tests/network.rs
+  s_89a704cfae63f5::t_18965b73b679fc 1-227
+  s_89a704cfae63f5::t_6f3d71fab07df2 228-260
+rust/compresso-sql/src/gate.rs
+  s_89a704cfae63f5::t_61c32d47ca55e8 185-188,190-192
+  s_89a704cfae63f5::t_7c5efda6636408 1-184,189,193-526
+  s_89a704cfae63f5::t_48199668498c46 527-590
+rust/compresso-sql/src/redact.rs
+  s_89a704cfae63f5::t_42aa97ea85d61d 1-228
+  s_89a704cfae63f5::t_96522b7e513874 229-236
+rust/compresso-sql/src/target.rs
+  s_89a704cfae63f5::t_79cd502619bfdb 263-264
+  s_89a704cfae63f5::t_5be2fd247d5eaf 1-262,265-467
+  s_89a704cfae63f5::t_c222eb2d7b98fc 468-486
+rust/compresso-sql/src/network.rs
+  s_89a704cfae63f5::t_36dc25f8fe27f7 1-763
+  s_89a704cfae63f5::t_2793544194f9fb 764-770
+rust/compresso-sql/src/sqlite.rs
+  s_89a704cfae63f5::t_1bd2cb27ea1780 1-359
+  s_89a704cfae63f5::t_961079f140281d 360-438
+Cargo.lock
+  s_89a704cfae63f5::t_403250c327cbd6 28-33,85,96,117-125,179-181,235-240,269-279,359-364,465,478,502-517,548-557,573-587,641-649,671-679,689,710,724-729,741-743,767-787,865-873,926-936,983-992,1025,1063-1073,1083-1091,1113-1136,1315,1341,1343,1400,1402,1445-1454,1461-1471,1551-1568,1587-1592,1605-1610,1706,1750-1761,1771,1783-1788,1795,1880-1893,1926,1947-1993,2023-2031,2064-2086,2157-2167,2196-2354,2368-2378,2385-2390,2431,2434,2493-2498,2506-2507,2509,2511,2525-2535,2597,2725-2730,2737-2751,2758-2775,2873,2875,2885,2887,2895,2897,2902,2908,2910,2949-2970,2977,3039-3047,3057-3120,3294-3299
+Cargo.toml
+  s_89a704cfae63f5::t_5696ff1e5d0880 25
+rust/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_61d1368d8ac546 16
+rust/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_36c35db9cca8f1 1-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9c8294098db4f2941b82d76198f24fdac62fe3da",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
