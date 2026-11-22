@@ -1,0 +1,31 @@
+decisions.md
+  s_89a704cfae63f5::t_a9c1e0dc871b0e 110
+docs/adr/0035-opt-in-verified-edit-tool.md
+  s_89a704cfae63f5::t_b942dc211b9fc9 268-275
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_21871189af9621 553
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_4e5d6457e69784 3578
+rust/compresso-atlas/src/edit.rs
+  s_89a704cfae63f5::t_93c80fe472878e 331,796-799,803-805,1416-1417,1471-1478,1686-1687,1689-1700,1836-1848,1863-1868,1884-1886,3027,3558-3599
+rust/compresso-atlas/src/scanner.rs
+  s_89a704cfae63f5::t_2fb1a9cb81431a 91-93,287-289,1298,1320-1321,1334-1339,1344-1380
+rust/compresso-atlas/tests/edit_batch.rs
+  s_89a704cfae63f5::t_88c3663c5ecb48 640-656,727-731,746-747,910-941
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "45be1f34ca4f6ccad3691b0c4e492b7308658179",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
