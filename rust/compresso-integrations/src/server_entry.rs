@@ -65,14 +65,58 @@ pub(crate) fn with_edits(mut args: Vec<String>) -> Vec<String> {
     args
 }
 
+/// Flag that enables the opt-in `compresso_sql` tool (E17-50, D115); its
+/// value names the environment variable holding the database URL.
+pub(crate) const SQL_ENV_FLAG: &str = "--sql-env";
+const SQL_ENV_PREFIX: &str = "COMPRESSO_SQL_";
+
+/// Whether `name` is an acceptable `--sql-env` variable name:
+/// `COMPRESSO_SQL_` and at least one of `A-Z`, `0-9`, `_` (the same rule the
+/// server applies; this crate does not link the database crate).
+pub fn is_sql_env_name(name: &str) -> bool {
+    name.strip_prefix(SQL_ENV_PREFIX).is_some_and(|rest| {
+        !rest.is_empty()
+            && rest
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+    })
+}
+
+/// Appends `--sql-env NAME` to adapter-written base arguments, after any
+/// `--edits` and before any recall source.
+pub(crate) fn with_sql_env(mut args: Vec<String>, name: &str) -> Vec<String> {
+    args.extend([SQL_ENV_FLAG.to_owned(), name.to_owned()]);
+    args
+}
+
 /// Whether `args` is `base`, optionally followed by `--edits`, optionally
-/// followed by `client`'s own recall source, in that canonical order.
-/// Another client's source, a repeated flag, or any other argument never
-/// matches.
+/// followed by `--sql-env NAME` (a valid name), optionally followed by
+/// `client`'s own recall source, in that canonical order. Another client's
+/// source, a repeated flag, or any other argument never matches.
 pub(crate) fn is_adapter_args(args: &[String], base: &[String], client: &str) -> bool {
-    [base.to_vec(), with_edits(base.to_vec())]
-        .into_iter()
-        .any(|base| args == base || args == with_recall_source(base, client).as_slice())
+    let Some(mut rest) = args.strip_prefix(base) else {
+        return false;
+    };
+    if let [flag, tail @ ..] = rest
+        && flag == EDITS_FLAG
+    {
+        rest = tail;
+    }
+    if let [flag, name, tail @ ..] = rest
+        && flag == SQL_ENV_FLAG
+        && is_sql_env_name(name)
+    {
+        rest = tail;
+    }
+    rest.is_empty() || rest == with_recall_source(Vec::new(), client).as_slice()
+}
+
+/// The `--sql-env` variable name adapter-shaped server arguments carry, if
+/// any.
+pub fn server_sql_env(args: &[String]) -> Option<&str> {
+    args.windows(2)
+        .find(|pair| pair[0] == SQL_ENV_FLAG && is_sql_env_name(&pair[1]))
+        .map(|pair| pair[1].as_str())
 }
 
 /// Whether adapter-shaped server arguments enable the edit tool.
@@ -539,6 +583,44 @@ mod tests {
             &serve_args(),
             "claude-code"
         ));
+    }
+
+    #[test]
+    fn test_a_sql_env_entry_is_exact_only_in_canonical_order_with_a_valid_name() {
+        let name = "COMPRESSO_SQL_MAIN";
+        let sql = with_sql_env(serve_args(), name);
+        assert!(is_adapter_args(&sql, &serve_args(), "codex"));
+        assert_eq!(server_sql_env(&sql), Some(name));
+        assert_eq!(server_sql_env(&serve_args()), None);
+        let full = with_recall_source(with_sql_env(with_edits(serve_args()), name), "claude-code");
+        assert!(is_adapter_args(&full, &serve_args(), "claude-code"));
+        assert!(server_enables_edits(&full));
+        // Out of order, repeated, or with an invalid name: not adapter-written.
+        let swapped = with_edits(with_sql_env(serve_args(), name));
+        assert!(!is_adapter_args(&swapped, &serve_args(), "codex"));
+        let twice = with_sql_env(sql.clone(), name);
+        assert!(!is_adapter_args(&twice, &serve_args(), "codex"));
+        let mut after_recall = with_recall_source(serve_args(), "codex");
+        after_recall.extend([SQL_ENV_FLAG.to_owned(), name.to_owned()]);
+        assert!(!is_adapter_args(&after_recall, &serve_args(), "codex"));
+        for invalid in [
+            "DATABASE_URL",
+            "COMPRESSO_SQL_",
+            "COMPRESSO_SQL_a",
+            "--edits",
+        ] {
+            let entry = with_sql_env(serve_args(), invalid);
+            assert!(
+                !is_adapter_args(&entry, &serve_args(), "codex"),
+                "{invalid}"
+            );
+            assert_eq!(server_sql_env(&entry), None);
+        }
+        let missing_value = with_edits(serve_args())
+            .into_iter()
+            .chain([SQL_ENV_FLAG.to_owned()])
+            .collect::<Vec<_>>();
+        assert!(!is_adapter_args(&missing_value, &serve_args(), "codex"));
     }
 
     #[test]

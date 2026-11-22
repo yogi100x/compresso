@@ -693,6 +693,20 @@ fn execute_mutation(
             "--edits applies only to `integrations install`; uninstall removes the whole Compresso entry",
         ));
     }
+    if arguments.sql_env.is_some() && action == MutationAction::Uninstall {
+        return Err(IntegrationCliError::new(
+            "invalid_arguments",
+            "--sql-env applies only to `integrations install`; uninstall removes the whole Compresso entry",
+        ));
+    }
+    if let Some(name) = &arguments.sql_env
+        && !compresso_integrations::is_sql_env_name(name)
+    {
+        return Err(IntegrationCliError::new(
+            "invalid_arguments",
+            "--sql-env needs a variable name matching COMPRESSO_SQL_[A-Z0-9_]+ (the name of the variable, never the URL)",
+        ));
+    }
     if arguments.no_session_commands && action == MutationAction::Uninstall {
         return Err(IntegrationCliError::new(
             "invalid_arguments",
@@ -703,6 +717,12 @@ fn execute_mutation(
         return Err(IntegrationCliError::new(
             "unsupported",
             "--edits is available for claude-code only; other clients can run `compresso mcp serve --edits` from their own configuration",
+        ));
+    }
+    if arguments.sql_env.is_some() && arguments.client != IntegrationClientArg::ClaudeCode {
+        return Err(IntegrationCliError::new(
+            "unsupported",
+            "--sql-env is available for claude-code only; other clients can run `compresso mcp serve --sql-env NAME` from their own configuration",
         ));
     }
     let requested_scope = if arguments.explore_agent || arguments.session_commands {
@@ -727,8 +747,13 @@ fn execute_mutation(
         SelectedIntegration::explore_agent(arguments.client, environment, &scope, arguments.edits)?
     } else if arguments.session_commands {
         SelectedIntegration::session_commands(arguments.client, environment, &scope)?
-    } else if arguments.edits {
-        SelectedIntegration::claude_code_with_edits(environment, &scope)?
+    } else if arguments.edits || arguments.sql_env.is_some() {
+        SelectedIntegration::claude_code_with_operator_tools(
+            environment,
+            &scope,
+            arguments.edits,
+            arguments.sql_env.clone(),
+        )?
     } else {
         SelectedIntegration::new(
             arguments.client,
@@ -1383,16 +1408,20 @@ impl SelectedIntegration {
 
 impl SelectedIntegration {
     /// The Claude Code MCP adapter writing an entry that starts
-    /// `mcp serve --edits` (E17-32, D97).
-    fn claude_code_with_edits(
+    /// `mcp serve` with `--edits` (E17-32, D97) and/or `--sql-env NAME`
+    /// (E17-50, D115).
+    fn claude_code_with_operator_tools(
         environment: &IntegrationEnvironment,
         scope: &Scope,
+        edits: bool,
+        sql_env: Option<String>,
     ) -> Result<Self, IntegrationCliError> {
         let adapter = ClaudeCodeIntegration::new(
             environment.home_dir.clone(),
             ClaudeCodeDiscovery::new(environment.path_entries.clone(), None),
         )
-        .with_edits(true);
+        .with_edits(edits)
+        .with_sql_env(sql_env);
         let config_path = adapter.config_path(scope)?;
         Ok(Self {
             adapter: Box::new(adapter),

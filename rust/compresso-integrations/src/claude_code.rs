@@ -10,7 +10,7 @@ use std::path::{Component, Path, PathBuf};
 use serde_json::{Map, Value, json};
 
 use crate::plan::MutationRequest;
-use crate::server_entry::{is_adapter_args, with_edits, with_recall_source};
+use crate::server_entry::{is_adapter_args, with_edits, with_recall_source, with_sql_env};
 use crate::text_fidelity::strip_bom;
 use crate::{
     ConfigFormat, Detection, InstallCtx, InstallReceipt, Integration, IntegrationError,
@@ -76,6 +76,8 @@ pub struct ClaudeCodeIntegration {
     compresso_version: String,
     /// Install an entry that starts `mcp serve --edits` (E17-32, D97).
     edits: bool,
+    /// Install an entry that starts `mcp serve --sql-env NAME` (E17-50, D115).
+    sql_env: Option<String>,
 }
 
 impl ClaudeCodeIntegration {
@@ -86,6 +88,7 @@ impl ClaudeCodeIntegration {
             discovery,
             compresso_version: env!("CARGO_PKG_VERSION").to_owned(),
             edits: false,
+            sql_env: None,
         }
     }
 
@@ -93,6 +96,15 @@ impl ClaudeCodeIntegration {
     /// Verify, status, and uninstall accept the entry either way.
     pub fn with_edits(mut self, edits: bool) -> Self {
         self.edits = edits;
+        self
+    }
+
+    /// Makes install write an entry that also serves the opt-in SQL tool,
+    /// reading its database URL from the variable `name` at server start.
+    /// The configuration stores only the name. Verify, status, and uninstall
+    /// accept the entry either way.
+    pub fn with_sql_env(mut self, name: Option<String>) -> Self {
+        self.sql_env = name;
         self
     }
 
@@ -186,6 +198,13 @@ impl Integration for ClaudeCodeIntegration {
         if self.edits {
             args = with_edits(args);
         }
+        let mut warnings = Vec::new();
+        if let Some(name) = &self.sql_env {
+            args = with_sql_env(args, name);
+            warnings.push(format!(
+                "compresso_sql reads its database URL from {name} when Claude Code starts the server; set {name} in the environment Claude Code runs in (the configuration stores only the name, never the URL), then restart Claude Code"
+            ));
+        }
         if context.session_recall {
             args = with_recall_source(args, CLIENT_ID);
         }
@@ -208,7 +227,7 @@ impl Integration for ClaudeCodeIntegration {
             owned_paths: vec![OWNED_PATH.to_owned()],
             compresso_version: self.compresso_version.clone(),
             prior_receipt: None,
-            warnings: Vec::new(),
+            warnings,
         })
     }
 

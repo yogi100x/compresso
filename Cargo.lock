@@ -480,6 +480,7 @@ dependencies = [
  "criterion",
  "jsonschema",
  "rmcp",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

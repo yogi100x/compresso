@@ -7,6 +7,7 @@ pub(crate) mod edit;
 pub(crate) mod engine_tools;
 pub(crate) mod recall;
 pub(crate) mod report;
+pub(crate) mod sql;
 pub(crate) mod text;
 
 use std::path::Path;
@@ -87,6 +88,7 @@ pub(crate) fn handles(name: &str) -> bool {
         || recall::handles(name)
         || edit::handles(name)
         || report::handles(name)
+        || sql::handles(name)
 }
 
 /// Remembers the failed call's tool and code for `compresso_report`, then
@@ -105,6 +107,7 @@ pub(crate) fn dispatch(
     repository_root: Option<&Path>,
     recall_options: Option<&recall::McpRecallOptions>,
     edits_enabled: bool,
+    sql_service: Option<&compresso_sql::SqlService>,
     name: &str,
     arguments: Option<JsonObject>,
     format: McpResultFormat,
@@ -131,6 +134,13 @@ pub(crate) fn dispatch(
             Err(error) => failed(session, name, error),
         };
     }
+    if sql::handles(name) {
+        // Not written to the ledger (see the `sql` module).
+        return match sql::run(sql_service, arguments) {
+            Ok(sent) => common::success_text(sent),
+            Err(error) => failed(session, name, error),
+        };
+    }
     if report::handles(name) {
         // Not written to the ledger (see `report::run`).
         let context = report::ReportContext {
@@ -139,6 +149,7 @@ pub(crate) fn dispatch(
             repository_root,
             recall_enabled: recall_options.is_some_and(|options| options.is_enabled()),
             edits_enabled,
+            sql: sql::SqlSurface::of(sql_service),
             profile,
         };
         return match report::run(&context, arguments) {
