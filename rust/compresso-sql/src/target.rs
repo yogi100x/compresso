@@ -211,6 +211,37 @@ fn parameters(url: &Url, allowed: &[Param]) -> Result<Vec<(&'static str, String)
     Ok(found)
 }
 
+/// Largest PEM file accepted as a root certificate, client certificate, or
+/// key.
+const MAX_PEM_BYTES: u64 = 1024 * 1024;
+
+/// Checks a PEM file named by a URL parameter: an absolute path to a regular
+/// file (not a symbolic link), readable, at most 1 MiB, holding a PEM block
+/// whose label contains `marker`. The error names only `what`.
+fn checked_pem(path: &str, what: &str, marker: &str) -> Result<PathBuf, String> {
+    let refused = || {
+        format!(
+            "the {what} must be an absolute path to a readable PEM file of at most 1 MiB that is not a symbolic link"
+        )
+    };
+    let path = PathBuf::from(path);
+    if !path.is_absolute() {
+        return Err(refused());
+    }
+    let metadata = std::fs::symlink_metadata(&path).map_err(|_| refused())?;
+    if !metadata.file_type().is_file() || metadata.len() > MAX_PEM_BYTES {
+        return Err(refused());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|_| refused())?;
+    let has_block = text.lines().any(|line| {
+        line.starts_with("-----BEGIN ") && line.ends_with("-----") && line.contains(marker)
+    });
+    if !has_block {
+        return Err(refused());
+    }
+    Ok(path)
+}
+
 fn decoded(text: &str, part: &str) -> Result<String, String> {
     percent_decode_str(text)
         .decode_utf8()
@@ -316,6 +347,17 @@ impl SqlTarget {
         let mode = param("sslmode")
             .map(|mode| parse_mode(engine, &mode))
             .transpose()?;
+        // A private CA is configured only here, in addition to the operating
+        // system's roots; verification stays on whatever is given.
+        let root_cert = param("sslrootcert")
+            .map(|path| checked_pem(&path, "configured root certificate", "CERTIFICATE"))
+            .transpose()?;
+        let client_cert = param("sslcert")
+            .map(|path| checked_pem(&path, "configured client certificate", "CERTIFICATE"))
+            .transpose()?;
+        let client_key = param("sslkey")
+            .map(|path| checked_pem(&path, "configured client key", "PRIVATE KEY"))
+            .transpose()?;
         let mut secrets = Secrets::from_url(
             value,
             &url,
@@ -374,13 +416,13 @@ impl SqlTarget {
                 if let Some(password) = &password {
                     options = options.password(password);
                 }
-                if let Some(path) = param("sslrootcert") {
+                if let Some(path) = &root_cert {
                     options = options.ssl_root_cert(path);
                 }
-                if let Some(path) = param("sslcert") {
+                if let Some(path) = &client_cert {
                     options = options.ssl_client_cert(path);
                 }
-                if let Some(path) = param("sslkey") {
+                if let Some(path) = &client_key {
                     options = options.ssl_client_key(path);
                 }
                 if options.get_options().is_some() {
@@ -410,13 +452,13 @@ impl SqlTarget {
                 if let Some(socket) = &socket {
                     options = options.socket(socket);
                 }
-                if let Some(path) = param("sslrootcert") {
+                if let Some(path) = &root_cert {
                     options = options.ssl_ca(path);
                 }
-                if let Some(path) = param("sslcert") {
+                if let Some(path) = &client_cert {
                     options = options.ssl_client_cert(path);
                 }
-                if let Some(path) = param("sslkey") {
+                if let Some(path) = &client_key {
                     options = options.ssl_client_key(path);
                 }
                 let local = options.get_socket().is_some() || is_loopback_text(options.get_host());
@@ -630,6 +672,97 @@ mod tests {
         );
     }
 
+    const PEM: &str =
+        "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUAA==\n-----END CERTIFICATE-----\n";
+
+    #[test]
+    fn test_a_private_root_certificate_is_configured_only_by_a_checked_url_parameter() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let ca = directory.path().join("ca.pem");
+        std::fs::write(&ca, PEM).expect("ca");
+        let ca = ca.to_str().expect("utf-8").to_owned();
+        let encoded =
+            percent_encoding::utf8_percent_encode(&ca, percent_encoding::NON_ALPHANUMERIC);
+        // Accepted for both engines; verification stays full for a remote
+        // host and for loopback with verify-full.
+        for (value, mode) in [
+            (
+                format!("postgres://u@db.example.com/app?sslrootcert={encoded}"),
+                "remote",
+            ),
+            (
+                format!("postgres://u@127.0.0.1/app?sslmode=verify-full&sslrootcert={encoded}"),
+                "local",
+            ),
+            (
+                format!("mysql://u@db.example.com/app?ssl-ca={encoded}"),
+                "remote",
+            ),
+        ] {
+            let SqlTarget::Network(target, _) = parse(&value).expect(&value) else {
+                panic!("network");
+            };
+            match &target.options {
+                DriverOptions::Postgres(options) => {
+                    assert!(
+                        matches!(options.get_ssl_mode(), PgSslMode::VerifyFull),
+                        "{mode}"
+                    );
+                }
+                DriverOptions::MySql(options) => {
+                    assert!(
+                        matches!(options.get_ssl_mode(), MySqlSslMode::VerifyIdentity),
+                        "{mode}"
+                    );
+                }
+            }
+        }
+        // A weaker mode with a custom root is still refused for a remote host.
+        assert!(
+            parse(&format!(
+                "postgres://u@db.example.com/app?sslmode=require&sslrootcert={encoded}"
+            ))
+            .is_err()
+        );
+
+        let not_pem = directory.path().join("not.pem");
+        std::fs::write(&not_pem, "hello").expect("file");
+        let big = directory.path().join("big.pem");
+        std::fs::write(&big, format!("{PEM}{}", "x".repeat(2 * 1024 * 1024))).expect("big");
+        let folder = directory.path().join("folder");
+        std::fs::create_dir(&folder).expect("dir");
+        let mut refused = vec![
+            "relative/ca.pem".to_owned(),
+            directory
+                .path()
+                .join("missing.pem")
+                .to_str()
+                .unwrap()
+                .to_owned(),
+            not_pem.to_str().unwrap().to_owned(),
+            big.to_str().unwrap().to_owned(),
+            folder.to_str().unwrap().to_owned(),
+        ];
+        #[cfg(unix)]
+        {
+            let link = directory.path().join("link.pem");
+            std::os::unix::fs::symlink(&ca, &link).expect("symlink");
+            refused.push(link.to_str().unwrap().to_owned());
+        }
+        for path in refused {
+            let encoded =
+                percent_encoding::utf8_percent_encode(&path, percent_encoding::NON_ALPHANUMERIC);
+            for value in [
+                format!("postgres://u@db.example.com/app?sslrootcert={encoded}"),
+                format!("mysql://u@db.example.com/app?ssl-ca={encoded}"),
+            ] {
+                let error = parse(&value).expect_err(&path);
+                assert!(error.contains("configured root certificate"), "{error}");
+                assert!(!error.contains(&path), "{error}");
+            }
+        }
+    }
+
     #[test]
     fn test_ipv6_loopback_literals_reach_the_driver_without_brackets() {
         for value in ["postgres://u@[::1]:5433/app", "mysql://u@[::1]:3307/app"] {
@@ -677,8 +810,8 @@ mod tests {
         ] {
             assert!(parse(value).is_err(), "{value}");
         }
-        assert!(parse("postgres://u@localhost/app?sslmode=require&sslrootcert=/ca.pem").is_ok());
-        assert!(parse("mysql://u@localhost/app?ssl-ca=/ca.pem&ssl-mode=REQUIRED").is_ok());
+        assert!(parse("postgres://u@localhost/app?sslmode=require").is_ok());
+        assert!(parse("mysql://u@localhost/app?ssl-mode=REQUIRED").is_ok());
     }
 
     #[test]

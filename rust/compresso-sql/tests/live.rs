@@ -39,7 +39,16 @@ fn variable(name: &str) -> Option<String> {
 }
 
 fn service(url: &str) -> SqlService {
-    SqlService::new(&SqlSettings::with_value(ENV, Some(url)), Vec::new())
+    let service = SqlService::new(&SqlSettings::with_value(ENV, Some(url)), Vec::new());
+    // In CI a configuration problem (a variable in the job's environment,
+    // a bad URL) fails here, once, with its reason, instead of as an
+    // assertion deep inside every test.
+    if let Some(problem) = service.configuration_problem()
+        && std::env::var("COMPRESSO_SQL_TEST_REQUIRE_LIVE").is_ok_and(|value| value == "1")
+    {
+        panic!("live setup is not usable: {problem}");
+    }
+    service
 }
 
 fn request(sql: &str, timeout_ms: u64) -> SqlRequest {

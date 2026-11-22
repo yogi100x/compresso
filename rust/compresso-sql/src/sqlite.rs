@@ -154,8 +154,10 @@ fn refuse_hard_links(_metadata: &fs::Metadata) -> Result<(), SqlError> {
 }
 
 /// Entries the walk below reads at most before refusing.
+#[cfg(unix)]
 const MAX_WALK_ENTRIES: usize = 10_000;
 /// Directory levels below a protected directory the walk reads.
+#[cfg(unix)]
 const MAX_WALK_DEPTH: usize = 3;
 
 /// Whether `metadata` is the same file (device and inode) as any file

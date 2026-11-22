@@ -287,6 +287,11 @@ jobs:
           COMPRESSO_SQL_TEST_MYSQL_PRIVILEGED_URL: mysql://root@127.0.0.1:3306/compresso_probe?ssl-mode=DISABLED
         shell: bash
         run: |
+          # The tool refuses to run while SSL_CERT_FILE or SSL_CERT_DIR is set
+          # (they would change which servers TLS trusts); the private CA of
+          # the TLS check is passed through the URL's sslrootcert instead.
+          echo "SSL_CERT_FILE set by the runner: ${SSL_CERT_FILE:+yes}${SSL_CERT_FILE:-no}"
+          unset SSL_CERT_FILE SSL_CERT_DIR
           export COMPRESSO_SQL_TEST_POSTGRES_WRONG_HOST_URL="postgres://reader@127.0.0.1:5433/probe?sslmode=verify-full&sslrootcert=${RUNNER_TEMP}/pgtls/ca.pem"
           cargo test -p compresso-sql --locked --test live -- --test-threads=1
       - name: Run live MySQL tests against MySQL 8.4
@@ -294,7 +299,10 @@ jobs:
           COMPRESSO_SQL_TEST_REQUIRE_LIVE: "1"
           COMPRESSO_SQL_TEST_MYSQL_URL: mysql://reader@127.0.0.1:3307/compresso_probe?ssl-mode=DISABLED
           COMPRESSO_SQL_TEST_MYSQL_PRIVILEGED_URL: mysql://root@127.0.0.1:3307/compresso_probe?ssl-mode=DISABLED
-        run: cargo test -p compresso-sql --locked --test live -- --test-threads=1 live_mysql
+        shell: bash
+        run: |
+          unset SSL_CERT_FILE SSL_CERT_DIR
+          cargo test -p compresso-sql --locked --test live -- --test-threads=1 live_mysql
       - name: Stop the TLS Postgres
         if: always()
         run: docker rm -f pgtls || true
