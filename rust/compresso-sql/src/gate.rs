@@ -207,9 +207,21 @@ pub fn check_statement(sql: &str, engine: SqlEngine) -> Result<(), String> {
     if matches!(keyword.as_str(), "EXPLAIN" | "DESCRIBE" | "DESC") && explains_with_analyze(first) {
         return Err("EXPLAIN ANALYZE runs the statement; use EXPLAIN without ANALYZE".to_owned());
     }
-    // A SHOW statement only reads (`SHOW CREATE TABLE`, `SHOW GRANTS`), so
-    // the words it names are not checked.
-    for token in first.iter().filter(|_| keyword != "SHOW") {
+    // `SHOW CREATE TABLE|VIEW|...` only reads: the one `CREATE` right after a
+    // leading SHOW is exempt; every other token, including any WHERE, LIKE,
+    // or subquery, is checked as in any statement.
+    let leading_index = first
+        .iter()
+        .position(|token| *token != Token::OpenParen)
+        .unwrap_or_default();
+    let exempt = (keyword == "SHOW"
+        && first.get(leading_index + 1) == Some(&Token::Word("CREATE".to_owned())))
+    .then_some(leading_index + 1);
+    for (_, token) in first
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| Some(*index) != exempt)
+    {
         if let Token::Word(word) = token
             && DENIED_WORDS.contains(&word.as_str())
         {
@@ -667,6 +679,19 @@ mod tests {
             "SELECT 1 FROM t WHERE x = 'SHOW' AND create = 1",
             SqlEngine::MySql
         ));
+    }
+
+    #[test]
+    fn test_show_with_a_filter_is_checked_like_any_statement() {
+        for sql in [
+            "SHOW TABLES WHERE `Tables_in_app` IN (SELECT 1 INTO OUTFILE '/tmp/x')",
+            "SHOW DATABASES WHERE `Database` = LOAD_FILE('/etc/passwd')",
+            "SHOW TABLES LIKE 'x' UNION SELECT 1 INTO DUMPFILE '/tmp/y'",
+            "SHOW CREATE TABLE t WHERE 1 = (SELECT COUNT(*) FROM u FOR UPDATE)",
+            "SHOW COLUMNS FROM t WHERE Field IN (SELECT get_lock('x', 1))",
+        ] {
+            assert!(!allowed(sql, SqlEngine::MySql), "{sql}");
+        }
     }
 
     #[test]

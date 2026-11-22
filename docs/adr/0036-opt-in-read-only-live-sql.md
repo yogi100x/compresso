@@ -209,8 +209,9 @@ been run.
 - **SQLite:** the database file is never written (opened read-only); WAL
   readers may update the `-shm` index, which is shared memory, not data;
   a crafted schema can make a statement slow until the deadline.
-- **False refusals:** a leading `SHOW` statement is exempt from the word
-  check, so `SHOW CREATE TABLE` runs; elsewhere an unquoted column named
+- **False refusals:** only the `CREATE` right after a leading `SHOW` is
+  exempt from the word check, so `SHOW CREATE TABLE` runs while every other
+  word of a SHOW (its WHERE, LIKE, or subquery) is still checked; elsewhere an unquoted column named
   like a denied word (`lock`, `copy`, `call`, `cluster`, `security`) must
   be quoted, and MySQL `LOCK IN SHARE MODE` is refused.
 - **All engines:** the gate's lexer is not the server's parser; a dialect
