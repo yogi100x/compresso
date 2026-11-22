@@ -841,9 +841,10 @@ async function shadowWithoutDatabaseCrate(
       .split("\n")
       .filter(
         (line) =>
-          !new RegExp(`^\\s*${databaseNetworkCrate}\\s*(=|\\.workspace\\s*=)`, "u").test(
-            line,
-          ),
+          !new RegExp(
+            `^\\s*${databaseNetworkCrate}\\s*(=|\\.workspace\\s*=)`,
+            "u",
+          ).test(line),
       )
       .join("\n")
       .replace(new RegExp(`"[^"\\n]*${databaseNetworkCrate}"\\s*,?`, "gu"), "");
