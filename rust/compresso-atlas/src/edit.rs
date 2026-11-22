@@ -70,7 +70,9 @@
 //! directory (a refusal names it): no hidden, reserved, `.git`, control, or
 //! scanner-excluded component, since a file there would not be indexed, and
 //! no name that differs only by case from an entry beside it or from a
-//! directory or file another create of the call adds. A symbolic link on
+//! directory or file another create of the call adds, no trailing `.` or
+//! space or control character, and no new name (directory or file) written
+//! in decomposed Unicode form (E17-49 review). A symbolic link on
 //! the path is refused `no_directory` before anything follows it, whatever
 //! it points to. A dry run creates nothing and reports the directories it
 //! would create. Directories are made outermost first, each with a
@@ -329,7 +331,8 @@ pub enum Refusal {
     /// adds.
     CaseDuplicate,
     /// `create` (E17-49 review): a new directory name ends with `.` or a
-    /// space, or holds a control character.
+    /// space or holds a control character, or a new name (directory or file)
+    /// is written in decomposed Unicode form.
     UnportableName,
 }
 
@@ -386,10 +389,10 @@ impl Refusal {
                 "a path component contains ':' or is a reserved device name (CON, PRN, AUX, NUL, COM1-9, LPT1-9, with or without an extension), which create refuses on every platform"
             }
             Self::CaseDuplicate => {
-                "a directory create would add differs only by case or Unicode normalization from an entry beside it or from a path another create of this call adds; a case-insensitive or normalizing file system cannot hold both"
+                "a directory create would add differs only by case from an entry beside it or from a path another create of this call adds; a case-insensitive file system cannot hold both"
             }
             Self::UnportableName => {
-                "a directory create would add ends with '.' or a space (Windows reads it as another name) or holds a control character"
+                "a name create would add ends with '.' or a space (Windows reads it as another name), holds a control character, or is written in decomposed Unicode form (a combining mark or conjoining jamo; write it composed)"
             }
         }
     }
@@ -1159,9 +1162,8 @@ fn validate_request(request: &EditRequest) -> Result<(), EditError> {
         EDIT_MAX_REQUEST_BYTES,
         request_bytes,
     )?;
-    // Two creates whose paths differ only by case (or, E17-49, by Unicode
-    // normalization) would be one file on a case-insensitive or normalizing
-    // file system; refused alike everywhere, dry runs too.
+    // Two creates whose paths differ only by case would be one file on a
+    // case-insensitive file system; refused alike everywhere, dry runs too.
     let mut created = BTreeMap::<String, (usize, &str)>::new();
     // E17-49: the directories the creates name, by `name_key`.
     let mut directories = BTreeMap::<String, &str>::new();
@@ -1174,7 +1176,7 @@ fn validate_request(request: &EditRequest) -> Result<(), EditError> {
             && earlier_path != path
         {
             return Err(invalid(format!(
-                "operation {}: create path '{path}' differs only by case or Unicode normalization from operation {earlier}'s '{earlier_path}'; a case-insensitive or normalizing file system cannot hold both",
+                "operation {}: create path '{path}' differs only by case from operation {earlier}'s '{earlier_path}'; a case-insensitive file system cannot hold both",
                 index + 1
             )));
         }
@@ -1216,66 +1218,30 @@ fn validate_request(request: &EditRequest) -> Result<(), EditError> {
     Ok(())
 }
 
-/// A comparison key under which two names a case-insensitive or
-/// Unicode-normalizing file system may store as one compare equal (E17-49):
-/// lowercased, with every character that has a canonical decomposition in
-/// the common precomposed ranges (Latin, Greek, Cyrillic, Hangul syllables),
-/// and every character followed by a combining mark, replaced by one NUL
-/// (which no path holds). It is conservative: `café` in composed and
-/// decomposed form compare equal, and so do `café` and `cafè`, which a
-/// create call then refuses as a pair. No normalization table is needed, so
-/// no dependency is added.
+/// The key two create names are compared by: lowercased. Names written in
+/// decomposed Unicode form never get this far for a new component (see
+/// [`is_decomposed`]), so a composed name and its decomposed spelling can
+/// never both be created, and genuinely different names never clash
+/// (E17-49 review).
 fn name_key(name: &str) -> String {
-    let mut key = Vec::<char>::with_capacity(name.len());
-    for character in name.chars() {
-        if is_combining(character) {
-            if let Some(last) = key.last_mut() {
-                *last = '\0';
-            }
-            continue;
-        }
-        if has_decomposition(character) {
-            key.push('\0');
-        } else {
-            key.extend(character.to_lowercase());
-        }
-    }
-    key.into_iter().collect()
+    name.to_lowercase()
 }
 
-/// Combining marks, and Hangul medial and final jamo, which compose with the
-/// character before them.
-const fn is_combining(character: char) -> bool {
+/// Whether `character` makes a name decomposed text: a combining mark or a
+/// conjoining Hangul jamo. A normalizing file system may store such a name
+/// as its composed form, so `create` refuses it in any new component
+/// (E17-49 review); without a normalization table, refusing it is the sound
+/// way to keep composed and decomposed spellings from both being created.
+pub(crate) const fn is_decomposed(character: char) -> bool {
     matches!(character,
         '\u{0300}'..='\u{036F}'
-        | '\u{0483}'..='\u{0489}'
-        | '\u{1160}'..='\u{11FF}'
         | '\u{1AB0}'..='\u{1AFF}'
         | '\u{1DC0}'..='\u{1DFF}'
         | '\u{20D0}'..='\u{20FF}'
-        | '\u{3099}'..='\u{309A}'
-        | '\u{FE20}'..='\u{FE2F}')
-}
-
-/// Precomposed letters of the common ranges that decompose canonically.
-const fn has_decomposition(character: char) -> bool {
-    matches!(character,
-        '\u{00C0}'..='\u{00C5}' | '\u{00C7}'..='\u{00CF}' | '\u{00D1}'..='\u{00D6}'
-        | '\u{00D9}'..='\u{00DD}' | '\u{00E0}'..='\u{00E5}' | '\u{00E7}'..='\u{00EF}'
-        | '\u{00F1}'..='\u{00F6}' | '\u{00F9}'..='\u{00FD}' | '\u{00FF}'
-        | '\u{0100}'..='\u{0130}' | '\u{0134}'..='\u{0137}' | '\u{0139}'..='\u{013E}'
-        | '\u{0143}'..='\u{0148}' | '\u{014C}'..='\u{0151}' | '\u{0154}'..='\u{0165}'
-        | '\u{0168}'..='\u{017E}' | '\u{01A0}'..='\u{01A1}' | '\u{01AF}'..='\u{01B0}'
-        | '\u{01CD}'..='\u{01DC}' | '\u{01DE}'..='\u{01E3}' | '\u{01E6}'..='\u{01F0}'
-        | '\u{01F4}'..='\u{01F5}' | '\u{01F8}'..='\u{021B}' | '\u{021E}'..='\u{021F}'
-        | '\u{0226}'..='\u{0233}'
-        | '\u{0386}' | '\u{0388}'..='\u{038A}' | '\u{038C}' | '\u{038E}'..='\u{0390}'
-        | '\u{03AA}'..='\u{03B0}' | '\u{03CA}'..='\u{03CE}'
-        | '\u{0400}'..='\u{0401}' | '\u{0403}' | '\u{0407}' | '\u{040C}'..='\u{040E}'
-        | '\u{0419}' | '\u{0439}' | '\u{0450}'..='\u{0451}' | '\u{0453}' | '\u{0457}'
-        | '\u{045C}'..='\u{045E}'
-        | '\u{1E00}'..='\u{1EFF}' | '\u{1F00}'..='\u{1FFF}'
-        | '\u{AC00}'..='\u{D7A3}')
+        | '\u{FE20}'..='\u{FE2F}'
+        | '\u{1100}'..='\u{11FF}'
+        | '\u{A960}'..='\u{A97F}'
+        | '\u{D7B0}'..='\u{D7FF}')
 }
 
 fn validate_operation(operation: &EditOperation) -> Result<(), EditError> {
@@ -1905,6 +1871,14 @@ fn create_working(gate: &Gate<'_>, path: &str, content: &str) -> Result<WorkingF
     // The name rules first, judged on the requested spelling alone, so such
     // a refusal never depends on what exists on disk.
     judge_create_name(gate, path, relative)?;
+    // The new file's name in decomposed form (E17-49 review).
+    if path
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| name.chars().any(is_decomposed))
+    {
+        return Err(refused(path, Refusal::UnportableName));
+    }
     // Then the link-free walk, before anything that could follow a link,
     // so a linked ancestor is answered alike whatever it points to.
     let (new_file, canonical_relative) = resolve_new_file(gate.root, path)?;
@@ -1922,7 +1896,11 @@ fn create_working(gate: &Gate<'_>, path: &str, content: &str) -> Result<WorkingF
     // space) or that holds a control character (E17-49 review).
     for directory in &new_file.new_directories {
         let name = directory.relative.rsplit('/').next().unwrap_or_default();
-        if name.ends_with(['.', ' ']) || name.chars().any(char::is_control) {
+        if name.ends_with(['.', ' '])
+            || name
+                .chars()
+                .any(|character| character.is_control() || is_decomposed(character))
+        {
             return Err(EditError::Refused {
                 path: path.to_owned(),
                 reason: Refusal::UnportableName,

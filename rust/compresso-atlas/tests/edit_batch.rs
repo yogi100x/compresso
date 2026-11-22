@@ -1259,42 +1259,79 @@ fn test_a_linked_ancestor_is_refused_alike_and_creates_nothing() {
     assert!(answers[0][0].contains("NoDirectory"), "{}", answers[0][0]);
 }
 
-/// E17-49 review: two directory names a normalizing file system stores as
-/// one (composed and decomposed `é`) are refused in dry and real runs alike.
+/// E17-49 review: a new name written in decomposed form (a combining mark
+/// or conjoining jamo) is refused `unportable_name`, so composed and
+/// decomposed spellings of one name get the same answer in dry and real
+/// runs; the composed spelling is created.
 #[test]
-fn test_directories_equal_under_unicode_normalization_are_refused_alike() {
+fn test_decomposed_new_names_are_refused_alike_in_dry_and_real_runs() {
     let fixture = Fixture::new(&[("src/lib.rs", b"x\n")]);
     let before = tree(&fixture.root);
-    let composed = "src/caf\u{e9}/a.rs";
-    let decomposed = "src/cafe\u{301}/b.rs";
     for dry_run in [true, false] {
-        let error = fixture
-            .apply_dry(
-                vec![create(composed, "x\n"), create(decomposed, "y\n")],
-                dry_run,
-            )
-            .expect_err("equal under normalization");
-        assert_eq!(refusal(error), Refusal::CaseDuplicate, "dry_run={dry_run}");
-        // Two files likewise.
-        let error = fixture
-            .apply_dry(
+        for (operations, directory) in [
+            (
+                vec![
+                    create("src/caf\u{e9}/a.rs", "x\n"),
+                    create("src/cafe\u{301}/b.rs", "y\n"),
+                ],
+                Some("src/cafe\u{301}"),
+            ),
+            (
                 vec![
                     create("src/n\u{e9}.rs", "x\n"),
                     create("src/ne\u{301}.rs", "y\n"),
                 ],
-                dry_run,
-            )
-            .expect_err("files equal under normalization");
-        assert!(error.to_string().contains("normalization"), "{error}");
+                None,
+            ),
+            (
+                vec![create("ko/\u{1112}\u{1161}\u{11ab}/a.md", "x\n")],
+                Some("ko/\u{1112}\u{1161}\u{11ab}"),
+            ),
+        ] {
+            let error = fixture
+                .apply_dry(operations, dry_run)
+                .expect_err("a decomposed new name");
+            assert_eq!(
+                refused_directory(&error).as_deref(),
+                directory,
+                "dry_run={dry_run}"
+            );
+            assert_eq!(refusal(error), Refusal::UnportableName, "dry_run={dry_run}");
+        }
     }
     assert_eq!(tree(&fixture.root), before);
-    // Distinct non-Latin names stay distinct.
     fixture
-        .apply(vec![
-            create("docs/\u{65e5}\u{672c}/a.md", "x\n"),
-            create("docs/\u{4e2d}\u{56fd}/b.md", "y\n"),
-        ])
-        .expect("different names");
+        .apply(vec![create("src/caf\u{e9}/a.rs", "x\n")])
+        .expect("the composed spelling");
+}
+
+/// E17-49 review: genuinely different names are never a clash, in one call
+/// or beside an existing sibling.
+#[test]
+fn test_distinct_non_ascii_names_are_never_a_clash() {
+    let fixture = Fixture::new(&[("src/lib.rs", b"x\n")]);
+    for (first, second) in [
+        ("ko/\u{d55c}\u{ad6d}.md", "ko/\u{c601}\u{c5b4}.md"),
+        ("vi/b\u{1ea1}n/a.md", "vi/b\u{1ea3}n/b.md"),
+        (
+            "ru/\u{43c}\u{43e}\u{439}/a.md",
+            "ru/\u{43c}\u{43e}\u{451}/b.md",
+        ),
+        ("fr/caf\u{e9}/a.md", "fr/caf\u{e8}/b.md"),
+        ("ja/\u{65e5}\u{672c}/a.md", "ja/\u{4e2d}\u{56fd}/b.md"),
+    ] {
+        fixture
+            .apply(vec![create(first, "x\n"), create(second, "y\n")])
+            .unwrap_or_else(|error| panic!("{first} and {second}: {error}"));
+    }
+    // A new directory beside an existing sibling of another name.
+    fixture
+        .apply(vec![create("ko2/\u{d55c}\u{ad6d}/a.md", "x\n")])
+        .expect("first");
+    let report = fixture
+        .apply(vec![create("ko2/\u{c601}\u{c5b4}/b.md", "y\n")])
+        .expect("a different name beside it");
+    assert_eq!(report.directories_created, ["ko2/\u{c601}\u{c5b4}"]);
 }
 
 /// E17-49 review: a new directory name ending with `.` or a space, or
