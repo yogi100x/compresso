@@ -151,7 +151,14 @@ fn test_sqlite_stacked_statements_are_refused() {
             "{sql}"
         );
     }
-    assert!(query(&service, "SELECT 1; -- trailing comment").is_ok());
+    assert!(query(&service, "SELECT 1; ").is_ok());
+    // Comments are outside the strict subset (E17-50 review).
+    assert_eq!(
+        query(&service, "SELECT 1; -- trailing comment")
+            .expect_err("comment")
+            .code(),
+        "sql_refused"
+    );
 }
 
 #[test]

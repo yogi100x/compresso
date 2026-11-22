@@ -1,34 +1,35 @@
 //! The statement gate: defence in depth in front of the database's own
 //! read-only session, never the only control.
 //!
-//! A small per-dialect lexer skips strings, quoted identifiers, and comments
-//! and then requires:
+//! It accepts a **strict subset** of SQL. After an independent review got
+//! past a lexer that tried to follow each dialect, the gate stopped
+//! interpreting anything whose reading differs between engines or settings
+//! and refuses it instead, naming the construct so the statement can be
+//! rewritten: every comment form (`--`, `/* */` including optimizer hints
+//! and `/*! */`, MySQL `#`); `$` (dollar quoting, parameters); backslashes;
+//! prefixed strings and names (`E''`, `N''`, `X''`, `B''`, `U&''`, `U&""`,
+//! `_charset''`, a quote right after a number) and `UESCAPE`; hex and binary
+//! number literals; control characters and NUL; and non-ASCII characters
+//! anywhere outside a plain `'...'` string (names included). Whitespace is
+//! ASCII space, tab, carriage return, and line feed only. A plain string is
+//! `'...'` with `''` as its only escape (MySQL also reads `"..."` as one,
+//! with `ANSI_QUOTES` pinned off); quoted names are `"..."` (Postgres,
+//! SQLite), backticks (MySQL, SQLite), and `[...]` (SQLite), printable ASCII
+//! only.
 //!
-//! - exactly one statement: nothing but whitespace and comments after a
-//!   single trailing `;`, and no unterminated string or comment;
-//! - a leading keyword from a short allow-list (`SELECT`, `WITH`, `VALUES`,
-//!   `TABLE`, `SHOW`, `EXPLAIN`/`DESCRIBE` without `ANALYZE`);
-//! - no write or DDL keyword anywhere (so a data-modifying `WITH` or a
-//!   `SELECT ... INTO OUTFILE` is refused before it reaches the server);
-//! - no call to a function on the per-engine deny-list (server file access,
-//!   other-session control, cross-database links, session-level locks).
-//!
-//! MySQL executable comments (`/*! ... */`, MariaDB `/*M! ... */`) run their
-//! contents, so they are refused rather than skipped. A keyword written as a
-//! quoted identifier is an identifier, not a keyword, which is how a column
-//! literally named `update` can still be selected. Postgres Unicode-escaped
-//! names and strings (`U&"..."`, `UESCAPE`) are refused because this lexer
-//! does not decode them.
+//! On that token stream it then requires exactly one statement (a single
+//! optional trailing `;`), a leading `SELECT`, `WITH`, `VALUES`, `TABLE`,
+//! `SHOW`, `EXPLAIN`, or `DESCRIBE`, no `ANALYZE` in an explain, no write,
+//! DDL, or session keyword anywhere (only the `CREATE` of `SHOW CREATE` is
+//! exempt), and no call to a function on a per-engine deny-list. A keyword
+//! written as a quoted name is a name, which is how a column literally named
+//! `update` can still be selected.
 //!
 //! The function deny-list is a text list and therefore incomplete by nature:
 //! a view, a wrapper function, or a function it does not name can still be
 //! reached. It is not a boundary. The controls that hold are the database's
 //! read-only session, the refusal of privileged roles, and the deadlines;
 //! what remains reachable under them is listed in ADR-0036.
-//!
-//! MySQL is lexed under the default quoting rules; the connection removes
-//! `ANSI_QUOTES`, `NO_BACKSLASH_ESCAPES`, and `ANSI` from the session's
-//! `sql_mode` and confirms it before any statement reaches this gate.
 
 use crate::SqlEngine;
 
@@ -264,6 +265,13 @@ fn explains_with_analyze(tokens: &[Token]) -> bool {
         .any(|token| matches!(token, Token::Word(word) if word == "ANALYZE" || word == "ANALYSE"))
 }
 
+/// The strict-subset lexer. Whitespace is ASCII space, tab, carriage return,
+/// and line feed only. Anything whose reading differs between engines or
+/// settings is refused, never interpreted: every comment form, `$`,
+/// backslashes, prefixed strings (`E''`, `N''`, `X''`, `B''`, `U&''`,
+/// `_charset''`, and a quote right after a number), hex and binary number
+/// literals, control characters, and non-ASCII characters outside a plain
+/// `'...'` string. A plain string is `'...'` with `''` as its only escape.
 fn lex(sql: &str, engine: SqlEngine) -> Result<Vec<Token>, String> {
     let chars = sql.chars().collect::<Vec<_>>();
     let mut tokens = Vec::new();
@@ -271,62 +279,55 @@ fn lex(sql: &str, engine: SqlEngine) -> Result<Vec<Token>, String> {
     let at = |index: usize| chars.get(index).copied();
     while let Some(character) = at(index) {
         match character {
-            c if c.is_whitespace() => index += 1,
-            '-' if at(index + 1) == Some('-')
-                && (engine != SqlEngine::MySql
-                    || at(index + 2)
-                        .is_none_or(|next| next.is_whitespace() || next.is_control())) =>
-            {
-                index = skip_line(&chars, index);
+            ' ' | '\t' | '\r' | '\n' => index += 1,
+            c if c.is_control() => return Err(control(c)),
+            c if !c.is_ascii() => return Err(non_ascii(c)),
+            '-' if at(index + 1) == Some('-') => {
+                return Err("comments are refused (`--`); remove them".to_owned());
             }
-            '#' if engine == SqlEngine::MySql => index = skip_line(&chars, index),
             '/' if at(index + 1) == Some('*') => {
-                if engine == SqlEngine::MySql
-                    && (at(index + 2) == Some('!')
-                        || (at(index + 2) == Some('M') && at(index + 3) == Some('!')))
-                {
-                    return Err(
-                        "MySQL executable comments (/*! ... */) are refused because the server runs their contents".to_owned(),
-                    );
-                }
-                index = skip_block_comment(&chars, index, engine == SqlEngine::Postgres)?;
+                return Err(
+                    "comments are refused (`/* */`, including optimizer hints and `/*! */`); remove them"
+                        .to_owned(),
+                );
             }
+            '#' if engine == SqlEngine::MySql => {
+                return Err("comments are refused (`#`); remove them".to_owned());
+            }
+            '$' => {
+                return Err(
+                    "`$` is refused (dollar-quoted strings, parameters, and `$` in names); use a plain '...' string"
+                        .to_owned(),
+                );
+            }
+            '\\' => return Err(backslash()),
             '\'' => {
-                let backslashes = engine == SqlEngine::MySql
-                    || (engine == SqlEngine::Postgres
-                        && index > 0
-                        && matches!(at(index - 1), Some('e' | 'E'))
-                        && !at(index.wrapping_sub(2)).is_some_and(is_word_char));
-                index = skip_quoted(&chars, index, '\'', backslashes)?;
+                refuse_prefix(&chars, index)?;
+                index = plain_string(&chars, index, '\'')?;
+                tokens.push(Token::Other);
+            }
+            '"' if engine == SqlEngine::MySql => {
+                // With ANSI_QUOTES off (the connection pins it) MySQL reads
+                // "..." as a string; the same plain rules apply.
+                refuse_prefix(&chars, index)?;
+                index = plain_string(&chars, index, '"')?;
                 tokens.push(Token::Other);
             }
             '"' => {
-                let end = skip_quoted(&chars, index, '"', engine == SqlEngine::MySql)?;
-                // MySQL treats "..." as a string by default; elsewhere it is
-                // an identifier.
-                if engine == SqlEngine::MySql {
-                    tokens.push(Token::Other);
-                } else {
-                    tokens.push(Token::Quoted(quoted_text(&chars, index, end)));
-                }
+                refuse_prefix(&chars, index)?;
+                let end = quoted_identifier(&chars, index, '"')?;
+                tokens.push(Token::Quoted(quoted_text(&chars, index, end)));
                 index = end;
             }
             '`' if engine != SqlEngine::Postgres => {
-                let end = skip_quoted(&chars, index, '`', false)?;
+                let end = quoted_identifier(&chars, index, '`')?;
                 tokens.push(Token::Quoted(quoted_text(&chars, index, end)));
                 index = end;
             }
             '[' if engine == SqlEngine::Sqlite => {
-                let end = chars[index + 1..]
-                    .iter()
-                    .position(|c| *c == ']')
-                    .map(|offset| index + offset + 2)
-                    .ok_or_else(|| "an identifier in [ ] is not closed".to_owned())?;
+                let end = quoted_identifier(&chars, index, ']')?;
                 tokens.push(Token::Quoted(quoted_text(&chars, index, end)));
                 index = end;
-            }
-            '$' if engine == SqlEngine::Postgres => {
-                index = skip_dollar(&chars, index, &mut tokens)?;
             }
             ';' => {
                 tokens.push(Token::Semicolon);
@@ -336,30 +337,30 @@ fn lex(sql: &str, engine: SqlEngine) -> Result<Vec<Token>, String> {
                 tokens.push(Token::OpenParen);
                 index += 1;
             }
-            c if is_word_start(c) => {
+            c if c.is_ascii_digit() => {
+                if c == '0' && matches!(at(index + 1), Some('x' | 'X' | 'b' | 'B')) {
+                    return Err(
+                        "hex and binary literals (0x..., 0b...) are refused; write the number in decimal"
+                            .to_owned(),
+                    );
+                }
+                while at(index).is_some_and(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_') {
+                    index += 1;
+                }
+                tokens.push(Token::Other);
+            }
+            c if c.is_ascii_alphabetic() || c == '_' => {
                 let start = index;
-                while at(index).is_some_and(is_word_char) {
+                while at(index).is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
                     index += 1;
                 }
                 let word = chars[start..index]
                     .iter()
                     .collect::<String>()
                     .to_ascii_uppercase();
-                // `U&"..."` and `U&'...'` spell names and strings with escapes
-                // this lexer does not decode, so a denied name could hide in
-                // one: refuse them outright.
-                if engine == SqlEngine::Postgres
-                    && (word == "UESCAPE"
-                        || (word == "U"
-                            && at(index) == Some('&')
-                            && matches!(at(index + 1), Some('"' | '\''))))
-                {
-                    return Err(
-                        "Unicode-escaped names and strings (U&\"...\") are refused; write the name plainly"
-                            .to_owned(),
-                    );
+                if word == "UESCAPE" {
+                    return Err("UESCAPE is refused; write names and strings plainly".to_owned());
                 }
-                // `E'...'` strings: the quote is lexed next with escapes.
                 tokens.push(Token::Word(word));
             }
             _ => {
@@ -368,118 +369,103 @@ fn lex(sql: &str, engine: SqlEngine) -> Result<Vec<Token>, String> {
             }
         }
     }
-    // `E'...'` leaves a Word("E") before its string; it is never a keyword.
-    tokens.retain(|token| !matches!(token, Token::Word(word) if word == "E"));
     Ok(tokens)
 }
 
-fn is_word_start(character: char) -> bool {
-    character.is_alphabetic() || character == '_'
+fn control(character: char) -> String {
+    format!(
+        "control characters (U+{:04X}, including NUL and tabs other than ASCII whitespace) are refused",
+        u32::from(character)
+    )
 }
 
-fn is_word_char(character: char) -> bool {
-    character.is_alphanumeric() || character == '_' || character == '$'
+fn non_ascii(character: char) -> String {
+    format!(
+        "non-ASCII characters are allowed only inside a plain '...' string; U+{:04X} was found outside one (in a name, as whitespace, or as an operator)",
+        u32::from(character)
+    )
 }
 
-fn skip_line(chars: &[char], index: usize) -> usize {
-    chars[index..]
-        .iter()
-        .position(|c| *c == '\n')
-        .map_or(chars.len(), |offset| index + offset + 1)
+fn backslash() -> String {
+    "backslashes are refused (engines read them differently inside strings); write the text without `\\`".to_owned()
 }
 
-fn skip_block_comment(chars: &[char], index: usize, nested: bool) -> Result<usize, String> {
-    let mut depth = 0usize;
-    let mut cursor = index;
-    while cursor < chars.len() {
-        if chars[cursor] == '/' && chars.get(cursor + 1) == Some(&'*') {
-            if depth == 0 || nested {
-                depth += 1;
-            }
-            cursor += 2;
-        } else if chars[cursor] == '*' && chars.get(cursor + 1) == Some(&'/') {
-            depth -= 1;
-            cursor += 2;
-            if depth == 0 {
-                return Ok(cursor);
-            }
-        } else {
-            cursor += 1;
+/// A quote directly after a letter, digit, `_`, or `&` starts a prefixed
+/// string or name (`E'..'`, `N'..'`, `X'..'`, `B'..'`, `U&'..'`,
+/// `_utf8mb4'..'`, `1e'..'`) that engines read differently.
+fn refuse_prefix(chars: &[char], index: usize) -> Result<(), String> {
+    match index.checked_sub(1).map(|previous| chars[previous]) {
+        Some(previous) if previous.is_ascii_alphanumeric() || previous == '_' || previous == '&' => {
+            Err(
+                "prefixed string literals and names (E'', N'', X'', B'', U&'', U&\"\", _charset'') are refused; use a plain '...' string with a space before it"
+                    .to_owned(),
+            )
         }
+        _ => Ok(()),
     }
-    Err("a /* comment is not closed".to_owned())
 }
 
-/// Skips a quoted run starting at `index`; a doubled quote is an escaped
-/// quote, and with `backslashes` a backslash escapes the next character.
-fn skip_quoted(
-    chars: &[char],
-    index: usize,
-    quote: char,
-    backslashes: bool,
-) -> Result<usize, String> {
+/// A plain string: `''` (or `""`) is the only escape; no backslash and no
+/// control character inside; any other character, non-ASCII included, is
+/// literal text.
+fn plain_string(chars: &[char], index: usize, quote: char) -> Result<usize, String> {
     let mut cursor = index + 1;
-    while cursor < chars.len() {
-        let character = chars[cursor];
-        if backslashes && character == '\\' {
-            cursor += 2;
-        } else if character == quote {
+    while let Some(&character) = chars.get(cursor) {
+        if character == quote {
             if chars.get(cursor + 1) == Some(&quote) {
                 cursor += 2;
-            } else {
-                return Ok(cursor + 1);
+                continue;
             }
-        } else {
-            cursor += 1;
+            return Ok(cursor + 1);
         }
+        if character == '\\' {
+            return Err(backslash());
+        }
+        if character.is_control() && !matches!(character, '\t' | '\n' | '\r') {
+            return Err(control(character));
+        }
+        cursor += 1;
     }
-    Err("a quoted string or identifier is not closed".to_owned())
+    Err("a quoted string is not closed".to_owned())
+}
+
+/// A quoted name: printable ASCII only, the closing quote doubled as its
+/// only escape (no doubling for `[...]`).
+fn quoted_identifier(chars: &[char], index: usize, close: char) -> Result<usize, String> {
+    let mut cursor = index + 1;
+    while let Some(&character) = chars.get(cursor) {
+        if character == close {
+            if close != ']' && chars.get(cursor + 1) == Some(&close) {
+                cursor += 2;
+                continue;
+            }
+            return Ok(cursor + 1);
+        }
+        if !character.is_ascii() {
+            return Err(non_ascii(character));
+        }
+        if character.is_ascii_control() {
+            return Err(control(character));
+        }
+        if character == '\\' {
+            return Err(backslash());
+        }
+        cursor += 1;
+    }
+    Err("a quoted name is not closed".to_owned())
 }
 
 /// A quoted identifier's name as the server reads it: the doubled closing
 /// quote is one quote character. Lower-cased, so a quoted name that differs
 /// from a denied one only in case is refused too (over-refusing is safe).
 fn quoted_text(chars: &[char], start: usize, end: usize) -> String {
-    let quote = chars[start];
+    let quote = chars[end - 1];
     let doubled = format!("{quote}{quote}");
-    chars[start + 1..end.saturating_sub(1).max(start + 1)]
+    chars[start + 1..end - 1]
         .iter()
         .collect::<String>()
         .replace(&doubled, &quote.to_string())
         .to_lowercase()
-}
-
-/// A Postgres `$tag$ ... $tag$` string, or a `$1` parameter.
-fn skip_dollar(chars: &[char], index: usize, tokens: &mut Vec<Token>) -> Result<usize, String> {
-    let mut cursor = index + 1;
-    if chars.get(cursor).is_some_and(char::is_ascii_digit) {
-        while chars.get(cursor).is_some_and(char::is_ascii_digit) {
-            cursor += 1;
-        }
-        tokens.push(Token::Other);
-        return Ok(cursor);
-    }
-    while chars
-        .get(cursor)
-        .is_some_and(|c| c.is_alphanumeric() || *c == '_')
-    {
-        cursor += 1;
-    }
-    if chars.get(cursor) != Some(&'$') {
-        tokens.push(Token::Other);
-        return Ok(index + 1);
-    }
-    let tag = &chars[index..=cursor];
-    let body = cursor + 1;
-    let mut search = body;
-    while search + tag.len() <= chars.len() {
-        if &chars[search..search + tag.len()] == tag {
-            tokens.push(Token::Other);
-            return Ok(search + tag.len());
-        }
-        search += 1;
-    }
-    Err("a $$-quoted string is not closed".to_owned())
 }
 
 #[cfg(test)]
@@ -498,7 +484,7 @@ mod tests {
             for sql in [
                 "SELECT 1",
                 "select * from orders where id = 3;",
-                "  -- note\nSELECT a FROM t /* trailing */ ;  -- done",
+                "  \nSELECT a FROM t\t;  ",
                 "WITH x AS (SELECT 1 AS n) SELECT n FROM x",
                 "VALUES (1), (2)",
                 "(SELECT 1) UNION (SELECT 2)",
@@ -513,13 +499,6 @@ mod tests {
         assert!(allowed("SELECT [drop] FROM t", SqlEngine::Sqlite));
         assert!(allowed("SHOW TABLES", SqlEngine::MySql));
         assert!(allowed("DESCRIBE orders", SqlEngine::MySql));
-        assert!(allowed("SELECT $$a;b$$, $tag$x$tag$", SqlEngine::Postgres));
-        assert!(allowed("SELECT E'it\\'s; still one'", SqlEngine::Postgres));
-        assert!(allowed("SELECT 'a\\';b'", SqlEngine::MySql));
-        assert!(allowed(
-            "SELECT 1 /*+ MAX_EXECUTION_TIME(10) */",
-            SqlEngine::MySql
-        ));
         assert!(allowed(
             "SELECT replace(a, 'x', 'y') FROM t",
             SqlEngine::MySql
@@ -532,22 +511,16 @@ mod tests {
             for sql in [
                 "SELECT 1; SELECT 2",
                 "SELECT 1; DELETE FROM t",
-                "SELECT 1;\n/* c */ SELECT 2",
+                "SELECT 1;\n SELECT 2",
                 ";SELECT 1",
                 "SELECT 1;;SELECT 2",
             ] {
                 assert!(!allowed(sql, engine), "{engine:?}: {sql}");
             }
         }
-        // MySQL `--x` is not a comment, so the `;` after it is real.
+        // Comments are refused outright, so nothing can hide behind one.
         assert!(!allowed("SELECT 1--1; DELETE FROM t", SqlEngine::MySql));
-        assert!(!allowed("SELECT 1 # c\n; SELECT 2", SqlEngine::MySql));
-        // Postgres block comments nest.
-        assert!(!allowed(
-            "SELECT 1 /* a /* b */ ; */ ; SELECT 2",
-            SqlEngine::Postgres
-        ));
-        assert!(allowed("SELECT 1 /* a /* b */ ; */", SqlEngine::Postgres));
+        assert!(!allowed("SELECT 1 /* a */", SqlEngine::Postgres));
     }
 
     #[test]
@@ -695,15 +668,16 @@ mod tests {
     }
 
     #[test]
-    fn test_postgres_strings_are_lexed_as_standard_conforming() {
+    fn test_backslashes_are_refused_whatever_the_string_setting() {
         // With standard_conforming_strings off the server would end the
-        // first string at `\'` and run the call; the connection turns the
-        // setting on for the transaction, so this lexing is the server's.
-        assert!(allowed("SELECT '\\'', 1, '\\''", SqlEngine::Postgres));
-        assert!(allowed(
+        // first string at `\'` and run the call; the gate refuses every
+        // backslash, and the connection also turns the setting on.
+        for sql in [
+            "SELECT '\\'', 1, '\\''",
             "SELECT '\\'' , pg_terminate_backend(1) --'",
-            SqlEngine::Postgres
-        ));
+        ] {
+            assert!(!allowed(sql, SqlEngine::Postgres), "{sql}");
+        }
     }
 
     #[test]
