@@ -358,6 +358,22 @@ impl SqlService {
     }
 }
 
+impl Drop for SqlService {
+    /// The service may be dropped on an async task (the MCP server closing),
+    /// where dropping a runtime would block; its runtime is shut down without
+    /// waiting instead.
+    fn drop(&mut self) {
+        let runtime = self
+            .runtime
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(runtime) = runtime {
+            runtime.shutdown_background();
+        }
+    }
+}
+
 impl fmt::Debug for SqlService {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
