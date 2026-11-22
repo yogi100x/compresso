@@ -1,0 +1,32 @@
+rust/compresso-sql/src/target.rs
+  s_89a704cfae63f5::t_3c2d00b277187c 1-8,15-17,58-76,97-104,107,124,133-137,139-196,198-213,218-227,231-234,257-403,437-444,446,448,470-474,493-496,498-501,584-668,670-672
+  s_89a704cfae63f5::t_9d632eb402300c 669,673-680,692
+Cargo.lock
+  s_89a704cfae63f5::t_49cb49c0c4afff 507
+rust/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_23f59f7f15d373 21-24,26
+rust/compresso-sql/src/lib.rs
+  s_89a704cfae63f5::t_5d6eb7f0edfe24 250-252,304,326,330-344,358-370,378,386-391
+rust/compresso-sql/src/network.rs
+  s_89a704cfae63f5::t_2030b810c72e60 25-26,34,36-37,58,61-68,72-78,83,85-97,99-112,116-123,127-152,156-159,201-205,209,214-217,269,286,316-318,463-485,488-496,498-516,518-527,529-629,672,680-691,741-743,948-974,976-980,987-988,990,992-1027
+rust/compresso-sql/src/sqlite.rs
+  s_89a704cfae63f5::t_a47d6a3c03533b 205,209-211
+rust/compresso-sql/tests/network.rs
+  s_89a704cfae63f5::t_8e67085624c5b3 136-147,286-318
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cf0cc8e9005df57e51f688768ca497d027668b0e",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
