@@ -1,0 +1,21 @@
+rust/compresso-sql/tests/live.rs
+  s_89a704cfae63f5::t_33fba9fccd8d1b 254-289
+rust/compresso-sql/src/network.rs
+  s_89a704cfae63f5::t_33fba9fccd8d1b 280-285,305,309,312-314
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7a27aab6f58fa8379a287b916d2d50175c765c43",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
