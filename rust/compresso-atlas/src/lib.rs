@@ -23,7 +23,8 @@ pub use cards::{
 pub use concurrency::{Concurrency, DEFAULT_MEMORY_BUDGET_BYTES};
 pub use edit::{
     EDIT_MAX_FILE_BYTES, EDIT_MAX_FILES, EDIT_MAX_IDENTIFIER_BYTES, EDIT_MAX_LISTED_LOCATIONS,
-    EDIT_MAX_OPERATIONS, EDIT_MAX_REQUEST_BYTES, EDIT_MAX_SCAN_BYTES, EDIT_MAX_SITES,
+    EDIT_MAX_NEW_DIRECTORIES, EDIT_MAX_NEW_DIRECTORY_DEPTH, EDIT_MAX_OPERATIONS,
+    EDIT_MAX_REQUEST_BYTES, EDIT_MAX_SCAN_BYTES, EDIT_MAX_SIBLING_ENTRIES, EDIT_MAX_SITES,
     EDIT_MAX_TEXT_BYTES, EDIT_MAX_WRITE_BYTES, EDIT_UNINDEXED_MEMO_ENTRIES, EditBound, EditError,
     EditLocation, EditOperation, EditReport, EditRequest, FileChange, IndexState, InsertPosition,
     LineEnding, Occurrences, OperationOutcome, Refusal, RenameOutcome, SkippedFile, SourceLanguage,

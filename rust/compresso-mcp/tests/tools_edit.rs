@@ -780,3 +780,54 @@ async fn test_large_batches_create_and_unchanged_replaces_over_mcp() {
     );
     harness.close().await;
 }
+
+/// E17-49 (D114): create makes missing directories and says which; a
+/// refused directory is named in the error.
+#[tokio::test]
+async fn test_create_reports_the_directories_it_makes_over_mcp() {
+    let fixture = Fixture::new();
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Full, true)).await;
+    let create =
+        |path: &str| json!({ "operations": [{ "op": "create", "path": path, "content": "x\n" }] });
+    let (text, is_error) = harness
+        .call("compresso_edit", &create("src/deep/new/made.rs"))
+        .await;
+    assert!(!is_error, "{text}");
+    let report: Value = serde_json::from_str(&text).expect("JSON");
+    assert_eq!(
+        report["directories_created"],
+        json!(["src/deep", "src/deep/new"])
+    );
+    let (text, is_error) = harness
+        .call("compresso_edit", &create("src/plain.rs"))
+        .await;
+    assert!(!is_error, "{text}");
+    let report: Value = serde_json::from_str(&text).expect("JSON");
+    assert!(report.get("directories_created").is_none(), "{report}");
+    let (text, is_error) = harness
+        .call("compresso_edit", &create("src/.cache/x/y.rs"))
+        .await;
+    assert!(is_error);
+    assert!(
+        text.starts_with("[edit_refused]") && text.contains("(directory \"src/.cache\")"),
+        "{text}"
+    );
+    harness.close().await;
+    assert!(!fixture.root.join("src/.cache").exists());
+    assert_eq!(fixture.text("src/deep/new/made.rs"), "x\n");
+
+    let mut harness = Harness::start(&fixture, fixture.options(McpToolProfile::Lean, true)).await;
+    let (text, is_error) = harness
+        .call(
+            "compresso_edit",
+            &json!({ "dry_run": true, "operations": [{ "op": "create", "path": "lib/one/two.rs", "content": "x\n" }] }),
+        )
+        .await;
+    assert!(!is_error, "{text}");
+    assert!(
+        text.contains("2 directories to create: lib, lib/one"),
+        "{text}"
+    );
+    harness.close().await;
+    assert!(!fixture.root.join("lib").exists());
+}

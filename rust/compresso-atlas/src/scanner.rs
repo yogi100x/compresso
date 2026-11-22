@@ -707,6 +707,30 @@ impl ScannerExclusions {
             .is_ok_and(|real_relative| self.excluded_by_policy(&real_root, real_relative))
     }
 
+    /// Whether the scanner skips everything below the directory `relative`
+    /// (E17-49): a built-in excluded name or `.git` entry on it, it or a
+    /// containing directory ignored as a directory, or a nested linked
+    /// worktree. Judged lexically on the spelling given, without resolving
+    /// it, so it also answers for a directory that does not exist yet.
+    pub fn excludes_directory(&self, root: &Path, relative: &Path) -> bool {
+        if is_secret_path(relative)
+            || relative
+                .components()
+                .any(|component| is_builtin_excluded_name(component.as_os_str()))
+        {
+            return true;
+        }
+        let mut directories = relative
+            .ancestors()
+            .filter(|directory| !directory.as_os_str().is_empty())
+            .collect::<Vec<_>>();
+        directories.reverse();
+        directories.into_iter().any(|directory| {
+            self.is_ignored(root, directory, true)
+                || is_nested_linked_worktree(&root.join(directory))
+        })
+    }
+
     /// The repository's `info/exclude` exists, or its `.git` pointer names
     /// one, but it was not applied in full.
     pub fn git_exclude_unusable(&self) -> bool {

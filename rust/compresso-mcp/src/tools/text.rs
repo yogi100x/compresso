@@ -916,6 +916,21 @@ fn edit(payload: &Value, out: &mut Out) {
             header.push_str(&format!("; {count} {label}"));
         }
     }
+    // E17-49: present only when not empty; at most 32 per call.
+    let directories = array(payload, "directories_created")
+        .iter()
+        .filter_map(Value::as_str)
+        .map(list_path)
+        .collect::<Vec<_>>();
+    if !directories.is_empty() {
+        header.push_str(&format!(
+            "; {} director{} {}: {}",
+            directories.len(),
+            if directories.len() == 1 { "y" } else { "ies" },
+            if dry_run { "to create" } else { "created" },
+            directories.join(", ")
+        ));
+    }
     out.line(header);
     for file in array(payload, "files") {
         let lines = array(file, "lines")

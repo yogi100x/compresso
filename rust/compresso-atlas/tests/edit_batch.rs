@@ -6,8 +6,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use compresso_atlas::{
-    EDIT_MAX_OPERATIONS, EDIT_MAX_TEXT_BYTES, EditError, EditOperation, EditReport, EditRequest,
-    Indexer, InsertPosition, Refusal, apply_edits,
+    EDIT_MAX_NEW_DIRECTORIES, EDIT_MAX_NEW_DIRECTORY_DEPTH, EDIT_MAX_OPERATIONS,
+    EDIT_MAX_TEXT_BYTES, EditBound, EditError, EditOperation, EditReport, EditRequest, Indexer,
+    InsertPosition, Refusal, apply_edits,
 };
 use compresso_core::{TokenProvider, counter_for};
 use compresso_store::Store;
@@ -464,7 +465,6 @@ fn test_create_keeps_every_path_gate_an_indexed_file_has() {
         (".github/workflows/new.yml", Refusal::ControlFile),
         ("src/.gitignore", Refusal::ControlFile),
         ("AGENTS.md", Refusal::ControlFile),
-        ("missing/new.rs", Refusal::NoDirectory),
         ("src/a.rs/new.rs", Refusal::NoDirectory),
         ("../outside.rs", Refusal::InvalidPath),
         ("/abs.rs", Refusal::InvalidPath),
@@ -941,4 +941,321 @@ fn test_a_non_utf8_text_file_is_skipped_and_the_index_continues() {
         .apply(vec![replace("long.txt", "\u{e9}\n", "e\n", 1)])
         .expect("a long valid UTF-8 file is indexed and edited");
     assert!(fixture.indexed(&probe));
+}
+
+// E17-49 (D114): create makes missing parent directories.
+
+/// Every path under `root`, sorted, directories with a trailing `/`.
+fn tree(root: &Path) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory).expect("read_dir") {
+            let entry = entry.expect("entry");
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .expect("under root")
+                .to_string_lossy()
+                .replace('\\', "/");
+            let kind = entry.file_type().expect("type");
+            if kind.is_dir() && !kind.is_symlink() {
+                paths.push(format!("{relative}/"));
+                pending.push(path);
+            } else {
+                paths.push(relative);
+            }
+        }
+    }
+    paths.sort();
+    paths
+}
+
+fn refused_directory(error: &EditError) -> Option<String> {
+    match error {
+        EditError::Refused { directory, .. } => directory.clone(),
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_create_makes_nested_missing_directories_and_reports_them() {
+    let fixture = Fixture::new(&[("src/lib.rs", b"pub mod a;\n")]);
+    let report = fixture
+        .apply(vec![create("src/a/b/c/new.rs", "pub fn new() {}\n")])
+        .expect("created with its directories");
+    assert_eq!(fixture.text("src/a/b/c/new.rs"), "pub fn new() {}\n");
+    assert_eq!(
+        report.directories_created,
+        ["src/a", "src/a/b", "src/a/b/c"],
+        "outermost first"
+    );
+    assert!(report.files[0].created && report.files[0].verified);
+    assert!(fixture.indexed("src/a/b/c/new.rs"));
+    // A directory that already exists is not reported.
+    let again = fixture
+        .apply(vec![create("src/a/b/other.rs", "x\n")])
+        .expect("into an existing directory");
+    assert!(again.directories_created.is_empty());
+}
+
+#[test]
+fn test_create_dry_run_creates_no_directory_and_reports_what_it_would() {
+    let fixture = Fixture::new(&[("src/lib.rs", b"x\n")]);
+    let before = tree(&fixture.root);
+    let report = fixture
+        .apply_dry(vec![create("src/new/deep/x.rs", "x\n")], true)
+        .expect("dry run");
+    assert_eq!(report.directories_created, ["src/new", "src/new/deep"]);
+    assert!(
+        report
+            .diff
+            .expect("diff")
+            .contains("+++ b/src/new/deep/x.rs")
+    );
+    assert_eq!(tree(&fixture.root), before, "a dry run creates nothing");
+}
+
+#[test]
+fn test_two_creates_share_a_new_parent_in_one_call() {
+    let fixture = Fixture::new(&[("src/lib.rs", b"x\n")]);
+    let report = fixture
+        .apply(vec![
+            create("pkg/inner/a.rs", "fn a() {}\n"),
+            create("pkg/inner/b.rs", "fn b() {}\n"),
+            create("pkg/c.rs", "fn c() {}\n"),
+        ])
+        .expect("created");
+    assert_eq!(report.directories_created, ["pkg", "pkg/inner"]);
+    for path in ["pkg/inner/a.rs", "pkg/inner/b.rs", "pkg/c.rs"] {
+        assert!(fixture.indexed(path), "{path}");
+    }
+}
+
+#[test]
+fn test_a_failing_batch_creates_no_directory() {
+    let fixture = Fixture::new(&[("src/lib.rs", b"fn a() {}\n")]);
+    let before = tree(&fixture.root);
+    for dry_run in [true, false] {
+        let error = fixture
+            .apply_dry(
+                vec![
+                    create("src/fresh/deeper/x.rs", "x\n"),
+                    replace("src/lib.rs", "fn missing", "fn x", 1),
+                ],
+                dry_run,
+            )
+            .expect_err("the replace fails");
+        assert!(
+            matches!(error, EditError::CountMismatch { .. }),
+            "{error:?}"
+        );
+    }
+    assert_eq!(tree(&fixture.root), before);
+}
+
+#[test]
+fn test_a_refused_directory_component_is_named_with_its_reason() {
+    let fixture = Fixture::new(&[(".gitignore", b"build/\n"), ("src/lib.rs", b"x\n")]);
+    let before = tree(&fixture.root);
+    let cases: &[(&str, Refusal, &str)] = &[
+        ("src/.cache/x.rs", Refusal::Hidden, "src/.cache"),
+        ("src/.cache/more/x.rs", Refusal::Hidden, "src/.cache"),
+        ("src/con/x.rs", Refusal::ReservedName, "src/con"),
+        ("src/new/aux.d/x.rs", Refusal::ReservedName, "src/new/aux.d"),
+        ("src/a:b/x.rs", Refusal::ReservedName, "src/a:b"),
+        (".github/new/x.yml", Refusal::ControlFile, ".github"),
+        ("src/.vscode/x.json", Refusal::ControlFile, "src/.vscode"),
+        ("src/.git/x", Refusal::Protected, "src/.git"),
+        ("build/gen/x.rs", Refusal::Excluded, "build"),
+        (
+            "src/node_modules/x/y.js",
+            Refusal::Excluded,
+            "src/node_modules",
+        ),
+    ];
+    for (path, reason, directory) in cases {
+        for dry_run in [true, false] {
+            let error = fixture
+                .apply_dry(vec![create(path, "x\n")], dry_run)
+                .expect_err(path);
+            let message = error.to_string();
+            assert!(
+                message.contains(&format!("(directory \"{directory}\")")),
+                "{path}: {message}"
+            );
+            assert!(!message.contains('\n'), "{message}");
+            assert_eq!(
+                refused_directory(&error).as_deref(),
+                Some(*directory),
+                "{path}"
+            );
+            assert_eq!(refusal(error), *reason, "{path}");
+        }
+    }
+    // A refused file name is not a directory.
+    let error = fixture
+        .apply(vec![create("src/new/.env", "x\n")])
+        .expect_err("secret name");
+    assert_eq!(refused_directory(&error), None);
+    assert_eq!(tree(&fixture.root), before, "nothing was created");
+}
+
+#[test]
+fn test_create_bounds_the_directories_it_adds() {
+    let fixture = Fixture::new(&[("src/lib.rs", b"x\n")]);
+    let before = tree(&fixture.root);
+    let levels = |count: usize| {
+        let mut path = String::from("src");
+        for level in 0..count {
+            path.push_str(&format!("/d{level}"));
+        }
+        path.push_str("/x.rs");
+        path
+    };
+    assert_eq!(EDIT_MAX_NEW_DIRECTORY_DEPTH, 8);
+    let error = fixture
+        .apply(vec![create(
+            &levels(EDIT_MAX_NEW_DIRECTORY_DEPTH + 1),
+            "x\n",
+        )])
+        .expect_err("too deep");
+    assert!(
+        matches!(
+            error,
+            EditError::Bound {
+                bound: EditBound::DirectoryDepth,
+                limit: 8,
+                actual: 9
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(tree(&fixture.root), before);
+    let report = fixture
+        .apply(vec![create(&levels(EDIT_MAX_NEW_DIRECTORY_DEPTH), "x\n")])
+        .expect("at the bound");
+    assert_eq!(report.directories_created.len(), 8);
+
+    assert_eq!(EDIT_MAX_NEW_DIRECTORIES, 32);
+    let before = tree(&fixture.root);
+    let many = (0..=EDIT_MAX_NEW_DIRECTORIES)
+        .map(|index| create(&format!("many/d{index:02}/x.rs"), "x\n"))
+        .collect::<Vec<_>>();
+    // Counted as the operations run: the operation that adds the 33rd fails.
+    let error = fixture.apply(many).expect_err("too many directories");
+    assert!(
+        matches!(
+            error,
+            EditError::Bound {
+                bound: EditBound::Directories,
+                limit: 32,
+                actual: 33
+            }
+        ),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("split"), "{error}");
+    assert_eq!(tree(&fixture.root), before);
+}
+
+#[test]
+fn test_a_new_directory_differing_only_by_case_is_refused() {
+    let fixture = Fixture::new(&[("src/Utils/a.rs", b"x\n")]);
+    let case_insensitive = fixture.root.join("SRC").exists();
+    let before = tree(&fixture.root);
+    // Two creates of one call.
+    for dry_run in [true, false] {
+        let error = fixture
+            .apply_dry(
+                vec![create("src/New/a.rs", "x\n"), create("src/new/b.rs", "y\n")],
+                dry_run,
+            )
+            .expect_err("directories differ only by case");
+        assert!(error.to_string().contains("operation 2"), "{error}");
+        assert_eq!(refused_directory(&error).as_deref(), Some("src/new"));
+        assert_eq!(refusal(error), Refusal::CaseDuplicate);
+    }
+    // A created file and a created directory of the same name.
+    let error = fixture
+        .apply(vec![
+            create("src/thing", "x\n"),
+            create("src/Thing/b.rs", "y\n"),
+        ])
+        .expect_err("file and directory differ only by case");
+    assert_eq!(refusal(error), Refusal::CaseDuplicate);
+    let error = fixture
+        .apply(vec![
+            create("src/thing", "x\n"),
+            create("src/thing/b.rs", "y\n"),
+        ])
+        .expect_err("file and directory of one name");
+    assert_eq!(refusal(error), Refusal::Exists);
+    assert_eq!(tree(&fixture.root), before);
+    // An existing sibling: a case-insensitive file system finds it and
+    // writes into it; a case-sensitive one refuses the new spelling.
+    let result = fixture.apply(vec![create("src/utils/b.rs", "x\n")]);
+    if case_insensitive {
+        let report = result.expect("into the existing directory");
+        assert!(report.directories_created.is_empty());
+        assert!(fixture.root.join("src/Utils/b.rs").exists());
+    } else {
+        let error = result.expect_err("differs by case from src/Utils");
+        assert_eq!(refused_directory(&error).as_deref(), Some("src/utils"));
+        assert_eq!(refusal(error), Refusal::CaseDuplicate);
+        assert_eq!(tree(&fixture.root), before);
+    }
+}
+
+/// A linked ancestor is refused with byte-identical answers whatever the
+/// link points to, and nothing is created through it or beside it.
+#[cfg(unix)]
+#[test]
+fn test_a_linked_ancestor_is_refused_alike_and_creates_nothing() {
+    let fixture = Fixture::new(&[("src/lib.rs", b"x\n"), ("real/there.rs", b"x\n")]);
+    let outside = fixture.root.parent().expect("parent").join("outside");
+    fs::create_dir_all(&outside).expect("outside");
+    fs::write(outside.join("there.rs"), "x\n").expect("outside file");
+    let targets = [
+        fixture.root.join("nowhere"),
+        outside.join("there.rs"),
+        fixture.root.join("real"),
+        outside.clone(),
+        outside.join("missing"),
+    ];
+    let paths = [
+        "lnk/x.rs",
+        "lnk/there.rs",
+        "lnk/new/x.rs",
+        "lnk/new/deeper/x.rs",
+        "src/lnk/x.rs",
+    ];
+    let mut answers = Vec::<Vec<String>>::new();
+    for target in &targets {
+        for name in ["lnk", "src/lnk"] {
+            let _ = fs::remove_file(fixture.root.join(name));
+            std::os::unix::fs::symlink(target, fixture.root.join(name)).expect("link");
+        }
+        let inside_before = tree(&fixture.root);
+        let outside_before = tree(&outside);
+        let mut row = Vec::new();
+        for path in paths {
+            for dry_run in [true, false] {
+                let error = fixture
+                    .apply_dry(vec![create(path, "x\n")], dry_run)
+                    .expect_err(path);
+                row.push(format!("{error:?} | {error}"));
+            }
+        }
+        assert_eq!(tree(&fixture.root), inside_before, "{target:?}");
+        assert_eq!(tree(&outside), outside_before, "{target:?}");
+        answers.push(row);
+    }
+    for row in &answers[1..] {
+        assert_eq!(
+            row, &answers[0],
+            "the same answers whatever the link points to"
+        );
+    }
+    assert!(answers[0][0].contains("NoDirectory"), "{}", answers[0][0]);
 }

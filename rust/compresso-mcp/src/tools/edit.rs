@@ -488,6 +488,11 @@ pub fn report_payload(
     if created > 0 {
         payload["files_created"] = json!(created);
     }
+    // E17-49: directories made for created files (for a dry run, the ones
+    // it would make), present only when not empty; at most 32 per call.
+    if !report.directories_created.is_empty() {
+        payload["directories_created"] = json!(report.directories_created);
+    }
     let unchanged = report
         .operations
         .iter()
