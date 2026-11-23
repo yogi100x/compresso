@@ -57,8 +57,8 @@ pub use receipt::{
     RECEIPT_SCHEMA_VERSION, ReceiptError, ReceiptStore,
 };
 pub use server_entry::{
-    ConfiguredServer, read_configured_server, recall_source_for_client,
-    receipt_authenticates_server, server_enables_edits, server_recall_source,
+    ConfiguredServer, is_sql_env_name, read_configured_server, recall_source_for_client,
+    receipt_authenticates_server, server_enables_edits, server_recall_source, server_sql_env,
 };
 pub use session_commands::{SESSION_COMMANDS, SESSION_COMMANDS_SKILL, SessionCommandsIntegration};
 

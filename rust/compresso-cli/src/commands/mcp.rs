@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use compresso_core::{Config, Engine, StreamError, TokenProvider, counter_for};
 use compresso_mcp::{
     McpDeps, McpInputError, McpRecallOptions, McpResultFormat, McpRootError, McpServeOptions,
-    McpToolProfile,
+    McpToolProfile, SqlSettings,
 };
 use compresso_recall::{RecallSource, SourceSupport};
 use compresso_store::Store;
@@ -20,10 +20,11 @@ pub(crate) const SERVE_FLAGS: &[&str] = &[
     "--recall-source",
     "--results",
     "--root",
+    "--sql-env",
     "--tools",
 ];
 
-const USAGE: &str = "mcp serve accepts only optional --root PATH, --recall-source SOURCE, --tools full|lean, --results json|text, and --edits arguments";
+const USAGE: &str = "mcp serve accepts only optional --root PATH, --recall-source SOURCE, --tools full|lean, --results json|text, --edits, and --sql-env NAME arguments";
 
 /// Operator-supplied `mcp serve` options.
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -38,6 +39,9 @@ struct ServeOptions {
     results: Option<McpResultFormat>,
     /// Serve the opt-in write tool `compresso_edit` (E17-32, D97).
     edits: bool,
+    /// Serve the opt-in read-only SQL tool `compresso_sql`, reading the
+    /// database URL from this variable at startup (E17-50, D115).
+    sql_env: Option<String>,
 }
 
 pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCode {
@@ -119,6 +123,7 @@ pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCo
         tools,
         results,
         edits,
+        sql_env,
     } = options;
     let recall = if recall_sources.is_empty() {
         None
@@ -145,6 +150,9 @@ pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCo
             tools,
             results,
             edits,
+            // The value is read once, here; it never reaches the
+            // configuration, the store, or a log.
+            sql: sql_env.as_deref().map(SqlSettings::from_env),
         },
     ));
     match result {
@@ -227,6 +235,18 @@ fn parse_serve_arguments(arguments: &[OsString]) -> Result<ServeOptions, &'stati
                     .and_then(McpResultFormat::parse)
                     .ok_or("--results requires json or text")?,
             );
+        } else if flag == OsStr::new("--sql-env") {
+            if options.sql_env.is_some() {
+                return Err("--sql-env may be given only once");
+            }
+            let name = inline
+                .or_else(|| arguments.next().cloned())
+                .and_then(|name| name.into_string().ok())
+                .filter(|name| compresso_mcp::is_valid_sql_env_name(name))
+                .ok_or(
+                    "--sql-env requires a variable name matching COMPRESSO_SQL_[A-Z0-9_]+ (the name, never the URL)",
+                )?;
+            options.sql_env = Some(name);
         } else if flag == OsStr::new("--edits") && inline.is_none() {
             if options.edits {
                 return Err("--edits may be given only once");
@@ -235,6 +255,11 @@ fn parse_serve_arguments(arguments: &[OsString]) -> Result<ServeOptions, &'stati
         } else {
             return Err(USAGE);
         }
+    }
+    if options.sql_env.is_some() && options.tools == McpToolProfile::Lean {
+        return Err(
+            "--sql-env is not served by the lean tool profile; drop --tools lean to serve compresso_sql",
+        );
     }
     Ok(options)
 }
@@ -292,6 +317,7 @@ mod tests {
                 tools: McpToolProfile::Full,
                 results: None,
                 edits: false,
+                sql_env: None,
             }
         );
         assert!(parse(&["--recall-source"]).is_err());
@@ -347,6 +373,7 @@ mod tests {
             ("--recall-source", Some("codex")),
             ("--results", Some("text")),
             ("--root", Some("/repo")),
+            ("--sql-env", Some("COMPRESSO_SQL_MAIN")),
             ("--tools", Some("lean")),
         ] {
             assert!(SERVE_FLAGS.contains(&flag));
@@ -354,7 +381,7 @@ mod tests {
             arguments.extend(value);
             assert!(parse(&arguments).is_ok(), "{flag}");
         }
-        assert_eq!(SERVE_FLAGS.len(), 5);
+        assert_eq!(SERVE_FLAGS.len(), 6);
     }
 
     #[test]
@@ -371,6 +398,38 @@ mod tests {
         assert_eq!(lean.tools, McpToolProfile::Lean);
         assert!(parse(&["--edits", "--edits"]).is_err());
         assert!(parse(&["--edits=true"]).is_err());
+    }
+
+    #[test]
+    fn test_sql_tool_is_off_by_default_and_needs_a_valid_variable_name() {
+        assert_eq!(parse(&[]).unwrap().sql_env, None);
+        assert_eq!(
+            parse(&["--sql-env", "COMPRESSO_SQL_MAIN"]).unwrap().sql_env,
+            Some("COMPRESSO_SQL_MAIN".to_owned())
+        );
+        let both = parse(&["--edits", "--sql-env=COMPRESSO_SQL_DB_2"]).unwrap();
+        assert!(both.edits);
+        assert_eq!(both.sql_env.as_deref(), Some("COMPRESSO_SQL_DB_2"));
+        for invalid in [
+            &["--sql-env"][..],
+            &["--sql-env", "DATABASE_URL"],
+            &["--sql-env", "COMPRESSO_SQL_"],
+            &["--sql-env", concat!("postgres://u:", "p@h/db")],
+            &["--sql-env=COMPRESSO_SQL_a"],
+            &[
+                "--sql-env",
+                "COMPRESSO_SQL_A",
+                "--sql-env",
+                "COMPRESSO_SQL_B",
+            ],
+            &["--tools", "lean", "--sql-env", "COMPRESSO_SQL_A"],
+        ] {
+            assert!(parse(invalid).is_err(), "{invalid:?}");
+        }
+        // The value is never echoed back in the parse error.
+        let url = concat!("postgres://u:", "canary", "-pw@h/db");
+        let error = parse(&["--sql-env", url]).unwrap_err();
+        assert!(!error.contains("canary"));
     }
 
     #[test]

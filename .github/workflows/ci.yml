@@ -63,9 +63,15 @@ jobs:
         run: node --experimental-strip-types --test scripts/doc-drift-lint.test.ts
       - name: Enforce documentation drift lint
         shell: bash
+        # Build outside the checkout: the secret scan below reads the whole
+        # working tree, and dependency metadata (sqlx's .rmeta embeds a PEM
+        # private key from its documentation examples) would be reported.
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/doc-drift-target
         run: |
           cargo run -p compresso-cli --example surface_inventory > "${RUNNER_TEMP}/surface-inventory.json"
           node --experimental-strip-types scripts/doc-drift-lint.ts --inventory "${RUNNER_TEMP}/surface-inventory.json" --json
+          rm -rf "${CARGO_TARGET_DIR}"
       - name: Install Rust security tools
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
@@ -193,6 +199,124 @@ jobs:
             target/release/compresso
             target/release/compresso.exe
           if-no-files-found: error
+
+  live-sql:
+    # E17-50: the compresso_sql tests that need a real server, against
+    # throwaway containers. The other jobs stay server-free.
+    name: Live SQL (Postgres, MariaDB, MySQL)
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16.4
+        env:
+          POSTGRES_DB: probe
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      mariadb:
+        image: mariadb:11.4.3
+        env:
+          MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: "1"
+          MARIADB_DATABASE: compresso_probe
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+          MYSQL_DATABASE: compresso_probe
+        ports:
+          - 3307:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        env:
+          # Remove after https://github.com/Swatinem/rust-cache/issues/331 is fixed.
+          NODE_OPTIONS: --disable-warning=DEP0040
+        with:
+          shared-key: ci-ubuntu-24.04
+      - name: Start a TLS Postgres with a throwaway certificate
+        # The certificate and keys are made here, live only in RUNNER_TEMP,
+        # and name db.invalid, so a client verifying 127.0.0.1 must refuse.
+        shell: bash
+        run: |
+          dir="${RUNNER_TEMP}/pgtls"
+          mkdir -p "${dir}"
+          cd "${dir}"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=compresso-test-ca -keyout ca.key -out ca.pem
+          openssl req -newkey rsa:2048 -nodes -subj /CN=db.invalid -keyout server.key -out server.csr
+          printf 'subjectAltName=DNS:db.invalid\n' > ext.cnf
+          openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 1 -out server.crt -extfile ext.cnf
+          chmod 0644 server.crt server.key ca.pem
+          docker run -d --name pgtls -p 5433:5432 \
+            -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=probe \
+            -v "${dir}:/certs:ro" postgres:16.4 \
+            bash -c 'cp /certs/server.crt /certs/server.key /var/lib/postgresql/ && chown postgres:postgres /var/lib/postgresql/server.crt /var/lib/postgresql/server.key && chmod 0600 /var/lib/postgresql/server.key && exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/var/lib/postgresql/server.crt -c ssl_key_file=/var/lib/postgresql/server.key'
+          for _ in $(seq 1 30); do
+            if docker exec pgtls pg_isready -U postgres >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs pgtls
+          exit 1
+      - name: Run live SQL tests against Postgres and MariaDB
+        env:
+          COMPRESSO_SQL_TEST_REQUIRE_LIVE: "1"
+          # The tests create the unprivileged `reader` accounts themselves.
+          COMPRESSO_SQL_TEST_POSTGRES_URL: postgres://reader@127.0.0.1:5432/probe?sslmode=disable
+          COMPRESSO_SQL_TEST_POSTGRES_PRIVILEGED_URL: postgres://postgres@127.0.0.1:5432/probe?sslmode=disable
+          COMPRESSO_SQL_TEST_MYSQL_URL: mysql://reader@127.0.0.1:3306/compresso_probe?ssl-mode=DISABLED
+          COMPRESSO_SQL_TEST_MYSQL_PRIVILEGED_URL: mysql://root@127.0.0.1:3306/compresso_probe?ssl-mode=DISABLED
+        shell: bash
+        run: |
+          # The tool refuses to run while SSL_CERT_FILE or SSL_CERT_DIR is set
+          # (they would change which servers TLS trusts); the private CA of
+          # the TLS check is passed through the URL's sslrootcert instead.
+          # Report set-but-empty separately: an empty value is still "set".
+          for name in SSL_CERT_FILE SSL_CERT_DIR; do
+            if [ -z "${!name+x}" ]; then
+              echo "${name}: not set"
+            else
+              value="${!name}"
+              echo "${name}: set by the environment, value length ${#value}"
+            fi
+          done
+          unset SSL_CERT_FILE SSL_CERT_DIR
+          export COMPRESSO_SQL_TEST_POSTGRES_WRONG_HOST_URL="postgres://reader@127.0.0.1:5433/probe?sslmode=verify-full&sslrootcert=${RUNNER_TEMP}/pgtls/ca.pem"
+          cargo test -p compresso-sql --locked --test live -- --test-threads=1 --nocapture
+      - name: Run live MySQL tests against MySQL 8.4
+        # Runs even when the previous step failed, so one round reports
+        # both engines; the job still fails if either step fails.
+        if: ${{ !cancelled() }}
+        env:
+          COMPRESSO_SQL_TEST_REQUIRE_LIVE: "1"
+          COMPRESSO_SQL_TEST_MYSQL_URL: mysql://reader@127.0.0.1:3307/compresso_probe?ssl-mode=DISABLED
+          COMPRESSO_SQL_TEST_MYSQL_PRIVILEGED_URL: mysql://root@127.0.0.1:3307/compresso_probe?ssl-mode=DISABLED
+        shell: bash
+        run: |
+          unset SSL_CERT_FILE SSL_CERT_DIR
+          cargo test -p compresso-sql --locked --test live -- --test-threads=1 --nocapture live_mysql
+      - name: Stop the TLS Postgres
+        if: always()
+        run: docker rm -f pgtls || true
 
   eval:
     name: Eval (${{ matrix.os }})

@@ -70,6 +70,8 @@ pub(crate) struct ReportContext<'a> {
     pub(crate) repository_root: Option<&'a Path>,
     pub(crate) recall_enabled: bool,
     pub(crate) edits_enabled: bool,
+    /// The SQL tool's surface: shown as on/off and the engine kind only.
+    pub(crate) sql: super::sql::SqlSurface,
     pub(crate) profile: McpToolProfile,
 }
 
@@ -198,12 +200,18 @@ struct Facts {
 
 fn facts(context: &ReportContext<'_>) -> Result<Facts, ToolFailure> {
     let on_off = |value: bool| if value { "on" } else { "off" };
-    let options = format!(
+    let mut options = format!(
         "{} profile; recall {}; edits {}",
         context.profile.name(),
         on_off(context.recall_enabled),
         on_off(context.edits_enabled)
     );
+    // Only that SQL is on and its engine kind: never the variable's name
+    // (operators name it after hosts or environments) or its value (D115).
+    if context.sql.is_on() {
+        options.push_str("; sql ");
+        options.push_str(context.sql.engine_name().unwrap_or("not configured"));
+    }
     let index = match context.repository_root {
         None => IndexState::Unbound,
         Some(root) => match context.store.repo_by_root(root).ok().flatten() {

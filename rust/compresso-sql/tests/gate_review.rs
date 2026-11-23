@@ -1,0 +1,192 @@
+//! Statements an independent review got past the first statement gate
+//! (E17-50 review, 2026-11-22). The gate now accepts only a strict subset of
+//! SQL: anything whose lexing differs between engines or settings is refused
+//! rather than interpreted, and the refusal names the construct.
+
+use compresso_sql::SqlEngine::{self, MySql, Postgres, Sqlite};
+use compresso_sql::gate::check_statement;
+
+fn refused(sql: &str, engine: SqlEngine, construct: &str) {
+    let error = check_statement(sql, engine).expect_err(sql);
+    assert!(
+        error.contains(construct),
+        "{engine:?}: {sql:?} refused for another reason: {error}"
+    );
+}
+
+#[test]
+fn test_unicode_whitespace_after_dashes_hides_nothing_in_mysql() {
+    for sql in [
+        "SELECT 1 --\u{a0}, GET_LOCK('x', 10), SLEEP(30) FROM (SELECT 1 AS `\u{a0}`) t",
+        "SELECT 1 --\u{a0} INTO OUTFILE '/tmp/x'",
+        "SELECT * FROM t --\u{85} FOR UPDATE",
+        "SELECT 1 --\u{a0}; DELETE FROM t",
+    ] {
+        refused(sql, MySql, "comment");
+    }
+}
+
+#[test]
+fn test_postgres_dollar_quotes_with_any_tag_are_refused() {
+    for sql in [
+        "SELECT $\u{20ac}$'$\u{20ac}$, pg_terminate_backend(pid), set_config('statement_timeout','0',false) FROM pg_stat_activity --'",
+        "SELECT $\u{a0}$'$\u{a0}$, dblink_exec('x','DELETE FROM t') --'",
+        "SELECT $\u{20ac}$ pg_sleep $\u{20ac}$",
+        "SELECT $$a$$",
+        "SELECT $tag$a$tag$",
+    ] {
+        refused(sql, Postgres, "$");
+    }
+}
+
+#[test]
+fn test_optimizer_hints_and_every_comment_form_are_refused() {
+    for (sql, engine) in [
+        (
+            "SELECT /*+ MAX_EXECUTION_TIME(3600000) */ SLEEP(3600)",
+            MySql,
+        ),
+        (
+            "SELECT /*+ SET_VAR(max_execution_time=0) */ BENCHMARK(1e12, MD5('a'))",
+            MySql,
+        ),
+        ("SELECT 1 /*! , 2 */", MySql),
+        ("SELECT 1 # note", MySql),
+        ("SELECT 1 -- note", MySql),
+        ("SELECT 1 /* /* */ , pg_sleep(1) */", Postgres),
+        ("SELECT 1 -- note", Postgres),
+        ("SELECT 1 /* note */", Sqlite),
+    ] {
+        refused(sql, engine, "comment");
+    }
+}
+
+#[test]
+fn test_prefixed_and_escaped_strings_are_refused() {
+    for (sql, engine) in [
+        ("SELECT E'a'", Postgres),
+        ("SELECT N'a'", MySql),
+        ("SELECT X'00'", MySql),
+        ("SELECT _utf8mb4'a'", MySql),
+        ("SELECT B'1'", Postgres),
+    ] {
+        refused(sql, engine, "prefixed string");
+    }
+    refused("SELECT U&'\\0041'", Postgres, "prefixed string");
+    // A quote glued to a number (`1e'...'`) is refused as a glued number.
+    refused(
+        "SELECT 1e'\\'' , pg_terminate_backend(1) --'",
+        Postgres,
+        "space after",
+    );
+    refused("SELECT U&\"x\"", Postgres, "prefixed");
+    for (sql, engine) in [
+        ("SELECT '\u{4e2d}\\' , GET_LOCK('x',1), '", MySql),
+        ("SELECT 'a\\'b'", MySql),
+        ("SELECT 'a\\b'", Postgres),
+    ] {
+        refused(sql, engine, "backslash");
+    }
+    refused("SELECT 0x41", MySql, "hex");
+}
+
+#[test]
+fn test_non_ascii_and_control_characters_outside_strings_are_refused() {
+    refused("SELECT pg_read_file\u{a0}('x')", Postgres, "non-ASCII");
+    refused("SELECT \"caf\u{e9}\" FROM t", Postgres, "non-ASCII");
+    refused("SELECT `\u{a0}` FROM t", MySql, "non-ASCII");
+    refused("SELECT\u{2003}1", Sqlite, "non-ASCII");
+    refused("SELECT 1\0; DELETE FROM t", Sqlite, "control");
+    refused("SELECT 'a\u{7}'", MySql, "control");
+    refused("SELECT\u{b}1", Postgres, "control");
+}
+
+#[test]
+fn test_plain_sql_still_passes() {
+    for engine in [Sqlite, Postgres, MySql] {
+        for sql in [
+            "SELECT 1",
+            "select id, name from orders where note = 'it''s caf\u{e9}' order by id;",
+            "WITH x AS (SELECT 1 AS n) SELECT n FROM x",
+            "SELECT count(*) FROM t WHERE a <> 2 AND b >= 1.5e3",
+        ] {
+            assert!(check_statement(sql, engine).is_ok(), "{engine:?}: {sql}");
+        }
+    }
+    assert!(check_statement("SELECT \"order\" FROM t", Postgres).is_ok());
+    assert!(check_statement("SELECT `order` FROM t", MySql).is_ok());
+    assert!(check_statement("SELECT @a := 1", MySql).is_ok());
+    assert!(check_statement("SHOW CREATE TABLE orders", MySql).is_ok());
+}
+
+#[test]
+fn test_a_word_glued_to_a_number_is_refused() {
+    for engine in [Sqlite, Postgres, MySql] {
+        for sql in [
+            "SELECT 1FROM t",
+            "SELECT 1e5pg_sleep(1)",
+            "SELECT 1.e1UNION SELECT 2",
+            "SELECT 1UNION SELECT 2",
+            "SELECT 1_000",
+            "SELECT 1e",
+            "SELECT 1.5.5",
+            "SELECT 2DELETE",
+        ] {
+            refused(sql, engine, "space after");
+        }
+        for sql in [
+            "SELECT 1, 2.5, 3e2, 4.0e-3, 5E+2, .5 FROM t",
+            "SELECT (1)+2*3",
+            "SELECT 'a'||'b'",
+            "SELECT x.y FROM s.t",
+        ] {
+            assert!(check_statement(sql, engine).is_ok(), "{engine:?}: {sql}");
+        }
+    }
+    // The denied names are still seen behind a number.
+    refused(
+        "SELECT 1 + pg_sleep(1) FROM pg_terminate_backend(1)",
+        Postgres,
+        "pg_terminate_backend",
+    );
+}
+
+#[test]
+fn test_confirmation_review_gate_cases() {
+    // Quoted EXPLAIN options are still options.
+    refused("EXPLAIN (\"analyze\") SELECT 1", Postgres, "ANALYZE");
+    refused(
+        "EXPLAIN (\"ANALYSE\" true) DELETE FROM t",
+        Postgres,
+        "ANALYZE",
+    );
+    // INTO and SHARE: SELECT ... INTO creates a table or sets variables;
+    // locking reads take row locks.
+    for (sql, engine) in [
+        ("SELECT 1 INTO t", Postgres),
+        ("SELECT * FROM t FOR SHARE", Postgres),
+        ("SELECT * FROM t FOR KEY SHARE", Postgres),
+        ("SELECT * FROM t FOR SHARE", MySql),
+        ("SELECT 1 INTO @a", MySql),
+    ] {
+        refused(sql, engine, "quote");
+    }
+    // MySQL SHOW with WHERE runs expressions outside max_execution_time.
+    refused("SHOW TABLES WHERE SLEEP(5)", MySql, "WHERE");
+    refused("SHOW PROCESSLIST WHERE 1 = 1", MySql, "WHERE");
+    assert!(check_statement("SHOW TABLES LIKE 'ord%'", MySql).is_ok());
+    // Refusals say what to do.
+    refused("SELECT 1 -- note", Postgres, "remove the comment");
+    refused("SELECT lock FROM t", Postgres, "\"lock\"");
+    refused("SELECT cluster FROM t", MySql, "`cluster`");
+}
+
+#[test]
+fn test_sqlite_alone_accepts_backslashes_in_plain_strings() {
+    let like = "SELECT name FROM t WHERE name LIKE 'a\\_%' ESCAPE '\\'";
+    assert!(check_statement(like, Sqlite).is_ok());
+    refused(like, Postgres, "backslash");
+    refused(like, MySql, "backslash");
+    // Still nowhere outside a string, and still no other escape.
+    refused("SELECT \\ 1", Sqlite, "backslash");
+}

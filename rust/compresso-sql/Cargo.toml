@@ -1,0 +1,27 @@
+[package]
+name = "compresso-sql"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[dependencies]
+futures-util = { version = "0.3", default-features = false }
+percent-encoding = "2.3"
+rusqlite = { workspace = true, features = ["hooks", "limits"] }
+serde.workspace = true
+serde_json.workspace = true
+sqlx = { version = "=0.9.1", default-features = false, features = ["postgres", "mysql", "runtime-tokio", "tls-rustls-ring-native-roots"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "rt", "time"] }
+url = "2.5"
+
+[features]
+# Only for this crate's own tests: a call that skips the statement gate.
+test-hooks = []
+
+[dev-dependencies]
+compresso-sql = { path = ".", features = ["test-hooks"] }
+tempfile.workspace = true

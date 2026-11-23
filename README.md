@@ -7,6 +7,21 @@ integrations. The MCP server is read-only unless the operator starts it with
 `--edits`, which adds one write tool, `compresso_edit`, for verified literal
 replacements, identifier renames, and anchored inserts in indexed files
 (ADR-0035); `compresso edit` runs the same edits from the command line.
+Compresso makes no network request of its own unless the operator starts the
+server with `--sql-env COMPRESSO_SQL_NAME`, which adds one read-only tool,
+`compresso_sql`, that queries the one Postgres, MySQL/MariaDB, or SQLite
+database whose URL that environment variable holds (ADR-0036; see
+`docs/runbooks/install-local.md`). Its live tests pass in CI against
+Postgres 16.4, MariaDB 11.4.3, and MySQL 8.4 containers (read-only codes,
+time limits, privilege refusals, TLS host checks); other versions, managed
+cloud variants, and Windows clients have not been tried. SQLite is fully
+tested (on Windows a hard link to a file in Compresso's data
+directory is not detected as one). Give it an account that can read only what the model should
+see (see the runbook for a least-privilege example): the tool refuses
+powerful roles, but a role that can read secret tables exposes them. A
+private CA goes in the URL (`sslrootcert=` / `ssl-ca=`), never in
+`SSL_CERT_FILE`. A Postgres target is refused while any
+`PG*` variable (such as `PGUSER`) is set where the client starts.
 
 ## Connecting a coding client
 
@@ -30,7 +45,8 @@ session's repository, read-only, secret-redacted, builds no index, and uploads
 nothing; a client never gets another client's transcripts, and Cursor gets
 none because its transcript format is unsupported. Pass `--no-recall` to
 either command to leave it off, or re-run the command with `--no-recall` to
-turn it off later. Compresso itself makes no network request, but anything an
+turn it off later. Compresso itself makes no network request (unless the operator
+enables `compresso_sql` with `--sql-env`), but anything an
 MCP tool returns, recall snippets included, goes to the coding client, which
 may send it to its model provider.
 

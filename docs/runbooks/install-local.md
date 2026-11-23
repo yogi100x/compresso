@@ -105,6 +105,74 @@ If verification fails, confirm that the tarball and `SHA256SUMS` came from the s
 platform is unsupported, use a matching E1-06 artifact or build locally; do not rename an artifact
 for a different target.
 
+## Optional: read-only live SQL queries
+
+`compresso_sql` (E17-50, ADR-0036) is off unless you turn it on.
+Its live tests pass in CI against Postgres 16.4, MariaDB 11.4.3, and MySQL
+8.4 containers; other versions, managed cloud variants (RDS, Cloud SQL,
+Azure, PlanetScale, Neon), and Windows clients have not been tried. Put the
+database URL in an environment variable whose name starts with
+`COMPRESSO_SQL_`, in the environment your coding client starts from (your
+shell profile or the client's own launch environment; Compresso never reads
+`.env` files and never stores the URL):
+
+```sh
+export COMPRESSO_SQL_APP='postgres://reader@db.internal:5432/app'
+compresso integrations install claude-code --sql-env COMPRESSO_SQL_APP
+```
+
+The entry stores only the name. Other clients can start
+`compresso mcp serve --sql-env COMPRESSO_SQL_APP` from their own
+configuration. Accepted values: `sqlite:/absolute/path.db` (no
+parameters), `postgres://user[:password]@host[:port]/database`, and
+`mysql://user[:password]@host[:port]/database`; user, host, and database are
+required, and only the TLS parameters (and MySQL `socket`) are accepted. The
+connection comes only from that URL: while any `PG*` variable such as
+`PGUSER`, `PGPASSWORD`, or `PGHOST` is set in the client's environment, a
+Postgres target is refused with an error naming the variable, and
+`~/.pgpass` is never read. Such variables are common (Postgres installers,
+some CI images set `PGUSER`); unset them in the environment the client
+starts from. Use a role that can only
+read: Compresso refuses a Postgres role that is, or is a member of, a
+superuser, BYPASSRLS, CREATEROLE, or REPLICATION role or any predefined
+`pg_` role (including `pg_read_all_data`, which can read password hashes),
+and a MySQL/MariaDB account with FILE, SUPER, PROCESS, CONNECTION_ADMIN,
+PROXY, or ALL PRIVILEGES on `*.*`, directly or through roles. It cannot know
+which of your tables hold secrets: an account that can read the `mysql`
+schema or secret tables exposes them. A least-privilege account:
+
+```sql
+-- Postgres
+CREATE ROLE sql_reader LOGIN PASSWORD '...';
+GRANT CONNECT ON DATABASE app TO sql_reader;
+GRANT USAGE ON SCHEMA public TO sql_reader;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO sql_reader;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO sql_reader;
+
+-- MySQL / MariaDB
+CREATE USER 'sql_reader'@'%' IDENTIFIED BY '...';
+GRANT SELECT ON app.* TO 'sql_reader'@'%';
+```
+
+For a connection that verifies certificates (any remote host, or
+loopback with `verify-ca`/`verify-full`), `SSL_CERT_FILE` and
+`SSL_CERT_DIR` must not be set where the client starts; SQLite and
+plain-text loopback targets are not affected. A server with a private CA is trusted
+through the URL alone: `sslrootcert=/absolute/ca.pem` (Postgres) or
+`ssl-ca=/absolute/ca.pem` (MySQL/MariaDB), an absolute path to a PEM file of
+at most 1 MiB that is not a symbolic link. It is added to the operating
+system's roots; certificate and host-name verification stay on. On macOS and Linux a SQLite file with more
+than one hard link is refused. On Windows only the path checks apply: a
+hard link to a file in Compresso's data directory is not detected there, so
+do not point the variable at a hard link. Statements must be plain SQL: no comments,
+`$`, backslashes, or non-ASCII outside `'...'` strings. Compresso answers one
+tool call at a time, so a slow query delays its other tools until it ends
+(at most the statement's `timeout_ms` plus about 16 s). Reading a WAL-mode
+SQLite database may create its `-wal` and `-shm` files beside it. Any host other than loopback or a local socket needs
+TLS with certificate verification (`sslmode=verify-full`,
+`ssl-mode=VERIFY_IDENTITY`, or no mode at all). Results go to your coding
+client and may be sent to its model provider.
+
 ## Test the installer
 
 The test suite builds deterministic stub artifacts through the E1-06 packager and exercises local

@@ -1,0 +1,4 @@
+[workspace]
+resolver = "3"
+members = ["crates/compresso-store", "crates/compresso-integrations", "crates/compresso-sql"]
+exclude = ["deps/tokio", "deps/socket2"]

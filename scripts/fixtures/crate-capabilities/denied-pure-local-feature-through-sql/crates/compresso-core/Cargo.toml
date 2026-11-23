@@ -1,0 +1,10 @@
+[package]
+name = "compresso-core"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+foo = { path = "../../deps/foo" }
+
+[features]
+net = ["foo/net"]

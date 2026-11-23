@@ -22,6 +22,7 @@ compresso-agent = { path = "rust/compresso-agent" }
 compresso-proxy = { path = "rust/compresso-proxy" }
 compresso-updater = { path = "rust/compresso-updater" }
 compresso-recall = { path = "rust/compresso-recall" }
+compresso-sql = { path = "rust/compresso-sql" }
 
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
