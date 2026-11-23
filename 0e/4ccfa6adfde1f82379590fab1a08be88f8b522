@@ -1,0 +1,53 @@
+rust/compresso-sql/tests/live_mongo.rs
+  s_89a704cfae63f5::t_7cef0c0a6f790e 317-372,374
+  s_89a704cfae63f5::t_cb3c7cf4f80001 373
+  s_89a704cfae63f5::t_714c170b304e1e 375-377
+rust/compresso-sql/src/mongo/mod.rs
+  s_89a704cfae63f5::t_de0c05b7c42ebf 203-204,206-208
+rust/compresso-sql/src/mongo/gate.rs
+  s_89a704cfae63f5::t_fc4cbd8f798f13 396-399,401-426,428,432-435
+  s_89a704cfae63f5::t_c8d996cd61799e 930-958
+  s_89a704cfae63f5::t_459aa958ae112b 959-961
+rust/compresso-sql/tests/mongo_environment.rs
+  s_89a704cfae63f5::t_04865db3c62e43 1-59
+decisions.md
+  s_89a704cfae63f5::t_0c170a77a27ca9 110
+docs/adr/0038-opt-in-read-only-mongodb.md
+  s_89a704cfae63f5::t_9254a9f33578cf 17,77-82,288
+docs/plan/00-overview.md
+  s_89a704cfae63f5::t_e464d22155e335 50
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_a698d00d8b8616 3
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_b023fbfc7b1467 3651,3654,3666
+rust/compresso-mcp/src/server.rs
+  s_89a704cfae63f5::t_0cb0d73c75fa0d 1004-1006,1319
+rust/compresso-mcp/tests/tools_mongo.rs
+  s_89a704cfae63f5::t_2d5eda95f14ddc 293-300
+rust/compresso-mcp/tests/golden/mongo_surfaces.txt
+  s_f4ca430ed37d9b::t_f289906b2f675a 99-103,202-206,239,322-326,426-430,463,546-550,650-654,770-774,874-878
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0e4ccfa6adfde1f82379590fab1a08be88f8b522",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_f4ca430ed37d9b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ab0c6ae8c7484240b",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
