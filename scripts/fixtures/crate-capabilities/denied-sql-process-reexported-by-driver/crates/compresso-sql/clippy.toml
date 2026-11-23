@@ -1,0 +1,15 @@
+# E17-52 (D117): this crate's tree contains Tokio's `process` feature (the
+# MongoDB driver turns it on). Clippy resolves these paths after name
+# resolution, so no alias, glob, group, or local macro reaches them; CI runs
+# Clippy with -D warnings, and scripts/check-crate-capabilities.ts checks
+# that these entries stay and that nothing lowers the lints.
+disallowed-types = [
+  { path = "std::process::Command", reason = "no process spawning in this crate (D117)" },
+  { path = "std::process::Child", reason = "no process spawning in this crate (D117)" },
+  { path = "tokio::process::Command", reason = "no process spawning in this crate (D117)" },
+  { path = "tokio::process::Child", reason = "no process spawning in this crate (D117)" },
+]
+disallowed-methods = [
+  { path = "std::process::Command::new", reason = "no process spawning in this crate (D117)" },
+  { path = "tokio::process::Command::new", reason = "no process spawning in this crate (D117)" },
+]

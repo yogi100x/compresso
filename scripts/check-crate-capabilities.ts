@@ -2,19 +2,36 @@
 
 /**
  * Capability boundaries per workspace crate: manifests, each member's own
- * resolved dependency tree, and a lexical scan of the crate's Rust sources.
+ * resolved dependency tree, a lexical scan of the crate's Rust sources, and,
+ * for the three crates the MongoDB driver's Tokio `process` feature reaches
+ * (`compresso-sql`, `compresso-mcp`, `compresso-cli`), a semantic control.
  *
- * Limits of the source scan (D117): it reads text, not resolved names. It
- * refuses glob imports and macro-built paths under `std`, `tokio`,
- * `async_std`, and `smol`, `include!` of anything but a literal file inside
- * the crate's scanned directories, and any `<name>::process::<member>` path,
- * so a `process` module re-exported by a dependency under that name is
- * caught. It cannot see a dependency's re-export under another name (`pub
- * use std::process as p;` then `p::Command`), process or network use inside
- * a dependency's own functions that the crate merely calls, or code produced
- * by procedural macros or build scripts. Those are bounded only by the
- * dependency-level checks: which packages and features each member's tree
- * may contain.
+ * The semantic control (D117) is Clippy's `disallowed_types` and
+ * `disallowed_methods`, configured per crate in `clippy.toml` and enforced
+ * by CI's `cargo clippy --workspace --all-targets -- -D warnings`. Clippy
+ * resolves paths after name resolution, so aliases, globs, nested groups,
+ * leading `::`, `extern crate` renames, local macros, `#[path]` modules,
+ * extra binaries, and integration tests do not evade it (each shown failing
+ * in a scratch crate). This script checks that the configuration and every
+ * entry are present, that no attribute or manifest lowers those lints, and
+ * that no `#[path]`, build script, or target outside the scanned folders
+ * exists. Residual risk: Clippy does not lint code expanded from another
+ * crate's macro; a `CLIPPY_CONF_DIR` or `RUSTFLAGS` lint override in the CI
+ * environment would weaken it; and the lint-level check here is lexical.
+ *
+ * The lexical scan is the only source control for every other crate and is
+ * a secondary one for those three. It reads text, not resolved names: it
+ * blanks comments, strings, and character literals; refuses direct paths,
+ * groups (nested too), leading `::`, aliases, glob imports, macro-built
+ * paths under `std`, `tokio`, `async_std`, and `smol`, a macro given a root
+ * and a member as neighbouring tokens, `include!` outside the crate's
+ * sources, and `<dependency>::process::<member>` paths. It cannot see a
+ * dependency's re-export under another name (`pub use std::process as p;`
+ * then `p::Command`), a macro that assembles the path some other way,
+ * effects inside a dependency's own functions, or generated code; for crates
+ * other than the three above those remain unchecked beyond the
+ * dependency-level checks (which packages and features each member's tree
+ * may contain).
  */
 
 import { execFile } from "node:child_process";
@@ -398,17 +415,21 @@ async function cargoMetadata(manifestPath: string, resolved: boolean) {
 }
 
 function stripRustCommentsAndStrings(source: string) {
-  const output = [...source];
+  // Works on code points, so a character outside the Basic Multilingual
+  // Plane cannot shift later positions.
+  const chars = [...source];
+  const output = [...chars];
+  const ahead = (index: number, length: number) =>
+    chars.slice(index, index + length).join("");
   let blockDepth = 0;
   let inLineComment = false;
   let inString = false;
   let escaped = false;
   let rawTerminator: string | undefined;
 
-  for (let index = 0; index < source.length; index += 1) {
-    const rest = source.slice(index);
-    const character = source[index];
-    const next = source[index + 1];
+  for (let index = 0; index < chars.length; index += 1) {
+    const character = chars[index];
+    const next = chars[index + 1];
 
     if (inLineComment) {
       if (character === "\n") {
@@ -435,7 +456,7 @@ function stripRustCommentsAndStrings(source: string) {
 
     if (rawTerminator) {
       output[index] = " ";
-      if (rest.startsWith(rawTerminator)) {
+      if (ahead(index, rawTerminator.length) === rawTerminator) {
         for (let offset = 1; offset < rawTerminator.length; offset += 1) {
           output[index + offset] = " ";
         }
@@ -451,9 +472,6 @@ function stripRustCommentsAndStrings(source: string) {
         inString = false;
       }
       escaped = character === "\\" && !escaped;
-      if (character !== "\\") {
-        escaped = false;
-      }
       continue;
     }
 
@@ -472,13 +490,33 @@ function stripRustCommentsAndStrings(source: string) {
       continue;
     }
 
-    const rawStart = rest.match(/^(?:br|r)(#*)"/u);
+    const previous = chars[index - 1] ?? " ";
+    const startsToken = !/[A-Za-z0-9_]/u.test(previous);
+    const window = ahead(index, 300);
+    const rawStart = startsToken ? window.match(/^(?:br|cr|r)(#*)"/u) : null;
     if (rawStart) {
-      for (let offset = 0; offset < rawStart[0].length; offset += 1) {
+      const length = [...rawStart[0]].length;
+      for (let offset = 0; offset < length; offset += 1) {
         output[index + offset] = " ";
       }
-      index += rawStart[0].length - 1;
+      index += length - 1;
       rawTerminator = `"${rawStart[1]}`;
+      continue;
+    }
+
+    // Character and byte literals ('"', b'"', '\'', '\u{..}'), so a quote
+    // inside one cannot open a string; a lifetime ('a) is left alone.
+    const literal = startsToken
+      ? window.match(
+          /^b?'(?:\\(?:x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f]{1,6}\}|[^\n])|[^\\'\n])'/u,
+        )
+      : null;
+    if (literal) {
+      const length = [...literal[0]].length;
+      for (let offset = 0; offset < length; offset += 1) {
+        output[index + offset] = " ";
+      }
+      index += length - 1;
       continue;
     }
 
@@ -491,7 +529,10 @@ function stripRustCommentsAndStrings(source: string) {
   return output.join("");
 }
 
-function sourceCapabilityUses(source: string) {
+function sourceCapabilityUses(
+  source: string,
+  dependencyRoots: Set<string> = new Set(),
+) {
   const uses = stdProcessCapabilityUses(source);
 
   for (const path of sourceCapabilityPaths) {
@@ -571,21 +612,317 @@ function sourceCapabilityUses(source: string) {
       }
     }
   }
-  // A `process` module reached through any other path (for example one a
-  // dependency re-exports, or `std::os::unix::process`) counts as process
-  // use unless the member is inert.
+  // Groups (nested ones too, up to the end of the `use` statement), a
+  // leading `::`, aliases made by `use ROOT as x` or `extern crate ROOT as
+  // x` and then used in a group, and a macro given both the root and the
+  // member as tokens (`m!(tokio, process)`).
+  const memberNames: Record<string, Capability> = {
+    net: "network",
+    process: "process",
+  };
+  for (const root of capabilityRoots) {
+    const escaped = regexEscape(root.name);
+    const aliases = new Set<string>([root.name]);
+    for (const match of source.matchAll(
+      new RegExp(
+        `\\b(?:use\\s+(?:::\\s*)?${escaped}|extern\\s+crate\\s+${escaped})\\s+as\\s+([A-Za-z_][A-Za-z0-9_]*)`,
+        "gu",
+      ),
+    )) {
+      aliases.add(match[1]);
+    }
+    for (const match of source.matchAll(
+      new RegExp(
+        `\\buse\\s+(?:::\\s*)?${escaped}\\s*::\\s*\\{[^;]*\\bself\\s+as\\s+([A-Za-z_][A-Za-z0-9_]*)`,
+        "gu",
+      ),
+    )) {
+      aliases.add(match[1]);
+    }
+    for (const [member, capability] of Object.entries(memberNames)) {
+      if (!root.capabilities.includes(capability)) {
+        continue;
+      }
+      for (const alias of aliases) {
+        const group = new RegExp(
+          `\\buse\\s+(?:::\\s*)?${regexEscape(alias)}\\s*::\\s*\\{([^;]*)`,
+          "gu",
+        );
+        for (const match of source.matchAll(group)) {
+          if (
+            groupReaches(
+              match[1],
+              member,
+              root.name === "std" && member === "process",
+            )
+          ) {
+            uses.push({
+              capability,
+              label: `${alias}::{..${member}..} (group of ${root.name})`,
+            });
+          }
+        }
+        if (alias !== root.name) {
+          const direct = new RegExp(
+            `(?:^|[^A-Za-z0-9_])(?:::\\s*)?${regexEscape(alias)}\\s*::\\s*${member}\\b`,
+            "u",
+          );
+          if (direct.test(source)) {
+            uses.push({
+              capability,
+              label: `${alias}::${member} (alias of ${root.name})`,
+            });
+          }
+        }
+      }
+      // A macro given the root and the member as neighbouring bare tokens
+      // (`m!(tokio, process)`, either order); other spellings are left to
+      // Clippy (see the file header).
+      const pair = new RegExp(
+        `!\\s*[([{][^;]*?(?:\\b${escaped}\\s*,\\s*${member}\\b|\\b${member}\\s*,\\s*${escaped}\\b)`,
+        "u",
+      );
+      if (pair.test(source)) {
+        uses.push({
+          capability,
+          label: `a macro given ${root.name} and ${member}`,
+        });
+      }
+    }
+  }
+  // `std::os::<platform>::process` (process extension traits).
+  if (
+    /\bstd\s*::\s*os\s*::\s*[A-Za-z_][A-Za-z0-9_]*\s*::\s*process\b/u.test(
+      source,
+    )
+  ) {
+    uses.push({ capability: "process", label: "std::os::<platform>::process" });
+  }
+  // A `process` module of a dependency (one it re-exports) counts as
+  // process use unless the member is inert. Local modules named `process`
+  // (`crate::process`, `jobs::process`) are not dependencies and pass.
   for (const match of source.matchAll(
-    /\b([A-Za-z_][A-Za-z0-9_]*)\s*::\s*process\s*::\s*([A-Za-z_][A-Za-z0-9_]*)/gu,
+    /(?:^|[^A-Za-z0-9_:])(?:::\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*::\s*process\s*::\s*([A-Za-z_][A-Za-z0-9_]*)/gu,
   )) {
-    if (match[1] !== "std" && !inertStdProcessMembers.has(match[2])) {
+    if (
+      match[1] !== "std" &&
+      dependencyRoots.has(match[1]) &&
+      !inertStdProcessMembers.has(match[2])
+    ) {
       uses.push({
         capability: "process",
-        label: `${match[1]}::process::${match[2]} (a process module outside std)`,
+        label: `${match[1]}::process::${match[2]} (a process module of a dependency)`,
       });
     }
   }
 
   return uses;
+}
+
+/**
+ * Whether the inside of a `use ROOT::{...}` group reaches `member`. For
+ * `std::process` the inert members alone (`ExitCode`, `id`) do not count.
+ */
+function groupReaches(group: string, member: string, inertAllowed: boolean) {
+  for (const match of group.matchAll(
+    new RegExp(
+      `\\b${member}\\b(\\s*::\\s*(?:([A-Za-z_][A-Za-z0-9_]*)|\\{([^}]*)\\}))?`,
+      "gu",
+    ),
+  )) {
+    if (!inertAllowed) {
+      return true;
+    }
+    const single = match[2];
+    const list = match[3];
+    if (single && inertStdProcessMembers.has(single)) {
+      continue;
+    }
+    if (
+      list !== undefined &&
+      list
+        .split(",")
+        .map((item) => item.trim().split(/\s+/u)[0])
+        .filter((item) => item.length > 0)
+        .every((item) => inertStdProcessMembers.has(item))
+    ) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+/**
+ * The semantic control (D117 confirmation round). Clippy's
+ * `disallowed_types` and `disallowed_methods` resolve paths after name
+ * resolution, so aliases, globs, groups, local macros, `#[path]` modules,
+ * extra binaries, and integration tests cannot evade them; CI runs Clippy
+ * with `-D warnings`. Each crate that the MongoDB driver's Tokio `process`
+ * feature reaches carries a `clippy.toml` naming these paths, and this
+ * script checks that the file and every entry are there and that nothing
+ * lowers the lint. `compresso-cli` keeps its sanctioned `std::process`
+ * files (ADR-0028, ADR-0031) and tests, so only Tokio's are disallowed there.
+ */
+const tokioProcessPaths = {
+  types: ["tokio::process::Command", "tokio::process::Child"],
+  methods: ["tokio::process::Command::new"],
+};
+const stdProcessPaths = {
+  types: ["std::process::Command", "std::process::Child"],
+  methods: ["std::process::Command::new"],
+};
+const semanticProcessCrates = new Map<
+  string,
+  { types: string[]; methods: string[] }
+>([
+  [
+    "compresso-sql",
+    {
+      types: [...stdProcessPaths.types, ...tokioProcessPaths.types],
+      methods: [...stdProcessPaths.methods, ...tokioProcessPaths.methods],
+    },
+  ],
+  [
+    "compresso-mcp",
+    {
+      types: [...stdProcessPaths.types, ...tokioProcessPaths.types],
+      methods: [...stdProcessPaths.methods, ...tokioProcessPaths.methods],
+    },
+  ],
+  ["compresso-cli", tokioProcessPaths],
+]);
+
+/** Lint-level settings that would switch the disallowed lints off. */
+const lintLowering =
+  /\b(?:allow|expect|warn)\s*\(\s*[^)"]*\b(?:warnings|clippy::all|clippy::style|clippy::disallowed_[a-z_]+)/u;
+const manifestLintLowering =
+  /^\s*(?:"?(?:style|all|disallowed_[a-z_]+|warnings)"?)\s*=/mu;
+
+async function allRustFiles(root: string) {
+  const files: string[] = [];
+  async function visit(directory: string) {
+    let entries: Dirent[];
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name === "target" || entry.name === "node_modules") {
+        continue;
+      }
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(path);
+      } else if (entry.isFile() && entry.name.endsWith(".rs")) {
+        files.push(path);
+      }
+    }
+  }
+  await visit(root);
+  return files.sort();
+}
+
+async function semanticControlViolations(
+  pkg: CargoPackage,
+  crateRoot: string,
+  workspaceRoot: string,
+) {
+  const required = semanticProcessCrates.get(pkg.name);
+  const violations: string[] = [];
+  if (!required) {
+    return violations;
+  }
+  let config: string;
+  try {
+    config = await readFile(join(crateRoot, "clippy.toml"), "utf8");
+  } catch {
+    return [
+      `clippy.toml is missing; it must disallow ${[...required.types, ...required.methods].join(", ")}`,
+    ];
+  }
+  try {
+    await stat(join(crateRoot, ".clippy.toml"));
+    violations.push(".clippy.toml must not exist beside clippy.toml");
+  } catch {
+    // Absent, as required.
+  }
+  const section = (name: string) => {
+    const match = config.match(
+      new RegExp(`^\\s*${name}\\s*=\\s*\\[([\\s\\S]*?)^\\]`, "mu"),
+    );
+    return match?.[1] ?? "";
+  };
+  for (const [name, paths] of [
+    ["disallowed-types", required.types],
+    ["disallowed-methods", required.methods],
+  ] as const) {
+    const body = section(name);
+    for (const path of paths) {
+      if (!body.includes(`path = "${path}"`)) {
+        violations.push(`clippy.toml ${name} must list ${path}`);
+      }
+    }
+  }
+  for (const file of await allRustFiles(crateRoot)) {
+    const text = await readFile(file, "utf8");
+    if (lintLowering.test(text)) {
+      violations.push(
+        `a lint attribute that can switch off clippy::disallowed_* is forbidden in ${file}`,
+      );
+    }
+  }
+  for (const file of [
+    pkg.manifest_path,
+    join(workspaceRoot, "Cargo.toml"),
+    join(workspaceRoot, ".cargo", "config.toml"),
+    join(workspaceRoot, ".cargo", "config"),
+  ]) {
+    let text: string;
+    try {
+      text = await readFile(file, "utf8");
+    } catch {
+      continue;
+    }
+    if (manifestLintLowering.test(text) || /disallowed/u.test(text)) {
+      violations.push(`${file} may not set the level of the disallowed lints`);
+    }
+  }
+  return violations;
+}
+
+/**
+ * Sources the lexical scan does not read: a `#[path]` module, a target
+ * (binary, test, build script) outside the crate's scanned directories.
+ */
+async function layoutViolations(pkg: CargoPackage, crateRoot: string) {
+  const violations: string[] = [];
+  const scanned = ["src", "tests", "benches", "examples"].map((directory) =>
+    join(crateRoot, directory),
+  );
+  for (const target of pkg.targets) {
+    const path = resolve(target.src_path);
+    if (target.kind.includes("custom-build")) {
+      violations.push(`a build script (${path}) is forbidden`);
+    } else if (
+      !scanned.some((directory) => path.startsWith(`${directory}${sep}`))
+    ) {
+      violations.push(
+        `target ${target.name} at ${path} is outside the scanned directories`,
+      );
+    }
+  }
+  for (const file of await allRustFiles(crateRoot)) {
+    const text = stripRustCommentsAndStrings(await readFile(file, "utf8"));
+    if (
+      /#\s*!?\s*\[\s*path\s*=/u.test(text) ||
+      /#\s*!?\s*\[\s*cfg_attr\s*\([^\]]*\bpath\s*=/u.test(text)
+    ) {
+      violations.push(`a #[path] module is forbidden in ${file}`);
+    }
+  }
+  return violations;
 }
 
 /**
@@ -1289,6 +1626,11 @@ export async function checkWorkspace(
     }
 
     const crateRoot = dirname(pkg.manifest_path);
+    const dependencyRoots = new Set(
+      pkg.dependencies.map((dependency) =>
+        (dependency.rename ?? dependency.name).replaceAll("-", "_"),
+      ),
+    );
     const testProcessSources = boundedLocalTestProcessSources(
       pkg,
       className,
@@ -1306,7 +1648,7 @@ export async function checkWorkspace(
         }
       }
       const source = stripRustCommentsAndStrings(rawSource);
-      for (const use of sourceCapabilityUses(source)) {
+      for (const use of sourceCapabilityUses(source, dependencyRoots)) {
         const allowedTestProcess =
           use.capability === "process" &&
           testProcessSources.has(resolve(sourcePath));
@@ -1315,6 +1657,20 @@ export async function checkWorkspace(
             `${pkg.name} (${className}): ${use.capability} API ${use.label} is forbidden in ${sourcePath}`,
           );
         }
+      }
+    }
+    if (!capabilities.network || !capabilities.process) {
+      for (const violation of await layoutViolations(pkg, crateRoot)) {
+        violations.add(`${pkg.name} (${className}): ${violation}`);
+      }
+    }
+    if (semanticProcessCrates.has(pkg.name)) {
+      for (const violation of await semanticControlViolations(
+        pkg,
+        crateRoot,
+        workspaceRoot,
+      )) {
+        violations.add(`${pkg.name} (${className}): ${violation}`);
       }
     }
   }

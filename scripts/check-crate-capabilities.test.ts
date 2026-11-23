@@ -448,11 +448,11 @@ for (const [name, pattern] of [
   ["denied-sql-macro-std-process", /std::\$\.\.\. \(path built by a macro\)/u],
   [
     "denied-sql-process-reexported-by-driver",
-    /mongodb::process::Command \(a process module outside std\)/u,
+    /mongodb::process::Command \(a process module of a dependency\)/u,
   ],
   [
     "denied-sql-std-process-reexported-by-dependency",
-    /mongodb::process::Command \(a process module outside std\)/u,
+    /mongodb::process::Command \(a process module of a dependency\)/u,
   ],
 ] as const) {
   test(`test_${name.replaceAll("-", "_")}`, async () => {
@@ -462,3 +462,61 @@ for (const [name, pattern] of [
     assert.match(result.violations.join("\n"), pattern);
   });
 }
+
+// D117 confirmation round: the evasions a lexical scan missed (each now
+// caught), the layout and lint-level checks that keep Clippy's
+// disallowed-path lints in force, and ordinary code that must still pass.
+for (const [name, pattern] of [
+  ["denied-sql-charlit-hides-process", /tokio::process/u],
+  [
+    "denied-sql-nested-group-process",
+    /tokio::\{\.\.process\.\.\} \(group of tokio\)/u,
+  ],
+  [
+    "denied-sql-leading-colon-group",
+    /tokio::\{\.\.process\.\.\} \(group of tokio\)/u,
+  ],
+  [
+    "denied-sql-extern-alias-group",
+    /tk07::\{\.\.process\.\.\} \(group of tokio\)/u,
+  ],
+  ["denied-sql-colon-alias", /t08::process \(alias of tokio\)/u],
+  ["denied-sql-std-byte-charlit", /std::process/u],
+  ["denied-sql-std-nested-group", /std::\{\.\.process\.\.\} \(group of std\)/u],
+  ["denied-sql-macro-pair", /a macro given tokio and process/u],
+  ["denied-sql-path-attribute", /a #\[path\] module is forbidden/u],
+  [
+    "denied-sql-bin-outside",
+    /target spawn06 at .* is outside the scanned directories/u,
+  ],
+  ["denied-sql-build-script", /a build script .* is forbidden/u],
+  ["denied-sql-clippy-config-missing", /clippy\.toml is missing/u],
+  [
+    "denied-sql-clippy-entry-missing",
+    /clippy\.toml disallowed-methods must list tokio::process::Command::new/u,
+  ],
+  [
+    "denied-sql-lint-allowed",
+    /a lint attribute that can switch off clippy::disallowed_\* is forbidden/u,
+  ],
+  [
+    "denied-sql-manifest-lint",
+    /may not set the level of the disallowed lints/u,
+  ],
+] as const) {
+  test(`test_${name.replaceAll("-", "_")}`, async () => {
+    const result = await checkWorkspace(fixture(name), fixtureDriver);
+
+    assert.equal(result.ok, false);
+    assert.match(result.violations.join("\n"), pattern);
+  });
+}
+
+test("test_local_process_modules_lifetimes_and_inert_members_pass", async () => {
+  const result = await checkWorkspace(
+    fixture("allowed-sql-local-process-module"),
+    fixtureDriver,
+  );
+
+  assert.deepEqual(result, { ok: true, checkedCrates: 3, violations: [] });
+});
