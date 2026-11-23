@@ -1,0 +1,25 @@
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_f9600c45dfd07e 3651,3672
+docs/adr/0038-opt-in-read-only-mongodb.md
+  s_89a704cfae63f5::t_f9600c45dfd07e 386-394,407-410,452-456,460-461,469,472,478,488,492,495,498-499
+decisions.md
+  s_89a704cfae63f5::t_f9600c45dfd07e 110
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_f9600c45dfd07e 750
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a1095a48f65844d8ae26696e2df36711494964a0",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
