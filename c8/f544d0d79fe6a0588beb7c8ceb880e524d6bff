@@ -1,0 +1,39 @@
+README.md
+  s_89a704cfae63f5::t_2c31544de13500 41-73
+docs/adr/0037-default-main-session-agent.md
+  s_89a704cfae63f5::t_e5968abd97595f 1-123
+decisions.md
+  s_89a704cfae63f5::t_95bfb8bb9c792c 110,123,134
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_294cb1f28ee5ca 3649-3666,3682,3713-3715
+docs/plan/04-mcp-and-integrations.md
+  s_470a2f6e5f0af8::t_322c0ba66eb848 43,52,810-811,862,881-889
+rust/compresso-integrations/src/explore_agent.rs
+  s_470a2f6e5f0af8::t_4f3336e27ed0f7 14-16
+rust/compresso-integrations/src/main_agent_setting.rs
+  s_470a2f6e5f0af8::t_9d4b87da8d5ee9 685
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c8f544d0d79fe6a0588beb7c8ceb880e524d6bff",
+  "prompts": {},
+  "sessions": {
+    "s_470a2f6e5f0af8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a2ff873261d314507",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
