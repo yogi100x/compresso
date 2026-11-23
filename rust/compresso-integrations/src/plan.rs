@@ -4781,7 +4781,7 @@ mod tests {
             assert!(Path::new(&receipt.backup_path).is_file());
             assert_eq!(
                 crate::legacy_backups(std::slice::from_ref(&receipt), |_| true),
-                [foreign.clone()],
+                std::slice::from_ref(&foreign),
                 "a copy in the backup directory is not an old copy"
             );
             // What an earlier version recorded: the copy beside the file.
