@@ -597,7 +597,9 @@ mod tests {
                     .with_compresso_version("0.1.0"),
                 home,
                 project,
-                manager: PlanManager::new("main-agent-setting-test").expect("manager"),
+                manager: PlanManager::new("main-agent-setting-test")
+                    .expect("manager")
+                    .with_backup_dir(crate::backups::test_dir()),
                 receipts: MemoryReceiptStore::default(),
             }
         }
@@ -749,7 +751,9 @@ mod tests {
         assert_eq!(receipt.backup_path, crate::NO_BACKUP_KEPT_SENTINEL);
         harness.uninstall(&receipt);
         // A fresh plan session, so the second plan's hash is new.
-        harness.manager = PlanManager::new("second-cycle").expect("manager");
+        harness.manager = PlanManager::new("second-cycle")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipt = harness.install().expect("install again");
         harness.uninstall(&receipt);
         let names = fs::read_dir(harness.project.join(".claude"))

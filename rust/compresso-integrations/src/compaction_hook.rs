@@ -499,7 +499,9 @@ mod tests {
             client: CompactionHookClient,
             scope: Scope,
         ) -> (PlanManager, MemoryReceiptStore, InstallReceipt) {
-            let manager = PlanManager::new("compaction-hook-test").expect("manager");
+            let manager = PlanManager::new("compaction-hook-test")
+                .expect("manager")
+                .with_backup_dir(crate::backups::test_dir());
             let receipts = MemoryReceiptStore::default();
             let adapter = self.adapter(client);
             let plan = adapter
@@ -587,7 +589,9 @@ mod tests {
         });
         write(&harness.claude_settings(), &existing);
         let before = fs::read(harness.claude_settings()).expect("settings");
-        let manager = PlanManager::new("compaction-hook-test").expect("manager");
+        let manager = PlanManager::new("compaction-hook-test")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
 
         let error = harness
             .adapter(CompactionHookClient::ClaudeCode)
@@ -629,7 +633,9 @@ mod tests {
 
         let moved = harness.compresso.with_file_name("compresso-next");
         fs::copy(&harness.compresso, &moved).expect("moved launcher");
-        let manager = PlanManager::new("compaction-hook-test").expect("manager");
+        let manager = PlanManager::new("compaction-hook-test")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let adapter = harness.adapter(CompactionHookClient::ClaudeCode);
         let plan = adapter
             .plan_install(
@@ -743,7 +749,9 @@ mod tests {
         let outside = harness.home.with_file_name("outside");
         fs::create_dir_all(&outside).expect("outside");
         std::os::unix::fs::symlink(&outside, harness.home.join(".claude")).expect("symlink");
-        let manager = PlanManager::new("compaction-hook-test").expect("manager");
+        let manager = PlanManager::new("compaction-hook-test")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let adapter = harness.adapter(CompactionHookClient::ClaudeCode);
 
         assert!(

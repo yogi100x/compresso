@@ -987,7 +987,9 @@ mod tests {
                 config_path: config.clone(),
             }
         );
-        let manager = PlanManager::new("codex-fresh").expect("manager");
+        let manager = PlanManager::new("codex-fresh")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
         let receipt = install(&adapter, &binary, &manager, &receipts);
 
@@ -1036,7 +1038,9 @@ mod tests {
             "experimental = true # keep me\n",
         );
         fs::write(&config, original).expect("base config");
-        let manager = PlanManager::new("codex-existing").expect("manager");
+        let manager = PlanManager::new("codex-existing")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
         install(&adapter, &binary, &manager, &receipts);
 
@@ -1064,7 +1068,9 @@ mod tests {
             "# exact top-level formatting\nmodel  =  \"gpt-5\"\n\n[mcp_servers.cubic] # preserve this sibling exactly\ncommand = \"cubic\"\nhttp_headers = {{ Authorization = \"Bearer {CANARY}\" }}\n\n[mcp_servers.compresso]\ncommand = \"/old/bin/compresso\"\nargs = [\"mcp\", \"serve\"]\n\n[features]\nexperimental = true # preserve this too\n"
         );
         fs::write(&config, &original).expect("base config");
-        let manager = PlanManager::new("codex-secret-safe-reinstall").expect("manager");
+        let manager = PlanManager::new("codex-secret-safe-reinstall")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
 
         let plan = adapter
@@ -1135,7 +1141,9 @@ mod tests {
             "mcp_servers = { other = { command = \"/opt/other\", args = [\"one\"] } } # keep\n",
         );
         fs::write(&config, original).expect("inline config");
-        let install_manager = PlanManager::new("codex-inline-install").expect("manager");
+        let install_manager = PlanManager::new("codex-inline-install")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
         let receipt = install(&adapter, &binary, &install_manager, &receipts);
 
@@ -1151,7 +1159,9 @@ mod tests {
             Some("/opt/other")
         );
 
-        let uninstall_manager = PlanManager::new("codex-inline-uninstall").expect("manager");
+        let uninstall_manager = PlanManager::new("codex-inline-uninstall")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let plan = adapter
             .plan_uninstall(&uninstall_manager, &receipt)
             .expect("uninstall plan");
@@ -1170,7 +1180,9 @@ mod tests {
         fs::create_dir_all(config.parent().expect("config parent")).expect("parent created");
         let original = "mcp_servers = \"externally-managed\"\n";
         fs::write(&config, original).expect("scalar config");
-        let manager = PlanManager::new("codex-scalar-parent").expect("manager");
+        let manager = PlanManager::new("codex-scalar-parent")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let error = adapter
             .plan_install(
                 &manager,
@@ -1195,7 +1207,9 @@ mod tests {
             "[mcp_servers.cubic]\nhttp_headers = {{ Authorization = \"Bearer {CANARY}\" }} invalid\n"
         );
         fs::write(&config, &malformed).expect("malformed config");
-        let manager = PlanManager::new("codex-malformed").expect("manager");
+        let manager = PlanManager::new("codex-malformed")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let error = adapter
             .plan_install(
                 &manager,
@@ -1218,7 +1232,9 @@ mod tests {
         let (_home, adapter, binary, config) = fixture(CodexPlatform::Linux);
         fs::create_dir_all(config.parent().expect("config parent")).expect("parent created");
         fs::write(&config, "model = \"gpt-5\"\n").expect("base config");
-        let manager = PlanManager::new("codex-drift").expect("manager");
+        let manager = PlanManager::new("codex-drift")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
         let plan = adapter
             .plan_install(
@@ -1245,7 +1261,9 @@ mod tests {
     #[test]
     fn test_disable_then_uninstall_retains_modified_table_and_repeats_safely() {
         let (_home, adapter, binary, config) = fixture(CodexPlatform::Linux);
-        let install_manager = PlanManager::new("codex-disable-install").expect("manager");
+        let install_manager = PlanManager::new("codex-disable-install")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
         let receipt = install(&adapter, &binary, &install_manager, &receipts);
 
@@ -1256,7 +1274,9 @@ mod tests {
         document["mcp_servers"]["compresso"]["enabled"] = value(false);
         fs::write(&config, document.to_string()).expect("user disabled entry");
 
-        let uninstall_manager = PlanManager::new("codex-disable-uninstall").expect("manager");
+        let uninstall_manager = PlanManager::new("codex-disable-uninstall")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let plan = adapter
             .plan_uninstall(&uninstall_manager, &receipt)
             .expect("uninstall plan");
@@ -1280,7 +1300,9 @@ mod tests {
             Some(false)
         );
 
-        let repeat_manager = PlanManager::new("codex-disable-repeat").expect("manager");
+        let repeat_manager = PlanManager::new("codex-disable-repeat")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let repeat = adapter
             .plan_uninstall(&repeat_manager, &receipt)
             .expect("repeat plan");
@@ -1297,11 +1319,15 @@ mod tests {
         fs::create_dir_all(config.parent().expect("config parent")).expect("parent created");
         let original = "[mcp_servers.other]\ncommand = \"/opt/other\"\n";
         fs::write(&config, original).expect("base config");
-        let install_manager = PlanManager::new("codex-remove-install").expect("manager");
+        let install_manager = PlanManager::new("codex-remove-install")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
         let receipt = install(&adapter, &binary, &install_manager, &receipts);
 
-        let uninstall_manager = PlanManager::new("codex-remove-uninstall").expect("manager");
+        let uninstall_manager = PlanManager::new("codex-remove-uninstall")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let plan = adapter
             .plan_uninstall(&uninstall_manager, &receipt)
             .expect("uninstall plan");
@@ -1319,7 +1345,9 @@ mod tests {
             .expect("receipt lookup")
             .expect("stored receipt");
         assert!(stored.uninstalled_at.is_some());
-        let repeat_manager = PlanManager::new("codex-remove-repeat").expect("manager");
+        let repeat_manager = PlanManager::new("codex-remove-repeat")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let repeat = adapter
             .plan_uninstall(&repeat_manager, &stored)
             .expect("repeat plan");
@@ -1336,12 +1364,16 @@ mod tests {
     #[test]
     fn test_missing_config_uninstall_is_typed_and_does_not_recreate_target() {
         let (_home, adapter, binary, config) = fixture(CodexPlatform::Linux);
-        let install_manager = PlanManager::new("codex-missing-install").expect("manager");
+        let install_manager = PlanManager::new("codex-missing-install")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
         let receipt = install(&adapter, &binary, &install_manager, &receipts);
         fs::remove_file(&config).expect("simulate user removing config");
 
-        let uninstall_manager = PlanManager::new("codex-missing-uninstall").expect("manager");
+        let uninstall_manager = PlanManager::new("codex-missing-uninstall")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let error = adapter
             .plan_uninstall(&uninstall_manager, &receipt)
             .expect_err("missing uninstall target rejected");
@@ -1372,7 +1404,9 @@ mod tests {
             adapter.detect(&Scope::Project(project.clone())),
             Detection::Unsupported { .. }
         ));
-        let manager = PlanManager::new("codex-project-unsupported").expect("manager");
+        let manager = PlanManager::new("codex-project-unsupported")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let project_error = adapter
             .plan_install(
                 &manager,
@@ -1617,7 +1651,9 @@ mod tests {
             PathBuf::from(format!("{parent_text}//compresso")),
             nested.join("../compresso"),
         ];
-        let manager = PlanManager::new("codex-non-normalized-launcher").expect("manager");
+        let manager = PlanManager::new("codex-non-normalized-launcher")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
 
         for path in cases {
             let error = adapter
@@ -1643,7 +1679,9 @@ mod tests {
         let (_home, adapter, binary, config) = fixture(CodexPlatform::Linux);
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o600))
             .expect("remove executable mode");
-        let manager = PlanManager::new("codex-non-executable").expect("manager");
+        let manager = PlanManager::new("codex-non-executable")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let error = adapter
             .plan_install(
                 &manager,
@@ -1668,7 +1706,9 @@ mod tests {
             .expect("home")
             .join("bin/compresso.txt");
         executable(&text_command);
-        let manager = PlanManager::new("codex-windows-extension").expect("manager");
+        let manager = PlanManager::new("codex-windows-extension")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let error = adapter
             .plan_install(
                 &manager,
@@ -1736,7 +1776,9 @@ mod tests {
         fs::create_dir(&outside).expect("outside directory");
         symlink(&outside, config.parent().expect("config directory"))
             .expect("config directory symlink");
-        let manager = PlanManager::new("codex-symlinked-directory").expect("manager");
+        let manager = PlanManager::new("codex-symlinked-directory")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let error = adapter
             .plan_install(
                 &manager,
@@ -1768,7 +1810,9 @@ mod tests {
         let outside_original = "model = \"outside\"\n";
         fs::write(&outside_file, outside_original).expect("outside config");
         symlink(&outside_file, &config).expect("config symlink");
-        let manager = PlanManager::new("codex-symlinked-file").expect("manager");
+        let manager = PlanManager::new("codex-symlinked-file")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let error = adapter
             .plan_install(
                 &manager,
@@ -1787,7 +1831,9 @@ mod tests {
 
         fs::remove_file(&config).expect("remove config symlink");
         fs::remove_dir(config.parent().expect("config parent")).expect("remove safe directory");
-        let plan_manager = PlanManager::new("codex-post-plan-swap").expect("manager");
+        let plan_manager = PlanManager::new("codex-post-plan-swap")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let plan = adapter
             .plan_install(
                 &plan_manager,
@@ -1818,7 +1864,9 @@ mod tests {
     #[test]
     fn test_owned_table_header_comment_is_retained_as_user_modification() {
         let (_home, adapter, binary, config) = fixture(CodexPlatform::Linux);
-        let install_manager = PlanManager::new("codex-header-install").expect("manager");
+        let install_manager = PlanManager::new("codex-header-install")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
         let receipt = install(&adapter, &binary, &install_manager, &receipts);
         let installed = fs::read_to_string(&config).expect("installed config");
@@ -1829,7 +1877,9 @@ mod tests {
         );
         fs::write(&config, &modified).expect("header comment added");
 
-        let uninstall_manager = PlanManager::new("codex-header-uninstall").expect("manager");
+        let uninstall_manager = PlanManager::new("codex-header-uninstall")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let plan = adapter
             .plan_uninstall(&uninstall_manager, &receipt)
             .expect("safe retained plan");
@@ -1957,7 +2007,9 @@ mod tests {
     #[test]
     fn test_live_initialize_is_the_only_mcp_list_fallback() {
         let (_home, adapter, binary, config) = fixture(CodexPlatform::Linux);
-        let manager = PlanManager::new("codex-live-fallback-install").expect("manager");
+        let manager = PlanManager::new("codex-live-fallback-install")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
         install(&adapter, &binary, &manager, &receipts);
         let config_bytes = fs::read(&config).expect("current config bytes");

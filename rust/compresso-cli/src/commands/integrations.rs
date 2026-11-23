@@ -124,6 +124,22 @@ impl IntegrationEnvironment {
         receipt_store_path(&self.data_dir)
     }
 
+    /// A plan manager for this session that keeps the copy of every changed
+    /// file in the data directory, never beside it (E17-53, D118).
+    pub(crate) fn plan_manager(&self) -> Result<PlanManager, IntegrationError> {
+        Ok(PlanManager::new(&self.session_id)?
+            .with_backup_dir(compresso_integrations::backup_dir_in(&self.data_dir)))
+    }
+
+    /// [`Self::plan_manager`] with an injected clock.
+    pub(crate) fn plan_manager_with_clock(
+        &self,
+        clock: Arc<dyn PlanClock>,
+    ) -> Result<PlanManager, IntegrationError> {
+        Ok(PlanManager::with_clock(&self.session_id, clock)?
+            .with_backup_dir(compresso_integrations::backup_dir_in(&self.data_dir)))
+    }
+
     fn database_path(&self) -> PathBuf {
         self.store_path.clone()
     }
@@ -271,6 +287,52 @@ pub(crate) struct PreparedSetupInstall {
     plan: MutationPlan,
 }
 
+impl PreparedSetupInstall {
+    /// [`legacy_backup_warning`] for the files this setup install changes.
+    pub(crate) fn legacy_backup_warning(&self, json: bool) -> Option<String> {
+        legacy_backup_warning(&self.receipts, &self.scope, &self.plan.config_path, json)
+    }
+}
+
+/// One warning naming the copies that versions before E17-53 wrote beside
+/// the files this command changes, when a receipt of ours names them and
+/// they still exist (D118). They may hold other servers' tokens; they are
+/// never deleted, because no receipt recorded what a copy held, so nothing
+/// proves a file at that path is still Compresso's copy. Text output prints
+/// the line, naming the files, on stderr; with `json` the warning names no
+/// path (it joins the report's warnings), so JSON reports name no more
+/// backup paths than before.
+pub(crate) fn legacy_backup_warning(
+    receipts: &FileReceiptStore,
+    scope: &Scope,
+    config_path: &Path,
+    json: bool,
+) -> Option<String> {
+    let all = receipts.all().ok()?;
+    let found = compresso_integrations::legacy_backups(&all, |path| match scope {
+        Scope::Project(root) => path.starts_with(root) || path == config_path,
+        Scope::User => path == config_path,
+    });
+    if found.is_empty() {
+        return None;
+    }
+    if json {
+        return Some(format!(
+            "old_backups_kept: {} cop{} of configuration files that an earlier Compresso version left beside them remain and may hold secrets; Compresso does not delete them; run the command without --json to list them",
+            found.len(),
+            if found.len() == 1 { "y" } else { "ies" }
+        ));
+    }
+    let names = found
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "warning: old_backups_kept: an earlier Compresso version left copies of configuration files beside them: {names}. They may hold secrets such as other servers' tokens and may be committed by `git add`. Compresso now keeps its copies in its own data directory and does not delete these; remove them yourself if you do not need them."
+    ))
+}
+
 pub(crate) struct SetupInstallResult {
     pub(crate) effective_plan_hash: String,
     pub(crate) effective_diff_hash: String,
@@ -391,7 +453,7 @@ pub(crate) fn plan_setup_main_agent(
 ) -> Result<(super::main_agent::MainAgentCompanion, PlanManager), IntegrationCliError> {
     let scope = resolve_scope(Some(root), &environment.cwd)?;
     let launcher_path = validate_stable_launcher(environment.compresso_bin.clone())?;
-    let manager = PlanManager::with_clock(&environment.session_id, clock)?;
+    let manager = environment.plan_manager_with_clock(clock)?;
     let receipts = FileReceiptStore::new(environment.receipt_store_path());
     if remove {
         let companion = super::main_agent::plan_uninstall(
@@ -489,7 +551,7 @@ pub(crate) fn refuse_pending_main_agent(
     environment: &IntegrationEnvironment,
 ) -> Result<(), IntegrationCliError> {
     let scope = resolve_scope(Some(root), &environment.cwd)?;
-    let manager = PlanManager::new(&environment.session_id)?;
+    let manager = environment.plan_manager()?;
     let receipts = FileReceiptStore::new(environment.receipt_store_path());
     super::main_agent::recover_pending(&environment.home_dir, &scope, &manager, &receipts, true)
         .map(|_| ())
@@ -507,7 +569,7 @@ pub(crate) fn rollback_setup_main_agent(
     let mut warnings = Vec::new();
     let (Ok(scope), Ok(manager)) = (
         resolve_scope(Some(root), &environment.cwd),
-        PlanManager::new(&environment.session_id),
+        environment.plan_manager(),
     ) else {
         return (Vec::new(), warnings);
     };
@@ -705,7 +767,7 @@ fn probe_legacy_hook(
             reason,
         }))
     };
-    let manager = match PlanManager::new(&environment.session_id) {
+    let manager = match environment.plan_manager() {
         Ok(manager) => manager,
         Err(error) => return unavailable(error.to_string()),
     };
@@ -867,7 +929,7 @@ fn prepare_install(
     } else {
         SelectedIntegration::new(client, environment, &scope, compaction_hook)?
     };
-    let manager = PlanManager::with_clock(&environment.session_id, clock)?;
+    let manager = environment.plan_manager_with_clock(clock)?;
     let receipts = FileReceiptStore::new(environment.receipt_store_path());
     let plan = selected.adapter.plan_install(
         &manager,
@@ -993,7 +1055,7 @@ fn execute_mutation(
     } else {
         (requested_scope, None)
     };
-    let manager = PlanManager::new(&environment.session_id)?;
+    let manager = environment.plan_manager()?;
     let receipts = FileReceiptStore::new(environment.receipt_store_path());
     let launcher_path = match action {
         MutationAction::Install => {
@@ -1150,6 +1212,18 @@ fn execute_mutation(
                     .map_err(IntegrationCliError::from)
             }),
     };
+    // Before any path that returns early, so every install or uninstall
+    // that reaches planning warns about old copies (E17-53).
+    match legacy_backup_warning(
+        &receipts,
+        &scope,
+        &selected.config_path,
+        arguments.output.json,
+    ) {
+        Some(warning) if arguments.output.json => main_agent_warnings.push(warning),
+        Some(warning) => writeln!(errors, "{warning}")?,
+        None => {}
+    }
     // Each owned item is removed independently: an entry that is already
     // gone (or whose receipt a crashed run consumed) does not stop the
     // agent file and key from being removed (E17-51 review).
@@ -1492,7 +1566,37 @@ fn execute_mutation(
             fallback_entry: None,
             json: arguments.output.json,
         },
-    )
+    )?;
+    if action == MutationAction::Uninstall && !arguments.output.json {
+        write_backups_kept_note(output, environment)?;
+    }
+    Ok(())
+}
+
+/// After an uninstall, says where the copies of changed configuration files
+/// stay and how to delete them (E17-53 review): uninstall removes Compresso's
+/// entries but keeps the copies, which can hold other servers' tokens.
+fn write_backups_kept_note(
+    output: &mut impl Write,
+    environment: &IntegrationEnvironment,
+) -> std::io::Result<()> {
+    let dir = compresso_integrations::backup_dir_in(&environment.data_dir);
+    let kept = std::fs::read_dir(&dir)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|entry| !entry.file_name().to_string_lossy().ends_with(".journal"))
+                .count()
+        })
+        .unwrap_or(0);
+    if kept > 0 {
+        writeln!(
+            output,
+            "note: copies Compresso made of the configuration files it changed (they can hold other servers' tokens) stay in {}; delete them there when you no longer need them; a file ending in .journal is an unfinished change: delete it only to abandon that change, as a recovery-conflict error that names it says",
+            dir.display()
+        )?;
+    }
+    Ok(())
 }
 
 fn write_fallback_preview(output: &mut impl Write, plan: &MutationPlan) -> std::io::Result<()> {
@@ -2806,6 +2910,7 @@ impl From<IntegrationError> for IntegrationCliError {
             IntegrationError::PendingRecovery { .. } => "pending_recovery",
             IntegrationError::PlanExpired { .. } => "plan_expired",
             IntegrationError::BackupCollision { .. } => "backup_collision",
+            IntegrationError::BackupDirectory { .. } => "backup_directory",
             IntegrationError::UninstallReceiptMissing { .. }
             | IntegrationError::UninstallReceiptMismatch { .. }
             | IntegrationError::UninstallReceiptNotActive { .. }

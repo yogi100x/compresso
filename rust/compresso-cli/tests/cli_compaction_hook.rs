@@ -90,7 +90,9 @@ impl Fixture {
     fn install_legacy_project_hook(&self) {
         let adapter =
             CompactionHookIntegration::new(CompactionHookClient::ClaudeCode, self.home.clone());
-        let manager = PlanManager::new("legacy-install").expect("manager");
+        let manager = PlanManager::new("legacy-install")
+            .expect("manager")
+            .with_backup_dir(test_backup_dir());
         let receipts = FileReceiptStore::new(self.root.join("data/integration-receipts.json"));
         let plan = adapter
             .plan_install(
@@ -565,4 +567,13 @@ fn test_legacy_project_hook_can_be_removed_explicitly_without_touching_the_user_
         read(&fixture.claude_settings()),
         json!({ "hooks": { "Stop": [{ "hooks": [] }] } })
     );
+}
+
+/// A backup directory private to the calling test thread, removed when the
+/// thread ends (E17-53: backups are kept in the data directory).
+fn test_backup_dir() -> std::path::PathBuf {
+    thread_local! {
+        static DIR: tempfile::TempDir = tempfile::tempdir().expect("test backup directory");
+    }
+    DIR.with(|dir| dir.path().join(compresso_integrations::BACKUP_DIR_NAME))
 }

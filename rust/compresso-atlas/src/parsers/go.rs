@@ -105,6 +105,7 @@ fn specs<'tree>(declaration: Node<'tree>, spec_kinds: &[&str]) -> (bool, Vec<Nod
     let mut specs = Vec::new();
     let mut cursor = declaration.walk();
     for child in declaration.children(&mut cursor) {
+        count_declaration_step();
         match child.kind() {
             "(" => grouped = true,
             "var_spec_list" => {
@@ -113,6 +114,7 @@ fn specs<'tree>(declaration: Node<'tree>, spec_kinds: &[&str]) -> (bool, Vec<Nod
                 specs.extend(
                     child
                         .named_children(&mut inner)
+                        .inspect(|_| count_declaration_step())
                         .filter(|spec| spec_kinds.contains(&spec.kind())),
                 );
             }
@@ -121,6 +123,22 @@ fn specs<'tree>(declaration: Node<'tree>, spec_kinds: &[&str]) -> (bool, Vec<Nod
         }
     }
     (grouped, specs)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Children of package-level declarations walked on this thread (tests
+    /// only): the cost driver of expanding a grouped declaration, so a group
+    /// expanded once per spec instead of once per declaration shows here as
+    /// quadratic growth, whatever the machine's load (E17-53).
+    static DECLARATION_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// One child of a declaration walked; counted in test builds only.
+#[inline]
+fn count_declaration_step() {
+    #[cfg(test)]
+    DECLARATION_STEPS.with(|steps| steps.set(steps.get() + 1));
 }
 
 fn types(declaration: Node<'_>, source: &str, output: &mut Vec<SymbolRecord>) {
@@ -155,6 +173,8 @@ fn types(declaration: Node<'_>, source: &str, output: &mut Vec<SymbolRecord>) {
             (declaration, declaration.start_byte())
         };
         let text = source.get(start..body_start).unwrap_or_default();
+        #[cfg(test)]
+        super::count_text_read(text.len());
         let signature = if grouped {
             bounded_signature(&format!("type {}", text.trim()))
         } else {
@@ -180,6 +200,7 @@ fn values(declaration: Node<'_>, keyword: &str, source: &str, output: &mut Vec<S
         let mut cursor = spec.walk();
         let names = spec
             .children_by_field_name("name", &mut cursor)
+            .inspect(|_| count_declaration_step())
             .filter(|name| name.kind() == "identifier")
             .collect::<Vec<_>>();
         let whole = if names.len() == 1 {
@@ -305,5 +326,87 @@ mod tests {
         assert_eq!(package_local_name("github.com/go-chi/chi/v5"), "chi");
         assert_eq!(package_local_name("gopkg.in/yaml.v3"), "yaml");
         assert_eq!(package_local_name("example.com/go-kit"), "go_kit");
+    }
+
+    /// A grouped `const` block of `count` specs, every spec the same
+    /// length, so the text a linear extraction reads is exactly linear too.
+    fn const_block(count: usize) -> String {
+        let mut source = String::from("package p\n\nconst (\n");
+        for index in 0..count {
+            source.push_str(&format!("\tC{index:06} = {index:06}\n"));
+        }
+        source.push_str(")\n");
+        source
+    }
+
+    /// Work done to extract a block of `count` specs: declaration children
+    /// and spec names walked, and source text bytes read.
+    fn extraction_work(count: usize) -> (usize, usize) {
+        let source = const_block(count);
+        super::DECLARATION_STEPS.with(|steps| steps.set(0));
+        crate::parsers::TEXT_BYTES.with(|bytes| bytes.set(0));
+        let extraction =
+            crate::parsers::ParserRegistry::extract(crate::parsers::Language::Go, &source)
+                .expect("Go source extracts");
+        assert_eq!(extraction.symbols.len(), count);
+        (
+            super::DECLARATION_STEPS.with(std::cell::Cell::get),
+            crate::parsers::TEXT_BYTES.with(std::cell::Cell::get),
+        )
+    }
+
+    /// A grouped declaration is expanded once, not once per spec (E17-37,
+    /// D102): the nodes walked and the source text read grow linearly with
+    /// the block. Counted, not timed (E17-53), so machine load cannot fail
+    /// it and a per-spec pass over the declaration (its children or its
+    /// text) fails it at the second size. Work that reads the source other
+    /// than through `node_text` or the counted reads is not seen; the
+    /// ignored wall-clock test below is the loose backstop for that.
+    #[test]
+    fn test_go_huge_const_block_expands_in_linear_work() {
+        // Each size is checked before the next is built, so a quadratic
+        // expansion fails at the second size instead of running long.
+        let (mut steps_before, mut bytes_before) = extraction_work(1_000);
+        assert!(
+            steps_before >= 1_000,
+            "every spec is walked: {steps_before}"
+        );
+        assert!(
+            bytes_before >= 1_000 * 6,
+            "every name is read: {bytes_before}"
+        );
+        for count in [4_000, 16_000] {
+            let (steps, bytes) = extraction_work(count);
+            assert!(
+                steps * 10 <= steps_before * 45,
+                "{count} specs walked {steps} nodes, a quarter of them {steps_before}"
+            );
+            assert!(
+                bytes * 10 <= bytes_before * 45,
+                "{count} specs read {bytes} source bytes, a quarter of them {bytes_before}"
+            );
+            (steps_before, bytes_before) = (steps, bytes);
+        }
+    }
+
+    /// Loose wall-clock backstop for per-spec work the counters cannot see
+    /// (a scan of the source that bypasses `node_text`). Ignored because it
+    /// depends on machine load; run it with `--ignored` when changing the
+    /// Go extractor. A quadratic pass makes 8 times the specs cost about 64
+    /// times the time; the bound is 32.
+    #[test]
+    #[ignore = "wall-clock; run by hand with --ignored"]
+    fn test_go_huge_const_block_wall_clock_backstop() {
+        let time = |count: usize| {
+            let source = const_block(count);
+            let started = std::time::Instant::now();
+            crate::parsers::ParserRegistry::extract(crate::parsers::Language::Go, &source)
+                .expect("Go source extracts");
+            started.elapsed()
+        };
+        // Small enough that a quadratic pass still ends in seconds.
+        let small = time(1_000);
+        let large = time(8_000);
+        assert!(large < small * 32, "1k specs {small:?}, 8k specs {large:?}");
     }
 }

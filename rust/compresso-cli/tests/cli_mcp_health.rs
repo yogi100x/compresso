@@ -48,9 +48,18 @@ while IFS= read -r line; do
 done
 "#;
 const HANGING_STUB: &str = "#!/bin/sh\nexec sleep 30\n";
+/// Starts a child that lives until it is killed, publishes its process id
+/// (renamed into place, so a reader never sees a partial id), and only then
+/// answers `initialize`; it never answers `tools/list`. The probe therefore
+/// times out after the child provably exists, however slowly the host runs
+/// the script.
 const HANGING_TREE_STUB: &str = r#"#!/bin/sh
-sleep 30 &
-echo $! > "$(dirname "$0")/child.pid"
+here="$(dirname "$0")"
+sleep 2147483647 &
+echo $! > "$here/child.pid.partial"
+mv "$here/child.pid.partial" "$here/child.pid"
+IFS= read -r line
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"compresso","version":"0.0.0"}}}'
 wait
 "#;
 const HANGS_AFTER_INITIALIZE_STUB: &str = r#"#!/bin/sh
@@ -276,8 +285,14 @@ fn assert_failure(script: &str, timeout: Duration, state: &str, fix_fragment: &s
     let (exit, payload) = fixture.doctor(Some(timeout));
 
     assert!(started.elapsed() < BOUNDED, "probe must be bounded");
+    assert_failure_report(exit, &payload, state, fix_fragment);
+    fixture
+}
+
+/// The doctor verdict [`assert_failure`] checks, without its timing bound.
+fn assert_failure_report(exit: CliExitCode, payload: &Value, state: &str, fix_fragment: &str) {
     assert_eq!(exit, CliExitCode::Failure);
-    let check = mcp_check(&payload);
+    let check = mcp_check(payload);
     assert_eq!(check["passed"], false, "{check}");
     assert_eq!(check["severity"], "error", "{check}");
     assert!(
@@ -292,11 +307,10 @@ fn assert_failure(script: &str, timeout: Duration, state: &str, fix_fragment: &s
             .is_some_and(|hint| hint.contains(fix_fragment)),
         "{check}"
     );
-    let server = server(&payload, "claude-code");
+    let server = server(payload, "claude-code");
     assert_eq!(server["state"], state);
     assert_eq!(server["healthy"], false);
     assert_eq!(server["severity"], "error");
-    fixture
 }
 
 /// Asserts that `doctor` passed with the MCP check downgraded to a warning
@@ -503,25 +517,130 @@ fn test_doctor_reports_handshake_timeout_for_unresponsive_server() {
 
 #[test]
 fn test_timeout_kills_the_server_process_tree() {
-    let fixture = assert_failure(
-        HANGING_TREE_STUB,
-        Duration::from_secs(8),
-        "handshake_timeout",
-        "Restart the coding client",
-    );
-    let pid = fs::read_to_string(fixture.stub.with_file_name("child.pid"))
-        .expect("stub should record its child");
-    let alive = || {
-        Command::new("kill")
-            .args(["-0", pid.trim()])
-            .output()
-            .is_ok_and(|output| output.status.success())
+    // The stub records its child before it answers `initialize`, so a
+    // recorded id proves the child existed before the probe gave up. Only a
+    // host too slow to run the stub's first lines within the deadline leaves
+    // no id; that run proves nothing and is repeated with a longer deadline
+    // (E17-53). Nothing here asserts on elapsed time.
+    let mut deadline = Duration::from_secs(4);
+    let (fixture, pid) = loop {
+        let fixture = Fixture::with_installed_stub(HANGING_TREE_STUB);
+        let (exit, payload) = fixture.doctor(Some(deadline));
+        let recorded = fs::read_to_string(fixture.stub.with_file_name("child.pid")).ok();
+        let guard = recorded.as_deref().map(ChildGuard::new);
+        assert_failure_report(
+            exit,
+            &payload,
+            "handshake_timeout",
+            "Restart the coding client",
+        );
+        match guard {
+            Some(guard) => break (fixture, guard),
+            None if deadline < Duration::from_secs(64) => deadline *= 2,
+            None => panic!("the stub never started within {deadline:?}"),
+        }
     };
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while alive() && Instant::now() < deadline {
+    // The end state is the assertion: the child is gone. The bound below only
+    // stops a hang; a child that was not killed lives until the guard kills
+    // it, so it can never pass by expiring on its own.
+    let gone_by = Instant::now() + Duration::from_secs(120);
+    while pid.alive() && Instant::now() < gone_by {
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(!alive(), "descendant {pid} outlived the probe");
+    assert!(!pid.alive(), "descendant {} outlived the probe", pid.pid);
+    drop(fixture);
+}
+
+/// The stub's child, identified by its process id together with its start
+/// time and command line as first seen. A process id can be reused once the
+/// child is gone, so the guard treats a process whose start time or command
+/// differs as not the child: it never reports it alive and never signals
+/// it. Dropped while the child still runs (a failing run), it kills it.
+struct ChildGuard {
+    pid: String,
+    /// `ps` start time and command of the child, if it was running when the
+    /// guard was made; `None` means it was already gone.
+    identity: Option<String>,
+}
+
+/// The command the stub gives its child.
+const CHILD_COMMAND: &str = "sleep 2147483647";
+
+impl ChildGuard {
+    fn new(recorded: &str) -> Self {
+        let pid = recorded.trim().to_owned();
+        assert!(
+            !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit()),
+            "recorded child id {pid:?}"
+        );
+        // The lookup must work at all, or "gone" below would prove nothing:
+        // the test process itself has to be seen.
+        let own = Self::observe(&std::process::id().to_string())
+            .unwrap_or_else(|error| panic!("process lookup failed: {error}"));
+        assert!(
+            own.is_some_and(|(_, identity)| !identity.is_empty()),
+            "process lookup does not see the test process"
+        );
+        let identity = Self::observe(&pid)
+            .unwrap_or_else(|error| panic!("process lookup for {pid} failed: {error}"))
+            .filter(|(state, identity)| {
+                !state.starts_with('Z') && identity.ends_with(CHILD_COMMAND)
+            })
+            .map(|(_, identity)| identity);
+        Self { pid, identity }
+    }
+
+    /// The state letter, and the start time and command, of process `pid`;
+    /// `None` when no such process exists; an error when the lookup itself
+    /// failed, so the caller never mistakes a failed lookup for "gone".
+    fn observe(pid: &str) -> Result<Option<(String, String)>, String> {
+        let output = Command::new("ps")
+            .args(["-o", "stat=", "-o", "lstart=", "-o", "command=", "-p", pid])
+            .output()
+            .map_err(|error| format!("ps did not run: {error}"))?;
+        let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if !output.status.success() {
+            // `ps -p` exits 1 with no output for a process that does not exist.
+            return if text.is_empty() && output.stderr.is_empty() {
+                Ok(None)
+            } else {
+                Err(format!(
+                    "ps failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ))
+            };
+        }
+        let (state, identity) = text
+            .split_once(char::is_whitespace)
+            .ok_or_else(|| format!("unexpected ps output {text:?}"))?;
+        Ok(Some((state.to_owned(), identity.trim().to_owned())))
+    }
+
+    /// Whether the child still runs: the same process (start time and
+    /// command) and not a zombie, which has exited and runs nothing. A
+    /// failed lookup is an error, never "gone".
+    fn running(&self) -> Result<bool, String> {
+        let Some(identity) = &self.identity else {
+            return Ok(false);
+        };
+        Ok(Self::observe(&self.pid)?
+            .is_some_and(|(state, now)| &now == identity && !state.starts_with('Z')))
+    }
+
+    fn alive(&self) -> bool {
+        self.running()
+            .unwrap_or_else(|error| panic!("process lookup for {} failed: {error}", self.pid))
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        // Only a process confirmed to be the child is signalled; a failed
+        // lookup signals nothing.
+        if matches!(self.running(), Ok(true)) {
+            let _ = Command::new("kill").args(["-KILL", &self.pid]).output();
+        }
+    }
 }
 
 #[test]

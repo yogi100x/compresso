@@ -249,7 +249,9 @@ impl Harness {
     }
 
     fn install(&self) -> InstallReceipt {
-        let manager = PlanManager::new("text-fidelity-install").expect("install manager");
+        let manager = PlanManager::new("text-fidelity-install")
+            .expect("install manager")
+            .with_backup_dir(test_backup_dir());
         let plan = self
             .adapter
             .plan_install(
@@ -267,7 +269,9 @@ impl Harness {
     }
 
     fn uninstall(&self, receipt: &InstallReceipt) {
-        let manager = PlanManager::new("text-fidelity-uninstall").expect("uninstall manager");
+        let manager = PlanManager::new("text-fidelity-uninstall")
+            .expect("uninstall manager")
+            .with_backup_dir(test_backup_dir());
         let plan = self
             .adapter
             .plan_uninstall(&manager, receipt)
@@ -525,4 +529,13 @@ fn cursor_platform() -> CursorPlatform {
     } else {
         CursorPlatform::Linux
     }
+}
+
+/// A backup directory private to the calling test thread, removed when the
+/// thread ends (E17-53: backups are kept in the data directory).
+fn test_backup_dir() -> std::path::PathBuf {
+    thread_local! {
+        static DIR: tempfile::TempDir = tempfile::tempdir().expect("test backup directory");
+    }
+    DIR.with(|dir| dir.path().join(compresso_integrations::BACKUP_DIR_NAME))
 }

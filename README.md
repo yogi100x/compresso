@@ -76,6 +76,42 @@ provider). Both show the exact plan first (`--dry-run` previews without
 writing), keep a backup and a receipt, and are undone with
 `compresso integrations uninstall <client>`.
 
+The backup of a changed file is kept in Compresso's own data directory,
+in `integration-backups/` (`$XDG_DATA_HOME/compresso/integration-backups/`,
+by default `~/.local/share/compresso/integration-backups/` on macOS and
+Linux): mode 0600 in a 0700
+directory, the oldest copy (the file as it was before Compresso first
+changed it) and the newest three per file, never beside the file, so nothing
+is added to your project folder that `git add -A` could commit. The
+crash-recovery journal of a change (which holds the file's bytes until the
+change finishes) is kept there too. The plan's last line names the copy, or
+says `(none: ...)` when no copy is needed. If that directory cannot be used
+(a file or link in its place, or no permission), the change stops before its
+journal is written and the error names the directory. If a change fails
+before your file is replaced (for example, the project folder is read-only),
+Compresso removes the journal and the copy that attempt made, so the next
+command is not blocked; once the file has been replaced, the journal stays
+until a later command finishes the change. During the replace itself a
+temporary file (`.<file>.compresso-tmp-*`, holding the new bytes) exists for
+a moment beside your file; it is removed on an error, but a hard kill at that
+moment leaves it, and nothing removes it later.
+
+Uninstall removes Compresso's entries but keeps these copies, which can hold
+other servers' tokens (also for user-level files such as `~/.claude.json`);
+its output says where they are. Delete the files in `integration-backups/`
+when you no longer need them. A file ending in `.journal` is an unfinished
+change: if a command reports a recovery conflict naming it (the file was
+changed since), delete that journal to abandon the change and keep your file
+as it is now.
+
+Versions before E17-53 wrote `<file>.compresso-backup-<time>` beside the
+file. Compresso still reads such a copy when its receipt names it, never
+deletes one, and prints one `old_backups_kept` warning naming every such file
+beside a file it manages when you install, reinstall, or uninstall (with
+`--json`, a count without the paths; run without it to see the names): they
+may hold other servers' tokens, so delete them yourself if you do not need
+them.
+
 For a Claude Code project (`setup claude-code ROOT`, or
 `integrations install claude-code --project DIR`) the install also makes
 Compresso the session's main agent by default (ADR-0037):

@@ -101,7 +101,9 @@ impl Harness {
         session_recall: bool,
         session: &str,
     ) -> (MutationPlan, InstallReceipt) {
-        let manager = PlanManager::new(session).expect("plan manager");
+        let manager = PlanManager::new(session)
+            .expect("plan manager")
+            .with_backup_dir(test_backup_dir());
         let plan = self.plan(adapter, &manager, scope, session_recall);
         let receipt = adapter
             .install(&manager, &PlanApproval::from(&plan), &self.receipts)
@@ -110,7 +112,9 @@ impl Harness {
     }
 
     fn uninstall(&self, adapter: &dyn Integration, config: &Path, session: &str) {
-        let manager = PlanManager::new(session).expect("plan manager");
+        let manager = PlanManager::new(session)
+            .expect("plan manager")
+            .with_backup_dir(test_backup_dir());
         let receipt = self
             .receipts
             .active_for(adapter.client_id(), config)
@@ -317,7 +321,9 @@ fn test_upgrade_from_previous_install_adds_recall_idempotently_and_uninstalls_cl
     assert_eq!(json_args(&config), json!(["mcp", "serve"]));
     let legacy_bytes = fs::read(&config).expect("legacy config");
 
-    let manager = PlanManager::new("upgrade-new").expect("plan manager");
+    let manager = PlanManager::new("upgrade-new")
+        .expect("plan manager")
+        .with_backup_dir(test_backup_dir());
     let upgrade = harness.plan(&claude, &manager, Scope::User, true);
     let changed = upgrade
         .unified_diff
@@ -379,7 +385,9 @@ fn test_upgrade_from_previous_install_adds_recall_idempotently_and_uninstalls_cl
     assert_eq!(server_recall_source(&args), Some("claude-code"));
 
     // Re-running the same install is a no-op plan that keeps the receipt.
-    let repeat_manager = PlanManager::new("upgrade-repeat").expect("plan manager");
+    let repeat_manager = PlanManager::new("upgrade-repeat")
+        .expect("plan manager")
+        .with_backup_dir(test_backup_dir());
     let repeat = harness.plan(&claude, &repeat_manager, Scope::User, true);
     assert_eq!(repeat.base_hash, repeat.result_hash);
     let repeated_receipt = claude
@@ -455,4 +463,13 @@ fn test_opting_out_after_a_default_install_removes_the_recall_argument() {
     assert!(opt_out.unified_diff.contains("--recall-source"));
     assert_eq!(json_args(&plan.config_path), json!(["mcp", "serve"]));
     assert!(check(&claude, &Scope::User, "server_entry"));
+}
+
+/// A backup directory private to the calling test thread, removed when the
+/// thread ends (E17-53: backups are kept in the data directory).
+fn test_backup_dir() -> std::path::PathBuf {
+    thread_local! {
+        static DIR: tempfile::TempDir = tempfile::tempdir().expect("test backup directory");
+    }
+    DIR.with(|dir| dir.path().join(compresso_integrations::BACKUP_DIR_NAME))
 }

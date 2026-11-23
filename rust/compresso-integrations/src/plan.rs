@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use toml_edit::{Decor, DocumentMut, Item};
@@ -610,9 +609,16 @@ pub enum IntegrationError {
     /// A prior crash left a commit requiring recovery.
     #[error("pending integration recovery journal exists for {path}")]
     PendingRecovery { path: PathBuf },
-    /// Recovery cannot safely decide between base and target.
-    #[error("integration recovery conflict for {path}")]
-    RecoveryConflict { path: PathBuf },
+    /// Recovery cannot safely decide between base and target: the file is
+    /// neither as the pending change found it nor as it would leave it.
+    #[error(
+        "integration recovery conflict for {path}: the unfinished change recorded in {journal} no longer matches the file; delete {journal} to abandon that change and keep {path} as it is now"
+    )]
+    RecoveryConflict { path: PathBuf, journal: PathBuf },
+    /// The backup directory is missing and cannot be created, is not a
+    /// directory, cannot be made private, or does not take a copy (E17-53).
+    #[error("the integration backup directory {path} cannot be used: {reason}")]
+    BackupDirectory { path: PathBuf, reason: String },
     /// Planned timestamped backup already exists with different bytes.
     #[error("integration backup collision at {path}")]
     BackupCollision { path: PathBuf },
@@ -648,6 +654,9 @@ pub struct PlanManager {
     issued: Mutex<BTreeMap<String, MutationPlan>>,
     completed: Mutex<BTreeMap<String, ApplyReport>>,
     apply_lock: Mutex<()>,
+    /// Where copies of changed files are kept (E17-53, D118); `None` refuses
+    /// any change that needs a copy.
+    backup_dir: Option<PathBuf>,
 }
 
 impl PlanManager {
@@ -672,7 +681,41 @@ impl PlanManager {
             issued: Mutex::new(BTreeMap::new()),
             completed: Mutex::new(BTreeMap::new()),
             apply_lock: Mutex::new(()),
+            backup_dir: None,
         })
+    }
+
+    /// Keeps the copy of every changed file in `dir` (normally
+    /// [`crate::backup_dir_in`] of the data directory), never beside the
+    /// file. Without it, a plan that needs a copy is refused.
+    #[must_use]
+    pub fn with_backup_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.backup_dir = Some(dir.into());
+        self
+    }
+
+    /// Where a commit to `config_path` writes its crash-recovery journal
+    /// (mode 0600, holding the file's bytes; removed when the commit
+    /// finishes, kept after a crash until a later command recovers it): in
+    /// the backup directory, never beside the file (E17-53). Only a manager
+    /// without a backup directory writes it beside the file.
+    fn journal_location(&self, config_path: &Path) -> PathBuf {
+        match &self.backup_dir {
+            Some(dir) => crate::backups::journal_path(dir, config_path),
+            None => journal_path(config_path),
+        }
+    }
+
+    /// The pending crash-recovery journal for `config_path`, if any: the one
+    /// in the backup directory, or one an earlier version left beside the
+    /// file, which is still recovered.
+    pub fn pending_journal(&self, config_path: &Path) -> Option<PathBuf> {
+        [
+            self.journal_location(config_path),
+            journal_path(config_path),
+        ]
+        .into_iter()
+        .find(|path| path.exists())
     }
 
     /// Issues a short-lived preview bound to the current full target state.
@@ -698,7 +741,7 @@ impl PlanManager {
         no_backup: Option<&'static str>,
     ) -> Result<MutationPlan, IntegrationError> {
         validate_request(&request)?;
-        if journal_path(&request.config_path).exists() {
+        if self.pending_journal(&request.config_path).is_some() {
             return Err(IntegrationError::PendingRecovery {
                 path: request.config_path,
             });
@@ -716,7 +759,9 @@ impl PlanManager {
             // line endings; every hash below covers this final shaping.
             request.target_contents = preserve_text_fidelity(bytes, &request.target_contents);
         }
-        if let Some(original) = pristine_uninstall_target(&request, &base) {
+        if let Some(original) =
+            pristine_uninstall_target(&request, &base, self.backup_dir.as_deref())
+        {
             request.target_contents = original;
         }
         let owned_keys = derive_owned_mutations(
@@ -740,7 +785,13 @@ impl PlanManager {
         } else if let Some(sentinel) = no_backup {
             sentinel.to_owned()
         } else {
-            planned_backup_path(&request.config_path, issued_at)?
+            let backup_dir =
+                self.backup_dir
+                    .as_deref()
+                    .ok_or_else(|| IntegrationError::Unsupported {
+                        reason: "no backup directory is configured for this change".to_owned(),
+                    })?;
+            crate::backups::planned_path(backup_dir, &request.config_path, issued_at)?
                 .to_string_lossy()
                 .into_owned()
         };
@@ -832,7 +883,7 @@ impl PlanManager {
             });
         }
         if matches!(pending_journal, PendingJournalPolicy::Reject)
-            && journal_path(&plan.config_path).exists()
+            && self.pending_journal(&plan.config_path).is_some()
         {
             return Err(IntegrationError::PendingRecovery {
                 path: plan.config_path,
@@ -846,7 +897,7 @@ impl PlanManager {
             .cloned()
         {
             if matches!(pending_journal, PendingJournalPolicy::Reject)
-                && journal_path(&plan.config_path).exists()
+                && self.pending_journal(&plan.config_path).is_some()
             {
                 return Err(IntegrationError::PendingRecovery {
                     path: plan.config_path,
@@ -854,7 +905,7 @@ impl PlanManager {
             }
             return Ok(mark_report_already_applied(report));
         }
-        if journal_path(&plan.config_path).exists() {
+        if self.pending_journal(&plan.config_path).is_some() {
             match pending_journal {
                 PendingJournalPolicy::Reject => {
                     return Err(IntegrationError::PendingRecovery {
@@ -862,7 +913,11 @@ impl PlanManager {
                     });
                 }
                 PendingJournalPolicy::Recover => {
-                    let (recovered_hash, recovered) = recover_journal(&plan.config_path, receipts)?;
+                    let journal = self
+                        .pending_journal(&plan.config_path)
+                        .expect("a pending journal was found above");
+                    let (recovered_hash, recovered) =
+                        recover_journal(&journal, &plan.config_path, receipts)?;
                     if recovered_hash == plan.plan_hash {
                         self.completed
                             .lock()
@@ -886,7 +941,7 @@ impl PlanManager {
             && let Some(receipt) = matching_active_receipt(&plan, receipts)?
         {
             if matches!(pending_journal, PendingJournalPolicy::Reject)
-                && journal_path(&plan.config_path).exists()
+                && self.pending_journal(&plan.config_path).is_some()
             {
                 return Err(IntegrationError::PendingRecovery {
                     path: plan.config_path,
@@ -913,7 +968,7 @@ impl PlanManager {
             )
         {
             if matches!(pending_journal, PendingJournalPolicy::Reject)
-                && journal_path(&plan.config_path).exists()
+                && self.pending_journal(&plan.config_path).is_some()
             {
                 return Err(IntegrationError::PendingRecovery {
                     path: plan.config_path,
@@ -932,8 +987,35 @@ impl PlanManager {
         }
 
         let commit = build_commit(&plan, apply_at, authorized_uninstall_receipt.as_ref())?;
-        write_journal(&plan.config_path, &commit, receipts)?;
-        finish_commit(&commit, receipts)?;
+        // The copy is written, and its directory checked, before the journal,
+        // so a bad backup directory fails before any journal exists. Until
+        // the target is replaced, every failure removes what this attempt
+        // wrote: its journal and the copy it created, never an older copy
+        // (E17-53 confirmation round).
+        let created_copy = ensure_backup(&commit)?;
+        let discard_copy = || {
+            if created_copy {
+                let _ignored = fs::remove_file(&plan.backup_path);
+            }
+        };
+        let journal = self.journal_location(&plan.config_path);
+        if let Err(error) = write_journal(&journal, &plan.config_path, &commit, receipts) {
+            discard_copy();
+            return Err(error);
+        }
+        let mut replaced = false;
+        if let Err(error) = finish_commit_tracked(&commit, &journal, receipts, &mut replaced) {
+            // A commit that never changed the target needs no recovery: its
+            // journal is removed so it cannot block later commands. Once the
+            // target holds this commit's result, the journal stays for
+            // recovery.
+            if !replaced {
+                let _ignored = fs::remove_file(&journal);
+                let _ignored = sync_parent(&journal);
+                discard_copy();
+            }
+            return Err(error);
+        }
         self.completed
             .lock()
             .map_err(|_| IntegrationError::LockPoisoned)?
@@ -962,7 +1044,7 @@ impl PlanManager {
                 actual: plan.operation,
             });
         }
-        if journal_path(&plan.config_path).exists() {
+        if self.pending_journal(&plan.config_path).is_some() {
             return Err(IntegrationError::PendingRecovery {
                 path: plan.config_path,
             });
@@ -1014,7 +1096,7 @@ impl PlanManager {
         {
             return Err(IntegrationError::ForgedPlan);
         }
-        if journal_path(&source.config_path).exists() {
+        if self.pending_journal(&source.config_path).is_some() {
             return Err(IntegrationError::PendingRecovery {
                 path: source.config_path,
             });
@@ -1104,10 +1186,10 @@ impl PlanManager {
             .apply_lock
             .lock()
             .map_err(|_| IntegrationError::LockPoisoned)?;
-        if !journal_path(config_path).exists() {
+        let Some(journal) = self.pending_journal(config_path) else {
             return Ok(None);
-        }
-        recover_journal(config_path, receipts).map(|(_, report)| Some(report))
+        };
+        recover_journal(&journal, config_path, receipts).map(|(_, report)| Some(report))
     }
 
     fn validate_approval_at(
@@ -1432,9 +1514,21 @@ fn installed_value_hashes(plan: &MutationPlan) -> BTreeMap<String, String> {
 
 fn finish_commit(
     commit: &PendingCommit,
+    journal: &Path,
     receipts: &dyn ReceiptStore,
 ) -> Result<(), IntegrationError> {
-    validate_pending_commit(commit)?;
+    finish_commit_tracked(commit, journal, receipts, &mut false)
+}
+
+/// [`finish_commit`], setting `replaced` once the target holds this
+/// commit's result: after the rename succeeded, or when it already did.
+fn finish_commit_tracked(
+    commit: &PendingCommit,
+    journal: &Path,
+    receipts: &dyn ReceiptStore,
+    replaced: &mut bool,
+) -> Result<(), IntegrationError> {
+    validate_pending_commit(commit, journal)?;
     let current = read_target(&commit.plan.config_path)?;
     if commit.plan.operation == MutationKind::Uninstall {
         // Re-establish canonical authority during both normal commit and
@@ -1445,9 +1539,15 @@ fn finish_commit(
     if current_hash != commit.plan.base_hash && current_hash != commit.plan.result_hash {
         return Err(IntegrationError::RecoveryConflict {
             path: commit.plan.config_path.clone(),
+            journal: journal.to_path_buf(),
         });
     }
     ensure_backup(commit)?;
+    if current_hash == commit.plan.result_hash {
+        // The target already holds this commit's result (an earlier attempt
+        // or recovery replaced it): only the receipt is left to save.
+        *replaced = true;
+    }
     if current_hash == commit.plan.base_hash {
         // Close the window between journal creation and replacement as much as
         // portable std permits by re-reading immediately before rename.
@@ -1469,6 +1569,9 @@ fn finish_commit(
             path: commit.plan.config_path.clone(),
             source,
         })?;
+        // Only now has the target changed: a failed temporary write or
+        // rename above leaves it as it was (E17-53 confirmation round).
+        *replaced = true;
         sync_parent(&commit.plan.config_path).map_err(|source| IntegrationError::Io {
             path: commit.plan.config_path.clone(),
             source,
@@ -1478,26 +1581,28 @@ fn finish_commit(
     if hash_target(&written) != commit.plan.result_hash {
         return Err(IntegrationError::RecoveryConflict {
             path: commit.plan.config_path.clone(),
+            journal: journal.to_path_buf(),
         });
     }
     receipts.save(&commit.persisted_receipt)?;
-    let journal = journal_path(&commit.plan.config_path);
-    fs::remove_file(&journal).map_err(|source| IntegrationError::Io {
-        path: journal,
+    prune_backups(commit, receipts);
+    fs::remove_file(journal).map_err(|source| IntegrationError::Io {
+        path: journal.to_path_buf(),
         source,
     })?;
     // The config and receipt are committed before journal deletion. A failed
     // directory fsync here must not report failure after commit; if deletion
     // is not durable the authenticated journal may safely replay idempotently.
-    let _post_commit_sync = sync_parent(&commit.plan.config_path);
+    let _post_commit_sync = sync_parent(journal);
     Ok(())
 }
 
 fn recover_journal(
+    journal: &Path,
     config_path: &Path,
     receipts: &dyn ReceiptStore,
 ) -> Result<(String, ApplyReport), IntegrationError> {
-    let path = journal_path(config_path);
+    let path = journal.to_path_buf();
     let bytes = fs::read(&path).map_err(|source| IntegrationError::Io {
         path: path.clone(),
         source,
@@ -1523,18 +1628,18 @@ fn recover_journal(
     // authority without the user-private approval key.
     receipts.verify_journal(&payload, &envelope.mac)?;
     let commit = envelope.commit;
-    validate_pending_commit(&commit)?;
+    validate_pending_commit(&commit, journal)?;
     if commit.plan.config_path != config_path {
         return Err(IntegrationError::InvalidJournal {
             path,
             reason: "journal target path mismatch".to_owned(),
         });
     }
-    finish_commit(&commit, receipts)?;
+    finish_commit(&commit, journal, receipts)?;
     Ok((commit.plan.plan_hash, commit.report))
 }
 
-fn validate_pending_commit(commit: &PendingCommit) -> Result<(), IntegrationError> {
+fn validate_pending_commit(commit: &PendingCommit, journal: &Path) -> Result<(), IntegrationError> {
     if commit.journal_version != 1
         || commit.plan.schema_version != PLAN_SCHEMA_VERSION
         || commit.plan.document_type != "mutation_plan"
@@ -1550,7 +1655,7 @@ fn validate_pending_commit(commit: &PendingCommit) -> Result<(), IntegrationErro
                 .to_string()
     {
         return Err(IntegrationError::InvalidJournal {
-            path: journal_path(&commit.plan.config_path),
+            path: journal.to_path_buf(),
             reason: "journal hashes or version do not validate".to_owned(),
         });
     }
@@ -1565,18 +1670,18 @@ fn validate_pending_commit(commit: &PendingCommit) -> Result<(), IntegrationErro
         || commit.persisted_receipt.config_path != commit.plan.config_path
     {
         return Err(IntegrationError::InvalidJournal {
-            path: journal_path(&commit.plan.config_path),
+            path: journal.to_path_buf(),
             reason: "journal payload does not match the approved plan".to_owned(),
         });
     }
     commit.persisted_receipt.validate()?;
-    validate_commit_outcome(commit)?;
+    validate_commit_outcome(commit, journal)?;
     Ok(())
 }
 
-fn validate_commit_outcome(commit: &PendingCommit) -> Result<(), IntegrationError> {
+fn validate_commit_outcome(commit: &PendingCommit, journal: &Path) -> Result<(), IntegrationError> {
     let invalid_outcome = || IntegrationError::InvalidJournal {
-        path: journal_path(&commit.plan.config_path),
+        path: journal.to_path_buf(),
         reason: "journal receipt/report does not match the approved plan".to_owned(),
     };
     if commit.report.already_applied {
@@ -1655,16 +1760,27 @@ fn validate_commit_outcome(commit: &PendingCommit) -> Result<(), IntegrationErro
 }
 
 fn write_journal(
+    journal: &Path,
     config_path: &Path,
     commit: &PendingCommit,
     receipts: &dyn ReceiptStore,
 ) -> Result<(), IntegrationError> {
-    let path = journal_path(config_path);
-    let parent = config_path.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent).map_err(|source| IntegrationError::Io {
-        path: parent.to_path_buf(),
-        source,
-    })?;
+    let path = journal.to_path_buf();
+    let parent = journal.parent().unwrap_or_else(|| Path::new("."));
+    if journal == journal_path(config_path) {
+        // Only a manager without a backup directory keeps it beside the file.
+        fs::create_dir_all(parent).map_err(|source| IntegrationError::Io {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+    } else {
+        crate::backups::ensure_private_dir(parent).map_err(|reason| {
+            IntegrationError::BackupDirectory {
+                path: parent.to_path_buf(),
+                reason,
+            }
+        })?;
+    }
     let payload = serde_json::to_vec(commit).map_err(|error| IntegrationError::InvalidJournal {
         path: path.clone(),
         reason: error.to_string(),
@@ -1737,38 +1853,97 @@ pub(crate) fn publish_completed_temp_no_replace(
     move_file_windows(temp, destination, false)
 }
 
-fn ensure_backup(commit: &PendingCommit) -> Result<(), IntegrationError> {
+/// Writes the commit's copy if it is not there yet; returns whether this
+/// call created it.
+fn ensure_backup(commit: &PendingCommit) -> Result<bool, IntegrationError> {
     let Some(base_contents) = &commit.base_contents else {
-        return Ok(());
+        return Ok(false);
     };
     if commit.plan.backup_path == UNMODIFIED_FILE_REMOVED_BACKUP_SENTINEL
         || commit.plan.backup_path == NO_BACKUP_KEPT_SENTINEL
         || commit.plan.backup_path == UNMODIFIED_FILE_REPLACED_BACKUP_SENTINEL
     {
-        return Ok(());
+        return Ok(false);
     }
     let path = PathBuf::from(&commit.plan.backup_path);
+    let legacy = crate::backups::is_legacy_beside(&commit.plan.config_path, &path);
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    if !legacy {
+        crate::backups::ensure_private_dir(dir).map_err(|reason| {
+            IntegrationError::BackupDirectory {
+                path: dir.to_path_buf(),
+                reason,
+            }
+        })?;
+    }
     if path.exists() {
         let existing = fs::read(&path).map_err(|source| IntegrationError::Io {
             path: path.clone(),
             source,
         })?;
         if existing == base_contents.as_bytes() {
-            return Ok(());
+            return Ok(false);
         }
         return Err(IntegrationError::BackupCollision { path });
     }
-    write_new_private(&path, base_contents.as_bytes()).map_err(|source| IntegrationError::Io {
-        path: path.clone(),
-        source,
-    })?;
-    sync_parent(&path).map_err(|source| IntegrationError::Io { path, source })
+    if legacy {
+        // A journal an earlier version left names a copy beside the file.
+        // That version wrote the copy before its journal; if it is gone, no
+        // new copy is put in the project tree (E17-53).
+        return Ok(false);
+    }
+    if let Err(error) = write_new_private(&path, base_contents.as_bytes()) {
+        // A partly written copy is not a copy.
+        let _ignored = fs::remove_file(&path);
+        return Err(IntegrationError::BackupDirectory {
+            path: dir.to_path_buf(),
+            reason: format!("a copy cannot be written into it: {error}"),
+        });
+    }
+    sync_parent(&path).map_err(|source| IntegrationError::Io { path, source })?;
+    Ok(true)
+}
+
+/// Keeps the oldest and newest copies of the committed target and every
+/// copy the plan, its prior receipt, or the target's active receipt names
+/// (E17-53). Copies beside the file, which only earlier versions wrote, are
+/// never touched.
+fn prune_backups(commit: &PendingCommit, receipts: &dyn ReceiptStore) {
+    let written = Path::new(&commit.plan.backup_path);
+    if commit.base_contents.is_none()
+        || crate::backups::is_legacy_beside(&commit.plan.config_path, written)
+        || written
+            .parent()
+            .is_none_or(|dir| dir.as_os_str().is_empty())
+        || !written.is_absolute()
+    {
+        return;
+    }
+    let prior = commit
+        .plan
+        .prior_receipt
+        .as_ref()
+        .map(|receipt| Path::new(receipt.backup_path.as_str()));
+    let active = receipts
+        .active_for(&commit.plan.client, &commit.plan.config_path)
+        .ok()
+        .flatten()
+        .map(|receipt| PathBuf::from(receipt.backup_path));
+    let protect = std::iter::once(written)
+        .chain(prior)
+        .chain(active.as_deref())
+        .collect::<Vec<_>>();
+    crate::backups::prune(&commit.plan.config_path, written, &protect);
 }
 
 /// Returns the exact pre-install bytes when a JSON uninstall of a file left
 /// untouched since its install would otherwise rewrite an equivalent document
 /// with different insignificant bytes.
-fn pristine_uninstall_target(request: &MutationRequest, base: &TargetState) -> Option<String> {
+fn pristine_uninstall_target(
+    request: &MutationRequest,
+    base: &TargetState,
+    backup_dir: Option<&Path>,
+) -> Option<String> {
     if request.operation != MutationKind::Uninstall || request.config_format != ConfigFormat::Json {
         return None;
     }
@@ -1782,6 +1957,7 @@ fn pristine_uninstall_target(request: &MutationRequest, base: &TargetState) -> O
     pristine_json_backup(
         &request.config_path,
         Path::new(&receipt.backup_path),
+        backup_dir,
         current,
         &request.target_contents,
     )
@@ -2551,35 +2727,8 @@ fn append_preview_line(
     }
 }
 
-fn planned_backup_path(path: &Path, now: i64) -> Result<PathBuf, IntegrationError> {
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| invalid("config_path must identify a file"))?
-        .to_string_lossy();
-    // The documented timestamp has one-second precision. Back-to-back install
-    // and uninstall plans may therefore collide; reserve the next free
-    // timestamp rather than ever overwriting a prior backup.
-    for offset in 0..=PLAN_TTL_SECONDS {
-        let timestamp = DateTime::<Utc>::from_timestamp(now.saturating_add(offset), 0)
-            .ok_or_else(|| invalid("plan timestamp is outside the supported range"))?
-            .format("%Y-%m-%dT%H-%M-%SZ");
-        let candidate = path.with_file_name(format!("{file_name}.compresso-backup-{timestamp}"));
-        if !candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-    Err(invalid(
-        "no collision-free timestamped backup path is available",
-    ))
-}
-
-/// The crash-recovery journal a commit to `path` writes beside it (mode
-/// 0600, removed when the commit finishes; after a crash it stays until a
-/// later command recovers it).
-pub fn pending_journal_path(path: &Path) -> PathBuf {
-    journal_path(path)
-}
-
+/// Where versions before E17-53 (and a manager without a backup directory)
+/// keep the crash-recovery journal of a commit to `path`: beside it.
 fn journal_path(path: &Path) -> PathBuf {
     let file_name = path.file_name().unwrap_or_default().to_string_lossy();
     path.with_file_name(format!("{file_name}.compresso-journal"))
@@ -2776,8 +2925,13 @@ mod tests {
                 .map_err(|_| ReceiptError::LockPoisoned)?
                 .take()
             {
-                write_journal(config_path, &commit, &self.inner)
-                    .expect("authenticated foreign journal should be injected");
+                write_journal(
+                    &test_journal(config_path),
+                    config_path,
+                    &commit,
+                    &self.inner,
+                )
+                .expect("authenticated foreign journal should be injected");
             }
             self.inner.active_for(client, config_path)
         }
@@ -2795,8 +2949,16 @@ mod tests {
         }
     }
 
+    /// Where a test manager (backup directory [`crate::backups::test_dir`])
+    /// keeps the journal of a commit to `config`.
+    fn test_journal(config: &Path) -> PathBuf {
+        crate::backups::journal_path(&crate::backups::test_dir(), config)
+    }
+
     fn manager(clock: Arc<FakeClock>) -> PlanManager {
-        PlanManager::with_clock("session-a", clock).expect("manager")
+        PlanManager::with_clock("session-a", clock)
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir())
     }
 
     fn install_request(path: PathBuf, target: &str) -> MutationRequest {
@@ -2877,7 +3039,9 @@ mod tests {
         let path = directory.path().join("config.json");
         fs::write(&path, "{}\n").expect("base written");
         let clock = Arc::new(SequenceClock::new(vec![100, 699]));
-        let manager = PlanManager::with_clock("ttl-session", clock).expect("manager");
+        let manager = PlanManager::with_clock("ttl-session", clock)
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let plan = manager
             .issue(install_request(
                 path,
@@ -2995,8 +3159,9 @@ mod tests {
             .expect("deferred install authorized");
 
         let receipts = MemoryReceiptStore::default();
-        let foreign_manager =
-            PlanManager::with_clock("foreign-session", clock.clone()).expect("foreign manager");
+        let foreign_manager = PlanManager::with_clock("foreign-session", clock.clone())
+            .expect("foreign manager")
+            .with_backup_dir(crate::backups::test_dir());
         let foreign = foreign_manager
             .issue(install_request(
                 path.clone(),
@@ -3005,8 +3170,9 @@ mod tests {
             .expect("foreign plan issued");
         let foreign_commit =
             build_commit(&foreign, clock.now_unix_seconds(), None).expect("foreign commit built");
-        write_journal(&path, &foreign_commit, &receipts).expect("foreign journal injected");
-        let journal = journal_path(&path);
+        write_journal(&test_journal(&path), &path, &foreign_commit, &receipts)
+            .expect("foreign journal injected");
+        let journal = test_journal(&path);
         let journal_before = fs::read(&journal).expect("foreign journal readable");
 
         let error = manager
@@ -3047,8 +3213,9 @@ mod tests {
         let installed_bytes = fs::read(&path).expect("installed config readable");
         let backups_before = backup_files(directory.path());
 
-        let setup_manager =
-            PlanManager::with_clock("setup-session", clock.clone()).expect("setup manager");
+        let setup_manager = PlanManager::with_clock("setup-session", clock.clone())
+            .expect("setup manager")
+            .with_backup_dir(crate::backups::test_dir());
         let approved = setup_manager
             .issue(install_request(path.clone(), target))
             .expect("idempotent setup plan issued");
@@ -3057,7 +3224,8 @@ mod tests {
             .expect("idempotent setup plan authorized");
 
         let foreign_manager = PlanManager::with_clock("foreign-active-lookup", clock.clone())
-            .expect("foreign manager");
+            .expect("foreign manager")
+            .with_backup_dir(crate::backups::test_dir());
         let foreign = foreign_manager
             .issue(install_request(
                 path.clone(),
@@ -3077,7 +3245,7 @@ mod tests {
             fs::read(&path).expect("installed config remains readable"),
             installed_bytes
         );
-        assert!(journal_path(&path).exists());
+        assert!(test_journal(&path).exists());
         assert_eq!(backup_files(directory.path()), backups_before);
         assert_eq!(
             receipts
@@ -3125,7 +3293,8 @@ mod tests {
 
         clock.advance(1);
         let foreign_manager = PlanManager::with_clock("foreign-uninstall-lookup", clock.clone())
-            .expect("foreign manager");
+            .expect("foreign manager")
+            .with_backup_dir(crate::backups::test_dir());
         let foreign = foreign_manager
             .issue(install_request(
                 path.clone(),
@@ -3152,7 +3321,7 @@ mod tests {
             fs::read_to_string(&path).expect("config remains readable"),
             user_modified
         );
-        assert!(journal_path(&path).exists());
+        assert!(test_journal(&path).exists());
         assert_eq!(backup_files(directory.path()), backups_before);
         assert_eq!(
             receipts
@@ -3182,8 +3351,9 @@ mod tests {
             .expect("install applies");
         let installed_bytes = fs::read(&path).expect("installed config readable");
 
-        let foreign_manager =
-            PlanManager::with_clock("foreign-completed", clock.clone()).expect("foreign manager");
+        let foreign_manager = PlanManager::with_clock("foreign-completed", clock.clone())
+            .expect("foreign manager")
+            .with_backup_dir(crate::backups::test_dir());
         let foreign = foreign_manager
             .issue(install_request(
                 path.clone(),
@@ -3192,8 +3362,9 @@ mod tests {
             .expect("foreign plan issued");
         let foreign_commit =
             build_commit(&foreign, clock.now_unix_seconds(), None).expect("foreign commit built");
-        write_journal(&path, &foreign_commit, &receipts).expect("foreign journal injected");
-        let journal = journal_path(&path);
+        write_journal(&test_journal(&path), &path, &foreign_commit, &receipts)
+            .expect("foreign journal injected");
+        let journal = test_journal(&path);
         let journal_before = fs::read(&journal).expect("foreign journal readable");
 
         let _apply_guard = manager.apply_lock.lock().expect("apply lock");
@@ -3228,7 +3399,9 @@ mod tests {
         let directory = tempdir().expect("temp directory");
         let path = directory.path().join("config.json");
         fs::write(&path, "{\"unknown\":{\"keep\":true}}\n").expect("base written");
-        let manager = PlanManager::new("owned-delta").expect("manager");
+        let manager = PlanManager::new("owned-delta")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let error = manager
             .issue(install_request(
                 path,
@@ -3243,7 +3416,9 @@ mod tests {
         let directory = tempdir().expect("temp directory");
         let path = directory.path().join("config.json");
         fs::write(&path, "{}\n").expect("base written");
-        let manager = PlanManager::new("owned-parent").expect("manager");
+        let manager = PlanManager::new("owned-parent")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
         let install = manager
             .issue(install_request(
@@ -3276,7 +3451,9 @@ mod tests {
         let path = directory.path().join("config.toml");
         let base = "# user comment\nmodel = \"gpt-5\"\n";
         fs::write(&path, base).expect("base written");
-        let manager = PlanManager::new("toml-owned").expect("manager");
+        let manager = PlanManager::new("toml-owned")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let valid = format!(
             "{base}\n[mcp_servers.compresso]\ncommand = \"/bin/compresso\"\nargs = [\"mcp\", \"serve\"]\n"
         );
@@ -3456,11 +3633,14 @@ mod tests {
             .expect("plan issued");
         let receipts = MemoryReceiptStore::default();
         let commit = build_commit(&plan, clock.now_unix_seconds(), None).expect("commit built");
-        write_journal(&path, &commit, &receipts).expect("durable journal written");
+        write_journal(&test_journal(&path), &path, &commit, &receipts)
+            .expect("durable journal written");
         atomic_replace(&path, plan.target_contents.as_bytes(), "crash-test")
             .expect("simulated pre-crash config replacement");
 
-        let fresh = PlanManager::with_clock("new-process", clock).expect("fresh manager");
+        let fresh = PlanManager::with_clock("new-process", clock)
+            .expect("fresh manager")
+            .with_backup_dir(crate::backups::test_dir());
         let report = fresh
             .recover(&path, &receipts)
             .expect("recovery succeeds")
@@ -3475,7 +3655,7 @@ mod tests {
                 .expect("receipt lookup")
                 .is_some()
         );
-        assert!(!journal_path(&path).exists());
+        assert!(!test_journal(&path).exists());
         assert!(Path::new(&plan.backup_path).exists());
     }
 
@@ -3514,7 +3694,7 @@ mod tests {
             .expect("active receipt authorizes uninstall");
         let commit = build_commit(&uninstall, clock.now_unix_seconds(), Some(&canonical))
             .expect("uninstall commit built");
-        write_journal(&path, &commit, &receipts).expect("journal written");
+        write_journal(&test_journal(&path), &path, &commit, &receipts).expect("journal written");
         ensure_backup(&commit).expect("backup committed");
         atomic_replace(
             &path,
@@ -3531,9 +3711,11 @@ mod tests {
                 .expect("active lookup")
                 .is_none()
         );
-        assert!(journal_path(&path).exists());
+        assert!(test_journal(&path).exists());
 
-        let fresh = PlanManager::with_clock("uninstall-recovery", clock).expect("fresh manager");
+        let fresh = PlanManager::with_clock("uninstall-recovery", clock)
+            .expect("fresh manager")
+            .with_backup_dir(crate::backups::test_dir());
         let report = fresh
             .recover(&path, &receipts)
             .expect("recovery succeeds")
@@ -3549,7 +3731,7 @@ mod tests {
                 .expect("receipt lookup"),
             Some(commit.persisted_receipt)
         );
-        assert!(!journal_path(&path).exists());
+        assert!(!test_journal(&path).exists());
     }
 
     fn whole_file_request(
@@ -3609,7 +3791,8 @@ mod tests {
                 .expect("active receipt authorizes uninstall");
             let commit = build_commit(&uninstall, clock.now_unix_seconds(), Some(&canonical))
                 .expect("uninstall commit built");
-            write_journal(&path, &commit, &receipts).expect("journal written");
+            write_journal(&test_journal(&path), &path, &commit, &receipts)
+                .expect("journal written");
             fs::remove_file(&path).expect("simulated deletion before the crash");
             if receipt_saved_before_crash {
                 receipts
@@ -3617,8 +3800,9 @@ mod tests {
                     .expect("receipt committed");
             }
 
-            let fresh =
-                PlanManager::with_clock("whole-file-recovery", clock).expect("fresh manager");
+            let fresh = PlanManager::with_clock("whole-file-recovery", clock)
+                .expect("fresh manager")
+                .with_backup_dir(crate::backups::test_dir());
             let report = fresh
                 .recover(&path, &receipts)
                 .expect("recovery succeeds")
@@ -3628,7 +3812,7 @@ mod tests {
                 ["agent_definition"]
             );
             assert!(!path.exists(), "recovery never recreates the deleted file");
-            assert!(!journal_path(&path).exists());
+            assert!(!test_journal(&path).exists());
             assert!(
                 receipts
                     .active_for("claude-code", &path)
@@ -3688,14 +3872,16 @@ mod tests {
             .expect("plan issued");
         let first_store = FileReceiptStore::new(&state);
         let commit = build_commit(&plan, clock.now_unix_seconds(), None).expect("commit built");
-        write_journal(&path, &commit, &first_store).expect("authenticated journal written");
+        write_journal(&test_journal(&path), &path, &commit, &first_store)
+            .expect("authenticated journal written");
         atomic_replace(&path, plan.target_contents.as_bytes(), "restart-test")
             .expect("simulated config commit");
         drop(first_store);
 
         let restarted_store = FileReceiptStore::new(&state);
-        let restarted_manager =
-            PlanManager::with_clock("restarted", clock).expect("restarted manager");
+        let restarted_manager = PlanManager::with_clock("restarted", clock)
+            .expect("restarted manager")
+            .with_backup_dir(crate::backups::test_dir());
         let report = restarted_manager
             .recover(&path, &restarted_store)
             .expect("authenticated recovery succeeds")
@@ -3725,11 +3911,14 @@ mod tests {
             .expect("plan issued");
         let store = FileReceiptStore::new(&state);
         let commit = build_commit(&plan, clock.now_unix_seconds(), None).expect("commit built");
-        write_journal(&path, &commit, &store).expect("authenticated journal written");
+        write_journal(&test_journal(&path), &path, &commit, &store)
+            .expect("authenticated journal written");
         let key_path = state.with_file_name("receipts.json.approval-key");
         fs::remove_file(&key_path).expect("test key removed");
 
-        let restarted = PlanManager::with_clock("restarted", clock).expect("restarted manager");
+        let restarted = PlanManager::with_clock("restarted", clock)
+            .expect("restarted manager")
+            .with_backup_dir(crate::backups::test_dir());
         let error = restarted
             .recover(&path, &FileReceiptStore::new(&state))
             .expect_err("missing key must fail closed");
@@ -3738,7 +3927,7 @@ mod tests {
             IntegrationError::Receipt(ReceiptError::ApprovalKey { .. })
         ));
         assert_eq!(fs::read_to_string(&path).expect("config readable"), "{}\n");
-        assert!(journal_path(&path).exists());
+        assert!(test_journal(&path).exists());
 
         #[cfg(unix)]
         {
@@ -3785,8 +3974,8 @@ mod tests {
             .expect("plan issued");
         let store = FileReceiptStore::new(&state);
         let commit = build_commit(&plan, clock.now_unix_seconds(), None).expect("commit built");
-        write_journal(&path, &commit, &store).expect("journal written");
-        let journal = journal_path(&path);
+        write_journal(&test_journal(&path), &path, &commit, &store).expect("journal written");
+        let journal = test_journal(&path);
         let mut forged: serde_json::Value =
             serde_json::from_slice(&fs::read(&journal).expect("journal readable"))
                 .expect("journal JSON");
@@ -3797,7 +3986,9 @@ mod tests {
         )
         .expect("forged journal written");
 
-        let restarted = PlanManager::with_clock("restarted", clock).expect("restarted manager");
+        let restarted = PlanManager::with_clock("restarted", clock)
+            .expect("restarted manager")
+            .with_backup_dir(crate::backups::test_dir());
         let error = restarted
             .recover(&path, &FileReceiptStore::new(&state))
             .expect_err("forged journal rejected");
@@ -3866,8 +4057,9 @@ mod tests {
         let bytes_after_first = fs::read(&path).expect("installed config readable");
         let backups_after_first = backup_files(directory.path());
 
-        let fresh_manager =
-            PlanManager::with_clock("session-b", clock).expect("fresh plan manager");
+        let fresh_manager = PlanManager::with_clock("session-b", clock)
+            .expect("fresh plan manager")
+            .with_backup_dir(crate::backups::test_dir());
         let fresh_plan = fresh_manager
             .issue(install_request(path.clone(), target))
             .expect("fresh plan issued");
@@ -3880,7 +4072,7 @@ mod tests {
         assert_eq!(report.receipt, Some(first_receipt));
         assert_eq!(fs::read(&path).expect("config readable"), bytes_after_first);
         assert_eq!(backup_files(directory.path()), backups_after_first);
-        assert!(!journal_path(&path).exists());
+        assert!(!test_journal(&path).exists());
         assert_eq!(receipts.all().expect("receipt snapshot").len(), 1);
     }
 
@@ -3960,7 +4152,9 @@ mod tests {
         let state = directory.path().join("state/receipts.json");
         let target = "{\"mcpServers\":{\"compresso\":{\"command\":\"/one\"}}}\n";
         fs::write(&path, "{}\n").expect("base written");
-        let manager = PlanManager::new("receipt-tamper-install").expect("manager");
+        let manager = PlanManager::new("receipt-tamper-install")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let store = FileReceiptStore::new(&state);
         let plan = manager
             .issue(install_request(path.clone(), target))
@@ -3984,7 +4178,9 @@ mod tests {
         )
         .expect("tampered receipt record written");
 
-        let fresh = PlanManager::new("receipt-tamper-repeat").expect("fresh manager");
+        let fresh = PlanManager::new("receipt-tamper-repeat")
+            .expect("fresh manager")
+            .with_backup_dir(crate::backups::test_dir());
         let repeat = fresh
             .issue(install_request(path.clone(), target))
             .expect("repeat plan");
@@ -3997,7 +4193,7 @@ mod tests {
         ));
         assert_eq!(fs::read(&path).expect("config readable"), config_before);
         assert_eq!(backup_files(directory.path()), backups_before);
-        assert!(!journal_path(&path).exists());
+        assert!(!test_journal(&path).exists());
     }
 
     #[test]
@@ -4050,7 +4246,7 @@ mod tests {
             user_modified
         );
         assert_eq!(backup_files(directory.path()), backups_before);
-        assert!(!journal_path(&path).exists());
+        assert!(!test_journal(&path).exists());
         assert_eq!(
             receipts
                 .active_for("claude-code", &path)
@@ -4101,7 +4297,7 @@ mod tests {
         ));
         assert_eq!(fs::read(&path).expect("config readable"), config_before);
         assert_eq!(backup_files(directory.path()), backups_before);
-        assert!(!journal_path(&path).exists());
+        assert!(!test_journal(&path).exists());
         assert_eq!(
             receipts
                 .active_for("claude-code", &path)
@@ -4161,7 +4357,7 @@ mod tests {
             first_target
         );
         assert_eq!(backup_files(directory.path()), backups_before);
-        assert!(!journal_path(&path).exists());
+        assert!(!test_journal(&path).exists());
         assert_eq!(
             receipts
                 .active_for("claude-code", &path)
@@ -4210,13 +4406,604 @@ mod tests {
         ));
         assert!(!path.exists());
         assert_eq!(backup_files(directory.path()), backups_before);
-        assert!(!journal_path(&path).exists());
+        assert!(!test_journal(&path).exists());
         assert_eq!(
             receipts
                 .active_for("claude-code", &path)
                 .expect("active lookup"),
             Some(receipt)
         );
+    }
+
+    /// Every file under `directory`, recursively, relative to it.
+    fn all_files(directory: &Path) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        let mut pending = vec![directory.to_path_buf()];
+        while let Some(next) = pending.pop() {
+            for entry in fs::read_dir(&next).expect("directory readable") {
+                let path = entry.expect("entry readable").path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    found.push(path.strip_prefix(directory).expect("inside").to_path_buf());
+                }
+            }
+        }
+        found.sort();
+        found
+    }
+
+    fn uninstall_request(path: PathBuf, target: &str, receipt: &InstallReceipt) -> MutationRequest {
+        MutationRequest {
+            operation: MutationKind::Uninstall,
+            prior_receipt: Some(receipt.clone()),
+            ..install_request(path, target)
+        }
+    }
+
+    /// A changed file's copy is kept in the backup directory, private to the
+    /// user, never beside the file, and only the newest copies of one target
+    /// survive (E17-53).
+    #[test]
+    fn test_backups_are_private_in_the_backup_directory_and_pruned() {
+        let directory = tempdir().expect("temp directory");
+        let project = directory.path().join("project");
+        let backups = directory.path().join("data").join(crate::BACKUP_DIR_NAME);
+        fs::create_dir_all(&project).expect("project");
+        let path = project.join(".mcp.json");
+        fs::write(
+            &path,
+            "{\"mcpServers\":{\"other\":{\"token\":\"secret\"}}}\n",
+        )
+        .expect("base");
+        let clock = Arc::new(FakeClock::new(1_700_000_000));
+        let manager = PlanManager::with_clock("prune", clock.clone())
+            .expect("manager")
+            .with_backup_dir(&backups);
+        let receipts = MemoryReceiptStore::default();
+        let mut written = Vec::new();
+        for step in 0..6 {
+            let target = format!(
+                "{{\"mcpServers\":{{\"other\":{{\"token\":\"secret\"}},\"compresso\":{{\"command\":\"/bin/c{step}\"}}}}}}\n"
+            );
+            let plan = manager
+                .issue(install_request(path.clone(), &target))
+                .expect("install plan");
+            assert_eq!(
+                Path::new(&plan.backup_path).parent(),
+                Some(backups.as_path())
+            );
+            manager
+                .apply(&PlanApproval::from(&plan), &receipts)
+                .expect("install applies");
+            written.push(PathBuf::from(&plan.backup_path));
+            clock.advance(60);
+        }
+
+        assert_eq!(all_files(&project), [PathBuf::from(".mcp.json")]);
+        let kept = all_files(&backups)
+            .into_iter()
+            .map(|name| backups.join(name))
+            .collect::<Vec<_>>();
+        // The oldest copy (the file before Compresso first changed it) and
+        // the newest three.
+        let mut expected = vec![written[0].clone()];
+        expected.extend_from_slice(&written[6 - crate::KEPT_PER_TARGET..]);
+        assert_eq!(kept, expected);
+        assert_eq!(
+            fs::read_to_string(&written[0]).expect("oldest copy"),
+            "{\"mcpServers\":{\"other\":{\"token\":\"secret\"}}}\n"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode =
+                |path: &Path| fs::metadata(path).expect("metadata").permissions().mode() & 0o777;
+            assert_eq!(mode(&backups), 0o700);
+            for copy in &kept {
+                assert_eq!(mode(copy), 0o600, "{}", copy.display());
+            }
+        }
+    }
+
+    /// A project with an `.mcp.json` holding another server's token, a
+    /// manager whose backup directory is `backups`, and the token-bearing
+    /// install plan for it.
+    fn secret_project(directory: &Path, backups: &Path) -> (PathBuf, PlanManager, MutationPlan) {
+        let project = directory.join("project");
+        fs::create_dir_all(&project).expect("project");
+        let path = project.join(".mcp.json");
+        fs::write(
+            &path,
+            "{\"mcpServers\":{\"other\":{\"token\":\"secret\"}}}\n",
+        )
+        .expect("base");
+        let manager =
+            PlanManager::with_clock("journal-steps", Arc::new(FakeClock::new(1_700_000_000)))
+                .expect("manager")
+                .with_backup_dir(backups);
+        let plan = manager
+            .issue(install_request(
+                path,
+                "{\"mcpServers\":{\"other\":{\"token\":\"secret\"},\"compresso\":{}}}\n",
+            ))
+            .expect("plan");
+        (project, manager, plan)
+    }
+
+    /// A backup directory that is a file, a symbolic link, or cannot be
+    /// created stops the commit before anything is written: no journal, no
+    /// copy, nothing new in the project, and the error names the directory
+    /// and what is wrong with it (E17-53 review).
+    #[test]
+    fn test_an_unusable_backup_directory_fails_before_any_write() {
+        for case in ["file", "symlink", "unwritable"] {
+            let directory = tempdir().expect("temp directory");
+            let data = directory.path().join("data");
+            fs::create_dir_all(&data).expect("data");
+            let backups = data.join(crate::BACKUP_DIR_NAME);
+            match case {
+                "file" => fs::write(&backups, "not a directory").expect("file in place"),
+                "symlink" => {
+                    let elsewhere = directory.path().join("elsewhere");
+                    fs::create_dir_all(&elsewhere).expect("elsewhere");
+                    #[cfg(unix)]
+                    std::os::unix::fs::symlink(&elsewhere, &backups).expect("symlink");
+                    #[cfg(not(unix))]
+                    continue;
+                }
+                _ => {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt as _;
+                        fs::set_permissions(&data, fs::Permissions::from_mode(0o500))
+                            .expect("read-only data directory");
+                    }
+                    #[cfg(not(unix))]
+                    continue;
+                }
+            }
+            let (project, manager, plan) = secret_project(directory.path(), &backups);
+            let before = all_files(&project);
+            let base = fs::read(project.join(".mcp.json")).expect("base");
+
+            let error = manager
+                .apply(&PlanApproval::from(&plan), &MemoryReceiptStore::default())
+                .expect_err(case);
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                fs::set_permissions(&data, fs::Permissions::from_mode(0o700)).expect("restore");
+            }
+            match &error {
+                IntegrationError::BackupDirectory { path, reason } => {
+                    assert_eq!(path, &backups, "{case}");
+                    assert!(!reason.is_empty(), "{case}");
+                }
+                other => panic!("{case}: {other}"),
+            }
+            assert!(
+                error.to_string().contains(&*backups.to_string_lossy()),
+                "{error}"
+            );
+            assert_eq!(all_files(&project), before, "{case}");
+            assert_eq!(
+                fs::read(project.join(".mcp.json")).expect("config"),
+                base,
+                "{case}"
+            );
+            assert!(
+                manager
+                    .pending_journal(&project.join(".mcp.json"))
+                    .is_none(),
+                "{case}"
+            );
+            let elsewhere = directory.path().join("elsewhere");
+            if elsewhere.exists() {
+                assert!(
+                    all_files(&elsewhere).is_empty(),
+                    "{case}: nothing through the link"
+                );
+            }
+        }
+    }
+
+    /// Each step of a commit that can fail: nothing but the target itself
+    /// ever changes in the project, the journal is kept only in the backup
+    /// directory, and only while the target holds this commit's change.
+    #[test]
+    fn test_a_failed_commit_never_leaves_a_file_in_the_project() {
+        struct Injector {
+            inner: MemoryReceiptStore,
+            on_seal: Option<PathBuf>,
+            fail_save: bool,
+        }
+        impl ReceiptStore for Injector {
+            fn by_plan_hash(&self, hash: &str) -> Result<Option<InstallReceipt>, ReceiptError> {
+                self.inner.by_plan_hash(hash)
+            }
+            fn active_for(
+                &self,
+                client: &str,
+                config_path: &Path,
+            ) -> Result<Option<InstallReceipt>, ReceiptError> {
+                self.inner.active_for(client, config_path)
+            }
+            fn save(&self, receipt: &InstallReceipt) -> Result<(), ReceiptError> {
+                if self.fail_save {
+                    return Err(ReceiptError::LockPoisoned);
+                }
+                self.inner.save(receipt)
+            }
+            fn seal_journal(&self, payload: &[u8]) -> Result<String, ReceiptError> {
+                if let Some(path) = &self.on_seal {
+                    // Another writer changes the file while the journal is written.
+                    fs::write(path, "{\"changed\":true}\n").expect("concurrent edit");
+                }
+                self.inner.seal_journal(payload)
+            }
+            fn verify_journal(&self, payload: &[u8], mac: &str) -> Result<(), ReceiptError> {
+                self.inner.verify_journal(payload, mac)
+            }
+        }
+
+        // Drift after the journal is written: the target was never changed
+        // by this commit, so the journal is removed.
+        let directory = tempdir().expect("temp directory");
+        let backups = directory.path().join("data").join(crate::BACKUP_DIR_NAME);
+        let (project, manager, plan) = secret_project(directory.path(), &backups);
+        let before = all_files(&project);
+        let store = Injector {
+            inner: MemoryReceiptStore::default(),
+            on_seal: Some(plan.config_path.clone()),
+            fail_save: false,
+        };
+        let error = manager
+            .apply(&PlanApproval::from(&plan), &store)
+            .expect_err("drift");
+        assert!(
+            matches!(error, IntegrationError::RecoveryConflict { .. }),
+            "{error}"
+        );
+        assert_eq!(all_files(&project), before);
+        assert!(manager.pending_journal(&plan.config_path).is_none());
+
+        // The receipt cannot be saved after the target changed: the journal
+        // stays, in the backup directory only, and recovery finishes it.
+        let directory = tempdir().expect("temp directory");
+        let backups = directory.path().join("data").join(crate::BACKUP_DIR_NAME);
+        let (project, manager, plan) = secret_project(directory.path(), &backups);
+        let before = all_files(&project);
+        let failing = Injector {
+            inner: MemoryReceiptStore::default(),
+            on_seal: None,
+            fail_save: true,
+        };
+        manager
+            .apply(&PlanApproval::from(&plan), &failing)
+            .expect_err("receipt save fails");
+        assert_eq!(all_files(&project), before, "only the target changed");
+        let journal = manager
+            .pending_journal(&plan.config_path)
+            .expect("journal kept");
+        assert_eq!(journal.parent(), Some(backups.as_path()));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                fs::metadata(&journal)
+                    .expect("journal")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+        let recovering = Injector {
+            fail_save: false,
+            ..failing
+        };
+        manager
+            .recover(&plan.config_path, &recovering)
+            .expect("recovered")
+            .expect("a pending commit");
+        assert!(manager.pending_journal(&plan.config_path).is_none());
+        assert_eq!(all_files(&project), before);
+    }
+
+    /// Copies of the target in `backups` (not journals or other files).
+    #[cfg(unix)]
+    fn copies_in(backups: &Path) -> Vec<PathBuf> {
+        if !backups.exists() {
+            return Vec::new();
+        }
+        all_files(backups)
+            .into_iter()
+            .filter(|name| !name.to_string_lossy().ends_with(".journal"))
+            .collect()
+    }
+
+    /// The temporary file of the atomic replace cannot be written (the
+    /// project directory is read-only): the target is unchanged, so the
+    /// commit leaves no journal and no copy, and a later install succeeds
+    /// (E17-53 confirmation round, M1).
+    #[cfg(unix)]
+    #[test]
+    fn test_a_failed_replace_leaves_no_journal_and_no_copy() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = tempdir().expect("temp directory");
+        let backups = directory.path().join("data").join(crate::BACKUP_DIR_NAME);
+        let (project, manager, plan) = secret_project(directory.path(), &backups);
+        let base = fs::read(&plan.config_path).expect("base");
+        let before = all_files(&project);
+        let receipts = MemoryReceiptStore::default();
+        fs::set_permissions(&project, fs::Permissions::from_mode(0o555)).expect("read-only");
+
+        let error = manager.apply(&PlanApproval::from(&plan), &receipts);
+
+        fs::set_permissions(&project, fs::Permissions::from_mode(0o755)).expect("writable");
+        assert!(
+            matches!(error, Err(IntegrationError::Io { .. })),
+            "{error:?}"
+        );
+        assert_eq!(fs::read(&plan.config_path).expect("config"), base);
+        assert_eq!(all_files(&project), before);
+        assert!(manager.pending_journal(&plan.config_path).is_none());
+        assert!(copies_in(&backups).is_empty(), "{:?}", copies_in(&backups));
+        let retry = manager
+            .issue(install_request(
+                plan.config_path.clone(),
+                "{\"mcpServers\":{\"other\":{\"token\":\"secret\"},\"compresso\":{}}}\n",
+            ))
+            .expect("not blocked");
+        manager
+            .apply(&PlanApproval::from(&retry), &receipts)
+            .expect("the next install succeeds");
+    }
+
+    /// A commit that fails before its journal is sealed removes the copy it
+    /// created, so retries do not pile up copies; an older copy is kept
+    /// (E17-53 confirmation round, S2).
+    #[cfg(unix)]
+    #[test]
+    fn test_failed_attempts_do_not_pile_up_copies() {
+        let directory = tempdir().expect("temp directory");
+        let backups = directory.path().join("data").join(crate::BACKUP_DIR_NAME);
+        let (_project, manager, plan) = secret_project(directory.path(), &backups);
+        fs::create_dir_all(&backups).expect("backups");
+        let older = backups.join(format!(
+            "{}-2000-01-01T00-00-00Z",
+            &Path::new(&plan.backup_path)
+                .file_name()
+                .expect("name")
+                .to_string_lossy()[..32]
+        ));
+        fs::write(&older, "older copy").expect("older copy");
+        // Something already holds the journal's name: the journal cannot be
+        // reserved, so every attempt fails before it is sealed.
+        let journal = crate::backups::journal_path(&backups, &plan.config_path);
+        std::os::unix::fs::symlink(directory.path().join("nowhere"), &journal).expect("dangling");
+        let receipts = MemoryReceiptStore::default();
+        let mut plan = plan;
+        for attempt in 0..3 {
+            assert!(
+                manager
+                    .apply(&PlanApproval::from(&plan), &receipts)
+                    .is_err(),
+                "{attempt}"
+            );
+            assert_eq!(
+                copies_in(&backups),
+                [PathBuf::from(older.file_name().expect("name"))]
+            );
+            plan = manager
+                .issue(install_request(
+                    plan.config_path.clone(),
+                    &plan.target_contents,
+                ))
+                .expect("reissued");
+        }
+        assert_eq!(fs::read_to_string(&older).expect("older"), "older copy");
+    }
+
+    /// A journal an earlier version left beside the file is still found and
+    /// recovered, and removed from the project once finished.
+    #[test]
+    fn test_an_old_journal_beside_the_file_is_still_recovered() {
+        let directory = tempdir().expect("temp directory");
+        let backups = directory.path().join("data").join(crate::BACKUP_DIR_NAME);
+        let (project, manager, plan) = secret_project(directory.path(), &backups);
+        let receipts = MemoryReceiptStore::default();
+        let commit = build_commit(&plan, plan.issued_at, None).expect("commit");
+        ensure_backup(&commit).expect("copy");
+        let beside = journal_path(&plan.config_path);
+        write_journal(&beside, &plan.config_path, &commit, &receipts).expect("old journal");
+        assert_eq!(
+            manager.pending_journal(&plan.config_path),
+            Some(beside.clone())
+        );
+        assert!(matches!(
+            manager.issue(install_request(plan.config_path.clone(), "{}\n")),
+            Err(IntegrationError::PendingRecovery { .. })
+        ));
+
+        manager
+            .recover(&plan.config_path, &receipts)
+            .expect("recovered")
+            .expect("a pending commit");
+
+        assert!(!beside.exists());
+        assert_eq!(all_files(&project), [PathBuf::from(".mcp.json")]);
+        assert!(
+            receipts
+                .active_for("claude-code", &plan.config_path)
+                .expect("lookup")
+                .is_some()
+        );
+    }
+
+    /// A manager without a backup directory refuses a change that needs a
+    /// copy instead of writing one beside the file.
+    #[test]
+    fn test_a_change_needing_a_copy_is_refused_without_a_backup_directory() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join(".mcp.json");
+        fs::write(&path, "{}\n").expect("base");
+        let manager = PlanManager::new("no-backup-dir").expect("manager");
+        let error = manager
+            .issue(install_request(
+                path.clone(),
+                "{\"mcpServers\":{\"compresso\":{}}}\n",
+            ))
+            .expect_err("refused");
+        assert!(matches!(error, IntegrationError::Unsupported { .. }));
+        assert_eq!(all_files(directory.path()), [PathBuf::from(".mcp.json")]);
+    }
+
+    /// A receipt written before E17-53 names a copy beside the file. Its
+    /// uninstall still restores the original bytes from that copy, never
+    /// deletes it or another file named like it, and writes no new file
+    /// beside the config; without the copy the uninstall still succeeds.
+    #[test]
+    fn test_an_old_receipt_with_a_copy_beside_the_file_still_uninstalls_cleanly() {
+        for copy_present in [true, false] {
+            let directory = tempdir().expect("temp directory");
+            let project = directory.path().join("project");
+            fs::create_dir_all(&project).expect("project");
+            let path = project.join(".mcp.json");
+            // Non-canonical formatting: only the copy can restore it exactly.
+            let original = "{\n    \"mcpServers\": {\"other\": {\"command\": \"x\"}}\n}\n";
+            fs::write(&path, original).expect("base");
+            let legacy = project.join(".mcp.json.compresso-backup-2026-01-01T00-00-00Z");
+            let foreign = project.join(".mcp.json.compresso-backup-2025-12-31T00-00-00Z");
+            fs::write(&foreign, "not ours").expect("foreign look-alike");
+            let clock = Arc::new(FakeClock::new(1_700_000_000));
+            let manager = manager(clock.clone());
+            let receipts = MemoryReceiptStore::default();
+            // What a JSON adapter renders: two-space pretty JSON.
+            let pretty = |value: serde_json::Value| {
+                format!(
+                    "{}\n",
+                    serde_json::to_string_pretty(&value).expect("render")
+                )
+            };
+            let install = manager
+                .issue(install_request(
+                    path.clone(),
+                    &pretty(json!({"mcpServers": {
+                        "other": {"command": "x"},
+                        "compresso": {"command": "/bin/c"}
+                    }})),
+                ))
+                .expect("install plan");
+            let mut receipt = manager
+                .apply_install(&PlanApproval::from(&install), &receipts)
+                .expect("install applies");
+            assert!(Path::new(&receipt.backup_path).is_file());
+            assert_eq!(
+                crate::legacy_backups(std::slice::from_ref(&receipt), |_| true),
+                std::slice::from_ref(&foreign),
+                "a copy in the backup directory is not an old copy"
+            );
+            // What an earlier version recorded: the copy beside the file.
+            receipt.backup_path = legacy.to_string_lossy().into_owned();
+            receipts.save(&receipt).expect("old-style receipt");
+            if copy_present {
+                fs::write(&legacy, original).expect("old copy");
+            }
+            clock.advance(60);
+
+            let uninstall = manager
+                .issue(uninstall_request(
+                    path.clone(),
+                    &pretty(json!({"mcpServers": {"other": {"command": "x"}}})),
+                    &receipt,
+                ))
+                .expect("uninstall plan");
+            assert!(!crate::backups::is_legacy_beside(
+                &path,
+                Path::new(&uninstall.backup_path)
+            ));
+            manager
+                .apply_uninstall(&PlanApproval::from(&uninstall), &receipts)
+                .expect("uninstall applies");
+
+            let restored = fs::read_to_string(&path).expect("config");
+            if copy_present {
+                assert_eq!(restored, original, "the old copy restores the bytes");
+            } else {
+                let value: serde_json::Value = serde_json::from_str(&restored).expect("json");
+                assert_eq!(value, json!({"mcpServers": {"other": {"command": "x"}}}));
+            }
+            let mut expected = vec![
+                PathBuf::from(".mcp.json"),
+                PathBuf::from(".mcp.json.compresso-backup-2025-12-31T00-00-00Z"),
+            ];
+            if copy_present {
+                expected.push(PathBuf::from(
+                    ".mcp.json.compresso-backup-2026-01-01T00-00-00Z",
+                ));
+            }
+            assert_eq!(all_files(&project), expected);
+            assert_eq!(fs::read_to_string(&foreign).expect("foreign"), "not ours");
+            assert_eq!(
+                crate::legacy_backups(&receipts.all().expect("receipts"), |_| true),
+                if copy_present {
+                    vec![foreign.clone(), legacy.clone()]
+                } else {
+                    vec![foreign.clone()]
+                },
+                "every file named like an old copy beside a receipted file is reported"
+            );
+        }
+    }
+
+    /// A journal an earlier version left names a copy beside the file;
+    /// finishing it never creates that copy in the project tree.
+    #[test]
+    fn test_recovering_an_old_journal_writes_no_copy_beside_the_file() {
+        let directory = tempdir().expect("temp directory");
+        let path = directory.path().join(".mcp.json");
+        fs::write(&path, "{}\n").expect("base");
+        let clock = Arc::new(FakeClock::new(1_700_000_000));
+        let manager = manager(clock);
+        let mut plan = manager
+            .issue(install_request(
+                path.clone(),
+                "{\"mcpServers\":{\"compresso\":{}}}\n",
+            ))
+            .expect("plan");
+        plan.backup_path = directory
+            .path()
+            .join(".mcp.json.compresso-backup-2023-11-14T22-13-20Z")
+            .to_string_lossy()
+            .into_owned();
+        let commit = PendingCommit {
+            journal_version: 1,
+            base_contents: Some("{}\n".to_owned()),
+            persisted_receipt: InstallReceipt {
+                schema_version: RECEIPT_SCHEMA_VERSION,
+                document_type: "install_receipt".to_owned(),
+                plan_hash: plan.plan_hash.clone(),
+                client: plan.client.clone(),
+                config_path: path.clone(),
+                keys_owned: vec!["mcpServers.compresso".to_owned()],
+                owned_value_hashes: installed_value_hashes(&plan),
+                backup_path: plan.backup_path.clone(),
+                installed_at: plan.issued_at,
+                compresso_version: plan.compresso_version.clone(),
+                uninstalled_at: None,
+            },
+            report: ApplyReport {
+                already_applied: false,
+                receipt: None,
+                restore: None,
+            },
+            plan,
+        };
+        ensure_backup(&commit).expect("old journal's copy step");
+        assert_eq!(all_files(directory.path()), [PathBuf::from(".mcp.json")]);
     }
 
     fn backup_files(directory: &Path) -> Vec<PathBuf> {
@@ -4286,7 +5073,9 @@ mod tests {
         );
 
         let backups = backup_files(directory.path());
-        let fresh = PlanManager::new("retained-repeat").expect("fresh manager");
+        let fresh = PlanManager::new("retained-repeat")
+            .expect("fresh manager")
+            .with_backup_dir(crate::backups::test_dir());
         let repeat = fresh
             .issue(MutationRequest {
                 operation: MutationKind::Uninstall,
@@ -4359,7 +5148,9 @@ mod tests {
             .expect("receipt lookup")
             .expect("stored receipt");
         let backups = backup_files(directory.path());
-        let fresh = PlanManager::new("removed-repeat").expect("fresh manager");
+        let fresh = PlanManager::new("removed-repeat")
+            .expect("fresh manager")
+            .with_backup_dir(crate::backups::test_dir());
         let repeat = fresh
             .issue(MutationRequest {
                 operation: MutationKind::Uninstall,

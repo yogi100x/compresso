@@ -437,7 +437,9 @@ mod tests {
                 home: fs::canonicalize(home).expect("home canonicalizes"),
                 project: fs::canonicalize(project).expect("project canonicalizes"),
                 _directory: directory,
-                manager: PlanManager::new("main-agent-test").expect("manager"),
+                manager: PlanManager::new("main-agent-test")
+                    .expect("manager")
+                    .with_backup_dir(crate::backups::test_dir()),
                 receipts: MemoryReceiptStore::default(),
             }
         }
