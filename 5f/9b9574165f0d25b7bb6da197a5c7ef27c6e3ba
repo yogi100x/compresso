@@ -1,0 +1,35 @@
+README.md
+  s_89a704cfae63f5::t_441c4b40130118 61-63
+decisions.md
+  s_f4ca430ed37d9b::t_7f2153a5f95ee1 110
+docs/adr/0037-default-main-session-agent.md
+  s_f4ca430ed37d9b::t_6de229a39f9899 140-169,196-198
+docs/plan/04-mcp-and-integrations.md
+  s_f4ca430ed37d9b::t_2a6d2197fe0514 885
+docs/plan/05-tickets.md
+  s_f4ca430ed37d9b::t_187d76d7fd7820 3666-3667
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5f9b9574165f0d25b7bb6da197a5c7ef27c6e3ba",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_f4ca430ed37d9b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ab0c6ae8c7484240b",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
