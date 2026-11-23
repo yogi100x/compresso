@@ -777,8 +777,8 @@ mod tests {
         assert!(!budget.admit(1));
         let mut budget = ReadBudget::new(MAX_SAMPLE_BYTES);
         assert!(!budget.admit(MAX_SAMPLE_BYTES + 1));
-        assert!(MAX_READ_BYTES <= 32 * 1024 * 1024);
-        assert!(MAX_SAMPLE_BYTES <= 8 * 1024 * 1024);
+        const { assert!(MAX_READ_BYTES <= 32 * 1024 * 1024) };
+        const { assert!(MAX_SAMPLE_BYTES <= 8 * 1024 * 1024) };
     }
 
     #[test]
