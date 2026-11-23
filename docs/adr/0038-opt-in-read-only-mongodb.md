@@ -283,7 +283,7 @@ another database.
   (`mongocrypt`, `mongocrypt-sys`) are listed by Cargo for an optional
   feature and are never built (`cargo tree --target all -i mongocrypt-sys`
   is empty). The macOS arm64 release binary grows from 39,634,416 to
-  46,305,392 bytes (+16.8%).
+  46,327,888 bytes (+16.9%).
 - The full surface grows only when the flag is set: the tool definition is
   591 o200k tokens (budget 600); default surfaces and goldens are
   unchanged.
