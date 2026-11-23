@@ -237,7 +237,7 @@ behind its tool search and that, on edit prompts, the model loaded only
 `compresso_grep` and `compresso_edit`; a later `compresso_read` call without
 its schema sent `start_line` as a string, was refused, and file reading moved
 to the shell (`cat`, `sed -n`, `head`) for the rest of the session. The owner
-approved three fixes: steer file reads to Compresso, load `compresso_read`
+approved three fixes on 2026-11-24: steer file reads to Compresso, load `compresso_read`
 early, and say where to change behaviour on the request path.
 
 The body (both variants) now says, in this order: use the Compresso tools for
@@ -247,14 +247,16 @@ all repository work and load them together in the first tool search
 `compresso_read`, several files or ranges per call, source or not (SQL,
 JSON, YAML, config, docs), noting that it reports ignored paths
 (dependencies, build output) and secret-named files (`.env*`, keys) as not
-found and sending only the ignored paths to the client's Read; the edit
+found, forbidding secret-named files (`.env*`, keys, credentials) with any
+tool, and sending only ignored dependency or build paths to the client's
+Read; the edit
 rules as before; that the shell is only for installing packages, the type-check or tests, and git, never to read or search files;
 the index fallback ("available" instead of "in your tool list", since a
 deferred tool is not listed until loaded). The routing sentence is replaced
 by: before editing a handler or function, trace how the request or call
 reaches it (route or registration, middleware, validators, wrappers, callers)
 and change the first place that decides the behaviour instead of adding a
-parallel mechanism. With edits 2,492 characters, without 2,201 (at
+parallel mechanism. With edits 2,491 characters, without 2,204 (at
 c1d6b2d, before this change: 2,178 and 1,809; the 2,179 recorded above was
 stale by one); the 2,500 ceiling is unchanged.
 
@@ -264,3 +266,12 @@ replaces it (the replaced file gets a copy in the data directory, since it is
 not an exact current render). Separately, every MCP integer argument now
 also accepts a string of decimal digits (04 §1.1), so a schema-less call no
 longer fails; schemas and goldens are unchanged.
+
+Review round (2026-11-24): `compresso_read` answers the same `not_found` text
+for git-ignored paths, dependency and build folders, secret-named files, and
+missing paths, and `.env` is usually git-ignored too, so the first wording
+("read ignored files with the client's Read") sent the model to read a secret
+file with another tool. The read line now says: never read secret files
+(`.env*`, keys, credentials) with any tool; only ignored dependency or build
+paths go to the client's Read. Four other sentences lost a word or two to stay
+under the ceiling; no instruction was dropped (D119).

@@ -120,7 +120,10 @@ Compresso the session's main agent by default (ADR-0037):
   repository search, reads, and edits through Compresso. It tells the model
   to load the Compresso tools in its first tool search, to read every
   repository file (SQL, JSON, and config included) with `compresso_read`,
-  and to keep the shell for installs, the type-check, tests, and git. It
+  with two exceptions: git-ignored dependency or build paths, which it reads
+  with the client's own Read, and secret-named files (`.env*`, keys,
+  credentials), which it is told never to read with any tool; and to keep
+  the shell for installs, the type-check, tests, and git. It
   replaces the client's long default system prompt; the client keeps all its
   own tools. An agent file an earlier version wrote shows as out of date in
   `integrations verify` until you install again.
