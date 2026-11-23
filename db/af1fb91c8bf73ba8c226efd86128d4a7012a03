@@ -1,0 +1,517 @@
+rust/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_64425cef6727ad 1-13
+rust/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_2c0732f6e9c21b 1-15
+rust/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_d174f269578a9a 1-15
+scripts/check-crate-capabilities.test.ts
+  s_89a704cfae63f5::t_8ab5644c8fc5b1 451,455,465-522
+scripts/check-crate-capabilities.ts
+  s_89a704cfae63f5::t_5674e4914cf164 5-7,9-34,418-423,430-432,459,493-496,498-499,502,507-522,532-535,615-703,705,707-711,714,722-927,1629-1633,1651,1662-1675
+scripts/fixtures/crate-capabilities/allowed-bounded-local-test-process/clippy.toml
+  s_89a704cfae63f5::t_6a170f31ee451a 1-13
+scripts/fixtures/crate-capabilities/allowed-cli-mcp-probe-process/clippy.toml
+  s_89a704cfae63f5::t_81164ccaa4b64a 1-13
+scripts/fixtures/crate-capabilities/allowed-mcp-network-through-sql/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_d0cef33ecb239b 1-13
+scripts/fixtures/crate-capabilities/allowed-mcp-network-through-sql/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_f116b19b6b39c1 1-15
+scripts/fixtures/crate-capabilities/allowed-mcp-network-through-sql/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_1bac90454952f9 1-15
+scripts/fixtures/crate-capabilities/allowed-sql-driver-tokio-process/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_94b9283a925cad 1-13
+scripts/fixtures/crate-capabilities/allowed-sql-driver-tokio-process/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_bc141d73b963d1 1-15
+scripts/fixtures/crate-capabilities/allowed-sql-driver-tokio-process/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_beca224a00d6d3 1-15
+scripts/fixtures/crate-capabilities/allowed-sql-local-process-module/Cargo.lock
+  s_89a704cfae63f5::t_2b73e409b0ef2c 1-44
+scripts/fixtures/crate-capabilities/allowed-sql-local-process-module/Cargo.toml
+  s_89a704cfae63f5::t_795954798b01e3 1-4
+scripts/fixtures/crate-capabilities/allowed-sql-local-process-module/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_965279a5aafda2 1-7
+scripts/fixtures/crate-capabilities/allowed-sql-local-process-module/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_2a97c1f612503f 1-13
+scripts/fixtures/crate-capabilities/allowed-sql-local-process-module/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_cdf3af593a3831 1-8
+scripts/fixtures/crate-capabilities/allowed-sql-local-process-module/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_21d2e5a179469b 1-15
+scripts/fixtures/crate-capabilities/allowed-sql-local-process-module/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_88874b4ae90092 1-8
+scripts/fixtures/crate-capabilities/allowed-sql-local-process-module/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_11cf9b26515519 1-15
+scripts/fixtures/crate-capabilities/allowed-sql-local-process-module/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_e86f20918d736c 1-10
+scripts/fixtures/crate-capabilities/allowed-sql-local-process-module/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_f6ae7013b984cb 1-4
+scripts/fixtures/crate-capabilities/allowed-sql-local-process-module/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_013e1f31c967b2 1-12
+scripts/fixtures/crate-capabilities/denied-bounded-local-dual-target-process/clippy.toml
+  s_89a704cfae63f5::t_b23f5de2c08fbb 1-13
+scripts/fixtures/crate-capabilities/denied-bounded-local-production-process/clippy.toml
+  s_89a704cfae63f5::t_0f8db50fd98bb2 1-13
+scripts/fixtures/crate-capabilities/denied-bounded-local-test-network/clippy.toml
+  s_89a704cfae63f5::t_8228bcc3b790a5 1-13
+scripts/fixtures/crate-capabilities/denied-cli-mcp-probe-sibling-process/clippy.toml
+  s_89a704cfae63f5::t_823c6791eefea0 1-13
+scripts/fixtures/crate-capabilities/denied-mcp-direct-network-beside-sql/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_9b8189be9eeccb 1-15
+scripts/fixtures/crate-capabilities/denied-mcp-direct-network-beside-sql/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_cb112103d0b18c 1-15
+scripts/fixtures/crate-capabilities/denied-mcp-network-through-impostor-sql/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_3740d2aea84ab8 1-15
+scripts/fixtures/crate-capabilities/denied-mcp-tokio-full-beside-driver/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_f69f3b926f716e 1-13
+scripts/fixtures/crate-capabilities/denied-mcp-tokio-full-beside-driver/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_474cb1e6a6eeeb 1-15
+scripts/fixtures/crate-capabilities/denied-mcp-tokio-full-beside-driver/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_7bdc1caa6c370d 1-15
+scripts/fixtures/crate-capabilities/denied-mcp-tokio-process-beside-driver/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_0c530d4365048c 1-13
+scripts/fixtures/crate-capabilities/denied-mcp-tokio-process-beside-driver/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_c38db04bb04c38 1-15
+scripts/fixtures/crate-capabilities/denied-mcp-tokio-process-beside-driver/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_69c8061edb3c26 1-15
+scripts/fixtures/crate-capabilities/denied-pure-local-feature-through-sql/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_ffc5b91f1c1574 1-13
+scripts/fixtures/crate-capabilities/denied-pure-local-feature-through-sql/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_2a03e9023f4810 1-15
+scripts/fixtures/crate-capabilities/denied-pure-local-feature-through-sql/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_e5ecd9ae9418c6 1-15
+scripts/fixtures/crate-capabilities/denied-sql-bin-outside/Cargo.lock
+  s_89a704cfae63f5::t_7fa48bf904e7c1 1-44
+scripts/fixtures/crate-capabilities/denied-sql-bin-outside/Cargo.toml
+  s_89a704cfae63f5::t_d4021082d69aaf 1-4
+scripts/fixtures/crate-capabilities/denied-sql-bin-outside/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_a1d3932b62fc79 1-7
+scripts/fixtures/crate-capabilities/denied-sql-bin-outside/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_94160e5a83434e 1-13
+scripts/fixtures/crate-capabilities/denied-sql-bin-outside/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_8d2ea5313bfd74 1-8
+scripts/fixtures/crate-capabilities/denied-sql-bin-outside/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_2581468ef7a4d2 1-15
+scripts/fixtures/crate-capabilities/denied-sql-bin-outside/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_acba6e6e35084a 1-15
+scripts/fixtures/crate-capabilities/denied-sql-bin-outside/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_f2851e9d69fa6a 1-10
+scripts/fixtures/crate-capabilities/denied-sql-bin-outside/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_6684fe1bd2b5ef 1-4
+scripts/fixtures/crate-capabilities/denied-sql-bin-outside/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_9b90e87fe648f0 1-12
+scripts/fixtures/crate-capabilities/denied-sql-build-script/Cargo.lock
+  s_89a704cfae63f5::t_bd74a65c7e5baa 1-44
+scripts/fixtures/crate-capabilities/denied-sql-build-script/Cargo.toml
+  s_89a704cfae63f5::t_d5805be0067e53 1-4
+scripts/fixtures/crate-capabilities/denied-sql-build-script/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_1f8bff49abc8fc 1-7
+scripts/fixtures/crate-capabilities/denied-sql-build-script/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_d24fb149ead4b1 1-13
+scripts/fixtures/crate-capabilities/denied-sql-build-script/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_4019da2d0ebcd2 1-8
+scripts/fixtures/crate-capabilities/denied-sql-build-script/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_bb226b658bb26a 1-15
+scripts/fixtures/crate-capabilities/denied-sql-build-script/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_922882c7698bb2 1-15
+scripts/fixtures/crate-capabilities/denied-sql-build-script/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_e23eea0c3f4d40 1-10
+scripts/fixtures/crate-capabilities/denied-sql-build-script/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_3919323150f41d 1-4
+scripts/fixtures/crate-capabilities/denied-sql-build-script/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_06cdcac9245116 1-12
+scripts/fixtures/crate-capabilities/denied-sql-charlit-hides-process/Cargo.lock
+  s_89a704cfae63f5::t_b111ba797dcae1 1-44
+scripts/fixtures/crate-capabilities/denied-sql-charlit-hides-process/Cargo.toml
+  s_89a704cfae63f5::t_8034d2cf40894f 1-4
+scripts/fixtures/crate-capabilities/denied-sql-charlit-hides-process/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_b976c2ff3dd78a 1-7
+scripts/fixtures/crate-capabilities/denied-sql-charlit-hides-process/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_deb305fa3e65f5 1-13
+scripts/fixtures/crate-capabilities/denied-sql-charlit-hides-process/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_d5ac19fb0e0262 1-8
+scripts/fixtures/crate-capabilities/denied-sql-charlit-hides-process/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_b5067c39ae8da1 1-15
+scripts/fixtures/crate-capabilities/denied-sql-charlit-hides-process/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_eec9e3e6b59be7 1-8
+scripts/fixtures/crate-capabilities/denied-sql-charlit-hides-process/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_fe0260fabe2ac0 1-15
+scripts/fixtures/crate-capabilities/denied-sql-charlit-hides-process/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_4366ef45f6a04c 1-10
+scripts/fixtures/crate-capabilities/denied-sql-charlit-hides-process/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_97b0836774946f 1-4
+scripts/fixtures/crate-capabilities/denied-sql-charlit-hides-process/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_d0465f6dd4281c 1-12
+scripts/fixtures/crate-capabilities/denied-sql-clippy-config-missing/Cargo.lock
+  s_89a704cfae63f5::t_a9374f2de618fd 1-44
+scripts/fixtures/crate-capabilities/denied-sql-clippy-config-missing/Cargo.toml
+  s_89a704cfae63f5::t_228451075743fc 1-4
+scripts/fixtures/crate-capabilities/denied-sql-clippy-config-missing/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_ce74d4c17446c3 1-7
+scripts/fixtures/crate-capabilities/denied-sql-clippy-config-missing/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_a1539f34e70e01 1-13
+scripts/fixtures/crate-capabilities/denied-sql-clippy-config-missing/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_251a25c20fad01 1-8
+scripts/fixtures/crate-capabilities/denied-sql-clippy-config-missing/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_707628dedcb86e 1-15
+scripts/fixtures/crate-capabilities/denied-sql-clippy-config-missing/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_26b8bbfbf82d0a 1-8
+scripts/fixtures/crate-capabilities/denied-sql-clippy-config-missing/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_fdfd0c5a42700f 1-10
+scripts/fixtures/crate-capabilities/denied-sql-clippy-config-missing/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_4d0c5282c348a8 1-4
+scripts/fixtures/crate-capabilities/denied-sql-clippy-config-missing/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_445e0499621831 1-12
+scripts/fixtures/crate-capabilities/denied-sql-clippy-entry-missing/Cargo.lock
+  s_89a704cfae63f5::t_5ff6675a1cbeb7 1-44
+scripts/fixtures/crate-capabilities/denied-sql-clippy-entry-missing/Cargo.toml
+  s_89a704cfae63f5::t_4d006146ad3afa 1-4
+scripts/fixtures/crate-capabilities/denied-sql-clippy-entry-missing/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_6a771d5c87071e 1-7
+scripts/fixtures/crate-capabilities/denied-sql-clippy-entry-missing/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_99e9a8d24e3652 1-13
+scripts/fixtures/crate-capabilities/denied-sql-clippy-entry-missing/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_ad607779347b75 1-8
+scripts/fixtures/crate-capabilities/denied-sql-clippy-entry-missing/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_6b92164d2ba965 1-15
+scripts/fixtures/crate-capabilities/denied-sql-clippy-entry-missing/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_264a330f15876d 1-8
+scripts/fixtures/crate-capabilities/denied-sql-clippy-entry-missing/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_0dbecb3410328b 1-10
+scripts/fixtures/crate-capabilities/denied-sql-clippy-entry-missing/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_43d495b85f69d5 1-4
+scripts/fixtures/crate-capabilities/denied-sql-clippy-entry-missing/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_06a106d7e26aa0 1-12
+scripts/fixtures/crate-capabilities/denied-sql-colon-alias/Cargo.lock
+  s_89a704cfae63f5::t_f0a305a5dd0ff0 1-44
+scripts/fixtures/crate-capabilities/denied-sql-colon-alias/Cargo.toml
+  s_89a704cfae63f5::t_88506a9aa0bd73 1-4
+scripts/fixtures/crate-capabilities/denied-sql-colon-alias/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_75d62e8f6398b8 1-7
+scripts/fixtures/crate-capabilities/denied-sql-colon-alias/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_d4b403b9c9bde3 1-13
+scripts/fixtures/crate-capabilities/denied-sql-colon-alias/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_902f6b8172819e 1-8
+scripts/fixtures/crate-capabilities/denied-sql-colon-alias/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_c624594ed9d166 1-15
+scripts/fixtures/crate-capabilities/denied-sql-colon-alias/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_373138cb4224b0 1-8
+scripts/fixtures/crate-capabilities/denied-sql-colon-alias/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_a331416fd98fd2 1-15
+scripts/fixtures/crate-capabilities/denied-sql-colon-alias/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_560fe7f6681989 1-10
+scripts/fixtures/crate-capabilities/denied-sql-colon-alias/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_559766c4fa9022 1-4
+scripts/fixtures/crate-capabilities/denied-sql-colon-alias/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_215ff7056360b7 1-12
+scripts/fixtures/crate-capabilities/denied-sql-driver-encryption-process/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_00306837df63a0 1-13
+scripts/fixtures/crate-capabilities/denied-sql-driver-encryption-process/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_9b0d8f3fdef5ff 1-15
+scripts/fixtures/crate-capabilities/denied-sql-driver-encryption-process/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_7b6432f424aa0c 1-15
+scripts/fixtures/crate-capabilities/denied-sql-extern-alias-group/Cargo.lock
+  s_89a704cfae63f5::t_2a35f3dc47c972 1-44
+scripts/fixtures/crate-capabilities/denied-sql-extern-alias-group/Cargo.toml
+  s_89a704cfae63f5::t_e42dd77c8e1003 1-4
+scripts/fixtures/crate-capabilities/denied-sql-extern-alias-group/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_b25edb4d117f6f 1-7
+scripts/fixtures/crate-capabilities/denied-sql-extern-alias-group/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_c2e8e2a3952d05 1-13
+scripts/fixtures/crate-capabilities/denied-sql-extern-alias-group/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_52ad5083920e12 1-8
+scripts/fixtures/crate-capabilities/denied-sql-extern-alias-group/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_1b2809214f51bd 1-15
+scripts/fixtures/crate-capabilities/denied-sql-extern-alias-group/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_a2a65823d3c0e5 1-8
+scripts/fixtures/crate-capabilities/denied-sql-extern-alias-group/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_89b3c2723aced3 1-15
+scripts/fixtures/crate-capabilities/denied-sql-extern-alias-group/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_9ecb8c9e315d2e 1-10
+scripts/fixtures/crate-capabilities/denied-sql-extern-alias-group/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_45371fca57742e 1-4
+scripts/fixtures/crate-capabilities/denied-sql-extern-alias-group/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_15ab8ca0709eec 1-12
+scripts/fixtures/crate-capabilities/denied-sql-glob-std-process/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_3810a47ba2eebc 1-13
+scripts/fixtures/crate-capabilities/denied-sql-glob-std-process/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_a36e1e9a706c6f 1-15
+scripts/fixtures/crate-capabilities/denied-sql-glob-std-process/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_3c484184c3c0e3 1-15
+scripts/fixtures/crate-capabilities/denied-sql-glob-tokio-process/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_d584bb136c8327 1-13
+scripts/fixtures/crate-capabilities/denied-sql-glob-tokio-process/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_52b2c9b625abc8 1-15
+scripts/fixtures/crate-capabilities/denied-sql-glob-tokio-process/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_28e0e4c90f95c0 1-15
+scripts/fixtures/crate-capabilities/denied-sql-include-outside-src/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_c0c80ec03136ad 1-13
+scripts/fixtures/crate-capabilities/denied-sql-include-outside-src/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_e9178b40b43be9 1-15
+scripts/fixtures/crate-capabilities/denied-sql-include-outside-src/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_becb47112506fe 1-15
+scripts/fixtures/crate-capabilities/denied-sql-leading-colon-group/Cargo.lock
+  s_89a704cfae63f5::t_a309463ae10d8a 1-44
+scripts/fixtures/crate-capabilities/denied-sql-leading-colon-group/Cargo.toml
+  s_89a704cfae63f5::t_0cb61c66d63fbe 1-4
+scripts/fixtures/crate-capabilities/denied-sql-leading-colon-group/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_c0447bd18772cf 1-7
+scripts/fixtures/crate-capabilities/denied-sql-leading-colon-group/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_adffc528cabb30 1-13
+scripts/fixtures/crate-capabilities/denied-sql-leading-colon-group/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_1a5ee850527ab2 1-8
+scripts/fixtures/crate-capabilities/denied-sql-leading-colon-group/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_71bb40ed20a5b9 1-15
+scripts/fixtures/crate-capabilities/denied-sql-leading-colon-group/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_6a29a5f9fe0380 1-8
+scripts/fixtures/crate-capabilities/denied-sql-leading-colon-group/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_d6846dac95e16e 1-15
+scripts/fixtures/crate-capabilities/denied-sql-leading-colon-group/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_159a314cbb41d7 1-10
+scripts/fixtures/crate-capabilities/denied-sql-leading-colon-group/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_f91737ee960ef7 1-4
+scripts/fixtures/crate-capabilities/denied-sql-leading-colon-group/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_c6f8368481da2d 1-12
+scripts/fixtures/crate-capabilities/denied-sql-lint-allowed/Cargo.lock
+  s_89a704cfae63f5::t_ad2a36def520ad 1-44
+scripts/fixtures/crate-capabilities/denied-sql-lint-allowed/Cargo.toml
+  s_89a704cfae63f5::t_f3d715448d4b2e 1-4
+scripts/fixtures/crate-capabilities/denied-sql-lint-allowed/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_f816a4f76cf948 1-7
+scripts/fixtures/crate-capabilities/denied-sql-lint-allowed/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_3e0152567f79d5 1-13
+scripts/fixtures/crate-capabilities/denied-sql-lint-allowed/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_3cf7a9b65db51f 1-8
+scripts/fixtures/crate-capabilities/denied-sql-lint-allowed/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_f00958902cb066 1-15
+scripts/fixtures/crate-capabilities/denied-sql-lint-allowed/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_4252f631ece421 1-8
+scripts/fixtures/crate-capabilities/denied-sql-lint-allowed/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_ddcabfbe9c7628 1-15
+scripts/fixtures/crate-capabilities/denied-sql-lint-allowed/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_1a2baa3de76f7d 1-10
+scripts/fixtures/crate-capabilities/denied-sql-lint-allowed/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_fca8fb4df16270 1-4
+scripts/fixtures/crate-capabilities/denied-sql-lint-allowed/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_1e302d47e68544 1-12
+scripts/fixtures/crate-capabilities/denied-sql-macro-pair/Cargo.lock
+  s_89a704cfae63f5::t_c4926e1cab6dd6 1-44
+scripts/fixtures/crate-capabilities/denied-sql-macro-pair/Cargo.toml
+  s_89a704cfae63f5::t_c0732230c977d0 1-4
+scripts/fixtures/crate-capabilities/denied-sql-macro-pair/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_db9bc2308eb558 1-7
+scripts/fixtures/crate-capabilities/denied-sql-macro-pair/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_4028f12739e8b9 1-13
+scripts/fixtures/crate-capabilities/denied-sql-macro-pair/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_723a205377b4ea 1-8
+scripts/fixtures/crate-capabilities/denied-sql-macro-pair/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_ed5f9d6760569f 1-15
+scripts/fixtures/crate-capabilities/denied-sql-macro-pair/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_9b9421acdc7b9a 1-8
+scripts/fixtures/crate-capabilities/denied-sql-macro-pair/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_edca95289329a6 1-15
+scripts/fixtures/crate-capabilities/denied-sql-macro-pair/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_00b7e5daa8b3a9 1-10
+scripts/fixtures/crate-capabilities/denied-sql-macro-pair/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_1dad0dfce7ac93 1-4
+scripts/fixtures/crate-capabilities/denied-sql-macro-pair/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_f688f448ef4d43 1-12
+scripts/fixtures/crate-capabilities/denied-sql-macro-std-process/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_8344f16feeaf64 1-13
+scripts/fixtures/crate-capabilities/denied-sql-macro-std-process/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_93dfd538d3685a 1-15
+scripts/fixtures/crate-capabilities/denied-sql-macro-std-process/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_fb3c7b0f66aca1 1-15
+scripts/fixtures/crate-capabilities/denied-sql-macro-tokio-process/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_70f3d218b1e2df 1-13
+scripts/fixtures/crate-capabilities/denied-sql-macro-tokio-process/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_cce4e19fd0d1a8 1-15
+scripts/fixtures/crate-capabilities/denied-sql-macro-tokio-process/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_85e3822c63cd6f 1-15
+scripts/fixtures/crate-capabilities/denied-sql-manifest-lint/Cargo.lock
+  s_89a704cfae63f5::t_8c4a8c3a800974 1-44
+scripts/fixtures/crate-capabilities/denied-sql-manifest-lint/Cargo.toml
+  s_89a704cfae63f5::t_b0d3160e88089e 1-4
+scripts/fixtures/crate-capabilities/denied-sql-manifest-lint/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_112b38c14fd626 1-7
+scripts/fixtures/crate-capabilities/denied-sql-manifest-lint/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_514c7eab705729 1-13
+scripts/fixtures/crate-capabilities/denied-sql-manifest-lint/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_b2b5a205238ba2 1-8
+scripts/fixtures/crate-capabilities/denied-sql-manifest-lint/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_748239483b6526 1-15
+scripts/fixtures/crate-capabilities/denied-sql-manifest-lint/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_672d1cfa56c2e0 1-15
+scripts/fixtures/crate-capabilities/denied-sql-manifest-lint/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_ee484785046d82 1-10
+scripts/fixtures/crate-capabilities/denied-sql-manifest-lint/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_7ee0b4a485308e 1-4
+scripts/fixtures/crate-capabilities/denied-sql-manifest-lint/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_747ff71e396947 1-12
+scripts/fixtures/crate-capabilities/denied-sql-nested-group-process/Cargo.lock
+  s_89a704cfae63f5::t_d2b27f9d851eb2 1-44
+scripts/fixtures/crate-capabilities/denied-sql-nested-group-process/Cargo.toml
+  s_89a704cfae63f5::t_4b17e80c2f178a 1-4
+scripts/fixtures/crate-capabilities/denied-sql-nested-group-process/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_3a601def71770b 1-7
+scripts/fixtures/crate-capabilities/denied-sql-nested-group-process/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_012e7db6321460 1-13
+scripts/fixtures/crate-capabilities/denied-sql-nested-group-process/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_eb172cbf788d1b 1-8
+scripts/fixtures/crate-capabilities/denied-sql-nested-group-process/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_291cedccc34bbb 1-15
+scripts/fixtures/crate-capabilities/denied-sql-nested-group-process/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_bc49a78a4d1255 1-8
+scripts/fixtures/crate-capabilities/denied-sql-nested-group-process/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_5e7152bfe150fe 1-15
+scripts/fixtures/crate-capabilities/denied-sql-nested-group-process/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_c0883cd5346c24 1-10
+scripts/fixtures/crate-capabilities/denied-sql-nested-group-process/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_28bc21b7dc46aa 1-4
+scripts/fixtures/crate-capabilities/denied-sql-nested-group-process/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_fac60d4a2a7f83 1-12
+scripts/fixtures/crate-capabilities/denied-sql-path-attribute/Cargo.lock
+  s_89a704cfae63f5::t_2d6f2e74548809 1-44
+scripts/fixtures/crate-capabilities/denied-sql-path-attribute/Cargo.toml
+  s_89a704cfae63f5::t_da46d9946b1e93 1-4
+scripts/fixtures/crate-capabilities/denied-sql-path-attribute/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_446cebdc018482 1-7
+scripts/fixtures/crate-capabilities/denied-sql-path-attribute/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_adf204deb57bbd 1-13
+scripts/fixtures/crate-capabilities/denied-sql-path-attribute/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_544c7cd0c09a9d 1-8
+scripts/fixtures/crate-capabilities/denied-sql-path-attribute/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_aeab9e46d65acd 1-15
+scripts/fixtures/crate-capabilities/denied-sql-path-attribute/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_c6827da022a014 1-8
+scripts/fixtures/crate-capabilities/denied-sql-path-attribute/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_f5689249936849 1-15
+scripts/fixtures/crate-capabilities/denied-sql-path-attribute/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_94a7ce7af9cfab 1-10
+scripts/fixtures/crate-capabilities/denied-sql-path-attribute/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_981cba03d3fa5e 1-4
+scripts/fixtures/crate-capabilities/denied-sql-path-attribute/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_8c7b2697d1a391 1-12
+scripts/fixtures/crate-capabilities/denied-sql-process-reexported-by-driver/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_03555f7ce080a5 1-13
+scripts/fixtures/crate-capabilities/denied-sql-process-reexported-by-driver/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_e74f983513a898 1-15
+scripts/fixtures/crate-capabilities/denied-sql-process-reexported-by-driver/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_4113664aa016cf 1-15
+scripts/fixtures/crate-capabilities/denied-sql-std-byte-charlit/Cargo.lock
+  s_89a704cfae63f5::t_74d69b9788a180 1-44
+scripts/fixtures/crate-capabilities/denied-sql-std-byte-charlit/Cargo.toml
+  s_89a704cfae63f5::t_86d4c4e540c3f6 1-4
+scripts/fixtures/crate-capabilities/denied-sql-std-byte-charlit/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_ae9ee9ac5aa27f 1-7
+scripts/fixtures/crate-capabilities/denied-sql-std-byte-charlit/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_81a7ac523ca15b 1-13
+scripts/fixtures/crate-capabilities/denied-sql-std-byte-charlit/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_8b39a11f440a50 1-8
+scripts/fixtures/crate-capabilities/denied-sql-std-byte-charlit/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_04e4217bae72a5 1-15
+scripts/fixtures/crate-capabilities/denied-sql-std-byte-charlit/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_1621bb7298036b 1-8
+scripts/fixtures/crate-capabilities/denied-sql-std-byte-charlit/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_89c170f2638cd9 1-15
+scripts/fixtures/crate-capabilities/denied-sql-std-byte-charlit/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_791c3e3f090c87 1-10
+scripts/fixtures/crate-capabilities/denied-sql-std-byte-charlit/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_5389953ddaea02 1-4
+scripts/fixtures/crate-capabilities/denied-sql-std-byte-charlit/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_da4671c3edbec4 1-12
+scripts/fixtures/crate-capabilities/denied-sql-std-nested-group/Cargo.lock
+  s_89a704cfae63f5::t_ff9d2afde9a675 1-44
+scripts/fixtures/crate-capabilities/denied-sql-std-nested-group/Cargo.toml
+  s_89a704cfae63f5::t_9204b60f0e9e05 1-4
+scripts/fixtures/crate-capabilities/denied-sql-std-nested-group/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_126ff3aa2591e8 1-7
+scripts/fixtures/crate-capabilities/denied-sql-std-nested-group/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_54159ca56bdfec 1-13
+scripts/fixtures/crate-capabilities/denied-sql-std-nested-group/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_fbc7fb23f4b969 1-8
+scripts/fixtures/crate-capabilities/denied-sql-std-nested-group/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_66b65820b9e544 1-15
+scripts/fixtures/crate-capabilities/denied-sql-std-nested-group/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_28fbfcfecc967a 1-8
+scripts/fixtures/crate-capabilities/denied-sql-std-nested-group/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_4aa81f236fd649 1-15
+scripts/fixtures/crate-capabilities/denied-sql-std-nested-group/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_333ba23d072670 1-10
+scripts/fixtures/crate-capabilities/denied-sql-std-nested-group/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_39dbacbe9dc3d4 1-4
+scripts/fixtures/crate-capabilities/denied-sql-std-nested-group/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_af9fb8761d306a 1-12
+scripts/fixtures/crate-capabilities/denied-sql-std-process-reexported-by-dependency/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_5b71b654961f8e 1-13
+scripts/fixtures/crate-capabilities/denied-sql-std-process-reexported-by-dependency/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_305588f69c580d 1-15
+scripts/fixtures/crate-capabilities/denied-sql-std-process-reexported-by-dependency/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_cb0f4ce0d0bc82 1-15
+scripts/fixtures/crate-capabilities/denied-store-network-through-sql/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_50fd643256473e 1-15
+scripts/fixtures/crate-capabilities/denied-store-process-through-driver/crates/compresso-cli/clippy.toml
+  s_89a704cfae63f5::t_2270384f534ecf 1-13
+scripts/fixtures/crate-capabilities/denied-store-process-through-driver/crates/compresso-mcp/clippy.toml
+  s_89a704cfae63f5::t_dea7b60abadfbd 1-15
+scripts/fixtures/crate-capabilities/denied-store-process-through-driver/crates/compresso-sql/clippy.toml
+  s_89a704cfae63f5::t_8b6dca30906e60 1-15
+scripts/fixtures/crate-capabilities/allowed-sql-local-process-module/crates/compresso-sql/src/lib.rs
+  s_470a2f6e5f0af8::t_040c603c702ced 1
+scripts/fixtures/crate-capabilities/denied-sql-bin-outside/crates/compresso-sql/Cargo.toml
+  s_470a2f6e5f0af8::t_3836db912db87a 1-12
+scripts/fixtures/crate-capabilities/denied-sql-bin-outside/crates/compresso-sql/tools/spawn.rs
+  s_470a2f6e5f0af8::t_173947341c90c2 1
+scripts/fixtures/crate-capabilities/denied-sql-build-script/crates/compresso-sql/Cargo.toml
+  s_470a2f6e5f0af8::t_388656453c05ba 1-9
+scripts/fixtures/crate-capabilities/denied-sql-build-script/crates/compresso-sql/tools/b.rs
+  s_470a2f6e5f0af8::t_9d88003165edba 1
+scripts/fixtures/crate-capabilities/denied-sql-charlit-hides-process/crates/compresso-sql/src/lib.rs
+  s_470a2f6e5f0af8::t_a0aab75b24daaa 1
+scripts/fixtures/crate-capabilities/denied-sql-clippy-entry-missing/crates/compresso-sql/clippy.toml
+  s_470a2f6e5f0af8::t_68013056cbff39 1-14
+scripts/fixtures/crate-capabilities/denied-sql-colon-alias/crates/compresso-sql/src/lib.rs
+  s_470a2f6e5f0af8::t_d01010c56bdeaf 1
+scripts/fixtures/crate-capabilities/denied-sql-extern-alias-group/crates/compresso-sql/src/lib.rs
+  s_470a2f6e5f0af8::t_7fe0fcb280174b 1
+scripts/fixtures/crate-capabilities/denied-sql-leading-colon-group/crates/compresso-sql/src/lib.rs
+  s_470a2f6e5f0af8::t_1df293aeb3ff60 1
+scripts/fixtures/crate-capabilities/denied-sql-lint-allowed/crates/compresso-sql/src/lib.rs
+  s_470a2f6e5f0af8::t_a6502fa41abf5c 1
+scripts/fixtures/crate-capabilities/denied-sql-macro-pair/crates/compresso-sql/src/lib.rs
+  s_470a2f6e5f0af8::t_0054c933d00731 1
+scripts/fixtures/crate-capabilities/denied-sql-manifest-lint/crates/compresso-sql/Cargo.toml
+  s_470a2f6e5f0af8::t_6c32ca130a12c3 1-11
+scripts/fixtures/crate-capabilities/denied-sql-nested-group-process/crates/compresso-sql/src/lib.rs
+  s_470a2f6e5f0af8::t_964ad24e113d52 1
+scripts/fixtures/crate-capabilities/denied-sql-path-attribute/crates/compresso-sql/outside/x.rs
+  s_470a2f6e5f0af8::t_948d07f92ce2d6 1
+scripts/fixtures/crate-capabilities/denied-sql-path-attribute/crates/compresso-sql/src/lib.rs
+  s_470a2f6e5f0af8::t_ff8b67284b5840 1
+scripts/fixtures/crate-capabilities/denied-sql-std-byte-charlit/crates/compresso-sql/src/lib.rs
+  s_470a2f6e5f0af8::t_f8a0c52789dcf0 1
+scripts/fixtures/crate-capabilities/denied-sql-std-nested-group/crates/compresso-sql/src/lib.rs
+  s_470a2f6e5f0af8::t_60f3466b7fd077 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "dbaf1fb91c8bf73ba8c226efd86128d4a7012a03",
+  "prompts": {},
+  "sessions": {
+    "s_470a2f6e5f0af8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a2ff873261d314507",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
