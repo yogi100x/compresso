@@ -5,6 +5,7 @@ pub(crate) mod atlas_trace;
 pub(crate) mod common;
 pub(crate) mod edit;
 pub(crate) mod engine_tools;
+pub(crate) mod mongo;
 pub(crate) mod recall;
 pub(crate) mod report;
 pub(crate) mod sql;
@@ -89,6 +90,7 @@ pub(crate) fn handles(name: &str) -> bool {
         || edit::handles(name)
         || report::handles(name)
         || sql::handles(name)
+        || mongo::handles(name)
 }
 
 /// Remembers the failed call's tool and code for `compresso_report`, then
@@ -108,6 +110,7 @@ pub(crate) fn dispatch(
     recall_options: Option<&recall::McpRecallOptions>,
     edits_enabled: bool,
     sql_service: Option<&compresso_sql::SqlService>,
+    mongo_service: Option<&compresso_sql::mongo::MongoService>,
     name: &str,
     arguments: Option<JsonObject>,
     format: McpResultFormat,
@@ -141,6 +144,13 @@ pub(crate) fn dispatch(
             Err(error) => failed(session, name, error),
         };
     }
+    if mongo::handles(name) {
+        // Not written to the ledger (see the `mongo` module).
+        return match mongo::run(mongo_service, arguments) {
+            Ok(sent) => common::success_text(sent),
+            Err(error) => failed(session, name, error),
+        };
+    }
     if report::handles(name) {
         // Not written to the ledger (see `report::run`).
         let context = report::ReportContext {
@@ -150,6 +160,7 @@ pub(crate) fn dispatch(
             recall_enabled: recall_options.is_some_and(|options| options.is_enabled()),
             edits_enabled,
             sql: sql::SqlSurface::of(sql_service),
+            mongo: mongo::MongoSurface::of(mongo_service),
             profile,
         };
         return match report::run(&context, arguments) {
