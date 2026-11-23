@@ -15,8 +15,9 @@ use serde_json::{Map, Value, json};
 
 use super::Form;
 use super::common::{
-    REINDEX_HINT, ToolFailure, ToolResult, checked_arguments, map_atlas_error, navigation_counter,
-    optional_bool, optional_string, optional_usize, resolve_repository, with_budget,
+    REINDEX_HINT, ToolFailure, ToolResult, checked_arguments, integer_argument, map_atlas_error,
+    navigation_counter, optional_bool, optional_string, optional_usize, resolve_repository,
+    with_budget,
 };
 use super::{atlas_read, text};
 
@@ -364,7 +365,7 @@ fn clamped_usize(
     maximum: usize,
 ) -> Result<Option<usize>, ToolFailure> {
     if let Some(clamped) = clamped
-        && let Some(value) = arguments.get(name).and_then(Value::as_u64)
+        && let Some(value) = arguments.get(name).and_then(integer_argument)
     {
         let bound = if value > maximum as u64 {
             Some(maximum)

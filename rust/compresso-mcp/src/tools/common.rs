@@ -141,6 +141,21 @@ pub(crate) fn token_budget(
         .map(|value| value.unwrap_or(default))
 }
 
+/// A non-negative integer argument: a JSON integer, or a string of ASCII
+/// decimal digits only (E17-54, D119). A client that calls a deferred tool
+/// before loading its schema sends `"16"` for `16`; schemas still say
+/// integer. Floats, signs, whitespace, an empty string, and a value past
+/// `u64` are refused, as before.
+pub(crate) fn integer_argument(value: &Value) -> Option<u64> {
+    match value {
+        Value::Number(number) => number.as_u64(),
+        Value::String(text) if !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) => {
+            text.parse().ok()
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn optional_usize(
     arguments: &mut Map<String, Value>,
     name: &'static str,
@@ -150,7 +165,7 @@ pub(crate) fn optional_usize(
     let Some(value) = arguments.remove(name) else {
         return Ok(None);
     };
-    let Some(value) = value.as_u64().and_then(|value| usize::try_from(value).ok()) else {
+    let Some(value) = integer_argument(&value).and_then(|value| usize::try_from(value).ok()) else {
         return Err(ToolFailure::invalid(format!(
             "argument '{name}' must be an integer from {minimum} through {maximum}."
         )));
@@ -172,7 +187,7 @@ pub(crate) fn optional_u32(
     let Some(value) = arguments.remove(name) else {
         return Ok(None);
     };
-    let Some(value) = value.as_u64().and_then(|value| u32::try_from(value).ok()) else {
+    let Some(value) = integer_argument(&value).and_then(|value| u32::try_from(value).ok()) else {
         return Err(ToolFailure::invalid(format!(
             "argument '{name}' must be an integer from {minimum} through {maximum}."
         )));
@@ -499,4 +514,96 @@ pub(crate) fn cap_rows(
     }
     let truncated = kept.len() < total;
     (kept, tokens_used, truncated)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Map, Value, json};
+
+    use super::{integer_argument, optional_u32, optional_usize};
+
+    fn arguments(value: Value) -> Map<String, Value> {
+        let mut arguments = Map::new();
+        arguments.insert("n".to_owned(), value);
+        arguments
+    }
+
+    #[test]
+    fn test_integer_argument_accepts_json_integers_and_decimal_digit_strings() {
+        assert_eq!(integer_argument(&json!(16)), Some(16));
+        assert_eq!(integer_argument(&json!(0)), Some(0));
+        assert_eq!(integer_argument(&json!("16")), Some(16));
+        assert_eq!(integer_argument(&json!("0")), Some(0));
+        assert_eq!(integer_argument(&json!("007")), Some(7));
+        assert_eq!(
+            integer_argument(&json!("18446744073709551615")),
+            Some(u64::MAX)
+        );
+    }
+
+    #[test]
+    fn test_integer_argument_refuses_floats_signs_whitespace_and_empty_strings() {
+        for value in [
+            json!(16.0),
+            json!(16.5),
+            json!(-1),
+            json!(""),
+            json!(" 16"),
+            json!("16 "),
+            json!("+16"),
+            json!("-16"),
+            json!("16.0"),
+            json!("1e3"),
+            json!("0x10"),
+            json!("1_000"),
+            json!("١٦"),
+            json!("18446744073709551616"),
+            json!(true),
+            json!(null),
+            json!([16]),
+            json!({ "n": 16 }),
+        ] {
+            assert_eq!(integer_argument(&value), None, "{value}");
+        }
+    }
+
+    #[test]
+    fn test_integer_arguments_given_as_strings_keep_their_range_checks() {
+        assert_eq!(
+            optional_usize(&mut arguments(json!("50")), "n", 1, 100).ok(),
+            Some(Some(50))
+        );
+        assert_eq!(
+            optional_u32(&mut arguments(json!("16")), "n", 1, u32::MAX).ok(),
+            Some(Some(16))
+        );
+        for value in [json!("0"), json!("101")] {
+            let error = optional_usize(&mut arguments(value.clone()), "n", 1, 100)
+                .expect_err("out of range");
+            assert_eq!(error.code(), "invalid_arguments");
+            assert_eq!(
+                error.message(),
+                "argument 'n' must be an integer from 1 through 100.",
+                "{value}"
+            );
+            assert!(optional_u32(&mut arguments(value), "n", 1, 100).is_err());
+        }
+        assert!(optional_u32(&mut arguments(json!("4294967296")), "n", 1, u32::MAX).is_err());
+        for value in [
+            json!("16.0"),
+            json!(" 16"),
+            json!(""),
+            json!("-1"),
+            json!(1.5),
+        ] {
+            let error =
+                optional_usize(&mut arguments(value.clone()), "n", 0, 100).expect_err("refused");
+            assert_eq!(
+                error.message(),
+                "argument 'n' must be an integer from 0 through 100.",
+                "{value}"
+            );
+            assert!(optional_u32(&mut arguments(value), "n", 0, 100).is_err());
+        }
+    }
 }
