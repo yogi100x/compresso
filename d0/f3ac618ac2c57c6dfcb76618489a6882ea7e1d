@@ -1,0 +1,45 @@
+rust/compresso-mcp/src/tools/mod.rs
+  s_89a704cfae63f5::t_39ca785ea16dbf 11
+rust/compresso-sql/src/mongo/gate.rs
+  s_89a704cfae63f5::t_5a7dc5163418f2 316-317,319,324,328-332,381-384,437,721-722,1219-1225,1230-1234,1239-1242,1245-1249
+  s_89a704cfae63f5::t_bc3477fe410a08 587-604,1226-1229,1235-1238,1243-1244
+  s_89a704cfae63f5::t_9795a4998f88e4 1250-1251
+rust/compresso-sql/tests/live_mongo.rs
+  s_89a704cfae63f5::t_6874107119cba4 903-913,915-924
+  s_89a704cfae63f5::t_fdc7cb3aa2dd68 914
+rust/compresso-mcp/src/tools/sql.rs
+  s_89a704cfae63f5::t_4f721e3f83c2a8 338-361
+  s_89a704cfae63f5::t_7edd2d0bdc241b 190-194,201-212,237,243-246,248-271,279,287
+rust/compresso-mcp/src/tools/shrink.rs
+  s_89a704cfae63f5::t_ff9be6b922b678 1-22,37-38,40-137,143-150
+  s_89a704cfae63f5::t_d5351deacf50db 138-142
+  s_89a704cfae63f5::t_f1c0c984e506ab 23-36,39
+.github/workflows/ci.yml
+  s_89a704cfae63f5::t_715744c558ca78 398-399
+rust/compresso-mcp/src/tools/mongo.rs
+  s_89a704cfae63f5::t_d5351deacf50db 343-345,432-443,446-450,462-468
+  s_89a704cfae63f5::t_4f721e3f83c2a8 408-431,444-445,451-461,469-470
+  s_89a704cfae63f5::t_39ca785ea16dbf 278-282,289-300,326,332-335,337-342,346-358
+rust/compresso-mcp/tests/live_mongo_mcp.rs
+  s_89a704cfae63f5::t_d5351deacf50db 11-13,169-172,188-192
+  s_89a704cfae63f5::t_d01e1ed7d63f9e 1-10,14-168,173-179,181-187,193-199
+  s_89a704cfae63f5::t_4a9baf1676c27a 180
+rust/compresso-sql/src/mongo/client.rs
+  s_89a704cfae63f5::t_6874107119cba4 185-186
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d0f3ac618ac2c57c6dfcb76618489a6882ea7e1d",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
