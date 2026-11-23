@@ -50,7 +50,7 @@ pub use queries::{
 };
 pub use scanner::{
     AtlasError, ScanError, ScanOptions, ScanResult, ScannerExclusions, SkipReason,
-    is_scanner_excluded, scan, scan_with_concurrency, scan_with_options,
+    is_globally_git_ignored, is_scanner_excluded, scan, scan_with_concurrency, scan_with_options,
 };
 pub use search::{
     SEARCH_MIN_QUERY_CHARS, SearchDiagnostic, SearchDiagnosticCode, SearchOptions, SearchReport,

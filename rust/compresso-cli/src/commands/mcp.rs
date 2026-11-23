@@ -21,11 +21,12 @@ pub(crate) const SERVE_FLAGS: &[&str] = &[
     "--recall-source",
     "--results",
     "--root",
+    "--session-tools",
     "--sql-env",
     "--tools",
 ];
 
-const USAGE: &str = "mcp serve accepts only optional --root PATH, --recall-source SOURCE, --tools full|lean, --results json|text, --edits, --sql-env NAME, and --mongo-env NAME arguments";
+const USAGE: &str = "mcp serve accepts only optional --root PATH, --recall-source SOURCE, --tools full|lean, --session-tools, --results json|text, --edits, --sql-env NAME, and --mongo-env NAME arguments";
 
 /// Operator-supplied `mcp serve` options.
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -46,6 +47,9 @@ struct ServeOptions {
     /// Serve the opt-in read-only MongoDB tool `compresso_mongo`, reading
     /// the server URL from this variable at startup (E17-52, D117).
     mongo_env: Option<String>,
+    /// With `--tools lean`, also serve the two tools the `/compresso`
+    /// session commands call (E17-51, D116).
+    session_tools: bool,
 }
 
 pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCode {
@@ -129,6 +133,7 @@ pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCo
         edits,
         sql_env,
         mongo_env,
+        session_tools,
     } = options;
     let recall = if recall_sources.is_empty() {
         None
@@ -159,6 +164,7 @@ pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCo
             // configuration, the store, or a log.
             sql: sql_env.as_deref().map(SqlSettings::from_env),
             mongo: mongo_env.as_deref().map(MongoSettings::from_env),
+            session_tools,
         },
     ));
     match result {
@@ -265,6 +271,11 @@ fn parse_serve_arguments(arguments: &[OsString]) -> Result<ServeOptions, &'stati
                     "--mongo-env requires a variable name matching COMPRESSO_MONGO_[A-Z0-9_]+ (the name, never the URL)",
                 )?;
             options.mongo_env = Some(name);
+        } else if flag == OsStr::new("--session-tools") && inline.is_none() {
+            if options.session_tools {
+                return Err("--session-tools may be given only once");
+            }
+            options.session_tools = true;
         } else if flag == OsStr::new("--edits") && inline.is_none() {
             if options.edits {
                 return Err("--edits may be given only once");
@@ -282,6 +293,11 @@ fn parse_serve_arguments(arguments: &[OsString]) -> Result<ServeOptions, &'stati
     if options.mongo_env.is_some() && options.tools == McpToolProfile::Lean {
         return Err(
             "--mongo-env is not served by the lean tool profile; drop --tools lean to serve compresso_mongo",
+        );
+    }
+    if options.session_tools && options.tools != McpToolProfile::Lean {
+        return Err(
+            "--session-tools applies only to --tools lean; the full profile already serves compresso_stats and compresso_report",
         );
     }
     Ok(options)
@@ -342,6 +358,7 @@ mod tests {
                 edits: false,
                 sql_env: None,
                 mongo_env: None,
+                session_tools: false,
             }
         );
         assert!(parse(&["--recall-source"]).is_err());
@@ -398,15 +415,32 @@ mod tests {
             ("--recall-source", Some("codex")),
             ("--results", Some("text")),
             ("--root", Some("/repo")),
+            ("--session-tools", None),
             ("--sql-env", Some("COMPRESSO_SQL_MAIN")),
             ("--tools", Some("lean")),
         ] {
             assert!(SERVE_FLAGS.contains(&flag));
             let mut arguments = vec![flag];
             arguments.extend(value);
+            if flag == "--session-tools" {
+                arguments.extend(["--tools", "lean"]);
+            }
             assert!(parse(&arguments).is_ok(), "{flag}");
         }
-        assert_eq!(SERVE_FLAGS.len(), 7);
+        assert_eq!(SERVE_FLAGS.len(), 8);
+    }
+
+    #[test]
+    fn test_session_tools_are_off_by_default_and_need_the_lean_profile() {
+        assert!(!parse(&[]).unwrap().session_tools);
+        assert!(!parse(&["--tools", "lean"]).unwrap().session_tools);
+        let lean = parse(&["--tools", "lean", "--session-tools", "--edits"]).unwrap();
+        assert!(lean.session_tools);
+        assert!(lean.edits);
+        assert!(parse(&["--session-tools"]).is_err());
+        assert!(parse(&["--tools", "full", "--session-tools"]).is_err());
+        assert!(parse(&["--tools", "lean", "--session-tools", "--session-tools"]).is_err());
+        assert!(parse(&["--tools", "lean", "--session-tools=yes"]).is_err());
     }
 
     #[test]

@@ -11,7 +11,8 @@ use serde_json::{Map, Value, json};
 
 use crate::plan::MutationRequest;
 use crate::server_entry::{
-    is_adapter_args, with_edits, with_mongo_env, with_recall_source, with_sql_env,
+    is_adapter_args, with_edits, with_lean_session, with_mongo_env, with_recall_source,
+    with_sql_env,
 };
 use crate::text_fidelity::strip_bom;
 use crate::{
@@ -83,6 +84,11 @@ pub struct ClaudeCodeIntegration {
     /// Install an entry that starts `mcp serve --mongo-env NAME` (E17-52,
     /// D117).
     mongo_env: Option<String>,
+    /// Install the main-session profile `--tools lean --session-tools`
+    /// (E17-51, D116), unless `sql_env` or `mongo_env` is set: the lean
+    /// profile never serves the database tools, so such an entry keeps the
+    /// full profile.
+    lean_session: bool,
 }
 
 impl ClaudeCodeIntegration {
@@ -95,6 +101,7 @@ impl ClaudeCodeIntegration {
             edits: false,
             sql_env: None,
             mongo_env: None,
+            lean_session: false,
         }
     }
 
@@ -120,6 +127,21 @@ impl ClaudeCodeIntegration {
     pub fn with_mongo_env(mut self, name: Option<String>) -> Self {
         self.mongo_env = name;
         self
+    }
+
+    /// Makes install write the main-session profile (`--tools lean
+    /// --session-tools`, E17-51) that the default main-session agent is
+    /// measured with. Ignored when `--sql-env` or `--mongo-env` is set (the
+    /// entry then keeps the full profile). Verify, status, and uninstall
+    /// accept either entry.
+    pub fn with_lean_session(mut self, lean_session: bool) -> Self {
+        self.lean_session = lean_session;
+        self
+    }
+
+    /// Whether install writes the main-session profile.
+    pub fn writes_lean_session(&self) -> bool {
+        self.lean_session && self.sql_env.is_none() && self.mongo_env.is_none()
     }
 
     /// Overrides the receipt version, primarily for deterministic embedders.
@@ -209,6 +231,9 @@ impl Integration for ClaudeCodeIntegration {
         let config_path = self.mutation_config_path(&context.scope)?;
         let command = resolved_compresso_command(&context.compresso_bin)?;
         let mut args = expected_server_args(&context.scope)?;
+        if self.writes_lean_session() {
+            args = with_lean_session(args);
+        }
         if self.edits {
             args = with_edits(args);
         }

@@ -76,6 +76,53 @@ provider). Both show the exact plan first (`--dry-run` previews without
 writing), keep a backup and a receipt, and are undone with
 `compresso integrations uninstall <client>`.
 
+For a Claude Code project (`setup claude-code ROOT`, or
+`integrations install claude-code --project DIR`) the install also makes
+Compresso the session's main agent by default (ADR-0037):
+
+- `.claude/agents/compresso-main.md`: a short main-session prompt that routes
+  repository search, reads, and edits through Compresso. It replaces the
+  client's long default system prompt; the client keeps all its own tools.
+- `"agent": "compresso-main"` in your personal
+  `.claude/settings.local.json`. Only that one key is added; every other byte
+  of the file is kept, and no backup copy of this file is ever written (it
+  may hold secrets; the change is exactly reversible).
+- The project's server entry runs
+  `mcp serve --tools lean --session-tools --edits`: the lean tools with
+  compact text results, the edit tool `compresso_edit`, and the two tools the
+  `/compresso` commands need.
+
+The three always agree. If the agent cannot be installed in full (an
+`agent` value you already set, which is never overwritten, or a
+`compresso-main.md` that Compresso did not write), the entry is written as
+`--no-main-agent` writes it and a warning says what was skipped and how to
+get the default. The agent file and the key are written before the
+entry; if either cannot be written (a file changed after the preview), the
+full-profile entry the preview also shows is written instead. `--sql-env` keeps the full profile, because the lean profile
+never serves `compresso_sql`, so it installs no agent either. If the project
+is a git repository that does not ignore `.claude/settings.local.json`, the
+install warns; it never edits `.gitignore` itself. If the project is not yet
+indexed, the install warns too (run `compresso index DIR`; `setup` indexes).
+
+No permission rule is added for the edit tool, so the client still asks
+before each edit. Pass `--no-edits` to keep the agent without the edit tool,
+or `--no-main-agent` to install the entry as before (full profile) with no
+agent file and no settings change; over a project that has the agent, it
+also removes the agent file and the key. A plain project uninstall removes
+the key (only while it still names `compresso-main`), the agent file (only
+while unchanged, and never while the key could not be removed), and the
+settings file only if Compresso created it and nothing else is left in it.
+User-scope installs, Codex, and Cursor are unchanged.
+
+The saving behind this default was measured on one model and one
+edit-heavy suite, two runs: about $3.07 a run against $5.60 for the client
+alone, with the first request about 2,800 tokens smaller. The shipped prompt
+differs from the measured one by a few lines (untrusted content, scoped and
+non-destructive changes, a fallback when the repository is not indexed, a
+general rule for finding where behaviour is decided, and Read before Edit
+without the edit tool); the suite was not re-run, only the first-request
+size was re-measured. Other models and task mixes are unmeasured.
+
 Session recall is on by default for Claude Code and Codex: the server entry
 ends in `--recall-source <that client>`, which serves the `compresso_recall`
 tool over that client's own local session transcripts. Recall is scoped to the

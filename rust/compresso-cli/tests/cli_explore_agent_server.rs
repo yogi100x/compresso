@@ -212,6 +212,9 @@ fn test_the_agent_file_starts_a_lean_server_and_the_shared_entry_stays_full() {
         "claude-code",
         "--project",
         &root,
+        // The default main-session agent (E17-51, D116) serves the lean
+        // profile from the shared entry; this test pins the opt-out shape.
+        "--no-main-agent",
         "--yes",
         "--json",
     ]);
@@ -233,7 +236,7 @@ fn test_the_agent_file_starts_a_lean_server_and_the_shared_entry_stays_full() {
     let shared = fixture.shared_entry();
     assert!(
         !shared["args"].to_string().contains("lean"),
-        "no installer writes lean into the shared entry: {shared}"
+        "with --no-main-agent no installer writes lean into the shared entry: {shared}"
     );
 
     let agent = fixture.agent_text();

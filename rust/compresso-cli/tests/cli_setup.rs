@@ -575,9 +575,21 @@ fn test_setup_project_clients_pin_exact_canonical_root() {
             canonical_text(&fixture.root),
         ];
         if client == "claude-code" {
-            // Recall is on by default, and only over the client's own
-            // transcripts. Cursor transcripts are unsupported.
-            expected.extend(["--recall-source".to_owned(), "claude-code".to_owned()]);
+            // The main-session profile with the edit tool is the Claude Code
+            // default (E17-51, D116). Recall is on by default, and only over
+            // the client's own transcripts. Cursor transcripts are
+            // unsupported.
+            expected.extend(
+                [
+                    "--tools",
+                    "lean",
+                    "--session-tools",
+                    "--edits",
+                    "--recall-source",
+                    "claude-code",
+                ]
+                .map(str::to_owned),
+            );
         }
         assert_eq!(
             config["mcpServers"]["compresso"]["args"],
@@ -1461,4 +1473,238 @@ fn test_setup_no_recall_writes_the_entry_without_a_recall_source() {
     let text = fs::read_to_string(fixture.codex_config()).expect("Codex config should exist");
     assert!(text.contains("args = [\"mcp\", \"serve\"]\n"), "{text}");
     assert!(!text.contains("--recall-source"));
+}
+
+/// E17-51 (D116): setup adds the main-session agent for Claude Code by
+/// default, previews it, and leaves it out with --no-main-agent.
+#[test]
+fn test_setup_adds_the_main_agent_for_claude_code_unless_opted_out() {
+    let fixture = Fixture::new();
+    let (exit, preview, errors) = fixture.run_setup_json(
+        &[
+            "setup",
+            "claude-code",
+            fixture.root_str(),
+            "--dry-run",
+            "--json",
+        ],
+        None,
+        &mut std::io::empty(),
+    );
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    let steps = preview["data"]["plan"]["main_agent"]["steps"]
+        .as_array()
+        .expect("main agent steps")
+        .len();
+    assert_eq!(steps, 2, "{preview}");
+    assert!(!fixture.root.join(".claude").exists());
+
+    let (exit, output, errors) = fixture.run_setup_json(
+        &[
+            "setup",
+            "claude-code",
+            fixture.root_str(),
+            "--yes",
+            "--json",
+        ],
+        Some(&fixture.store),
+        &mut std::io::empty(),
+    );
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert_eq!(
+        output["data"]["result"]["main_agent"]["steps"][1]["result"]["installed"], true,
+        "{output}"
+    );
+    assert!(
+        fixture
+            .root
+            .join(".claude/agents/compresso-main.md")
+            .is_file()
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join(".claude/settings.local.json")).expect("settings"),
+        "{\n  \"agent\": \"compresso-main\"\n}\n"
+    );
+
+    let fixture = Fixture::new();
+    let (exit, _, errors) = fixture.run_setup_json(
+        &[
+            "setup",
+            "claude-code",
+            fixture.root_str(),
+            "--no-main-agent",
+            "--yes",
+            "--json",
+        ],
+        Some(&fixture.store),
+        &mut std::io::empty(),
+    );
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert!(!fixture.root.join(".claude/agents").exists());
+    assert!(!fixture.root.join(".claude/settings.local.json").exists());
+    let config: Value =
+        serde_json::from_slice(&fs::read(fixture.root.join(".mcp.json")).expect("entry"))
+            .expect("JSON");
+    assert!(
+        !config["mcpServers"]["compresso"]["args"]
+            .to_string()
+            .contains("lean")
+    );
+}
+
+/// E17-51 review: `setup --no-main-agent` over a default install removes the
+/// agent file and the key through their receipts, so no agent is left
+/// running against the full-profile entry.
+#[test]
+fn test_setup_no_main_agent_over_a_default_install_removes_the_agent() {
+    let fixture = Fixture::new();
+    let (exit, _, errors) = fixture.run_setup_json(
+        &[
+            "setup",
+            "claude-code",
+            fixture.root_str(),
+            "--yes",
+            "--json",
+        ],
+        Some(&fixture.store),
+        &mut std::io::empty(),
+    );
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert!(
+        fixture
+            .root
+            .join(".claude/agents/compresso-main.md")
+            .is_file()
+    );
+    let (exit, output, errors) = fixture.run_setup_json(
+        &[
+            "setup",
+            "claude-code",
+            fixture.root_str(),
+            "--no-main-agent",
+            "--yes",
+            "--json",
+        ],
+        Some(&fixture.store),
+        &mut std::io::empty(),
+    );
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert!(
+        !fixture
+            .root
+            .join(".claude/agents/compresso-main.md")
+            .exists(),
+        "{output}"
+    );
+    assert!(
+        !fixture.root.join(".claude/settings.local.json").exists(),
+        "{output}"
+    );
+    let removed = output["data"]["result"]["main_agent"]["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .filter(|step| step["result"]["removed"] == true)
+        .count();
+    assert_eq!(removed, 2, "{output}");
+}
+
+/// E17-51 review: setup writes the main-session agent only when it is
+/// exactly what was previewed.
+#[test]
+fn test_setup_writes_no_main_agent_file_that_changed_since_the_preview() {
+    let fixture = Fixture::new();
+    let runtime = TestSetupRuntime::new(
+        fixture.environment.data_dir.join("compresso.db"),
+        Arc::new(SequenceClock::new([1_000])),
+    )
+    .with_open_write(
+        fixture.root.join(".claude/settings.local.json"),
+        b"{\"model\": \"x\"}\n".to_vec(),
+    );
+    let (exit, output, errors) = fixture.run_setup_json_with_runtime(
+        &[
+            "setup",
+            "claude-code",
+            fixture.root_str(),
+            "--yes",
+            "--json",
+        ],
+        None,
+        &runtime,
+        &mut std::io::empty(),
+    );
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert!(
+        output["data"]["result"]["main_agent"]["warnings"]
+            .as_array()
+            .expect("warnings")
+            .iter()
+            .any(|warning| warning
+                .as_str()
+                .is_some_and(|text| text.contains("changed after the setup preview"))),
+        "{output}"
+    );
+    assert!(
+        !fixture
+            .root
+            .join(".claude/agents/compresso-main.md")
+            .exists()
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join(".claude/settings.local.json")).expect("settings"),
+        "{\"model\": \"x\"}\n"
+    );
+    // The end state agrees: the previewed fallback (full-profile) entry.
+    let config: Value =
+        serde_json::from_slice(&fs::read(fixture.root.join(".mcp.json")).expect("entry"))
+            .expect("JSON");
+    let args = config["mcpServers"]["compresso"]["args"].to_string();
+    assert!(
+        !args.contains("lean") && !args.contains("--edits"),
+        "{args}"
+    );
+    assert!(
+        output["data"]["plan"]["main_agent"]["fallback_entry"].is_object(),
+        "{output}"
+    );
+    let (_, verify, _) = fixture.run_integration(&[
+        "integrations",
+        "verify",
+        "claude-code",
+        "--project",
+        fixture.root_str(),
+        "--json",
+    ]);
+    assert!(
+        verify["data"]["checks"]
+            .as_array()
+            .expect("checks")
+            .iter()
+            .filter(|check| check["name"].as_str().unwrap().starts_with("main_agent"))
+            .all(|check| check["passed"] == true),
+        "{verify}"
+    );
+}
+
+/// E17-51 review: setup refuses, naming the journal, while an interrupted
+/// change to the settings file is pending.
+#[test]
+fn test_setup_refuses_a_pending_settings_journal() {
+    let fixture = Fixture::new();
+    fs::create_dir_all(fixture.root.join(".claude")).expect("claude dir");
+    let journal = fixture
+        .root
+        .join(".claude/settings.local.json.compresso-journal");
+    fs::write(&journal, "{}").expect("journal");
+    for extra in [&[][..], &["--no-main-agent"][..]] {
+        let mut arguments = vec!["setup", "claude-code", fixture.root_str()];
+        arguments.extend_from_slice(extra);
+        arguments.extend(["--yes", "--json"]);
+        let (exit, _, errors) =
+            fixture.run_setup_json(&arguments, Some(&fixture.store), &mut std::io::empty());
+        assert_eq!(exit, CliExitCode::Failure, "{extra:?}");
+        assert!(errors.to_string().contains("compresso-journal"), "{errors}");
+        assert!(!fixture.root.join(".mcp.json").exists());
+    }
 }

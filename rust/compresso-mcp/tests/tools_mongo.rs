@@ -14,8 +14,8 @@ use std::time::Duration;
 use compresso_core::{Config, Engine, TokenProvider, counter_for};
 use compresso_mcp::{
     McpDeps, McpServeOptions, McpToolProfile, MongoSettings, MongoSurface, SqlEngine, SqlSettings,
-    SqlSurface, advertised_surface, advertised_surface_for, advertised_surface_with_databases,
-    serve_io_with_options,
+    SqlSurface, advertised_lean_session_surface, advertised_surface, advertised_surface_for,
+    advertised_surface_with_databases, serve_io_with_options,
 };
 use compresso_store::{StatsFilter, Store};
 use serde_json::{Value, json};
@@ -226,6 +226,28 @@ async fn test_servers_without_the_flag_and_lean_servers_never_serve_mongo() {
         }
         harness.close().await;
     }
+}
+
+/// E17-51 x E17-52: the lean session profile (`--session-tools`) never
+/// serves the MongoDB tool either.
+#[tokio::test]
+async fn test_the_lean_session_profile_never_serves_mongo() {
+    for recall in [false, true] {
+        for edits in [false, true] {
+            let (tools, _) = advertised_lean_session_surface(recall, edits);
+            assert!(tools.iter().all(|tool| tool.name != "compresso_mongo"));
+        }
+    }
+    let fixture = Fixture::new();
+    let mut options = fixture.options(McpToolProfile::Lean, Some(Some(&refused_url())));
+    options.session_tools = true;
+    let mut harness = Harness::start(&fixture, options).await;
+    let tools = harness.tools().await;
+    assert!(!names(&tools).contains(&"compresso_mongo"));
+    assert!(names(&tools).contains(&"compresso_report"));
+    let (text, is_error) = harness.call("compresso_mongo", &find()).await;
+    assert!(is_error && text.starts_with("[tool_unavailable]"), "{text}");
+    harness.close().await;
 }
 
 #[tokio::test]

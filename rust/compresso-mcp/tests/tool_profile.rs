@@ -51,6 +51,15 @@ struct Harness {
 
 impl Harness {
     async fn start(tools: McpToolProfile, recall: bool) -> Self {
+        Self::start_with(tools, recall, false, false).await
+    }
+
+    async fn start_with(
+        tools: McpToolProfile,
+        recall: bool,
+        edits: bool,
+        session_tools: bool,
+    ) -> Self {
         let temp = TempDir::new().expect("temporary directory");
         let home = temp.path().join("home");
         std::fs::create_dir_all(&home).expect("temporary home");
@@ -70,6 +79,8 @@ impl Harness {
                 sources: vec![RecallSource::ClaudeCode],
             }),
             tools,
+            edits,
+            session_tools,
             ..McpServeOptions::default()
         };
         let (client, server) = tokio::io::duplex(256 * 1024);
@@ -279,6 +290,93 @@ async fn test_lean_profile_with_operator_enabled_recall_serves_recall_last() {
     expected.push("compresso_recall");
     assert_eq!(names(&tools), expected);
     harness.close().await;
+}
+
+/// E17-51 (D116): `--session-tools` adds exactly the two tools the
+/// `/compresso` session commands call, after the lean tools; the lean
+/// instructions change only their first sentence, to say what
+/// `compresso_report` writes.
+#[tokio::test]
+async fn test_lean_session_tools_add_stats_and_report_and_keep_the_lean_instructions() {
+    let mut harness = Harness::start_with(McpToolProfile::Lean, true, true, true).await;
+    let tools = harness.list().await;
+    let mut expected = LEAN_TOOLS.to_vec();
+    expected.extend([
+        "compresso_recall",
+        "compresso_edit",
+        "compresso_stats",
+        "compresso_report",
+    ]);
+    assert_eq!(names(&tools), expected);
+    for tool in &tools {
+        assert!(tool["inputSchema"]["properties"].get("root").is_none());
+    }
+    let response = harness.call("compresso_stats", json!({})).await;
+    assert_ne!(response["result"]["isError"], true, "{response}");
+    let response = harness
+        .call("compresso_report", json!({ "kind": "share" }))
+        .await;
+    assert_ne!(response["result"]["isError"], true, "{response}");
+    // Every other full-profile tool stays hidden.
+    let response = harness
+        .call("compresso_impact", json!({ "path": "src/lib.rs" }))
+        .await;
+    assert!(error_text(&response).starts_with("[tool_unavailable]"));
+    harness.close().await;
+
+    let (_, lean) = compresso_mcp::advertised_surface_with(McpToolProfile::Lean, true, true);
+    let (session, instructions) = compresso_mcp::advertised_lean_session_surface(true, true);
+    // Only the first sentence changes, to say what compresso_report writes.
+    assert_ne!(instructions, lean);
+    assert!(
+        instructions.contains(
+            "compresso_report saves a report under Compresso's data directory when asked."
+        )
+    );
+    assert_eq!(
+        instructions.split_once(" Use these tools").unwrap().1,
+        lean.split_once(" Use these tools").unwrap().1
+    );
+    let (_, read_only) = compresso_mcp::advertised_lean_session_surface(false, false);
+    assert!(!read_only.contains("read-only"), "{read_only}");
+    assert!(
+        read_only.contains("writes no repository file"),
+        "{read_only}"
+    );
+    assert_eq!(
+        session
+            .iter()
+            .map(|tool| tool.name.as_ref())
+            .collect::<Vec<_>>(),
+        expected
+    );
+    // Without the flag the lean surface is unchanged.
+    let (plain, _) = compresso_mcp::advertised_surface_with(McpToolProfile::Lean, false, false);
+    assert_eq!(plain.len(), LEAN_TOOLS.len());
+}
+
+/// The schema cost the two session tools add to a lean server (o200k and
+/// calibrated), for the record in D116; schemas are deferred behind the
+/// client's tool search in the measured setup, so the first request pays
+/// only their names.
+#[test]
+fn test_lean_session_tools_cost_is_bounded() {
+    for provider in [
+        TokenProvider::OpenAiO200k,
+        TokenProvider::AnthropicCalibrated,
+    ] {
+        let lean_edits = surface_tokens_with(McpToolProfile::Lean, provider, true);
+        let (tools, instructions) = compresso_mcp::advertised_lean_session_surface(false, true);
+        let listed = serde_json::to_string(&json!({ "tools": tools })).expect("tools serialize");
+        let counter = counter_for(provider);
+        let session = counter.count(&listed) + counter.count(&instructions);
+        println!("{provider:?}: lean+edits={lean_edits} lean+edits+session={session}");
+        assert!(session > lean_edits);
+        assert!(
+            session - lean_edits <= 300,
+            "{provider:?}: {session} vs {lean_edits}"
+        );
+    }
 }
 
 #[test]

@@ -11,8 +11,9 @@
 //! (E17-38, D103): `compresso mcp serve --tools lean` under the key
 //! [`LEAN_SERVER_KEY`], which Claude Code connects only while this agent runs.
 //! The agent's Compresso tools are that server's tools, so the agent runs on
-//! the lean profile while the shared `compresso` entry and the main session
-//! stay on the full profile (D92).
+//! the lean profile whatever profile the shared `compresso` entry serves (the
+//! full profile, or since E17-51 (D116) the lean session profile a default
+//! project install writes for the main-session agent).
 //!
 //! The adapter owns the whole file (`ConfigFormat::Markdown`, owned path
 //! [`OWNED_PATH`]). It installs only into a missing file or over a file that
