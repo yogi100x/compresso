@@ -227,6 +227,7 @@ stop it.
 - **collections, describe**: the names and kinds of the collections the
   account may list; field names and types from 100 random documents; index
   names and keys.
+- **Time-series collections**: readable (see the confirmation round).
 - **Every call**: makes the server log a `connectionStatus`, an
   `Unauthorized` `hostInfo` on `admin` (an audit log records both), and,
   for a call that reads collections, a names-only `listCollections`. Calls
@@ -267,14 +268,13 @@ An independent review of this change found, and this round fixed:
 - **describe memory** (must-fix): the field summary stored every path of
   every sampled document (100 documents of 60,000 keys took 1.74 GB). It now
   tracks at most 800 paths (four times the 200 shown) and counts the rest in
-  `fields_omitted`, and reads at most 8 MiB of sample. `find`, `aggregate`,
-  and `distinct` read documents as raw BSON and stop after 32 MiB of them
-  (the server's 16 MiB reply limit, twice), so 1,000 rows of 16 MiB can
-  never be held; the result is then marked `max_bytes`.
+  `fields_omitted`, and reads at most 8 MiB of sample. (This round's
+  statement that `distinct` was bounded was false: it decoded the whole
+  reply; see the confirmation round.)
 - **Error text**: the driver's rendering of an error embeds the reply
   document as hex, past the scrub. Errors are now fixed text plus the
   server's numeric code, its code name (letters and digits only), and its
-  message cut to 200 characters; every message, SQL and MongoDB alike, has
+  message (scrubbed, then cut to 600 characters); every message, SQL and MongoDB alike, has
   hidden characters escaped as result cells are (a failed cast quotes the
   stored value). The SQL path had the same unescaped-message problem
   (server messages quoting stored values) and is fixed by the same change in
@@ -296,14 +296,79 @@ An independent review of this change found, and this round fixed:
   `[patch]` crate of that name, or another version, fails). The source scan
   now refuses glob imports and macro-built paths under `std`, `tokio`,
   `async_std`, and `smol`, `include!` of anything outside the crate's
-  scanned sources, and any `<name>::process::<member>` path; the `std`
-  cases were open on main too and are fixed for every crate. What a lexical
-  scan cannot see is stated in the script's header (a dependency re-export
-  under another name, effects inside a dependency's functions, generated
-  code).
+  scanned sources, and `<name>::process::<member>` paths. The claim that
+  this closed the `std::process` forms was false (see the confirmation
+  round).
 - **Wording**: the guarantee sentence says the tool reads only the
   configured database and sends one probe command on `admin` that must be
   refused.
+
+## Confirmation round (2026-11-23)
+
+A second review found the following, all fixed in this round:
+
+- **Memory per document.** Byte caps held, but each admitted document was
+  decoded whole and then rendered: one 15 MB document through `find` peaked
+  at 825 MB, a pipeline that builds large documents from small ones at
+  610 MB, and `distinct` on one 15 MB value at 795 MB (`distinct` had no
+  budget at all). Now replies are read as raw bytes and rendered straight
+  from them (`raw.rs`): no `Document` or `Bson` tree of a result document is
+  built, each document is rendered within what the result can still hold
+  (cut and marked `$truncated`), and a document over 1 MiB is a size marker
+  (`{"$document": {"bytes": N}}`). Servers are asked for batches of 16
+  documents. `distinct` runs as `$match`, `$unwind`, `$group`, `$limit`
+  through the same raw path (unordered, as `distinct` is; array elements
+  unwound as `distinct` does; the `$group` is held to the server's 100 MB
+  limit). Measured peak RSS of one call in a release build (macOS arm64,
+  MongoDB 8.0.38): one 15 MB document through `find` 26 MB, `distinct` on
+  one 15 MB value 26 MB, a pipeline generating 11 MB documents from three
+  small ones 22 MB, a `$push` of 300,000 values 25 MB, 60,000-key documents
+  through `find` 40 MB and `describe` 26 MB (before: 825, 795, 610, n/a,
+  403, 133 MB). What remains: the driver holds one server reply while it is
+  read (at most 16 MiB of documents; a 48 MiB message at the protocol
+  limit).
+- **Typed values forged through `distinct`**: it decoded through the
+  driver's extended-JSON reading, so a stored `{"$oid": ...}` came back as a
+  real object id. It now uses the raw renderer; every non-JSON type is a
+  `$`-keyed marker object (`$oid`, `$date`, `$timestamp`, `$regex` with
+  `$options`, `$numberDecimal`, `$numberDouble`, `$binary`, `$code`,
+  `$symbol`, `$dbPointer`, `$undefined`, `$minKey`, `$maxKey`), and stored
+  `$` keys at any depth and in arrays are escaped with a leading `\`.
+- **Invalid UTF-8**: a key or string that is not valid UTF-8 is shown
+  lossily (U+FFFD) instead of failing the whole call. (The driver refuses to
+  insert such a key, so keys are covered by unit tests; strings also live.)
+- **System variables only in expressions**: `$$name` is checked only where
+  the server reads an expression (stage bodies other than `$match`, `$expr`,
+  `$lookup` `let`); a value compared in a filter or a `$literal` is data.
+  In an expression a literal string starting with `$` must be wrapped in
+  `$literal`, and the refusal says so.
+- **Scrub before cut**: server messages are scrubbed of URL parts before the
+  length cut, so no prefix of a secret can survive a cut.
+- **Time-series collections** are allowed: the server unpacks their buckets
+  itself with no pipeline anyone stored, so they are not views in the sense
+  that matters here; `collections` lists them as `timeseries`.
+- **Capability check**: the lexical scan was still evadable (a `'"'`
+  character literal hid what followed; nested use groups; a leading `::`;
+  `extern crate` aliases used in a group; a macro given both names;
+  `#[path]` modules, extra `[[bin]]` paths, and build scripts outside the
+  scanned folders), and it refused any local module named `process`. The
+  real control for `compresso-sql`, `compresso-mcp`, and `compresso-cli` is
+  now semantic: Clippy's `disallowed_types` and `disallowed_methods` in a
+  per-crate `clippy.toml` (std and Tokio process types and `Command::new`;
+  only Tokio's in `compresso-cli`, whose sanctioned `std::process` files
+  stay), enforced by CI's `-D warnings`. In a scratch crate every evasion
+  above (14 source forms, a `#[path]` module, an extra binary, an
+  integration test, a build script) failed Clippy, and `std::process::ExitCode`
+  did not. The script checks the entries, refuses attributes or manifest
+  settings that lower those lints, `#[path]` modules, build scripts, and
+  targets outside the scanned folders. The lexical scan stays as a
+  secondary check (character literals, nested groups, leading `::`,
+  aliases, and the false positive fixed). Residual risk, stated in the
+  script header: Clippy does not lint code expanded from another crate's
+  macro; a `CLIPPY_CONF_DIR` or `RUSTFLAGS` override in CI would weaken it;
+  the lint-level check is lexical; and for every other crate the lexical
+  scan remains the only source control, which a dependency re-export under
+  another name or a macro assembling the path some other way can evade.
 
 ## Known gaps
 
