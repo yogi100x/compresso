@@ -14,7 +14,7 @@ awaiting owner confirmation** (listed in D117), including the
 capability-check amendment in decision 11.
 
 **Live status.** The CI job `live-mongo` added by this change has **not yet
-run**: the branch has not been pushed. The seven live tests in
+run**: the branch has not been pushed. The eight live tests in
 `rust/compresso-sql/tests/live_mongo.rs` passed on the build machine on
 2026-11-23 against throwaway local containers the session started and
 removed: MongoDB 8.0.38 with access control on, and MongoDB 8.0.38 with TLS
@@ -74,7 +74,12 @@ stop it.
      $gt $gte $in $lt $lte $mod $ne $nin $nor $not $options $or $regex
      $size $type`, plus the expression operators inside `$expr`.
    - *Find projections*: inclusion or exclusion (0, 1, true, false),
-     `$slice`, `$elemMatch`. *Sorts*: 1 or -1 only.
+     `$slice`, `$elemMatch`. *Sorts*: 1 or -1 only; several fields only as
+     an array of one-field objects (`[{"a": -1}, {"b": 1}]`), so their order
+     never depends on how a JSON object keeps key order. Key order inside
+     an embedded-document equality value follows the JSON parser (insertion
+     order in the shipped binary, whose `serde_json` keeps it) - a known
+     limit.
    - *Stages*: `$addFields $bucket $bucketAuto $count $facet $group $limit
      $lookup $match $project $replaceRoot $replaceWith $sample $set $skip
      $sort $sortByCount $unset $unwind`. `$facet` may not be nested;
@@ -280,7 +285,7 @@ another database.
   is empty). The macOS arm64 release binary grows from 39,634,416 to
   46,305,392 bytes (+16.8%).
 - The full surface grows only when the flag is set: the tool definition is
-  569 o200k tokens (budget 600); default surfaces and goldens are
+  591 o200k tokens (budget 600); default surfaces and goldens are
   unchanged.
 - The allow-list refuses some valid MongoDB (geospatial and text queries,
   `$setWindowFields`, `$densify`, `$graphLookup`, `$unionWith`, window and

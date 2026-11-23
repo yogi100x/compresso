@@ -290,6 +290,14 @@ async fn test_a_mongo_server_refuses_before_connecting_states_its_network_use_an
             json!({"action": "find", "collection": "items", "command": {"drop": "items"}}),
             "[invalid_arguments]",
         ),
+        (
+            json!({"action": "find", "collection": "items", "filter": {"a": "x".repeat(100_001)}}),
+            "[invalid_arguments]",
+        ),
+        (
+            json!({"action": "find", "collection": "items", "sort": {"a": 1, "b": -1}}),
+            "[mongo_refused]",
+        ),
         (find(), "[mongo_connection]"),
     ] {
         let (text, is_error) = harness.call("compresso_mongo", &arguments).await;

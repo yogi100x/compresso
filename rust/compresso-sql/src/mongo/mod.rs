@@ -200,8 +200,12 @@ impl MongoSettings {
             value: std::env::var(env_name).ok(),
             environment: MONGO_HANDSHAKE_ENVIRONMENT
                 .iter()
+                // As the driver tests them: `var_os`, a lossy prefix check
+                // for AWS_EXECUTION_ENV, and non-empty for the rest.
                 .filter(|name| {
-                    std::env::var(name).is_ok_and(|value| target::marks_handshake(name, &value))
+                    std::env::var_os(name).is_some_and(|value| {
+                        target::marks_handshake(name, &value.to_string_lossy())
+                    })
                 })
                 .map(|name| (*name).to_owned())
                 .collect(),

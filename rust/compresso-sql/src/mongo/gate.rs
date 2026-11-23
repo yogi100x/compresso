@@ -393,16 +393,46 @@ pub(crate) fn projection(value: &Value) -> Result<Document, SqlError> {
     document(object, PROJECTION, 0, &mut budget)
 }
 
-/// A sort: fields with 1 or -1 only.
+/// A sort: fields with 1 or -1 only. Field order matters and a JSON object's
+/// key order is not guaranteed through every parser, so a sort on several
+/// fields is an array of one-field objects (`[{"a": -1}, {"b": 1}]`); an
+/// object may name one field only.
 pub(crate) fn sort(value: &Value) -> Result<Document, SqlError> {
-    let Value::Object(object) = value else {
-        return Err(refused("sort must be a JSON object."));
+    let fields: Vec<(&String, &Value)> = match value {
+        Value::Object(object) if object.len() <= 1 => object.iter().collect(),
+        Value::Object(_) => {
+            return Err(refused(
+                "a sort on several fields must be an array of one-field objects, e.g. [{\"a\": -1}, {\"b\": 1}], so the order is kept.",
+            ));
+        }
+        Value::Array(items) => {
+            let mut fields = Vec::with_capacity(items.len());
+            for item in items {
+                match item {
+                    Value::Object(object) if object.len() == 1 => fields.extend(object.iter()),
+                    _ => {
+                        return Err(refused(
+                            "each element of a sort array must be an object with one field.",
+                        ));
+                    }
+                }
+            }
+            fields
+        }
+        _ => {
+            return Err(refused(
+                "sort must be a one-field object or an array of one-field objects.",
+            ));
+        }
     };
-    if object.len() > 32 {
+    if fields.len() > 32 {
         return Err(refused("sort may name at most 32 fields."));
     }
     let mut sorted = Document::new();
-    for (key, direction) in object {
+    for (key, direction) in fields {
+        if sorted.contains_key(key) {
+            return Err(refused("sort names a field more than once."));
+        }
         check_field(key)?;
         match direction.as_i64() {
             Some(direction @ (1 | -1)) => {
@@ -897,6 +927,38 @@ mod tests {
         assert!(code(pipeline(&json!({"$match": {}}))).contains("array"));
         assert!(code(filter(&json!([]))).contains("object"));
         assert!(code(sort(&json!({"$natural": 1}))).starts_with("[mongo_refused]"));
+        // Several sort fields only as an ordered array, order kept.
+        let sorted = sort(&json!([{"score": -1}, {"age": 1}, {"name": 1}])).expect("array");
+        assert_eq!(
+            sorted.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["score", "age", "name"]
+        );
+        assert!(code(sort(&json!({"score": -1, "age": 1}))).contains("array of one-field"));
+        assert!(code(sort(&json!([{"a": 1, "b": 1}]))).contains("one field"));
+        assert!(code(sort(&json!([{"a": 1}, {"a": -1}]))).contains("more than once"));
+        let many = Value::Array((0..33).map(|n| json!({format!("f{n}"): 1})).collect());
+        assert!(code(sort(&many)).contains("at most 32"));
+        let stages = pipeline(&json!([{"$sort": [{"b": -1}, {"a": 1}]}])).expect("stage sort");
+        assert_eq!(
+            stages[0]
+                .get_document("$sort")
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["b", "a"]
+        );
+        // $lookup accepts only its own keys and needs `from`.
+        assert!(
+            code(pipeline(
+                &json!([{"$lookup": {"from": "b", "as": "c", "db": "admin"}}])
+            ))
+            .contains("accepts only")
+        );
+        assert!(
+            code(pipeline(&json!([{"$lookup": {"as": "c", "pipeline": []}}])))
+                .contains("needs from")
+        );
         assert!(code(projection(&json!({"a": 2}))).contains("projection value"));
         assert!(code(projection(&json!({"a": {"$function": "x"}}))).contains("JavaScript"));
         projection(&json!({"a": 1, "b": false, "c": {"$slice": [1, 2]}})).expect("allowed");

@@ -47,7 +47,7 @@ E16 Full-product completion (routing, modes, languages, integrations, operations
 | E2 Core engine | ContextGraph, tokenizers, strategies, safety, engine, traces | 2 | ~5 wk |
 | E3 Atlas | Store, scanner, tree-sitter parsers, incremental indexer, queries | 3 | 4 wk |
 | E4 CLI | `compresso` binary, all slice commands, JSON output | 3–4 | ~1.5 wk |
-| E5 MCP server | rmcp stdio server, 10 read-only tools (13 after E17, 14 with recall, counting E17-48's `compresso_report`, which writes reports only to Compresso's data directory; plus the opt-in `compresso_edit` write tool with `--edits`, E17-32, and the opt-in read-only `compresso_sql` live-database tool with `--sql-env`, E17-50), sessions/ledger | 4 | ~2 wk |
+| E5 MCP server | rmcp stdio server, 10 read-only tools (13 after E17, 14 with recall, counting E17-48's `compresso_report`, which writes reports only to Compresso's data directory; plus the opt-in `compresso_edit` write tool with `--edits`, E17-32, the opt-in read-only `compresso_sql` live-database tool with `--sql-env`, E17-50, and the opt-in read-only `compresso_mongo` MongoDB tool with `--mongo-env`, E17-52), sessions/ledger | 4 | ~2 wk |
 | E6 Integrations | Framework + Claude Code, Codex, Cursor adapters | 5 (pulled in) | ~2 wk |
 | E7 Eval & fixtures | Fixture corpus, eval runner, release gates | 2–3 | ~2.5 wk (overlaps) |
 | E8–E12 | Supervisor, desktop, cloud, proxy, release eng | 4–9 | full tickets in 05 |

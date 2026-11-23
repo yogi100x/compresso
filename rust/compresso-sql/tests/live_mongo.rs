@@ -314,6 +314,67 @@ fn test_live_mongo_reads_work_for_a_read_account() {
     assert!(inside.is_ok(), "{inside:?}");
 }
 
+/// Every allowed stage, and a multi-field sort in order, runs for a `read`
+/// account: the allow-list sends nothing the server or the role refuses.
+#[test]
+fn test_live_mongo_every_allowed_stage_runs_for_a_read_account() {
+    let Some(live) = Live::start() else { return };
+    let service = live.service("reader");
+    let stages = [
+        json!({"$addFields": {"double": {"$multiply": ["$n", 2]}}}),
+        json!({"$bucket": {"groupBy": "$n", "boundaries": [0, 10, 20, 30], "output": {"c": {"$sum": 1}}}}),
+        json!({"$bucketAuto": {"groupBy": "$n", "buckets": 3}}),
+        json!({"$count": "total"}),
+        json!({"$facet": {"evens": [{"$match": {"kind": "even"}}, {"$count": "n"}]}}),
+        json!({"$group": {"_id": "$kind", "avg": {"$avg": "$n"}, "all": {"$push": "$n"}}}),
+        json!({"$limit": 2}),
+        json!({"$lookup": {"from": "items", "localField": "n", "foreignField": "n", "as": "self"}}),
+        json!({"$match": {"n": {"$in": [1, 2, 3]}}}),
+        json!({"$project": {"_id": 0, "n": 1, "kind": 1}}),
+        json!({"$replaceRoot": {"newRoot": "$nested"}}),
+        json!({"$replaceWith": {"n": "$n"}}),
+        json!({"$sample": {"size": 3}}),
+        json!({"$set": {"flag": {"$cond": [{"$gt": ["$n", 5]}, true, false]}}}),
+        json!({"$skip": 28}),
+        json!({"$sort": [{"kind": 1}, {"n": -1}]}),
+        json!({"$sortByCount": "$kind"}),
+        json!({"$unset": "note"}),
+        json!({"$unwind": "$self"}),
+    ];
+    assert_eq!(stages.len(), compresso_sql::mongo::gate::STAGES.len());
+    for stage in stages {
+        let pipeline = if stage.get("$unwind").is_some() {
+            json!([{"$lookup": {"from": "items", "localField": "n", "foreignField": "n", "as": "self"}}, stage])
+        } else {
+            json!([stage])
+        };
+        let result = service.execute(&request(
+            MongoAction::Aggregate {
+                collection: "items".to_owned(),
+                pipeline: pipeline.clone(),
+            },
+            50,
+            5_000,
+        ));
+        assert!(result.is_ok(), "{pipeline}: {result:?}");
+    }
+    let find = MongoAction::Find {
+        collection: "items".to_owned(),
+        filter: json!({}),
+        projection: Some(json!({"_id": 0, "kind": 1, "n": 1})),
+        sort: Some(json!([{"kind": 1}, {"n": -1}])),
+        skip: 0,
+    };
+    let (rows, _) = documents(service.execute(&request(find, 2, 5_000)).expect("find"));
+    assert_eq!(
+        rows,
+        vec![
+            json!({"n": 28, "kind": "even"}),
+            json!({"n": 26, "kind": "even"})
+        ]
+    );
+}
+
 #[test]
 fn test_live_mongo_accounts_beyond_read_are_refused() {
     let Some(live) = Live::start() else { return };
