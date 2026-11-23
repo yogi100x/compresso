@@ -1,0 +1,157 @@
+scripts/check-crate-capabilities.test.ts
+  s_89a704cfae63f5::t_39d9ea7ed95b5a 300-306,310,316-336,340,353,366,381,436-464
+scripts/check-crate-capabilities.ts
+  s_89a704cfae63f5::t_9df4444b1a0b04 3-19,68,551-587,591-637,942-965,1242,1244,1298-1308,1354
+scripts/fixtures/crate-capabilities/denied-sql-glob-std-process/Cargo.lock
+  s_89a704cfae63f5::t_c953f25c6ee9e6 1-44
+scripts/fixtures/crate-capabilities/denied-sql-glob-std-process/Cargo.toml
+  s_89a704cfae63f5::t_d44f1a1e3e15f4 1-4
+scripts/fixtures/crate-capabilities/denied-sql-glob-std-process/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_8efd363e08d465 1-7
+scripts/fixtures/crate-capabilities/denied-sql-glob-std-process/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_3a81bd55273b30 1-8
+scripts/fixtures/crate-capabilities/denied-sql-glob-std-process/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_68101e15da90fa 1-8
+scripts/fixtures/crate-capabilities/denied-sql-glob-std-process/crates/compresso-sql/src/lib.rs
+  s_89a704cfae63f5::t_abe7646944b642 1
+scripts/fixtures/crate-capabilities/denied-sql-glob-std-process/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_707963e6681bd3 1-10
+scripts/fixtures/crate-capabilities/denied-sql-glob-std-process/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_ee2895f76adad4 1-4
+scripts/fixtures/crate-capabilities/denied-sql-glob-std-process/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_df0e8d40623bf1 1-12
+scripts/fixtures/crate-capabilities/denied-sql-glob-tokio-process/Cargo.lock
+  s_89a704cfae63f5::t_e4c33d5f7f95ae 1-44
+scripts/fixtures/crate-capabilities/denied-sql-glob-tokio-process/Cargo.toml
+  s_89a704cfae63f5::t_1cc06c673cd346 1-4
+scripts/fixtures/crate-capabilities/denied-sql-glob-tokio-process/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_b44637c5ebae31 1-7
+scripts/fixtures/crate-capabilities/denied-sql-glob-tokio-process/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_6b28251bf1a9c7 1-8
+scripts/fixtures/crate-capabilities/denied-sql-glob-tokio-process/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_7109499b1e7487 1-8
+scripts/fixtures/crate-capabilities/denied-sql-glob-tokio-process/crates/compresso-sql/src/lib.rs
+  s_89a704cfae63f5::t_86db04b5e7ed6b 1
+scripts/fixtures/crate-capabilities/denied-sql-glob-tokio-process/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_36ce57929b8c79 1-10
+scripts/fixtures/crate-capabilities/denied-sql-glob-tokio-process/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_329900b54948a0 1-4
+scripts/fixtures/crate-capabilities/denied-sql-glob-tokio-process/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_cfb0bb78e0a353 1-12
+scripts/fixtures/crate-capabilities/denied-sql-include-outside-src/Cargo.lock
+  s_89a704cfae63f5::t_972b3d12b59665 1-44
+scripts/fixtures/crate-capabilities/denied-sql-include-outside-src/Cargo.toml
+  s_89a704cfae63f5::t_1beb33ebd9769e 1-4
+scripts/fixtures/crate-capabilities/denied-sql-include-outside-src/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_944d273f396eab 1-7
+scripts/fixtures/crate-capabilities/denied-sql-include-outside-src/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_313a274d488b49 1-8
+scripts/fixtures/crate-capabilities/denied-sql-include-outside-src/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_926f5c4881e90f 1-8
+scripts/fixtures/crate-capabilities/denied-sql-include-outside-src/crates/compresso-sql/src/lib.rs
+  s_89a704cfae63f5::t_fc772a0e2b2ada 1
+scripts/fixtures/crate-capabilities/denied-sql-include-outside-src/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_9c5b2b5e8dddcf 1-10
+scripts/fixtures/crate-capabilities/denied-sql-include-outside-src/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_cb9e94207543a9 1-4
+scripts/fixtures/crate-capabilities/denied-sql-include-outside-src/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_9429037a01e766 1-12
+scripts/fixtures/crate-capabilities/denied-sql-include-outside-src/x.rs
+  s_89a704cfae63f5::t_92175b49380672 1
+scripts/fixtures/crate-capabilities/denied-sql-macro-std-process/Cargo.lock
+  s_89a704cfae63f5::t_938c803bfccd2f 1-44
+scripts/fixtures/crate-capabilities/denied-sql-macro-std-process/Cargo.toml
+  s_89a704cfae63f5::t_fe52717eaf39fa 1-4
+scripts/fixtures/crate-capabilities/denied-sql-macro-std-process/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_96f7e78e842da6 1-7
+scripts/fixtures/crate-capabilities/denied-sql-macro-std-process/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_410856a7231d1e 1-8
+scripts/fixtures/crate-capabilities/denied-sql-macro-std-process/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_3bf87af76caa8f 1-8
+scripts/fixtures/crate-capabilities/denied-sql-macro-std-process/crates/compresso-sql/src/lib.rs
+  s_89a704cfae63f5::t_3ab4681dee3594 1
+scripts/fixtures/crate-capabilities/denied-sql-macro-std-process/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_edb5d955d5645d 1-10
+scripts/fixtures/crate-capabilities/denied-sql-macro-std-process/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_4635285b9f2177 1-4
+scripts/fixtures/crate-capabilities/denied-sql-macro-std-process/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_0a24ad74f0cbf7 1-12
+scripts/fixtures/crate-capabilities/denied-sql-macro-tokio-process/Cargo.lock
+  s_89a704cfae63f5::t_96dbeee551ca80 1-44
+scripts/fixtures/crate-capabilities/denied-sql-macro-tokio-process/Cargo.toml
+  s_89a704cfae63f5::t_c1a8688072e431 1-4
+scripts/fixtures/crate-capabilities/denied-sql-macro-tokio-process/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_e986a032745c04 1-7
+scripts/fixtures/crate-capabilities/denied-sql-macro-tokio-process/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_e866c0fb56c0bd 1-8
+scripts/fixtures/crate-capabilities/denied-sql-macro-tokio-process/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_00b57da987a9f4 1-8
+scripts/fixtures/crate-capabilities/denied-sql-macro-tokio-process/crates/compresso-sql/src/lib.rs
+  s_89a704cfae63f5::t_53e0d9d46c8879 1
+scripts/fixtures/crate-capabilities/denied-sql-macro-tokio-process/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_b5e74457e9ce41 1-10
+scripts/fixtures/crate-capabilities/denied-sql-macro-tokio-process/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_a228ed8348af5c 1-4
+scripts/fixtures/crate-capabilities/denied-sql-macro-tokio-process/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_54c116c54e50c1 1-12
+scripts/fixtures/crate-capabilities/denied-sql-process-reexported-by-driver/Cargo.lock
+  s_89a704cfae63f5::t_e51460ce0f4f68 1-44
+scripts/fixtures/crate-capabilities/denied-sql-process-reexported-by-driver/Cargo.toml
+  s_89a704cfae63f5::t_3f20c0ffad30d8 1-4
+scripts/fixtures/crate-capabilities/denied-sql-process-reexported-by-driver/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_590bb91e202486 1-7
+scripts/fixtures/crate-capabilities/denied-sql-process-reexported-by-driver/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_16b2e75d220e05 1-8
+scripts/fixtures/crate-capabilities/denied-sql-process-reexported-by-driver/crates/compresso-mcp/src/lib.rs
+  s_89a704cfae63f5::t_0726071b59d1d7 1
+scripts/fixtures/crate-capabilities/denied-sql-process-reexported-by-driver/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_a572636f6ed922 1-8
+scripts/fixtures/crate-capabilities/denied-sql-process-reexported-by-driver/crates/compresso-sql/src/lib.rs
+  s_89a704cfae63f5::t_014c907fe95276 1
+scripts/fixtures/crate-capabilities/denied-sql-process-reexported-by-driver/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_a8555de98291f5 1-10
+scripts/fixtures/crate-capabilities/denied-sql-process-reexported-by-driver/deps/mongodb/src/lib.rs
+  s_89a704cfae63f5::t_88af5d084af485 1
+scripts/fixtures/crate-capabilities/denied-sql-process-reexported-by-driver/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_24249d652b7c91 1-4
+scripts/fixtures/crate-capabilities/denied-sql-process-reexported-by-driver/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_5efba1333a3be2 1-12
+scripts/fixtures/crate-capabilities/denied-sql-std-process-reexported-by-dependency/Cargo.lock
+  s_89a704cfae63f5::t_d098b9e6e326de 1-44
+scripts/fixtures/crate-capabilities/denied-sql-std-process-reexported-by-dependency/Cargo.toml
+  s_89a704cfae63f5::t_3000ea8a4571f1 1-4
+scripts/fixtures/crate-capabilities/denied-sql-std-process-reexported-by-dependency/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_5896d7febef4b7 1-7
+scripts/fixtures/crate-capabilities/denied-sql-std-process-reexported-by-dependency/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_aafbecb3e9aec7 1-8
+scripts/fixtures/crate-capabilities/denied-sql-std-process-reexported-by-dependency/crates/compresso-mcp/src/lib.rs
+  s_89a704cfae63f5::t_7f130220876767 1
+scripts/fixtures/crate-capabilities/denied-sql-std-process-reexported-by-dependency/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_729cf31a7a4daa 1-8
+scripts/fixtures/crate-capabilities/denied-sql-std-process-reexported-by-dependency/crates/compresso-sql/src/lib.rs
+  s_89a704cfae63f5::t_61291f84561022 1
+scripts/fixtures/crate-capabilities/denied-sql-std-process-reexported-by-dependency/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_d321863a0082f6 1-10
+scripts/fixtures/crate-capabilities/denied-sql-std-process-reexported-by-dependency/deps/mongodb/src/lib.rs
+  s_89a704cfae63f5::t_74a1f32d439b2c 1
+scripts/fixtures/crate-capabilities/denied-sql-std-process-reexported-by-dependency/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_00f1279746a406 1-4
+scripts/fixtures/crate-capabilities/denied-sql-std-process-reexported-by-dependency/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_c0a6e03a8c3d78 1-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1c756aa69bfdb27ceacf01bef1e897effb0dbd4c",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
