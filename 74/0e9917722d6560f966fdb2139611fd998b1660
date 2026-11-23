@@ -1,0 +1,21 @@
+decisions.md
+  s_89a704cfae63f5::t_a7b9f5a9492255 110
+docs/adr/0038-opt-in-read-only-mongodb.md
+  s_89a704cfae63f5::t_7a2093d9769ac1 286
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "740e9917722d6560f966fdb2139611fd998b1660",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
