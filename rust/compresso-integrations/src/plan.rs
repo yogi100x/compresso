@@ -4713,6 +4713,7 @@ mod tests {
     }
 
     /// Copies of the target in `backups` (not journals or other files).
+    #[cfg(unix)]
     fn copies_in(backups: &Path) -> Vec<PathBuf> {
         if !backups.exists() {
             return Vec::new();
