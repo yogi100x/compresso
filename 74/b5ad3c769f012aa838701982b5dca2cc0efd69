@@ -1,0 +1,51 @@
+rust/compresso-cli/tests/cli_main_agent.rs
+  s_89a704cfae63f5::t_6b768da6ca29be 7,778-1046
+rust/compresso-cli/src/commands/integrations.rs
+  s_5fbb5b37b205bc::t_f07b50f5daca2d 41-43,60,68-73,106-110,119,128,485-527,994-1006,1087-1098,1100-1106,1111-1139,1141-1166,1212,1228-1230,1249,1285-1340,1342-1344,1346-1358,1379,1390,1447,1458,1464-1553,1585-1586,1589-1602,2441-2442,2502-2505,2518-2520
+rust/compresso-cli/src/commands/main_agent.rs
+  s_5fbb5b37b205bc::t_638bb55fe3098f 202-236,430-434,440,443,445-473,483,488,495-502,509
+rust/compresso-cli/src/commands/setup.rs
+  s_f4ca430ed37d9b::t_e0f086f61a541a 18,216-220,265-281,303,342-348,425-427,443-478,482-486,513,523-527,550,879-880,941,1018-1027
+rust/compresso-cli/tests/cli_setup.rs
+  s_f4ca430ed37d9b::t_aea502ad7a726f 1658-1709
+rust/compresso-integrations/src/lib.rs
+  s_5fbb5b37b205bc::t_00477dda5319ae 60
+rust/compresso-integrations/src/main_agent.rs
+  s_5fbb5b37b205bc::t_e0ba959486796f 57-58,531-533
+rust/compresso-integrations/src/plan.rs
+  s_f4ca430ed37d9b::t_bcdde46d1b0d17 2576-2582
+rust/compresso-store/src/lib.rs
+  s_f4ca430ed37d9b::t_288523682f035d 255-260
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "74b5ad3c769f012aa838701982b5dca2cc0efd69",
+  "prompts": {},
+  "sessions": {
+    "s_5fbb5b37b205bc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a4378162088715db3",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_f4ca430ed37d9b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ab0c6ae8c7484240b",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
