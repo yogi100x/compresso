@@ -1,5 +1,22 @@
 #!/usr/bin/env node
 
+/**
+ * Capability boundaries per workspace crate: manifests, each member's own
+ * resolved dependency tree, and a lexical scan of the crate's Rust sources.
+ *
+ * Limits of the source scan (D117): it reads text, not resolved names. It
+ * refuses glob imports and macro-built paths under `std`, `tokio`,
+ * `async_std`, and `smol`, `include!` of anything but a literal file inside
+ * the crate's scanned directories, and any `<name>::process::<member>` path,
+ * so a `process` module re-exported by a dependency under that name is
+ * caught. It cannot see a dependency's re-export under another name (`pub
+ * use std::process as p;` then `p::Command`), process or network use inside
+ * a dependency's own functions that the crate merely calls, or code produced
+ * by procedural macros or build scripts. Those are bounded only by the
+ * dependency-level checks: which packages and features each member's tree
+ * may contain.
+ */
+
 import { execFile } from "node:child_process";
 import type { Dirent } from "node:fs";
 import {
@@ -48,6 +65,7 @@ type CargoTarget = {
 type CargoPackage = {
   id: string;
   name: string;
+  version: string;
   source?: string | null;
   manifest_path: string;
   dependencies: CargoDependency[];
@@ -530,7 +548,91 @@ function sourceCapabilityUses(source: string) {
     }
   }
 
+  // D117 review: forms a lexical scan cannot follow are refused outright.
+  // A glob import of a capability root brings `process` or `net` into scope
+  // under a bare name; a macro that builds a path under such a root can name
+  // any member.
+  for (const root of capabilityRoots) {
+    const escaped = regexEscape(root.name);
+    const glob = new RegExp(
+      `\\buse\\s+(?:::\\s*)?${escaped}\\s*::\\s*(?:\\*|\\{[^}]*\\*)`,
+      "u",
+    );
+    const macroPath = new RegExp(`\\b${escaped}\\s*::\\s*\\$`, "u");
+    for (const capability of root.capabilities) {
+      if (glob.test(source)) {
+        uses.push({ capability, label: `${root.name}::* (glob import)` });
+      }
+      if (macroPath.test(source)) {
+        uses.push({
+          capability,
+          label: `${root.name}::$... (path built by a macro)`,
+        });
+      }
+    }
+  }
+  // A `process` module reached through any other path (for example one a
+  // dependency re-exports, or `std::os::unix::process`) counts as process
+  // use unless the member is inert.
+  for (const match of source.matchAll(
+    /\b([A-Za-z_][A-Za-z0-9_]*)\s*::\s*process\s*::\s*([A-Za-z_][A-Za-z0-9_]*)/gu,
+  )) {
+    if (match[1] !== "std" && !inertStdProcessMembers.has(match[2])) {
+      uses.push({
+        capability: "process",
+        label: `${match[1]}::process::${match[2]} (a process module outside std)`,
+      });
+    }
+  }
+
   return uses;
+}
+
+/**
+ * Roots whose glob import or macro-built path the scan refuses, with the
+ * capabilities their members can grant.
+ */
+const capabilityRoots: Array<{ name: string; capabilities: Capability[] }> = [
+  { name: "std", capabilities: ["network", "process"] },
+  { name: "tokio", capabilities: ["network", "process"] },
+  { name: "async_std", capabilities: ["network", "process"] },
+  { name: "smol", capabilities: ["network", "process"] },
+];
+
+/**
+ * `include!` targets in one source file (read before strings are stripped).
+ * Each is refused unless it is a plain string literal naming a file inside
+ * the crate's scanned directories (which the scan reads anyway); a target
+ * built by another macro cannot be checked and is refused.
+ */
+function includeViolations(
+  rawSource: string,
+  sourcePath: string,
+  crateRoot: string,
+) {
+  const violations: string[] = [];
+  const scanned = ["src", "tests", "benches", "examples"].map((directory) =>
+    join(crateRoot, directory),
+  );
+  for (const match of rawSource.matchAll(
+    /\binclude\s*!\s*[(\[{]\s*([^)\]}]*)[)\]}]/gu,
+  )) {
+    const argument = match[1].trim();
+    const literal = argument.match(/^"([^"\\]*)"$/u);
+    if (!literal) {
+      violations.push(
+        `include! with a computed path is forbidden in ${sourcePath}`,
+      );
+      continue;
+    }
+    const target = resolve(dirname(sourcePath), literal[1]);
+    if (!scanned.some((directory) => target.startsWith(`${directory}${sep}`))) {
+      violations.push(
+        `include! of ${literal[1]} (outside the crate's scanned sources) is forbidden in ${sourcePath}`,
+      );
+    }
+  }
+  return violations;
 }
 
 async function rustSourceFiles(crateRoot: string) {
@@ -837,6 +939,30 @@ function treeCapabilityPath(
  * feature) keeps the capability, so the check fails closed.
  */
 const tokioProcessDriver = "mongodb";
+/**
+ * The exemption holds only for the driver from crates.io at exactly the
+ * version `compresso-sql` pins; a path, git, or `[patch]` crate named
+ * `mongodb`, or another version, keeps the capability (fail closed). A
+ * version bump must update this pin after reading the new manifest.
+ */
+export type TokioProcessDriverPin = { source: string | null; version: string };
+const tokioProcessDriverPin: TokioProcessDriverPin = {
+  source: "registry+https://github.com/rust-lang/crates.io-index",
+  version: "3.10.2",
+};
+
+function driverMatchesPin(resolved: CargoMetadata, pin: TokioProcessDriverPin) {
+  const drivers = resolved.packages.filter(
+    (pkg) => pkg.name === tokioProcessDriver,
+  );
+  return (
+    drivers.length > 0 &&
+    drivers.every(
+      (pkg) =>
+        (pkg.source ?? null) === pin.source && pkg.version === pin.version,
+    )
+  );
+}
 const tokioProcessDriverForbiddenFeatures = [
   "in-use-encryption",
   "in-use-encryption-unstable",
@@ -1113,7 +1239,9 @@ async function hasLockfile(root: string) {
 
 export async function checkWorkspace(
   root = process.cwd(),
+  options: { tokioProcessDriverPin?: TokioProcessDriverPin } = {},
 ): Promise<CheckResult> {
+  const driverPin = options.tokioProcessDriverPin ?? tokioProcessDriverPin;
   const workspaceRoot = resolve(root);
   const manifestPath = join(workspaceRoot, "Cargo.toml");
   const declared = await cargoMetadata(manifestPath, false);
@@ -1167,9 +1295,17 @@ export async function checkWorkspace(
       crateRoot,
     );
     for (const sourcePath of await rustSourceFiles(crateRoot)) {
-      const source = stripRustCommentsAndStrings(
-        await readFile(sourcePath, "utf8"),
-      );
+      const rawSource = await readFile(sourcePath, "utf8");
+      if (!capabilities.network || !capabilities.process) {
+        for (const violation of includeViolations(
+          rawSource,
+          sourcePath,
+          crateRoot,
+        )) {
+          violations.add(`${pkg.name} (${className}): ${violation}`);
+        }
+      }
+      const source = stripRustCommentsAndStrings(rawSource);
       for (const use of sourceCapabilityUses(source)) {
         const allowedTestProcess =
           use.capability === "process" &&
@@ -1215,6 +1351,7 @@ export async function checkWorkspace(
             path.at(-1) === "tokio" &&
             (pkg.name === databaseNetworkCrate ||
               databaseNetworkConsumers.has(pkg.name)) &&
+            driverMatchesPin(resolved, driverPin) &&
             (await tokioProcessOnlyFromDriver(manifestPath, pkg.name, tree))
           ) {
             // D117: Tokio's process feature, turned on only by the MongoDB

@@ -297,17 +297,47 @@ test("test_network_through_sql_fails_for_every_other_crate", async () => {
 // D117: Tokio's process feature turned on only by the MongoDB driver (without
 // its encryption feature) is not counted for compresso-sql and its two
 // consumers; every other route to it still is.
+// The fixtures' driver is a path crate at 0.0.0; the real pin (crates.io,
+// the locked version) is checked by the run over the real workspace and by
+// the two tests after this one.
+const fixtureDriver = {
+  tokioProcessDriverPin: { source: null, version: "0.0.0" },
+};
+
 test("test_tokio_process_only_from_the_driver_passes", async () => {
   const result = await checkWorkspace(
     fixture("allowed-sql-driver-tokio-process"),
+    fixtureDriver,
   );
 
   assert.deepEqual(result, { ok: true, checkedCrates: 3, violations: [] });
 });
 
+test("test_a_path_crate_named_like_the_driver_keeps_the_process_capability", async () => {
+  const result = await checkWorkspace(
+    fixture("allowed-sql-driver-tokio-process"),
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(
+    result.violations.join("\n"),
+    /compresso-sql \(database-network\): resolved dependency path compresso-sql -> mongodb -> tokio grants process capability/u,
+  );
+});
+
+test("test_another_driver_version_keeps_the_process_capability", async () => {
+  const result = await checkWorkspace(
+    fixture("allowed-sql-driver-tokio-process"),
+    { tokioProcessDriverPin: { source: null, version: "0.0.1" } },
+  );
+
+  assert.equal(result.ok, false);
+});
+
 test("test_tokio_process_beside_the_driver_still_fails", async () => {
   const result = await checkWorkspace(
     fixture("denied-mcp-tokio-process-beside-driver"),
+    fixtureDriver,
   );
 
   assert.equal(result.ok, false);
@@ -320,6 +350,7 @@ test("test_tokio_process_beside_the_driver_still_fails", async () => {
 test("test_a_tokio_feature_implying_process_beside_the_driver_fails", async () => {
   const result = await checkWorkspace(
     fixture("denied-mcp-tokio-full-beside-driver"),
+    fixtureDriver,
   );
 
   assert.equal(result.ok, false);
@@ -332,6 +363,7 @@ test("test_a_tokio_feature_implying_process_beside_the_driver_fails", async () =
 test("test_the_driver_encryption_feature_keeps_the_process_capability", async () => {
   const result = await checkWorkspace(
     fixture("denied-sql-driver-encryption-process"),
+    fixtureDriver,
   );
   const violations = result.violations.join("\n");
 
@@ -346,6 +378,7 @@ test("test_the_driver_encryption_feature_keeps_the_process_capability", async ()
 test("test_the_driver_outside_the_database_crate_fails", async () => {
   const result = await checkWorkspace(
     fixture("denied-store-process-through-driver"),
+    fixtureDriver,
   );
   const violations = result.violations.join("\n");
 
@@ -400,3 +433,32 @@ test("test_network_through_a_pure_local_crate_enabled_by_sql_fails", async () =>
     /compresso-mcp \(pure-local\): resolved dependency path compresso-mcp -> compresso-core -> foo -> socket2 passes through workspace crate compresso-core/u,
   );
 });
+
+// D117 review: evasions of the lexical source scan, each with the driver
+// exemption in force, so only the scan can catch them. The std cases apply
+// to every crate without process capability (on main too).
+for (const [name, pattern] of [
+  ["denied-sql-glob-tokio-process", /tokio::\* \(glob import\)/u],
+  [
+    "denied-sql-macro-tokio-process",
+    /tokio::\$\.\.\. \(path built by a macro\)/u,
+  ],
+  ["denied-sql-include-outside-src", /include! of \.\.\/\.\.\/\.\.\/x\.rs/u],
+  ["denied-sql-glob-std-process", /std::\* \(glob import\)/u],
+  ["denied-sql-macro-std-process", /std::\$\.\.\. \(path built by a macro\)/u],
+  [
+    "denied-sql-process-reexported-by-driver",
+    /mongodb::process::Command \(a process module outside std\)/u,
+  ],
+  [
+    "denied-sql-std-process-reexported-by-dependency",
+    /mongodb::process::Command \(a process module outside std\)/u,
+  ],
+] as const) {
+  test(`test_${name.replaceAll("-", "_")}`, async () => {
+    const result = await checkWorkspace(fixture(name), fixtureDriver);
+
+    assert.equal(result.ok, false);
+    assert.match(result.violations.join("\n"), pattern);
+  });
+}
