@@ -1,0 +1,59 @@
+rust/compresso-sql/src/mongo/client.rs
+  s_89a704cfae63f5::t_105b77db53e9e1 894-911
+  s_89a704cfae63f5::t_68218c28992e54 4-5,11-27,31-33,36-37,40,48,51-52,63,68-70,72,77-78,149-150,160,169-170,174,178,181-200,203-206,209-215,222-270,272-300,331-336,338-342,345,347-349,354-355,417-442,447,450-457,459-464,467-481,483-491,494-510,530,539,542-544,552,554-555,558-560,564,579-583,586-588,620,624-625,628-630,632,634-637,640,658-659,681-684,692,696-701,703,705,712,714-715,767-769,786,827-829,831-835,837-838,843-844,855-856,865-866,868,870-871,874-875,877-893,912-954,956,997-1004,1011-1046,1048-1053,1055-1068,1070-1075,1077-1081,1083-1088,1090-1094
+  s_89a704cfae63f5::t_b2341db280004b 179-180
+  s_89a704cfae63f5::t_afaa258f3bf59b 201-202
+  s_89a704cfae63f5::t_7e06315d23fdb0 207-208
+  s_89a704cfae63f5::t_7f0c38edb9c722 216-221
+  s_89a704cfae63f5::t_896c59563cf504 271
+  s_89a704cfae63f5::t_e3548e5bc55ad0 443-446
+  s_89a704cfae63f5::t_b71022d0bf152c 448-449
+  s_89a704cfae63f5::t_2e2dd47731c4f7 631
+  s_89a704cfae63f5::t_66000dbfbffe3a 633
+  s_89a704cfae63f5::t_8c6198b9cb888b 830
+  s_89a704cfae63f5::t_02bc684c7edfa4 836
+  s_89a704cfae63f5::t_c5568ca28e8b3d 955
+  s_89a704cfae63f5::t_62eef6bd739ccd 957
+  s_89a704cfae63f5::t_3ac15769056bc0 996
+  s_89a704cfae63f5::t_331d6ec228e9aa 1005-1010
+  s_89a704cfae63f5::t_9878c999b6428c 1047
+  s_89a704cfae63f5::t_5cced0b391f6e3 1054
+  s_89a704cfae63f5::t_38e2880c00be1c 1069
+  s_89a704cfae63f5::t_e5dba40e5846e1 1076
+  s_89a704cfae63f5::t_dbec9b58d42a2d 1082
+  s_89a704cfae63f5::t_cfee75088442ee 1089
+  s_470a2f6e5f0af8::t_50bb216403fcc5 981,992-993
+rust/compresso-sql/src/mongo/raw.rs
+  s_89a704cfae63f5::t_bb138944ae7f1b 1-576
+  s_89a704cfae63f5::t_2f46c235d8d067 577-613
+rust/compresso-sql/src/mongo/target.rs
+  s_89a704cfae63f5::t_ddbf08d0a4cdf5 530-536
+rust/compresso-sql/src/mongo/output.rs
+  s_89a704cfae63f5::t_b4b51bd6637f2c 1-2,4,7,47-51,62,69
+rust/compresso-sql/tests/live_mongo.rs
+  s_89a704cfae63f5::t_7aac4646f2b9db 150,178-208,350-352,749-831
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "33d641b757310572c09cca1a28ea655bc134752d",
+  "prompts": {},
+  "sessions": {
+    "s_470a2f6e5f0af8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a2ff873261d314507",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
