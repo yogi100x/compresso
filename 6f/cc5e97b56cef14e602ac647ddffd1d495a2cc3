@@ -1,0 +1,105 @@
+scripts/check-crate-capabilities.ts
+  s_89a704cfae63f5::t_e4d910ea0642e3 798-802,807-810,812-815,817-819,826-914,917
+  s_89a704cfae63f5::t_b965f36b15419b 1212-1222
+  s_89a704cfae63f5::t_e5386e61f7d14a 915-916,918-920,1223-1224
+scripts/check-crate-capabilities.test.ts
+  s_89a704cfae63f5::t_e4b3af5c863058 297-362
+scripts/fixtures/crate-capabilities/allowed-sql-driver-tokio-process/Cargo.lock
+  s_89a704cfae63f5::t_0ad491cbc931fe 1-44
+scripts/fixtures/crate-capabilities/allowed-sql-driver-tokio-process/Cargo.toml
+  s_89a704cfae63f5::t_f931fdc0a46e2f 1-4
+scripts/fixtures/crate-capabilities/allowed-sql-driver-tokio-process/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_a70da44037bda2 1-7
+scripts/fixtures/crate-capabilities/allowed-sql-driver-tokio-process/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_c45afda2268b54 1-8
+scripts/fixtures/crate-capabilities/allowed-sql-driver-tokio-process/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_09cb62455e5140 1-8
+scripts/fixtures/crate-capabilities/allowed-sql-driver-tokio-process/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_752e0bfd127aac 1-10
+scripts/fixtures/crate-capabilities/allowed-sql-driver-tokio-process/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_c8f89c1a77b94c 1-4
+scripts/fixtures/crate-capabilities/allowed-sql-driver-tokio-process/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_1d6a9743f77736 1-12
+scripts/fixtures/crate-capabilities/denied-mcp-tokio-full-beside-driver/Cargo.lock
+  s_89a704cfae63f5::t_28751a95e0f987 1-44
+scripts/fixtures/crate-capabilities/denied-mcp-tokio-full-beside-driver/Cargo.toml
+  s_89a704cfae63f5::t_1e7f900fb8fd76 1-4
+scripts/fixtures/crate-capabilities/denied-mcp-tokio-full-beside-driver/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_d1549c0613a0e2 1-7
+scripts/fixtures/crate-capabilities/denied-mcp-tokio-full-beside-driver/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_79b5a35da72afe 1-8
+scripts/fixtures/crate-capabilities/denied-mcp-tokio-full-beside-driver/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_0405eaad51a8e7 1-8
+scripts/fixtures/crate-capabilities/denied-mcp-tokio-full-beside-driver/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_5083b3bddff442 1-10
+scripts/fixtures/crate-capabilities/denied-mcp-tokio-full-beside-driver/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_35bebc025c869b 1-4
+scripts/fixtures/crate-capabilities/denied-mcp-tokio-full-beside-driver/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_69a1fb9ea0d86d 1-12
+scripts/fixtures/crate-capabilities/denied-mcp-tokio-process-beside-driver/Cargo.lock
+  s_89a704cfae63f5::t_babd0b4bbf7008 1-44
+scripts/fixtures/crate-capabilities/denied-mcp-tokio-process-beside-driver/Cargo.toml
+  s_89a704cfae63f5::t_29dd37c8c47f35 1-4
+scripts/fixtures/crate-capabilities/denied-mcp-tokio-process-beside-driver/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_b0379897e0f582 1-7
+scripts/fixtures/crate-capabilities/denied-mcp-tokio-process-beside-driver/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_97b677adf94d15 1-8
+scripts/fixtures/crate-capabilities/denied-mcp-tokio-process-beside-driver/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_9f47b82f6653f0 1-8
+scripts/fixtures/crate-capabilities/denied-mcp-tokio-process-beside-driver/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_b1539ebf2cb226 1-10
+scripts/fixtures/crate-capabilities/denied-mcp-tokio-process-beside-driver/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_9f4495257742bc 1-4
+scripts/fixtures/crate-capabilities/denied-mcp-tokio-process-beside-driver/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_f3ce05122d0692 1-12
+scripts/fixtures/crate-capabilities/denied-sql-driver-encryption-process/Cargo.lock
+  s_89a704cfae63f5::t_6f796b6c06954f 1-44
+scripts/fixtures/crate-capabilities/denied-sql-driver-encryption-process/Cargo.toml
+  s_89a704cfae63f5::t_1524d3e4b1fb37 1-4
+scripts/fixtures/crate-capabilities/denied-sql-driver-encryption-process/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_844d115f206103 1-7
+scripts/fixtures/crate-capabilities/denied-sql-driver-encryption-process/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_4e671d30447128 1-8
+scripts/fixtures/crate-capabilities/denied-sql-driver-encryption-process/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_2c77c72582b0ab 1-8
+scripts/fixtures/crate-capabilities/denied-sql-driver-encryption-process/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_026992d493acbe 1-10
+scripts/fixtures/crate-capabilities/denied-sql-driver-encryption-process/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_df7c94845f93d1 1-4
+scripts/fixtures/crate-capabilities/denied-sql-driver-encryption-process/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_501c1e3fac5a3e 1-12
+scripts/fixtures/crate-capabilities/denied-store-process-through-driver/Cargo.lock
+  s_89a704cfae63f5::t_68d2dd70dd53e3 1-51
+scripts/fixtures/crate-capabilities/denied-store-process-through-driver/Cargo.toml
+  s_89a704cfae63f5::t_cfee6e5e11c57e 1-4
+scripts/fixtures/crate-capabilities/denied-store-process-through-driver/crates/compresso-cli/Cargo.toml
+  s_89a704cfae63f5::t_4febfa12176bf4 1-7
+scripts/fixtures/crate-capabilities/denied-store-process-through-driver/crates/compresso-mcp/Cargo.toml
+  s_89a704cfae63f5::t_b1f52e15cab762 1-8
+scripts/fixtures/crate-capabilities/denied-store-process-through-driver/crates/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_24ace2392f568a 1-8
+scripts/fixtures/crate-capabilities/denied-store-process-through-driver/crates/compresso-store/Cargo.toml
+  s_89a704cfae63f5::t_3ac9bec1eea29b 1-7
+scripts/fixtures/crate-capabilities/denied-store-process-through-driver/deps/mongodb/Cargo.toml
+  s_89a704cfae63f5::t_93cea2f65f4025 1-10
+scripts/fixtures/crate-capabilities/denied-store-process-through-driver/deps/socket2/Cargo.toml
+  s_89a704cfae63f5::t_75ec83c031caf2 1-4
+scripts/fixtures/crate-capabilities/denied-store-process-through-driver/deps/tokio/Cargo.toml
+  s_89a704cfae63f5::t_18c17ac25d780f 1-12
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6fcc5e97b56cef14e602ac647ddffd1d495a2cc3",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
