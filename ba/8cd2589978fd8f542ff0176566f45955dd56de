@@ -1,0 +1,35 @@
+decisions.md
+  s_89a704cfae63f5::t_e16db20e0ca05a 110
+docs/adr/0038-opt-in-read-only-mongodb.md
+  s_89a704cfae63f5::t_08384033fba5dd 397
+scripts/check-crate-capabilities.ts
+  s_89a704cfae63f5::t_327c48b8cd67ac 743
+rust/compresso-sql/src/mongo/client.rs
+  s_470a2f6e5f0af8::t_7093ffaf405e4f 900-902
+rust/compresso-sql/src/mongo/raw.rs
+  s_470a2f6e5f0af8::t_b0d179248ca479 326
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ba8cd2589978fd8f542ff0176566f45955dd56de",
+  "prompts": {},
+  "sessions": {
+    "s_470a2f6e5f0af8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a2ff873261d314507",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
