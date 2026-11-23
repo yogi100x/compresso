@@ -1655,4 +1655,56 @@ fn test_setup_writes_no_main_agent_file_that_changed_since_the_preview() {
         fs::read_to_string(fixture.root.join(".claude/settings.local.json")).expect("settings"),
         "{\"model\": \"x\"}\n"
     );
+    // The end state agrees: the previewed fallback (full-profile) entry.
+    let config: Value =
+        serde_json::from_slice(&fs::read(fixture.root.join(".mcp.json")).expect("entry"))
+            .expect("JSON");
+    let args = config["mcpServers"]["compresso"]["args"].to_string();
+    assert!(
+        !args.contains("lean") && !args.contains("--edits"),
+        "{args}"
+    );
+    assert!(
+        output["data"]["plan"]["main_agent"]["fallback_entry"].is_object(),
+        "{output}"
+    );
+    let (_, verify, _) = fixture.run_integration(&[
+        "integrations",
+        "verify",
+        "claude-code",
+        "--project",
+        fixture.root_str(),
+        "--json",
+    ]);
+    assert!(
+        verify["data"]["checks"]
+            .as_array()
+            .expect("checks")
+            .iter()
+            .filter(|check| check["name"].as_str().unwrap().starts_with("main_agent"))
+            .all(|check| check["passed"] == true),
+        "{verify}"
+    );
+}
+
+/// E17-51 review: setup refuses, naming the journal, while an interrupted
+/// change to the settings file is pending.
+#[test]
+fn test_setup_refuses_a_pending_settings_journal() {
+    let fixture = Fixture::new();
+    fs::create_dir_all(fixture.root.join(".claude")).expect("claude dir");
+    let journal = fixture
+        .root
+        .join(".claude/settings.local.json.compresso-journal");
+    fs::write(&journal, "{}").expect("journal");
+    for extra in [&[][..], &["--no-main-agent"][..]] {
+        let mut arguments = vec!["setup", "claude-code", fixture.root_str()];
+        arguments.extend_from_slice(extra);
+        arguments.extend(["--yes", "--json"]);
+        let (exit, _, errors) =
+            fixture.run_setup_json(&arguments, Some(&fixture.store), &mut std::io::empty());
+        assert_eq!(exit, CliExitCode::Failure, "{extra:?}");
+        assert!(errors.to_string().contains("compresso-journal"), "{errors}");
+        assert!(!fixture.root.join(".mcp.json").exists());
+    }
 }

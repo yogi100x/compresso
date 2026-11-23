@@ -54,8 +54,8 @@ const TOOLS_WITH_EDITS: &str = "Tools:
 - Use Write only for a file compresso_edit refuses to create. Use the shell for installing packages, running the type-check or tests, and git; not for reading or editing source.";
 
 const TOOLS_READ_ONLY: &str = "Tools:
-- Use the Compresso tools for all repository search and reading. compresso_grep finds text and use sites (pass several patterns and line ranges in one call); compresso_search finds definitions; compresso_outline and compresso_unfold show a file's structure or one symbol; compresso_read reads exact line ranges; compresso_context gives an evidence pack for a broad question.
-- Edit files with the client's own tools: call Read on a file immediately before you change it with Edit (Edit refuses a file not read first), and copy the old text exactly.
+- Explore with the Compresso tools: compresso_grep finds text and use sites (pass several patterns and line ranges in one call); compresso_search finds definitions; compresso_outline and compresso_unfold show a file's structure or one symbol; compresso_read reads exact line ranges; compresso_context gives an evidence pack for a broad question.
+- To change a file, read it once with the client's Read (not compresso_read) right before you edit it with Edit, which refuses a file not read first, and copy the old text exactly from that read.
 - Use the shell for installing packages, running the type-check or tests, and git; not for reading or searching source.";
 
 const STYLE_WITH_EDITS: &str = "Working style:
@@ -528,9 +528,9 @@ mod tests {
         assert!(!read_only.contains("compresso_edit"));
         assert!(!read_only.contains("64 operations"));
         assert!(!read_only.contains("edits through Compresso"));
-        assert!(
-            read_only.contains("call Read on a file immediately before you change it with Edit")
-        );
+        assert!(read_only.contains(
+            "read it once with the client's Read (not compresso_read) right before you edit it"
+        ));
         for edits in [true, false] {
             let body = MainAgentIntegration::body(edits);
             assert!(

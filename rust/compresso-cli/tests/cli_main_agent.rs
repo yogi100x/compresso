@@ -4,7 +4,7 @@
 #![cfg(unix)]
 
 use std::fs;
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
@@ -774,4 +774,273 @@ fn test_verify_fails_the_profile_when_the_agent_names_an_edit_tool_the_entry_doe
         .find(|check| check["name"] == "main_agent_server_profile")
         .expect("profile check");
     assert_eq!(profile["passed"], false, "{verify}");
+}
+
+/// Writes a file when the confirmation is read, as a client session that
+/// grants a permission while the preview is on screen would.
+struct ChangeOnConfirm {
+    path: PathBuf,
+    bytes: &'static str,
+    answered: bool,
+}
+
+impl Read for ChangeOnConfirm {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if !self.answered {
+            self.answered = true;
+            fs::write(&self.path, self.bytes)?;
+            buffer[0] = b'y';
+            return Ok(1);
+        }
+        if self.path.as_os_str().is_empty() {
+            return Ok(0);
+        }
+        self.path = PathBuf::new();
+        buffer[0] = b'\n';
+        Ok(1)
+    }
+}
+
+fn verify_checks(fixture: &Fixture) -> Vec<(String, bool)> {
+    let (_, verify, _) = fixture.integrations(&[
+        "verify",
+        "claude-code",
+        "--project",
+        fixture.root_arg(),
+        "--json",
+    ]);
+    verify["data"]["checks"]
+        .as_array()
+        .expect("checks")
+        .iter()
+        .filter(|check| {
+            check["name"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("main_agent"))
+        })
+        .map(|check| {
+            (
+                check["name"].as_str().unwrap().to_owned(),
+                check["passed"] == true,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn test_a_settings_change_between_preview_and_apply_writes_the_fallback_entry() {
+    let fixture = Fixture::new();
+    fs::create_dir_all(fixture.root.join(".claude")).expect("claude dir");
+    fs::write(
+        fixture.settings_path(),
+        "{\n  \"permissions\": {\"allow\": []}\n}\n",
+    )
+    .expect("settings");
+    let changed = "{\n  \"permissions\": {\"allow\": [\"Bash(ls:*)\"]}\n}\n";
+    let cli = Cli::try_parse_from([
+        "compresso",
+        "integrations",
+        "install",
+        "claude-code",
+        "--project",
+        fixture.root_arg(),
+    ])
+    .expect("parses");
+    let RootCommand::Integrations { command } = cli.command else {
+        panic!("integrations");
+    };
+    let mut output = Vec::new();
+    let mut errors = Vec::new();
+    let exit = execute_integrations(
+        command,
+        &fixture.environment,
+        &mut ChangeOnConfirm {
+            path: fixture.settings_path(),
+            bytes: changed,
+            answered: false,
+        },
+        &mut output,
+        &mut errors,
+    );
+    let human = String::from_utf8(output).unwrap();
+    assert_eq!(
+        exit,
+        CliExitCode::Success,
+        "{human} {}",
+        String::from_utf8_lossy(&errors)
+    );
+    assert!(
+        human.contains("If the agent file or the \"agent\" setting cannot be written"),
+        "{human}"
+    );
+    assert!(human.contains("main_agent_not_installed"), "{human}");
+    // The end state agrees: full-profile entry, no agent, the user's bytes.
+    let args = fixture.entry_args();
+    assert!(
+        !has_lean_session(&args) && !args.iter().any(|arg| arg == "--edits"),
+        "{args:?}"
+    );
+    assert!(!fixture.agent_path().exists());
+    assert_eq!(
+        fs::read_to_string(fixture.settings_path()).unwrap(),
+        changed
+    );
+    assert!(verify_checks(&fixture).iter().all(|(_, passed)| *passed));
+}
+
+#[test]
+fn test_verify_reports_a_lean_entry_without_the_agent() {
+    let fixture = Fixture::new();
+    fixture.install(&[]);
+    fs::remove_file(fixture.agent_path()).expect("agent");
+    fs::remove_file(fixture.settings_path()).expect("settings");
+    let checks = verify_checks(&fixture);
+    assert!(
+        checks.contains(&("main_agent_server_profile".to_owned(), false)),
+        "{checks:?}"
+    );
+}
+
+#[test]
+fn test_verify_reports_a_users_own_agent_as_not_managed() {
+    let fixture = Fixture::new();
+    fs::create_dir_all(fixture.agent_path().parent().unwrap()).expect("dirs");
+    fs::write(fixture.settings_path(), "{\"agent\": \"mine\"}\n").expect("settings");
+    fs::write(
+        fixture.agent_path(),
+        "---\nname: compresso-main\ndescription: mine\n---\n\nMine.\n",
+    )
+    .expect("agent");
+    fixture.install(&["--no-main-agent"]);
+    let checks = verify_checks(&fixture);
+    assert_eq!(
+        checks,
+        [("main_agent_not_managed".to_owned(), true)],
+        "{checks:?}"
+    );
+    let (exit, _, errors) = fixture.integrations(&[
+        "uninstall",
+        "claude-code",
+        "--project",
+        fixture.root_arg(),
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert_eq!(
+        verify_checks(&fixture),
+        [("main_agent_not_managed".to_owned(), true)]
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.settings_path()).unwrap(),
+        "{\"agent\": \"mine\"}\n"
+    );
+}
+
+#[test]
+fn test_uninstall_removes_the_agent_and_key_when_the_entry_is_gone() {
+    let fixture = Fixture::new();
+    fixture.install(&[]);
+    fs::remove_file(fixture.root.join(".mcp.json")).expect("entry");
+    let (exit, output, errors) = fixture.integrations(&[
+        "uninstall",
+        "claude-code",
+        "--project",
+        fixture.root_arg(),
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success, "{errors} {output}");
+    assert!(!fixture.agent_path().exists());
+    assert!(!fixture.settings_path().exists());
+    assert!(
+        warnings(&output)
+            .iter()
+            .any(|warning| warning.starts_with("entry_not_removed")),
+        "{output}"
+    );
+}
+
+#[test]
+fn test_removed_flags_are_named_without_their_values() {
+    let fixture = Fixture::new();
+    fixture.install(&["--no-main-agent"]);
+    let path = fixture.root.join(".mcp.json");
+    let text = fs::read_to_string(&path).expect("entry");
+    fs::write(
+        &path,
+        text.replace(
+            "\"--recall-source\"",
+            "\"--token=s3cret\",\n        \"--recall-source\"",
+        ),
+    )
+    .expect("entry");
+    let (_, output, _) = fixture.integrations(&[
+        "install",
+        "claude-code",
+        "--project",
+        fixture.root_arg(),
+        "--no-main-agent",
+        "--dry-run",
+        "--json",
+    ]);
+    let text = output.to_string();
+    assert!(
+        text.contains(
+            "entry_flag_removed: the current compresso entry starts the server with --token;"
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("s3cret"), "{text}");
+}
+
+#[test]
+fn test_project_not_indexed_is_judged_on_the_store_index_uses_with_xdg_data_home_set() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let base = fs::canonicalize(directory.path()).expect("canonical");
+    let home = base.join("home");
+    let indexed = base.join("indexed");
+    let unindexed = base.join("unindexed");
+    for path in [&home, &indexed, &unindexed] {
+        fs::create_dir_all(path.join("src")).expect("dirs");
+    }
+    fs::write(indexed.join("src/a.rs"), "pub fn a() {}\n").expect("source");
+    let run = |arguments: &[&str]| {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_compresso"))
+            .args(arguments)
+            .env_clear()
+            .env("HOME", &home)
+            .env("XDG_DATA_HOME", base.join("xdg-data"))
+            .env("XDG_CONFIG_HOME", base.join("xdg-config"))
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .output()
+            .expect("compresso runs");
+        assert!(
+            output.status.success(),
+            "{arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).expect("UTF-8")
+    };
+    run(&["index", indexed.to_str().unwrap(), "--json"]);
+    let out = run(&[
+        "integrations",
+        "install",
+        "claude-code",
+        "--project",
+        indexed.to_str().unwrap(),
+        "--yes",
+        "--json",
+    ]);
+    assert!(!out.contains("project_not_indexed"), "{out}");
+    let out = run(&[
+        "integrations",
+        "install",
+        "claude-code",
+        "--project",
+        unindexed.to_str().unwrap(),
+        "--yes",
+        "--json",
+    ]);
+    assert!(out.contains("project_not_indexed"), "{out}");
 }

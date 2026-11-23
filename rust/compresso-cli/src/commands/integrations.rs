@@ -38,6 +38,9 @@ pub struct IntegrationEnvironment {
     /// Deadline for the live MCP handshake run by `integrations status`.
     /// `None` (the default for injected environments) starts no process.
     pub mcp_probe_timeout: Option<Duration>,
+    /// The index database `compresso index` and `mcp serve` open; injected
+    /// environments use `data_dir/compresso.db`.
+    pub store_path: PathBuf,
 }
 
 impl IntegrationEnvironment {
@@ -54,11 +57,18 @@ impl IntegrationEnvironment {
             home_dir,
             cwd,
             compresso_bin,
+            store_path: data_dir.join("compresso.db"),
             data_dir,
             path_entries,
             session_id: session_id.into(),
             mcp_probe_timeout: None,
         }
+    }
+
+    /// Uses `path` as the index database (the one `compresso index` writes).
+    pub fn with_store_path(mut self, path: PathBuf) -> Self {
+        self.store_path = path;
+        self
     }
 
     /// Enables the bounded live MCP handshake reported by `integrations status`.
@@ -93,6 +103,11 @@ impl IntegrationEnvironment {
                 .map(|duration| duration.as_nanos())
                 .unwrap_or_default()
         );
+        // One store for everything: the database `compresso index` and
+        // `mcp serve` open, whatever XDG_DATA_HOME says (E17-51 review).
+        let store_path = Store::default_path().map_err(|_| {
+            IntegrationCliError::environment("failed to resolve the local index database")
+        })?;
         Ok(Self::new(
             home_dir,
             cwd.to_path_buf(),
@@ -101,6 +116,7 @@ impl IntegrationEnvironment {
             path_entries,
             session_id,
         )
+        .with_store_path(store_path)
         .with_mcp_probe_timeout(mcp_probe::DEFAULT_PROBE_TIMEOUT))
     }
 
@@ -109,7 +125,7 @@ impl IntegrationEnvironment {
     }
 
     fn database_path(&self) -> PathBuf {
-        self.data_dir.join("compresso.db")
+        self.store_path.clone()
     }
 }
 
@@ -462,6 +478,49 @@ pub(crate) fn apply_setup_main_agent(
             warnings.push(format!("{label}_failed: {message}"));
         }
     }
+    project_canonical_receipts(&receipts, environment, &mut warnings);
+    (outcomes, warnings)
+}
+
+/// Refuses setup while an interrupted change to the agent or settings file
+/// is pending, naming the journal (setup previews before it writes).
+pub(crate) fn refuse_pending_main_agent(
+    root: &Path,
+    environment: &IntegrationEnvironment,
+) -> Result<(), IntegrationCliError> {
+    let scope = resolve_scope(Some(root), &environment.cwd)?;
+    let manager = PlanManager::new(&environment.session_id)?;
+    let receipts = FileReceiptStore::new(environment.receipt_store_path());
+    super::main_agent::recover_pending(&environment.home_dir, &scope, &manager, &receipts, true)
+        .map(|_| ())
+}
+
+/// Removes the agent file (and key) setup just wrote through their receipts,
+/// when the pair did not land in full.
+pub(crate) fn rollback_setup_main_agent(
+    root: &Path,
+    environment: &IntegrationEnvironment,
+) -> (
+    Vec<(&'static str, super::main_agent::StepOutcome)>,
+    Vec<String>,
+) {
+    let mut warnings = Vec::new();
+    let (Ok(scope), Ok(manager)) = (
+        resolve_scope(Some(root), &environment.cwd),
+        PlanManager::new(&environment.session_id),
+    ) else {
+        return (Vec::new(), warnings);
+    };
+    let receipts = FileReceiptStore::new(environment.receipt_store_path());
+    let rollback = super::main_agent::plan_uninstall(
+        &environment.home_dir,
+        &scope,
+        &manager,
+        &receipts,
+        false,
+        &mut warnings,
+    );
+    let outcomes = rollback.apply(&manager, &receipts);
     project_canonical_receipts(&receipts, environment, &mut warnings);
     (outcomes, warnings)
 }
@@ -932,6 +991,19 @@ fn execute_mutation(
         && plain_entry_change(&arguments)
         && matches!(scope, Scope::Project(_));
     let mut main_agent_warnings = Vec::new();
+    // An interrupted change to the agent file or the settings file is
+    // finished before anything reads them; a dry run refuses instead.
+    if project_entry
+        && super::main_agent::recover_pending(
+            &environment.home_dir,
+            &scope,
+            &manager,
+            &receipts,
+            arguments.dry_run,
+        )?
+    {
+        project_canonical_receipts(&receipts, environment, &mut Vec::new());
+    }
     if action == MutationAction::Install
         && arguments.client == IntegrationClientArg::ClaudeCode
         && !arguments.no_main_agent
@@ -1012,28 +1084,86 @@ fn execute_mutation(
         project_canonical_receipts(&receipts, environment, &mut Vec::new());
     }
 
-    let plan = match action {
-        MutationAction::Install => selected.adapter.plan_install(
-            &manager,
-            &InstallCtx {
-                compresso_bin: launcher_path
-                    .clone()
+    let install_context = launcher_path.clone().map(|compresso_bin| InstallCtx {
+        compresso_bin,
+        scope: scope.clone(),
+        session_recall: !arguments.no_recall,
+    });
+    let planned = match action {
+        MutationAction::Install => selected
+            .adapter
+            .plan_install(
+                &manager,
+                install_context
+                    .as_ref()
                     .expect("install actions validate a launcher"),
-                scope: scope.clone(),
-                session_recall: !arguments.no_recall,
-            },
-        )?,
-        MutationAction::Uninstall => {
-            let receipt = receipts
-                .active_for(arguments.client.as_str(), &selected.config_path)?
-                .ok_or_else(|| {
+            )
+            .map_err(IntegrationCliError::from),
+        MutationAction::Uninstall => receipts
+            .active_for(arguments.client.as_str(), &selected.config_path)
+            .map_err(IntegrationCliError::from)
+            .and_then(|receipt| {
+                receipt.ok_or_else(|| {
                     IntegrationCliError::new(
                         "receipt_not_found",
                         "no active canonical receipt authorizes this uninstall",
                     )
-                })?;
-            selected.adapter.plan_uninstall(&manager, &receipt)?
+                })
+            })
+            .and_then(|receipt| {
+                selected
+                    .adapter
+                    .plan_uninstall(&manager, &receipt)
+                    .map_err(IntegrationCliError::from)
+            }),
+    };
+    // Each owned item is removed independently: an entry that is already
+    // gone (or whose receipt a crashed run consumed) does not stop the
+    // agent file and key from being removed (E17-51 review).
+    let plan = match planned {
+        Ok(plan) => plan,
+        Err(error)
+            if action == MutationAction::Uninstall
+                && project_entry
+                && !main_agent_companion.is_empty() =>
+        {
+            return uninstall_main_agent_without_entry(
+                &arguments,
+                environment,
+                &manager,
+                &receipts,
+                &main_agent_companion,
+                main_agent_warnings,
+                &error,
+                output,
+            );
         }
+        Err(error) => return Err(error),
+    };
+    // With the main-session agent, the entry written when the agent file or
+    // the key cannot be written at apply time: exactly what --no-main-agent
+    // writes. It is part of the preview, so nothing unpreviewed is written.
+    let fallback = if main_agent {
+        let fallback_selected = if arguments.edits {
+            SelectedIntegration::claude_code_with_operator_tools(
+                environment,
+                &scope,
+                true,
+                None,
+                false,
+            )?
+        } else {
+            SelectedIntegration::new(arguments.client, environment, &scope, false)?
+        };
+        let fallback_plan = fallback_selected.adapter.plan_install(
+            &manager,
+            install_context
+                .as_ref()
+                .expect("install actions validate a launcher"),
+        )?;
+        Some((fallback_selected, fallback_plan))
+    } else {
+        None
     };
     if action == MutationAction::Install && arguments.client == IntegrationClientArg::ClaudeCode {
         main_agent_warnings.extend(removed_entry_flags(
@@ -1079,6 +1209,7 @@ fn execute_mutation(
                 session_commands_result: None,
                 main_agent: &main_agent_companion,
                 main_agent_result: &[],
+                fallback_entry: fallback.as_ref().map(|(_, plan)| plan),
                 json: arguments.output.json,
             },
         );
@@ -1094,6 +1225,9 @@ fn execute_mutation(
             write_session_commands_preview(output, &companion.plan)?;
         }
         main_agent_companion.write_preview(output)?;
+        if let Some((_, fallback_plan)) = &fallback {
+            write_fallback_preview(output, fallback_plan)?;
+        }
     }
     if !arguments.yes {
         if arguments.output.json {
@@ -1112,6 +1246,7 @@ fn execute_mutation(
                     session_commands_result: None,
                     main_agent: &main_agent_companion,
                     main_agent_result: &[],
+                    fallback_entry: fallback.as_ref().map(|(_, plan)| plan),
                     json: true,
                 },
             )?;
@@ -1147,14 +1282,80 @@ fn execute_mutation(
         }
     }
 
-    let approval = PlanApproval::from(&plan);
-    let result = match action {
-        MutationAction::Install => {
-            MutationResult::Install(selected.adapter.install(&manager, &approval, &receipts)?)
+    // Order (E17-51 review): with the main-session agent, the agent file and
+    // the key are written first and the lean entry only if both landed;
+    // otherwise the agent file just written is removed and the previewed
+    // fallback entry is written. An uninstall removes the key and the agent
+    // file before the entry; any other install writes the entry first.
+    let mut late_warnings = Vec::new();
+    let mut main_agent_result = Vec::new();
+    let mut effective_plan = &plan;
+    let result = if let Some((fallback_selected, fallback_plan)) = &fallback {
+        main_agent_result = main_agent_companion.apply(&manager, &receipts);
+        let landed = main_agent_result
+            .iter()
+            .filter(|(_, outcome)| matches!(outcome, super::main_agent::StepOutcome::Installed))
+            .count()
+            == 2;
+        if landed {
+            match selected
+                .adapter
+                .install(&manager, &PlanApproval::from(&plan), &receipts)
+            {
+                Ok(receipt) => MutationResult::Install(receipt),
+                Err(error) => {
+                    // Keep the agent and the entry in agreement: the agent
+                    // just written is removed again when its entry fails.
+                    let rollback = super::main_agent::plan_uninstall(
+                        &environment.home_dir,
+                        &scope,
+                        &manager,
+                        &receipts,
+                        false,
+                        &mut Vec::new(),
+                    );
+                    rollback.apply(&manager, &receipts);
+                    project_canonical_receipts(&receipts, environment, &mut Vec::new());
+                    return Err(error.into());
+                }
+            }
+        } else {
+            let rollback = super::main_agent::plan_uninstall(
+                &environment.home_dir,
+                &scope,
+                &manager,
+                &receipts,
+                false,
+                &mut late_warnings,
+            );
+            main_agent_result.extend(rollback.apply(&manager, &receipts));
+            late_warnings.push(
+                "main_agent_not_installed: the agent file or the \"agent\" setting could not be written (a file changed after the preview), so the full-profile entry shown as the alternative was written and any agent file just written was removed; run the install again to get the default".to_owned(),
+            );
+            effective_plan = fallback_plan;
+            MutationResult::Install(fallback_selected.adapter.install(
+                &manager,
+                &PlanApproval::from(fallback_plan),
+                &receipts,
+            )?)
         }
-        MutationAction::Uninstall => {
-            MutationResult::Uninstall(selected.adapter.uninstall(&manager, &approval, &receipts)?)
+    } else {
+        if action == MutationAction::Uninstall {
+            main_agent_result = main_agent_companion.apply(&manager, &receipts);
         }
+        let approval = PlanApproval::from(&plan);
+        let result = match action {
+            MutationAction::Install => {
+                MutationResult::Install(selected.adapter.install(&manager, &approval, &receipts)?)
+            }
+            MutationAction::Uninstall => MutationResult::Uninstall(
+                selected.adapter.uninstall(&manager, &approval, &receipts)?,
+            ),
+        };
+        if action == MutationAction::Install {
+            main_agent_result = main_agent_companion.apply(&manager, &receipts);
+        }
+        result
     };
     // The session command skill is applied only after the main entry, and
     // its failure never fails the command (its own plan and receipt).
@@ -1174,9 +1375,8 @@ fn execute_mutation(
         }
         .map_err(|error| IntegrationCliError::from(error).message)
     });
-    // The main-session agent follows the entry; a failure is a warning.
-    let main_agent_result = main_agent_companion.apply(&manager, &receipts);
     let mut warnings = companion_warnings;
+    warnings.extend(late_warnings);
     if let Some(Err(message)) = &session_commands_result {
         warnings.push(format!("session_commands_failed: {message}"));
     }
@@ -1187,6 +1387,7 @@ fn execute_mutation(
     }
     project_canonical_receipts(&receipts, environment, &mut warnings);
     if main_agent
+        && std::ptr::eq(effective_plan, &plan)
         && let Scope::Project(root) = &scope
         && let Some(warning) = project_not_indexed_warning(root, environment)
     {
@@ -1243,7 +1444,7 @@ fn execute_mutation(
             action,
             client: arguments.client,
             dry_run: false,
-            plan: &plan,
+            plan: effective_plan,
             result: Some(&result),
             warnings: &warnings,
             migration: migration.as_ref(),
@@ -1254,9 +1455,100 @@ fn execute_mutation(
                 .and_then(|result| result.as_ref().ok()),
             main_agent: &main_agent_companion,
             main_agent_result: &main_agent_result,
+            fallback_entry: None,
             json: arguments.output.json,
         },
     )
+}
+
+fn write_fallback_preview(output: &mut impl Write, plan: &MutationPlan) -> std::io::Result<()> {
+    writeln!(
+        output,
+        "# If the agent file or the \"agent\" setting cannot be written when this is applied, this entry is written instead (as --no-main-agent writes it) and the agent file is removed:"
+    )?;
+    output.write_all(plan.unified_diff.as_bytes())?;
+    writeln!(output, "# Fallback plan hash: {}", plan.plan_hash)
+}
+
+/// A project uninstall whose entry cannot be planned (already gone, or its
+/// receipt consumed by an interrupted run) still removes the agent file and
+/// the key, and says what was left and why.
+#[allow(clippy::too_many_arguments)]
+fn uninstall_main_agent_without_entry(
+    arguments: &IntegrationMutationArgs,
+    environment: &IntegrationEnvironment,
+    manager: &PlanManager,
+    receipts: &FileReceiptStore,
+    companion: &super::main_agent::MainAgentCompanion,
+    mut warnings: Vec<String>,
+    entry_error: &IntegrationCliError,
+    output: &mut impl Write,
+) -> Result<(), IntegrationCliError> {
+    warnings.push(format!(
+        "entry_not_removed: the compresso entry was left as it is ({}: {}); it is already absent or no receipt covers it",
+        entry_error.code, entry_error.message
+    ));
+    let outcomes = if arguments.dry_run || !arguments.yes {
+        Vec::new()
+    } else {
+        companion.apply(manager, receipts)
+    };
+    for (label, outcome) in &outcomes {
+        if let super::main_agent::StepOutcome::Failed(message) = outcome {
+            warnings.push(format!("{label}_failed: {message}"));
+        }
+    }
+    if !outcomes.is_empty() {
+        project_canonical_receipts(receipts, environment, &mut warnings);
+    }
+    if arguments.output.json {
+        let mut steps = companion.to_json();
+        if let Some(steps) = steps.as_array_mut() {
+            for step in steps {
+                let label = step["step"].as_str().unwrap_or_default().to_owned();
+                step["result"] = outcomes
+                    .iter()
+                    .find(|(name, _)| *name == label)
+                    .map_or(serde_json::Value::Null, |(_, outcome)| {
+                        super::main_agent::outcome_json(outcome)
+                    });
+            }
+        }
+        serde_json::to_writer(
+            &mut *output,
+            &serde_json::json!({
+                "schema_version": 1,
+                "data": {
+                    "action": "uninstall",
+                    "client": arguments.client.as_str(),
+                    "dry_run": arguments.dry_run,
+                    "plan": null,
+                    "result": null,
+                    "warnings": warnings,
+                    "main_agent": steps,
+                }
+            }),
+        )?;
+        writeln!(output)?;
+    } else {
+        companion.write_preview(output)?;
+        if !arguments.dry_run && !arguments.yes {
+            writeln!(output, "rerun with --yes to remove these")?;
+        }
+        for (label, outcome) in &outcomes {
+            super::main_agent::write_outcome(output, label, outcome)?;
+        }
+        for warning in &warnings {
+            writeln!(output, "warning: {warning}")?;
+        }
+    }
+    if !arguments.dry_run && !arguments.yes {
+        return Err(IntegrationCliError::new(
+            "confirmation_required",
+            "removing the main-session agent without its entry requires --yes",
+        ));
+    }
+    Ok(())
 }
 
 /// A warning when the project root is not approved and indexed: the server
@@ -1290,10 +1582,24 @@ fn removed_entry_flags(
     plan: &MutationPlan,
     arguments: &IntegrationMutationArgs,
 ) -> Vec<String> {
+    // Only flag names: `--flag=VALUE` loses its value, and the argument
+    // after a flag is never a name, so no value is ever printed.
     let flags = |args: &[String]| {
         args.iter()
-            .filter(|arg| arg.starts_with("--") && *arg != "--root")
-            .cloned()
+            .filter(|arg| arg.starts_with("--"))
+            .map(|arg| arg.split_once('=').map_or(arg.as_str(), |(name, _)| name))
+            .filter(|name| *name != "--root")
+            .map(|name| {
+                name.chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() || c == '-' {
+                            c
+                        } else {
+                            '?'
+                        }
+                    })
+                    .collect::<String>()
+            })
             .collect::<Vec<_>>()
     };
     let read_args = |bytes: &[u8]| {
@@ -2132,6 +2438,8 @@ struct PlanRendering<'a> {
     /// The main-session agent changed with the MCP entry (E17-51).
     main_agent: &'a super::main_agent::MainAgentCompanion,
     main_agent_result: &'a [(&'static str, super::main_agent::StepOutcome)],
+    /// The entry written instead when the agent cannot be (previews only).
+    fallback_entry: Option<&'a MutationPlan>,
     json: bool,
 }
 
@@ -2191,6 +2499,10 @@ fn render_plan(
             }
             document["data"]["main_agent"] = steps;
         }
+        if let Some(plan) = rendering.fallback_entry {
+            document["data"]["fallback_entry"] =
+                serde_json::json!({ "plan": plan.public_preview() });
+        }
         serde_json::to_writer(&mut *output, &document)?;
         writeln!(output)?;
     } else if rendering.dry_run {
@@ -2203,6 +2515,9 @@ fn render_plan(
             write_session_commands_preview(output, plan)?;
         }
         rendering.main_agent.write_preview(output)?;
+        if let Some(plan) = rendering.fallback_entry {
+            write_fallback_preview(output, plan)?;
+        }
         for warning in rendering.warnings {
             writeln!(output, "warning: {warning}")?;
         }

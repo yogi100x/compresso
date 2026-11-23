@@ -2573,6 +2573,13 @@ fn planned_backup_path(path: &Path, now: i64) -> Result<PathBuf, IntegrationErro
     ))
 }
 
+/// The crash-recovery journal a commit to `path` writes beside it (mode
+/// 0600, removed when the commit finishes; after a crash it stays until a
+/// later command recovers it).
+pub fn pending_journal_path(path: &Path) -> PathBuf {
+    journal_path(path)
+}
+
 fn journal_path(path: &Path) -> PathBuf {
     let file_name = path.file_name().unwrap_or_default().to_string_lossy();
     path.with_file_name(format!("{file_name}.compresso-journal"))

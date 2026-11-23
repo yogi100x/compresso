@@ -199,6 +199,41 @@ pub(crate) fn write_outcome(
     }
 }
 
+/// Finishes an interrupted change to the agent file or the settings file
+/// before anything else reads them (E17-51 review). A journal left by a
+/// crash holds the previewed bytes, the settings bytes included, until it is
+/// recovered. A dry run never recovers: it refuses, naming the journal.
+pub(crate) fn recover_pending(
+    home: &Path,
+    scope: &Scope,
+    manager: &PlanManager,
+    receipts: &dyn ReceiptStore,
+    dry_run: bool,
+) -> Result<bool, IntegrationCliError> {
+    let paths = [
+        MainAgentIntegration::new(home.to_path_buf()).config_path(scope),
+        MainAgentSettingIntegration::new(home.to_path_buf()).config_path(scope),
+    ];
+    let mut recovered = false;
+    for path in paths.into_iter().flatten() {
+        let journal = compresso_integrations::pending_journal_path(&path);
+        if !journal.exists() {
+            continue;
+        }
+        if dry_run {
+            return Err(IntegrationCliError::new(
+                "pending_recovery",
+                format!(
+                    "{} holds an interrupted Compresso change; finish it first with `compresso integrations install claude-code --project DIR` (not a dry run), which recovers it",
+                    journal.display()
+                ),
+            ));
+        }
+        recovered |= manager.recover(&path, receipts)?.is_some();
+    }
+    Ok(recovered)
+}
+
 /// Plans the main-session agent for a project install. Returns an error for
 /// a refusal that must stop the whole install before anything is written.
 #[allow(clippy::too_many_arguments)]
@@ -392,54 +427,86 @@ pub(crate) fn settings_not_ignored_warning(root: &Path) -> Option<String> {
 }
 
 /// The main-session checks `integrations verify claude-code --project`
-/// adds when the agent file or the `agent` key is present; none when
-/// neither is (a `--no-main-agent` install).
+/// adds. They are required when the entry serves the lean session profile
+/// or Compresso's agent file (with its marker) is present: the file, the key,
+/// and the entry must then agree, and a mismatch is named. Otherwise a user's
+/// own `agent` value or own `compresso-main.md` is reported as informational
+/// (passed, not managed by Compresso); nothing present adds no check.
 pub(crate) fn verify_checks(
     home: &Path,
     scope: &Scope,
     entry_args: Option<&[String]>,
 ) -> Vec<VerificationCheck> {
+    use compresso_integrations::AgentSetting;
     let agent = MainAgentIntegration::new(home.to_path_buf());
     let setting = MainAgentSettingIntegration::new(home.to_path_buf());
+    let agent_ours = agent.is_installed(scope);
     let file_present = agent.config_path(scope).is_ok_and(|path| path.exists());
-    let key_present = !matches!(
-        setting.agent_setting(scope),
-        Ok(compresso_integrations::AgentSetting::Absent)
-    );
-    if !file_present && !key_present {
-        return Vec::new();
+    let key = setting.agent_setting(scope);
+    let lean = entry_args.is_some_and(server_serves_lean_session);
+    if !lean && !agent_ours {
+        let mut notes = Vec::new();
+        if file_present {
+            notes.push(format!(
+                ".claude/agents/{MAIN_AGENT_NAME}.md was not written by Compresso"
+            ));
+        }
+        match &key {
+            Ok(AgentSetting::Other(_)) => notes.push(format!(
+                "{LOCAL_SETTINGS_FILE} sets \"agent\" to your own agent"
+            )),
+            Ok(AgentSetting::Ours) => notes.push(format!(
+                "{LOCAL_SETTINGS_FILE} sets \"agent\" to \"{MAIN_AGENT_NAME}\", but no Compresso agent file is installed"
+            )),
+            _ => {}
+        }
+        if notes.is_empty() {
+            return Vec::new();
+        }
+        return vec![VerificationCheck {
+            name: "main_agent_not_managed".to_owned(),
+            passed: true,
+            detail: format!(
+                "{}; Compresso does not manage it and changes nothing",
+                notes.join("; ")
+            ),
+        }];
     }
     let mut checks = agent.verify(scope).checks;
     checks.extend(setting.verify(scope).checks);
-    // Since the E17-51 review the agent runs only against the lean session
-    // profile, with --edits when its body names the edit tool.
-    let lean = entry_args.is_some_and(server_serves_lean_session);
     let edits = entry_args.is_some_and(server_enables_edits);
     let edit_body = agent
         .config_path(scope)
         .ok()
         .and_then(|path| std::fs::read_to_string(path).ok())
         .is_some_and(|text| text == MainAgentIntegration::render(true));
-    let fix = "run `compresso integrations install claude-code --project DIR` to restore the default, or add --no-main-agent to remove the agent";
+    let restore = "run `compresso integrations install claude-code --project DIR` (it installs the agent, or writes the full-profile entry when it cannot)";
     let (passed, detail) = if entry_args.is_none() {
         (
             false,
             format!(
-                "the main-session agent is installed but the project has no readable compresso entry; {fix}"
+                "mismatch: Compresso's main-session agent file is present but the project has no readable compresso entry; {restore}"
             ),
         )
     } else if !lean {
         (
             false,
             format!(
-                "mismatch: the main-session agent is installed but the compresso entry serves the full profile, not --tools lean --session-tools; {fix}"
+                "mismatch: Compresso's main-session agent file is present but the compresso entry serves the full profile, not --tools lean --session-tools; {restore}, or add --no-main-agent to remove the agent (delete the file if Compresso has no receipt for it)"
+            ),
+        )
+    } else if !agent_ours || !matches!(key, Ok(AgentSetting::Ours)) {
+        (
+            false,
+            format!(
+                "mismatch: the compresso entry serves the main-session profile but Compresso's agent file or its \"agent\" setting is missing; {restore}"
             ),
         )
     } else if edit_body && !edits {
         (
             false,
             format!(
-                "mismatch: the agent file tells the model to use compresso_edit but the compresso entry has no --edits; {fix}"
+                "mismatch: the agent file tells the model to use compresso_edit but the compresso entry has no --edits; {restore}"
             ),
         )
     } else {
