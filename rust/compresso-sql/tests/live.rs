@@ -333,6 +333,18 @@ fn test_live_postgres_tls_to_the_wrong_host_name_is_refused() {
     assert_eq!(error.code(), "sql_connection", "{error}");
 }
 
+/// E17-52 (D117): the MongoDB driver links rustls too. A verified TLS
+/// connection to Postgres (a host name the certificate names, a private
+/// root through `sslrootcert`) still reads: one crypto provider, no panic.
+#[test]
+fn test_live_postgres_verified_tls_with_a_private_root_reads() {
+    let Some(url) = variable("COMPRESSO_SQL_TEST_POSTGRES_TLS_URL") else {
+        return;
+    };
+    let rows = gated(&service(&url), "SELECT 1 AS one").expect("verified TLS read");
+    assert_eq!(rows, vec![vec![Value::from(1)]]);
+}
+
 async fn mysql_admin(admin: &str, statements: &[String]) {
     let mut connection = MySqlConnection::connect(admin)
         .await

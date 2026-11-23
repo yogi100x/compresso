@@ -254,7 +254,9 @@ jobs:
           shared-key: ci-ubuntu-24.04
       - name: Start a TLS Postgres with a throwaway certificate
         # The certificate and keys are made here, live only in RUNNER_TEMP,
-        # and name db.invalid, so a client verifying 127.0.0.1 must refuse.
+        # and name db.invalid and localhost, so a client verifying 127.0.0.1
+        # must refuse and one verifying localhost must succeed (E17-52: the
+        # MongoDB driver links rustls too).
         shell: bash
         run: |
           dir="${RUNNER_TEMP}/pgtls"
@@ -262,7 +264,7 @@ jobs:
           cd "${dir}"
           openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=compresso-test-ca -keyout ca.key -out ca.pem
           openssl req -newkey rsa:2048 -nodes -subj /CN=db.invalid -keyout server.key -out server.csr
-          printf 'subjectAltName=DNS:db.invalid\n' > ext.cnf
+          printf 'subjectAltName=DNS:db.invalid,DNS:localhost\n' > ext.cnf
           openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 1 -out server.crt -extfile ext.cnf
           chmod 0644 server.crt server.key ca.pem
           docker run -d --name pgtls -p 5433:5432 \
@@ -270,7 +272,8 @@ jobs:
             -v "${dir}:/certs:ro" postgres:16.4 \
             bash -c 'cp /certs/server.crt /certs/server.key /var/lib/postgresql/ && chown postgres:postgres /var/lib/postgresql/server.crt /var/lib/postgresql/server.key && chmod 0600 /var/lib/postgresql/server.key && exec docker-entrypoint.sh postgres -c ssl=on -c ssl_cert_file=/var/lib/postgresql/server.crt -c ssl_key_file=/var/lib/postgresql/server.key'
           for _ in $(seq 1 30); do
-            if docker exec pgtls pg_isready -U postgres >/dev/null 2>&1; then
+            # Ready once the role for the verified-TLS read exists.
+            if docker exec pgtls psql -U postgres -d probe -c "CREATE ROLE reader LOGIN" >/dev/null 2>&1; then
               exit 0
             fi
             sleep 2
@@ -301,6 +304,7 @@ jobs:
           done
           unset SSL_CERT_FILE SSL_CERT_DIR
           export COMPRESSO_SQL_TEST_POSTGRES_WRONG_HOST_URL="postgres://reader@127.0.0.1:5433/probe?sslmode=verify-full&sslrootcert=${RUNNER_TEMP}/pgtls/ca.pem"
+          export COMPRESSO_SQL_TEST_POSTGRES_TLS_URL="postgres://reader@localhost:5433/probe?sslmode=verify-full&sslrootcert=${RUNNER_TEMP}/pgtls/ca.pem"
           cargo test -p compresso-sql --locked --test live -- --test-threads=1 --nocapture
       - name: Run live MySQL tests against MySQL 8.4
         # Runs even when the previous step failed, so one round reports
@@ -317,6 +321,83 @@ jobs:
       - name: Stop the TLS Postgres
         if: always()
         run: docker rm -f pgtls || true
+
+  live-mongo:
+    # E17-52: the compresso_mongo tests that need a real server, against
+    # throwaway containers made in this job. The other jobs stay
+    # server-free.
+    name: Live MongoDB
+    runs-on: ubuntu-24.04
+    env:
+      MONGO_IMAGE: mongo:8.0.38@sha256:479e85ced54ffb8a40dade1dcde2da2a9ae858515b9415e9cc54bfb8f0575d01
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        env:
+          # Remove after https://github.com/Swatinem/rust-cache/issues/331 is fixed.
+          NODE_OPTIONS: --disable-warning=DEP0040
+        with:
+          shared-key: ci-ubuntu-24.04
+      - name: Start MongoDB with access control
+        # The root password is made here and lives only in this job; the
+        # tests use root only to create their accounts and data.
+        shell: bash
+        run: |
+          password="$(openssl rand -hex 16)"
+          echo "::add-mask::${password}"
+          docker run -d --name mongoauth -p 27017:27017 \
+            -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD="${password}" \
+            "${MONGO_IMAGE}"
+          echo "COMPRESSO_MONGO_TEST_ADMIN_URL=mongodb://root:${password}@127.0.0.1:27017/?authSource=admin&directConnection=true" >> "${GITHUB_ENV}"
+          for _ in $(seq 1 45); do
+            if docker exec mongoauth mongosh --quiet -u root -p "${password}" --eval 'db.runCommand({ping: 1}).ok' 2>/dev/null | grep -q 1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs mongoauth
+          exit 1
+      - name: Start a TLS MongoDB with a throwaway certificate
+        # Access control is off on purpose: the tool must refuse it. The
+        # certificate names only localhost, so a client verifying 127.0.0.1
+        # must refuse it.
+        shell: bash
+        run: |
+          dir="${RUNNER_TEMP}/mongotls"
+          mkdir -p "${dir}"
+          cd "${dir}"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=compresso-test-ca -keyout ca.key -out ca.pem
+          openssl req -newkey rsa:2048 -nodes -subj /CN=localhost -keyout server.key -out server.csr
+          printf 'subjectAltName=DNS:localhost\n' > ext.cnf
+          openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial -days 1 -out server.crt -extfile ext.cnf
+          cat server.crt server.key > server.pem
+          chmod 0644 server.pem ca.pem
+          docker run -d --name mongotls -p 27018:27017 -v "${dir}:/certs:ro" "${MONGO_IMAGE}" \
+            mongod --bind_ip_all --tlsMode requireTLS --tlsCertificateKeyFile /certs/server.pem \
+            --tlsCAFile /certs/ca.pem --tlsAllowConnectionsWithoutCertificates
+          for _ in $(seq 1 45); do
+            if docker exec mongotls mongosh --quiet --tls --tlsCAFile /certs/ca.pem --host localhost --eval 'db.runCommand({ping: 1}).ok' 2>/dev/null | grep -q 1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs mongotls
+          exit 1
+      - name: Run live MongoDB tests
+        env:
+          COMPRESSO_SQL_TEST_REQUIRE_LIVE: "1"
+          COMPRESSO_MONGO_TEST_HOST: 127.0.0.1:27017
+          COMPRESSO_MONGO_TEST_TLS_HOST: localhost:27018
+        shell: bash
+        run: |
+          docker exec mongoauth mongod --version
+          export COMPRESSO_MONGO_TEST_TLS_CA="${RUNNER_TEMP}/mongotls/ca.pem"
+          cargo test -p compresso-sql --locked --test live_mongo -- --test-threads=1 --nocapture
+      - name: Stop the MongoDB containers
+        if: always()
+        run: docker rm -f mongoauth mongotls || true
 
   eval:
     name: Eval (${{ matrix.os }})

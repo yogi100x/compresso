@@ -1823,7 +1823,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tool_names_include_the_operator_enabled_recall_edit_and_sql_tools() {
+    fn test_tool_names_include_the_operator_enabled_recall_edit_sql_and_mongo_tools() {
         let names = tool_names();
         assert!(
             names
@@ -1831,10 +1831,14 @@ mod tests {
                 .any(|name| name == crate::tools::recall::TOOL_NAME)
         );
         assert_eq!(
-            names[names.len() - 2..],
-            [crate::tools::edit::TOOL_NAME, crate::tools::sql::TOOL_NAME]
+            names[names.len() - 3..],
+            [
+                crate::tools::edit::TOOL_NAME,
+                crate::tools::sql::TOOL_NAME,
+                crate::tools::mongo::TOOL_NAME
+            ]
         );
-        assert_eq!(names.len(), tool_declarations().len() + 3);
+        assert_eq!(names.len(), tool_declarations().len() + 4);
     }
 
     #[test]
