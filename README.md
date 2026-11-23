@@ -86,14 +86,23 @@ is added to your project folder that `git add -A` could commit. The
 crash-recovery journal of a change (which holds the file's bytes until the
 change finishes) is kept there too. The plan's last line names the copy, or
 says `(none: ...)` when no copy is needed. If that directory cannot be used
-(a file or link in its place, or no permission), nothing is written and the
-error names it.
+(a file or link in its place, or no permission), the change stops before its
+journal is written and the error names the directory. If a change fails
+before your file is replaced (for example, the project folder is read-only),
+Compresso removes the journal and the copy that attempt made, so the next
+command is not blocked; once the file has been replaced, the journal stays
+until a later command finishes the change. During the replace itself a
+temporary file (`.<file>.compresso-tmp-*`, holding the new bytes) exists for
+a moment beside your file; it is removed on an error, but a hard kill at that
+moment leaves it, and nothing removes it later.
 
 Uninstall removes Compresso's entries but keeps these copies, which can hold
 other servers' tokens (also for user-level files such as `~/.claude.json`);
 its output says where they are. Delete the files in `integration-backups/`
-when you no longer need them, except a file ending in `.journal`, which is an
-unfinished change.
+when you no longer need them. A file ending in `.journal` is an unfinished
+change: if a command reports a recovery conflict naming it (the file was
+changed since), delete that journal to abandon the change and keep your file
+as it is now.
 
 Versions before E17-53 wrote `<file>.compresso-backup-<time>` beside the
 file. Compresso still reads such a copy when its receipt names it, never

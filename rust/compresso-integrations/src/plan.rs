@@ -609,9 +609,12 @@ pub enum IntegrationError {
     /// A prior crash left a commit requiring recovery.
     #[error("pending integration recovery journal exists for {path}")]
     PendingRecovery { path: PathBuf },
-    /// Recovery cannot safely decide between base and target.
-    #[error("integration recovery conflict for {path}")]
-    RecoveryConflict { path: PathBuf },
+    /// Recovery cannot safely decide between base and target: the file is
+    /// neither as the pending change found it nor as it would leave it.
+    #[error(
+        "integration recovery conflict for {path}: the unfinished change recorded in {journal} no longer matches the file; delete {journal} to abandon that change and keep {path} as it is now"
+    )]
+    RecoveryConflict { path: PathBuf, journal: PathBuf },
     /// The backup directory is missing and cannot be created, is not a
     /// directory, cannot be made private, or does not take a copy (E17-53).
     #[error("the integration backup directory {path} cannot be used: {reason}")]
@@ -984,23 +987,32 @@ impl PlanManager {
         }
 
         let commit = build_commit(&plan, apply_at, authorized_uninstall_receipt.as_ref())?;
-        // The copy is written, and its directory checked, before the journal:
-        // a failure here leaves nothing behind (E17-53).
-        ensure_backup(&commit)?;
+        // The copy is written, and its directory checked, before the journal,
+        // so a bad backup directory fails before any journal exists. Until
+        // the target is replaced, every failure removes what this attempt
+        // wrote: its journal and the copy it created, never an older copy
+        // (E17-53 confirmation round).
+        let created_copy = ensure_backup(&commit)?;
+        let discard_copy = || {
+            if created_copy {
+                let _ignored = fs::remove_file(&plan.backup_path);
+            }
+        };
         let journal = self.journal_location(&plan.config_path);
-        write_journal(&journal, &plan.config_path, &commit, receipts)?;
+        if let Err(error) = write_journal(&journal, &plan.config_path, &commit, receipts) {
+            discard_copy();
+            return Err(error);
+        }
         let mut replaced = false;
         if let Err(error) = finish_commit_tracked(&commit, &journal, receipts, &mut replaced) {
             // A commit that never changed the target needs no recovery: its
-            // journal is removed so it cannot block later commands. Once this
-            // commit changed the target (or the target holds its result), the
-            // journal stays for recovery.
-            if !replaced
-                && read_target(&plan.config_path)
-                    .is_ok_and(|current| hash_target(&current) != plan.result_hash)
-            {
+            // journal is removed so it cannot block later commands. Once the
+            // target holds this commit's result, the journal stays for
+            // recovery.
+            if !replaced {
                 let _ignored = fs::remove_file(&journal);
                 let _ignored = sync_parent(&journal);
+                discard_copy();
             }
             return Err(error);
         }
@@ -1508,7 +1520,8 @@ fn finish_commit(
     finish_commit_tracked(commit, journal, receipts, &mut false)
 }
 
-/// [`finish_commit`], setting `replaced` once the target is changed.
+/// [`finish_commit`], setting `replaced` once the target holds this
+/// commit's result: after the rename succeeded, or when it already did.
 fn finish_commit_tracked(
     commit: &PendingCommit,
     journal: &Path,
@@ -1526,9 +1539,15 @@ fn finish_commit_tracked(
     if current_hash != commit.plan.base_hash && current_hash != commit.plan.result_hash {
         return Err(IntegrationError::RecoveryConflict {
             path: commit.plan.config_path.clone(),
+            journal: journal.to_path_buf(),
         });
     }
     ensure_backup(commit)?;
+    if current_hash == commit.plan.result_hash {
+        // The target already holds this commit's result (an earlier attempt
+        // or recovery replaced it): only the receipt is left to save.
+        *replaced = true;
+    }
     if current_hash == commit.plan.base_hash {
         // Close the window between journal creation and replacement as much as
         // portable std permits by re-reading immediately before rename.
@@ -1538,7 +1557,6 @@ fn finish_commit_tracked(
                 path: commit.plan.config_path.clone(),
             });
         }
-        *replaced = true;
         match planned_result(commit.plan.config_format, &commit.plan.target_contents) {
             TargetState::Present(bytes) => atomic_replace(
                 &commit.plan.config_path,
@@ -1551,6 +1569,9 @@ fn finish_commit_tracked(
             path: commit.plan.config_path.clone(),
             source,
         })?;
+        // Only now has the target changed: a failed temporary write or
+        // rename above leaves it as it was (E17-53 confirmation round).
+        *replaced = true;
         sync_parent(&commit.plan.config_path).map_err(|source| IntegrationError::Io {
             path: commit.plan.config_path.clone(),
             source,
@@ -1560,6 +1581,7 @@ fn finish_commit_tracked(
     if hash_target(&written) != commit.plan.result_hash {
         return Err(IntegrationError::RecoveryConflict {
             path: commit.plan.config_path.clone(),
+            journal: journal.to_path_buf(),
         });
     }
     receipts.save(&commit.persisted_receipt)?;
@@ -1831,15 +1853,17 @@ pub(crate) fn publish_completed_temp_no_replace(
     move_file_windows(temp, destination, false)
 }
 
-fn ensure_backup(commit: &PendingCommit) -> Result<(), IntegrationError> {
+/// Writes the commit's copy if it is not there yet; returns whether this
+/// call created it.
+fn ensure_backup(commit: &PendingCommit) -> Result<bool, IntegrationError> {
     let Some(base_contents) = &commit.base_contents else {
-        return Ok(());
+        return Ok(false);
     };
     if commit.plan.backup_path == UNMODIFIED_FILE_REMOVED_BACKUP_SENTINEL
         || commit.plan.backup_path == NO_BACKUP_KEPT_SENTINEL
         || commit.plan.backup_path == UNMODIFIED_FILE_REPLACED_BACKUP_SENTINEL
     {
-        return Ok(());
+        return Ok(false);
     }
     let path = PathBuf::from(&commit.plan.backup_path);
     let legacy = crate::backups::is_legacy_beside(&commit.plan.config_path, &path);
@@ -1858,7 +1882,7 @@ fn ensure_backup(commit: &PendingCommit) -> Result<(), IntegrationError> {
             source,
         })?;
         if existing == base_contents.as_bytes() {
-            return Ok(());
+            return Ok(false);
         }
         return Err(IntegrationError::BackupCollision { path });
     }
@@ -1866,15 +1890,18 @@ fn ensure_backup(commit: &PendingCommit) -> Result<(), IntegrationError> {
         // A journal an earlier version left names a copy beside the file.
         // That version wrote the copy before its journal; if it is gone, no
         // new copy is put in the project tree (E17-53).
-        return Ok(());
+        return Ok(false);
     }
-    write_new_private(&path, base_contents.as_bytes()).map_err(|error| {
-        IntegrationError::BackupDirectory {
+    if let Err(error) = write_new_private(&path, base_contents.as_bytes()) {
+        // A partly written copy is not a copy.
+        let _ignored = fs::remove_file(&path);
+        return Err(IntegrationError::BackupDirectory {
             path: dir.to_path_buf(),
             reason: format!("a copy cannot be written into it: {error}"),
-        }
-    })?;
-    sync_parent(&path).map_err(|source| IntegrationError::Io { path, source })
+        });
+    }
+    sync_parent(&path).map_err(|source| IntegrationError::Io { path, source })?;
+    Ok(true)
 }
 
 /// Keeps the oldest and newest copies of the committed target and every
@@ -4683,6 +4710,100 @@ mod tests {
             .expect("a pending commit");
         assert!(manager.pending_journal(&plan.config_path).is_none());
         assert_eq!(all_files(&project), before);
+    }
+
+    /// Copies of the target in `backups` (not journals or other files).
+    fn copies_in(backups: &Path) -> Vec<PathBuf> {
+        if !backups.exists() {
+            return Vec::new();
+        }
+        all_files(backups)
+            .into_iter()
+            .filter(|name| !name.to_string_lossy().ends_with(".journal"))
+            .collect()
+    }
+
+    /// The temporary file of the atomic replace cannot be written (the
+    /// project directory is read-only): the target is unchanged, so the
+    /// commit leaves no journal and no copy, and a later install succeeds
+    /// (E17-53 confirmation round, M1).
+    #[cfg(unix)]
+    #[test]
+    fn test_a_failed_replace_leaves_no_journal_and_no_copy() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = tempdir().expect("temp directory");
+        let backups = directory.path().join("data").join(crate::BACKUP_DIR_NAME);
+        let (project, manager, plan) = secret_project(directory.path(), &backups);
+        let base = fs::read(&plan.config_path).expect("base");
+        let before = all_files(&project);
+        let receipts = MemoryReceiptStore::default();
+        fs::set_permissions(&project, fs::Permissions::from_mode(0o555)).expect("read-only");
+
+        let error = manager.apply(&PlanApproval::from(&plan), &receipts);
+
+        fs::set_permissions(&project, fs::Permissions::from_mode(0o755)).expect("writable");
+        assert!(
+            matches!(error, Err(IntegrationError::Io { .. })),
+            "{error:?}"
+        );
+        assert_eq!(fs::read(&plan.config_path).expect("config"), base);
+        assert_eq!(all_files(&project), before);
+        assert!(manager.pending_journal(&plan.config_path).is_none());
+        assert!(copies_in(&backups).is_empty(), "{:?}", copies_in(&backups));
+        let retry = manager
+            .issue(install_request(
+                plan.config_path.clone(),
+                "{\"mcpServers\":{\"other\":{\"token\":\"secret\"},\"compresso\":{}}}\n",
+            ))
+            .expect("not blocked");
+        manager
+            .apply(&PlanApproval::from(&retry), &receipts)
+            .expect("the next install succeeds");
+    }
+
+    /// A commit that fails before its journal is sealed removes the copy it
+    /// created, so retries do not pile up copies; an older copy is kept
+    /// (E17-53 confirmation round, S2).
+    #[cfg(unix)]
+    #[test]
+    fn test_failed_attempts_do_not_pile_up_copies() {
+        let directory = tempdir().expect("temp directory");
+        let backups = directory.path().join("data").join(crate::BACKUP_DIR_NAME);
+        let (_project, manager, plan) = secret_project(directory.path(), &backups);
+        fs::create_dir_all(&backups).expect("backups");
+        let older = backups.join(format!(
+            "{}-2000-01-01T00-00-00Z",
+            &Path::new(&plan.backup_path)
+                .file_name()
+                .expect("name")
+                .to_string_lossy()[..32]
+        ));
+        fs::write(&older, "older copy").expect("older copy");
+        // Something already holds the journal's name: the journal cannot be
+        // reserved, so every attempt fails before it is sealed.
+        let journal = crate::backups::journal_path(&backups, &plan.config_path);
+        std::os::unix::fs::symlink(directory.path().join("nowhere"), &journal).expect("dangling");
+        let receipts = MemoryReceiptStore::default();
+        let mut plan = plan;
+        for attempt in 0..3 {
+            assert!(
+                manager
+                    .apply(&PlanApproval::from(&plan), &receipts)
+                    .is_err(),
+                "{attempt}"
+            );
+            assert_eq!(
+                copies_in(&backups),
+                [PathBuf::from(older.file_name().expect("name"))]
+            );
+            plan = manager
+                .issue(install_request(
+                    plan.config_path.clone(),
+                    &plan.target_contents,
+                ))
+                .expect("reissued");
+        }
+        assert_eq!(fs::read_to_string(&older).expect("older"), "older copy");
     }
 
     /// A journal an earlier version left beside the file is still found and

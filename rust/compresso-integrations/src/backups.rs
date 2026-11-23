@@ -6,8 +6,10 @@
 //! hold other servers' tokens, and a copy in the project tree is not ignored
 //! by git in most repositories. Each copy is named
 //! `<32 hex digits of the BLAKE3 hash of the target path>-<UTC timestamp>`,
-//! written once with mode 0600 in a directory of mode 0700, and only the
-//! newest [`KEPT_PER_TARGET`] copies of one target are kept.
+//! written once with mode 0600 in a directory of mode 0700. Per target, the
+//! oldest copy, the newest [`KEPT_PER_TARGET`], and any copy the committed
+//! plan, its prior receipt, or the active receipt names are kept; others are
+//! pruned after each commit.
 //!
 //! Versions before E17-53 wrote `<file>.compresso-backup-<timestamp>` beside
 //! the file and named it in the receipt. Those copies are still read (a

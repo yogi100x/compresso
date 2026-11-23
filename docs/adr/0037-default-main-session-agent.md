@@ -203,8 +203,9 @@ The settings-file rule above (no copy, because the key splice is exactly
 reversible, written atomically, and refused on drift) stays. Every other
 file the plan manager changes still gets a copy, but in Compresso's data
 directory, `integration-backups/<hash of the target path>-<UTC time>` (0600 in
-a 0700 directory, the newest three per target kept, never one the plan or its
-prior receipt names), never beside the file: the project `.mcp.json`, the
+a 0700 directory; per target the oldest copy, the newest three, and any copy
+the plan, its prior receipt, or the active receipt names are kept), never
+beside the file: the project `.mcp.json`, the
 hook files, the agent and skill files, `~/.claude.json`, `~/.codex/config.toml`,
 and the Cursor configuration. The copy is what the verbatim JSON restore on
 uninstall reads, so a copy is kept rather than none (D116's reasoning does

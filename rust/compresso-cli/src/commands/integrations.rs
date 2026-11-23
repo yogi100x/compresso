@@ -1592,7 +1592,7 @@ fn write_backups_kept_note(
     if kept > 0 {
         writeln!(
             output,
-            "note: copies Compresso made of the configuration files it changed (they can hold other servers' tokens) stay in {}; delete them there when you no longer need them (keep any file ending in .journal: it is an unfinished change)",
+            "note: copies Compresso made of the configuration files it changed (they can hold other servers' tokens) stay in {}; delete them there when you no longer need them; a file ending in .journal is an unfinished change: delete it only to abandon that change, as a recovery-conflict error that names it says",
             dir.display()
         )?;
     }

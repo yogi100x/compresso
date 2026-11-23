@@ -814,6 +814,48 @@ fn test_an_unusable_backup_directory_leaves_the_project_untouched() {
     assert_eq!(exit, CliExitCode::Success, "{output}");
 }
 
+/// Through the CLI: a read-only project directory makes the replace fail;
+/// the file is unchanged, no journal or copy of this attempt is left, and
+/// the next install succeeds (E17-53 confirmation round, M1).
+#[cfg(unix)]
+#[test]
+fn test_a_read_only_project_leaves_no_journal_and_the_next_install_succeeds() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let fixture = Fixture::new();
+    let config = fixture.project.join(".mcp.json");
+    fs::write(
+        &config,
+        "{\"mcpServers\": {\"other\": {\"env\": {\"TOKEN\": \"t\"}}}}\n",
+    )
+    .expect("existing project config");
+    let base = fs::read(&config).expect("base");
+    let backups = fixture.data.join(compresso_integrations::BACKUP_DIR_NAME);
+    fs::set_permissions(&fixture.project, fs::Permissions::from_mode(0o555)).expect("read-only");
+
+    let (exit, output, _) = fixture.run(
+        &fixture.project_arguments("install", &["--no-main-agent", "--yes", "--json"]),
+        "",
+    );
+
+    fs::set_permissions(&fixture.project, fs::Permissions::from_mode(0o755)).expect("writable");
+    assert_eq!(exit, CliExitCode::Failure, "{output}");
+    assert_eq!(fs::read(&config).expect("config"), base);
+    let left = if backups.exists() {
+        files_under(&backups)
+    } else {
+        Vec::new()
+    };
+    assert!(
+        left.is_empty(),
+        "nothing of the failed attempt is left: {left:?}"
+    );
+    let (exit, output, _) = fixture.run(
+        &fixture.project_arguments("install", &["--no-main-agent", "--yes", "--json"]),
+        "",
+    );
+    assert_eq!(exit, CliExitCode::Success, "{output}");
+}
+
 /// Through the CLI: repeated changed installs keep the oldest copy (the
 /// file before Compresso changed it) and the newest three, never delete the
 /// copy the active receipt names, and never delete a file in the backup
