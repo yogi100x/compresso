@@ -66,8 +66,7 @@ start in a folder the user has not trusted, nor ever under `-p`.
   endings) is kept; uninstall removes exactly those bytes. A missing file is
   created as `{"agent": "compresso-main"}` with two-space indentation and a
   trailing newline. The plan manager writes through a temporary file renamed
-  in the same directory and keeps its usual timestamped backup of an existing
-  file. Uninstall removes the key only while it still holds `compresso-main`
+  in the same directory and keeps no backup copy (see the amendments). Uninstall removes the key only while it still holds `compresso-main`
   (otherwise `key_modified`), and deletes the file only when nothing else is
   left in it and the install receipt says Compresso created it. The plan
   manager enforces that last rule for every JSON target: an empty JSON
@@ -78,11 +77,11 @@ start in a folder the user has not trusted, nor ever under `-p`.
   `--tools lean`, adds `compresso_stats` and `compresso_report` (short
   descriptions, `stats` advertising only `since`) after the lean tools so the
   `/compresso` commands keep working; recall stays a lean row served with
-  `--recall-source`. The lean instructions stay byte-identical (the new rows
-  add no hint), and plain `--tools lean` is unchanged. With `--sql-env` the
-  entry keeps the full profile, because the lean profile never serves
-  `compresso_sql` (D115); the agent is still installed and its tool names are
-  served by the full profile too.
+  `--recall-source`. The new rows add no hint; the first sentence of the lean
+  instructions changes only with the flag (see the amendments), and plain
+  `--tools lean` is unchanged. With `--sql-env` the entry keeps the full
+  profile, because the lean profile never serves `compresso_sql` (D115), and
+  (since the review) no agent is installed.
 - **Opt-outs.** `--no-main-agent` writes neither file and keeps the previous
   entry (full profile; `--edits` only if given); over a project that already
   has the agent it also removes the agent file and the key through their
@@ -101,6 +100,42 @@ start in a folder the user has not trusted, nor ever under `-p`.
   manager keeps beside it when it changes an existing file
   (`settings.local.json.compresso-backup-*`), install prints one warning
   suggesting `.claude/settings.local.json*`. Nothing is edited.
+
+## Amendments after the independent review (2026-11-23)
+
+- **Agreement.** The agent file, the `agent` key, and the entry always agree.
+  The entry serves the lean session profile only when both the agent file and
+  the key are planned. `--no-main-agent`, `--sql-env`, a user file at the
+  agent path, or another `agent` value write the entry exactly as
+  `--no-main-agent` does and remove an agent an earlier install wrote, through
+  its receipts; `setup` does the same. `verify` names a mismatch
+  (`main_agent_server_profile`).
+- **No backups of the settings file.** The plan manager writes no copy of
+  `.claude/settings.local.json` (sentinel `(none: no copy kept of a personal
+  settings file)`), and none when it replaces an agent file that is exactly
+  a current render (`(none: unmodified Compresso file replaced)`).
+- **Uninstall order.** If the key cannot be removed, the agent file it names
+  is kept, at plan and at apply time.
+- **Preview.** Entry arguments are shown with `--sql-env`'s variable name
+  redacted; a reinstall warns `entry_flag_removed` for every option the
+  current entry carries that the new one drops, unknown ones included.
+- **Body.** The shipped body adds, against the measured prompt: the untrusted
+  content and scoped-edit lines, "Do not commit, push, delete files, or run
+  destructive commands unless the user asked.", a fallback ("If no Compresso
+  tool is in your tool list, or one reports that the repository is not
+  indexed, tell the user to run `compresso index`, and use the client's own
+  tools meanwhile."), and a general routing sentence (follow callers and use
+  sites, not only the first matching file); the `--no-edits` body tells the
+  model to Read a file right before Edit, and its description does not
+  mention edits. 2,179 characters. The suite was not re-run; the first
+  request with the shipped body measured 17,398 tokens.
+- **Instructions.** With `--session-tools` the lean instructions' first
+  sentence says the server writes no repository file and that
+  `compresso_report` saves a report under Compresso's data directory when
+  asked (instead of "read-only"); without the flag every surface is
+  unchanged. Schema cost with the edit tool: o200k 2,573 → 2,833.
+- **Refusals.** The file-system root and paths inside `~/.claude` are refused
+  like the home directory. `{ }` keeps its inner whitespace.
 
 ## Consequences
 
