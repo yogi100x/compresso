@@ -229,3 +229,38 @@ the warning names every `<file>.compresso-backup-*` beside a managed file,
 and an uninstall says where the copies stay. Only the atomic replace's own
 temporary file is still written beside the target, as a same-directory rename
 requires.
+
+## Amendment (2026-11-24, E17-54, D119): the body loads and reads through Compresso
+
+Measured runs of the shipped default found that the client defers MCP tools
+behind its tool search and that, on edit prompts, the model loaded only
+`compresso_grep` and `compresso_edit`; a later `compresso_read` call without
+its schema sent `start_line` as a string, was refused, and file reading moved
+to the shell (`cat`, `sed -n`, `head`) for the rest of the session. The owner
+approved three fixes: steer file reads to Compresso, load `compresso_read`
+early, and say where to change behaviour on the request path.
+
+The body (both variants) now says, in this order: use the Compresso tools for
+all repository work and load them together in the first tool search
+(`compresso_grep`, `compresso_read`, `compresso_search`, and with edits
+`compresso_edit`); what the lookup tools do; that `compresso_read` reads
+several files or line ranges per call, source or not (SQL, JSON, YAML,
+config, docs), and reports ignored paths (dependencies, build output) and
+secret-named files (`.env*`, keys) as not found, which the client's Read
+reads instead; the edit rules as before; that the shell is only for installing
+packages, the type-check or tests, and git, never to read or search files;
+the index fallback ("available" instead of "in your tool list", since a
+deferred tool is not listed until loaded). The routing sentence is replaced
+by: before editing a handler or function, trace how the request or call
+reaches it (route or registration, middleware, validators, wrappers, callers)
+and change the first place that decides the behaviour instead of adding a
+parallel mechanism. With edits 2,482 characters, without 2,191 (at
+c1d6b2d, before this change: 2,178 and 1,809); the 2,500 ceiling is
+unchanged.
+
+An agent file written by an earlier version still carries the marker, so it
+is managed, but `main_agent_current` fails until `integrations install`
+replaces it (the replaced file gets a copy in the data directory, since it is
+not an exact current render). Separately, every MCP integer argument now
+also accepts a string of decimal digits (04 §1.1), so a schema-less call no
+longer fails; schemas and goldens are unchanged.
