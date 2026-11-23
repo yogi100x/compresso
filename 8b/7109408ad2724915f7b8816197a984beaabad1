@@ -1,0 +1,48 @@
+rust/compresso-sql/src/mongo/raw.rs
+  s_89a704cfae63f5::t_a9aa9d4ee45faf 608-646,648,650-661
+  s_89a704cfae63f5::t_166a7293846dbc 158,647,649
+  s_89a704cfae63f5::t_b729f74bacc782 161-164,166,168,171-178,180,278-282,287,293-294,328,384-389,391-393,395
+  s_89a704cfae63f5::t_c9ef43d2f88aa0 390
+  s_89a704cfae63f5::t_09912a4d59faac 394
+  s_470a2f6e5f0af8::t_3ab9d11a557116 398
+rust/compresso-sql/src/mongo/client.rs
+  s_89a704cfae63f5::t_4fd4ffd5612fdd 178-186,193-195,964-965
+rust/compresso-sql/src/mongo/mod.rs
+  s_89a704cfae63f5::t_9462b4b352cdc9 447,453-454,456-464,467-469
+  s_89a704cfae63f5::t_252edfb69a8886 444-446,455
+rust/compresso-sql/tests/live_mongo.rs
+  s_89a704cfae63f5::t_89968009fb25ae 1017,1027-1045
+  s_89a704cfae63f5::t_8d8486951645f6 150,200-220,876-897,899-944,949-968,970-972,974-1016,1018-1026
+  s_89a704cfae63f5::t_6110f995eb134b 898,945-948,969,973
+rust/compresso-sql/src/mongo/gate.rs
+  s_89a704cfae63f5::t_91a212bf5c6637 413-418,423-432,435-438,440-472,474,806-810,812,821-826,843,847-848,850-852,858-859,863
+  s_89a704cfae63f5::t_252edfb69a8886 844-846,849,1134-1171,1173-1175,1177-1193
+  s_89a704cfae63f5::t_9462b4b352cdc9 898,1019,1226,1229,1234
+  s_89a704cfae63f5::t_1f06d7d7d35a22 1172
+  s_89a704cfae63f5::t_f32dc89b5cb5ca 1176
+  s_89a704cfae63f5::t_efd1abf7474ee8 1194
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8b7109408ad2724915f7b8816197a984beaabad1",
+  "prompts": {},
+  "sessions": {
+    "s_470a2f6e5f0af8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a2ff873261d314507",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
