@@ -1,0 +1,48 @@
+rust/compresso-mcp/tests/tools_mongo.rs
+  s_89a704cfae63f5::t_d3cd5a44c2d398 1-478
+  s_89a704cfae63f5::t_2f56e7b5b9eb88 479-502
+rust/compresso-mcp/src/tools/mongo.rs
+  s_89a704cfae63f5::t_1d598dc615ff85 1-364
+  s_89a704cfae63f5::t_a57b8e42f373a0 365-367
+  s_470a2f6e5f0af8::t_b66c595126f8e0 368-372
+rust/compresso-mcp/src/server.rs
+  s_89a704cfae63f5::t_7a4f2a43f560a8 341,963-1007
+  s_89a704cfae63f5::t_a1e2c37e50bb45 837-850
+  s_89a704cfae63f5::t_0ec1d0026ca28b 893-910,922-924,932-933
+  s_89a704cfae63f5::t_222c613a3d22ad 1297-1340
+  s_89a704cfae63f5::t_05912e28672e0f 339-340
+  s_89a704cfae63f5::t_9d014d17718f3e 892
+  s_89a704cfae63f5::t_4a182cf096b300 1008-1009
+  s_89a704cfae63f5::t_7daee1e1669b00 1341-1342
+  s_470a2f6e5f0af8::t_3b6856f31250af 30,33,213,229,231-232,234,239,252,319-322,366,430,458,503,530-533,570,611,642,674,697,707,739,1026,1424
+rust/compresso-mcp/src/tools/mod.rs
+  s_89a704cfae63f5::t_cbce90c829f996 8,93,113,147-153,163
+rust/compresso-mcp/src/tools/report.rs
+  s_89a704cfae63f5::t_07df9c93460f2c 75-76,217-222
+rust/compresso-mcp/src/lib.rs
+  s_470a2f6e5f0af8::t_b0837085ad5e83 4-5,21-24,26,30-32
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b497ec1418258e78d94be62bfb5e7e304ab4ef77",
+  "prompts": {},
+  "sessions": {
+    "s_470a2f6e5f0af8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a2ff873261d314507",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
