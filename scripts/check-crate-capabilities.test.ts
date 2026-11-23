@@ -294,6 +294,105 @@ test("test_network_through_sql_fails_for_every_other_crate", async () => {
   );
 });
 
+// D117: Tokio's process feature turned on only by the MongoDB driver (without
+// its encryption feature) is not counted for compresso-sql and its two
+// consumers; every other route to it still is.
+// The fixtures' driver is a path crate at 0.0.0; the real pin (crates.io,
+// the locked version) is checked by the run over the real workspace and by
+// the two tests after this one.
+const fixtureDriver = {
+  tokioProcessDriverPin: { source: null, version: "0.0.0" },
+};
+
+test("test_tokio_process_only_from_the_driver_passes", async () => {
+  const result = await checkWorkspace(
+    fixture("allowed-sql-driver-tokio-process"),
+    fixtureDriver,
+  );
+
+  assert.deepEqual(result, { ok: true, checkedCrates: 3, violations: [] });
+});
+
+test("test_a_path_crate_named_like_the_driver_keeps_the_process_capability", async () => {
+  const result = await checkWorkspace(
+    fixture("allowed-sql-driver-tokio-process"),
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(
+    result.violations.join("\n"),
+    /compresso-sql \(database-network\): resolved dependency path compresso-sql -> mongodb -> tokio grants process capability/u,
+  );
+});
+
+test("test_another_driver_version_keeps_the_process_capability", async () => {
+  const result = await checkWorkspace(
+    fixture("allowed-sql-driver-tokio-process"),
+    { tokioProcessDriverPin: { source: null, version: "0.0.1" } },
+  );
+
+  assert.equal(result.ok, false);
+});
+
+test("test_tokio_process_beside_the_driver_still_fails", async () => {
+  const result = await checkWorkspace(
+    fixture("denied-mcp-tokio-process-beside-driver"),
+    fixtureDriver,
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(
+    result.violations.join("\n"),
+    /compresso-mcp \(pure-local\): resolved dependency path compresso-mcp -> compresso-sql -> mongodb -> tokio grants process capability/u,
+  );
+});
+
+test("test_a_tokio_feature_implying_process_beside_the_driver_fails", async () => {
+  const result = await checkWorkspace(
+    fixture("denied-mcp-tokio-full-beside-driver"),
+    fixtureDriver,
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(
+    result.violations.join("\n"),
+    /compresso-mcp \(pure-local\): resolved dependency path compresso-mcp -> compresso-sql -> mongodb -> tokio grants process capability/u,
+  );
+});
+
+test("test_the_driver_encryption_feature_keeps_the_process_capability", async () => {
+  const result = await checkWorkspace(
+    fixture("denied-sql-driver-encryption-process"),
+    fixtureDriver,
+  );
+  const violations = result.violations.join("\n");
+
+  assert.equal(result.ok, false);
+  assert.match(
+    violations,
+    /compresso-sql \(database-network\): resolved dependency path compresso-sql -> mongodb -> tokio grants process capability/u,
+  );
+  assert.match(violations, /compresso-cli \(bounded-local\)/u);
+});
+
+test("test_the_driver_outside_the_database_crate_fails", async () => {
+  const result = await checkWorkspace(
+    fixture("denied-store-process-through-driver"),
+    fixtureDriver,
+  );
+  const violations = result.violations.join("\n");
+
+  assert.equal(result.ok, false);
+  assert.match(
+    violations,
+    /compresso-store \(pure-local\): resolved dependency path compresso-store -> mongodb -> tokio grants process capability/u,
+  );
+  assert.match(
+    violations,
+    /compresso-store \(pure-local\): resolved dependency path compresso-store -> mongodb -> tokio -> socket2 grants network capability/u,
+  );
+});
+
 test("test_network_through_non_member_sql_crate_fails_closed", async () => {
   await assert.rejects(
     checkWorkspace(fixture("denied-mcp-network-through-impostor-sql")),
@@ -334,3 +433,139 @@ test("test_network_through_a_pure_local_crate_enabled_by_sql_fails", async () =>
     /compresso-mcp \(pure-local\): resolved dependency path compresso-mcp -> compresso-core -> foo -> socket2 passes through workspace crate compresso-core/u,
   );
 });
+
+// D117 review: evasions of the lexical source scan, each with the driver
+// exemption in force, so only the scan can catch them. The std cases apply
+// to every crate without process capability (on main too).
+for (const [name, pattern] of [
+  ["denied-sql-glob-tokio-process", /tokio::\* \(glob import\)/u],
+  [
+    "denied-sql-macro-tokio-process",
+    /tokio::\$\.\.\. \(path built by a macro\)/u,
+  ],
+  ["denied-sql-include-outside-src", /include! of \.\.\/\.\.\/\.\.\/x\.rs/u],
+  ["denied-sql-glob-std-process", /std::\* \(glob import\)/u],
+  ["denied-sql-macro-std-process", /std::\$\.\.\. \(path built by a macro\)/u],
+  [
+    "denied-sql-process-reexported-by-driver",
+    /mongodb::process::Command \(a process module of a dependency\)/u,
+  ],
+  [
+    "denied-sql-std-process-reexported-by-dependency",
+    /mongodb::process::Command \(a process module of a dependency\)/u,
+  ],
+] as const) {
+  test(`test_${name.replaceAll("-", "_")}`, async () => {
+    const result = await checkWorkspace(fixture(name), fixtureDriver);
+
+    assert.equal(result.ok, false);
+    assert.match(result.violations.join("\n"), pattern);
+  });
+}
+
+// D117 confirmation round: the evasions a lexical scan missed (each now
+// caught), the layout and lint-level checks that keep Clippy's
+// disallowed-path lints in force, and ordinary code that must still pass.
+for (const [name, pattern] of [
+  ["denied-sql-charlit-hides-process", /tokio::process/u],
+  [
+    "denied-sql-nested-group-process",
+    /tokio::\{\.\.process\.\.\} \(group of tokio\)/u,
+  ],
+  [
+    "denied-sql-leading-colon-group",
+    /tokio::\{\.\.process\.\.\} \(group of tokio\)/u,
+  ],
+  [
+    "denied-sql-extern-alias-group",
+    /tk07::\{\.\.process\.\.\} \(group of tokio\)/u,
+  ],
+  ["denied-sql-colon-alias", /t08::process \(alias of tokio\)/u],
+  ["denied-sql-std-byte-charlit", /std::process/u],
+  ["denied-sql-std-nested-group", /std::\{\.\.process\.\.\} \(group of std\)/u],
+  ["denied-sql-macro-pair", /a macro given tokio and process/u],
+  ["denied-sql-path-attribute", /a #\[path\] module is forbidden/u],
+  [
+    "denied-sql-bin-outside",
+    /target spawn06 at .* is outside the scanned directories/u,
+  ],
+  ["denied-sql-build-script", /a build script .* is forbidden/u],
+  ["denied-sql-clippy-config-missing", /clippy\.toml is missing/u],
+  [
+    "denied-sql-clippy-entry-missing",
+    /clippy\.toml disallowed-methods must list tokio::process::Command::new/u,
+  ],
+  [
+    "denied-sql-lint-allowed",
+    /an attribute lowering clippy::disallowed_methods is forbidden/u,
+  ],
+  [
+    "denied-sql-manifest-lint",
+    /Cargo\.toml lowers clippy::disallowed_methods/u,
+  ],
+] as const) {
+  test(`test_${name.replaceAll("-", "_")}`, async () => {
+    const result = await checkWorkspace(fixture(name), fixtureDriver);
+
+    assert.equal(result.ok, false);
+    assert.match(result.violations.join("\n"), pattern);
+  });
+}
+
+test("test_local_process_modules_lifetimes_and_inert_members_pass", async () => {
+  const result = await checkWorkspace(
+    fixture("allowed-sql-local-process-module"),
+    fixtureDriver,
+  );
+
+  assert.deepEqual(result, { ok: true, checkedCrates: 3, violations: [] });
+});
+
+// D117 second confirmation round: holes that passed both Clippy and the
+// script, each now refused.
+for (const [name, pattern] of [
+  ["denied-sql-ffi-system", /an extern block or ABI is forbidden/u],
+  [
+    "denied-mcp-ffi-spawn",
+    /compresso-mcp .*an extern block or ABI is forbidden/u,
+  ],
+  [
+    "denied-sql-allow-spaced",
+    /an attribute lowering clippy::disallowed_methods is forbidden/u,
+  ],
+  ["denied-sql-allow-macro", /a lint attribute built by a macro is forbidden/u],
+  ["denied-sql-manifest-inline", /Cargo\.toml lowers clippy::style/u],
+  ["denied-sql-manifest-dotted", /Cargo\.toml lowers clippy::style/u],
+  [
+    "denied-cargo-config-env",
+    /\.cargo\/config\.toml sets env\.CLIPPY_CONF_DIR/u,
+  ],
+  [
+    "denied-cargo-config-rustflags",
+    /\.cargo\/config\.toml sets build\.rustflags/u,
+  ],
+  ["denied-sql-raw-identifiers", /process API std::process/u],
+  [
+    "denied-sql-crate-clippy-config",
+    /would replace the workspace clippy\.toml/u,
+  ],
+  [
+    "denied-mcp-unsafe-not-forbidden",
+    /must start with #!\[forbid\(unsafe_code\)\]/u,
+  ],
+  [
+    "denied-sql-unsafe-outside-site",
+    /an attribute lowering unsafe_code is forbidden/u,
+  ],
+  [
+    "denied-mcp-ffi-dependency",
+    /direct dependency libc gives FFI or process access/u,
+  ],
+] as const) {
+  test(`test_${name.replaceAll("-", "_")}`, async () => {
+    const result = await checkWorkspace(fixture(name), fixtureDriver);
+
+    assert.equal(result.ok, false);
+    assert.match(result.violations.join("\n"), pattern);
+  });
+}

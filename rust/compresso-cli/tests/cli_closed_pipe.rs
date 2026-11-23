@@ -7,6 +7,9 @@
 //!
 //! These tests launch the real binary so the failure crosses a real OS pipe:
 //! `EPIPE` on Unix and `ERROR_BROKEN_PIPE` / `ERROR_NO_DATA` on Windows.
+// Integration tests of a bounded-local crate may start processes (the
+// capability matrix); the workspace clippy.toml disallows them elsewhere.
+#![allow(clippy::disallowed_types, clippy::disallowed_methods)]
 
 use std::io::Write;
 use std::path::Path;

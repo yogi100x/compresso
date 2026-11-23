@@ -1,3 +1,7 @@
+// D117: no unsafe code (no FFI process spawning); the capability check
+// requires this line.
+#![forbid(unsafe_code)]
+
 use std::io;
 use std::process::ExitCode;
 

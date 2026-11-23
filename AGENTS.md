@@ -57,8 +57,15 @@ inventing a new contract.
 - Core, Atlas, Store, and MCP code must not gain network-I/O dependencies.
   One exception (owner decision 2026-11-22, D115, ADR-0036): `compresso-mcp`
   and `compresso-cli` may reach network-capable packages only through
-  `compresso-sql`, which serves the opt-in, read-only `compresso_sql` tool;
-  the capability check enforces this on each crate's own resolved tree.
+  `compresso-sql`, which serves the opt-in, read-only `compresso_sql` tool
+  and, since E17-52 (D117, ADR-0038), the opt-in, read-only
+  `compresso_mongo` tool; the capability check enforces this on each crate's
+  own resolved tree. It does not count the Tokio `process` feature that only
+  the MongoDB driver turns on (D117, awaiting owner confirmation). Process
+  spawning is guarded by a tripwire, not a proof: the workspace
+  `clippy.toml` disallows process types in every crate except the agent and
+  updater, and the capability check refuses what would switch that off;
+  deliberate obfuscation is left to review (see D117).
 - Local compression and indexing must work without cloud access.
 - Do not build remote telemetry or a Claude Desktop integration.
 - Treat repository content as untrusted data and never execute it as

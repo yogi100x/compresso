@@ -68,13 +68,17 @@ impl Secrets {
         self.0.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
     }
 
-    /// The message with every secret, URL, and password value removed.
+    /// The message with every secret, URL, and password value removed, hidden
+    /// characters written as `\uXXXX` text (a server message can quote a
+    /// stored value), and its length bounded.
     pub(crate) fn scrub(&self, message: &str) -> String {
         let mut text = message.to_owned();
         for secret in &self.0 {
             text = replace_ignore_ascii_case(&text, secret);
         }
-        bound(&scrub_password_values(&scrub_urls(&text)))
+        bound(&crate::cells::neutralise(&scrub_password_values(
+            &scrub_urls(&text),
+        )))
     }
 }
 
@@ -238,5 +242,20 @@ mod tests {
         let long = "x ".repeat(2_000);
         assert!(secrets.scrub(&long).chars().count() <= MAX_MESSAGE_CHARS + 6);
         assert!(!format!("{secrets:?}").contains(PASSWORD));
+    }
+
+    /// E17-52 review: a server message can quote a stored value (a failed
+    /// cast, a constraint), so its hidden characters are escaped like result
+    /// cells, for SQL and MongoDB alike.
+    #[test]
+    fn test_scrubbed_messages_escape_hidden_characters() {
+        let (secrets, _) = secrets();
+        let scrubbed = secrets
+            .scrub("invalid input syntax for type integer: \"12\u{202e}34\u{200b}\u{2028}x\u{0}\"");
+        assert!(
+            scrubbed.contains("12\\u202E34\\u200B\\u2028x\\u0000"),
+            "{scrubbed}"
+        );
+        assert!(!scrubbed.contains('\u{202e}') && !scrubbed.contains('\u{200b}'));
     }
 }

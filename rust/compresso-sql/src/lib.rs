@@ -15,12 +15,21 @@
 //! [`gate::check_statement`] first. The [`Connector`] trait is the seam a
 //! later non-SQL store plugs into without reshaping the crate.
 //!
+//! The [`mongo`] module serves the separate, operator-enabled
+//! `compresso_mongo` tool (E17-52, D117, ADR-0038) from this same crate, so
+//! the capability check still names one crate as the only network path.
+//!
 //! Secrets: the URL and its parts never leave this crate except inside the
 //! driver. Errors carry a fixed code and an engine message with every URL
 //! component scrubbed, and no type here prints the URL through `Debug`.
 
+// D117: unsafe code only at the one allowed site in `sqlite.rs` (SQLite's
+// memory counter); the capability check pins it.
+#![deny(unsafe_code)]
+
 mod cells;
 pub mod gate;
+pub mod mongo;
 mod network;
 mod redact;
 mod sqlite;

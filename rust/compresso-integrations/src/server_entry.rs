@@ -108,12 +108,37 @@ pub(crate) fn with_sql_env(mut args: Vec<String>, name: &str) -> Vec<String> {
     args
 }
 
+/// Flag that enables the opt-in `compresso_mongo` tool (E17-52, D117); its
+/// value names the environment variable holding the server URL.
+pub(crate) const MONGO_ENV_FLAG: &str = "--mongo-env";
+const MONGO_ENV_PREFIX: &str = "COMPRESSO_MONGO_";
+
+/// Whether `name` is an acceptable `--mongo-env` variable name:
+/// `COMPRESSO_MONGO_` and at least one of `A-Z`, `0-9`, `_` (the same rule
+/// the server applies).
+pub fn is_mongo_env_name(name: &str) -> bool {
+    name.strip_prefix(MONGO_ENV_PREFIX).is_some_and(|rest| {
+        !rest.is_empty()
+            && rest
+                .bytes()
+                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+    })
+}
+
+/// Appends `--mongo-env NAME` to adapter-written base arguments, after any
+/// `--sql-env NAME` and before any recall source.
+pub(crate) fn with_mongo_env(mut args: Vec<String>, name: &str) -> Vec<String> {
+    args.extend([MONGO_ENV_FLAG.to_owned(), name.to_owned()]);
+    args
+}
+
 /// Whether `args` is `base`, optionally followed (Claude Code only) by the
 /// main-session profile `--tools lean --session-tools`, optionally followed
-/// by `--edits`, optionally followed by `--sql-env NAME` (a valid name; never
-/// with the lean profile, which refuses it), optionally followed by
-/// `client`'s own recall source, in that canonical order. Another client's
-/// source, a repeated flag, or any other argument never matches.
+/// by `--edits`, optionally followed by `--sql-env NAME` and then by
+/// `--mongo-env NAME` (valid names; never with the lean profile, which
+/// refuses both), optionally followed by `client`'s own recall source, in
+/// that canonical order. Another client's source, a repeated flag, or any
+/// other argument never matches.
 pub(crate) fn is_adapter_args(args: &[String], base: &[String], client: &str) -> bool {
     let Some(mut rest) = args.strip_prefix(base) else {
         return false;
@@ -141,7 +166,22 @@ pub(crate) fn is_adapter_args(args: &[String], base: &[String], client: &str) ->
     {
         rest = tail;
     }
+    if let [flag, name, tail @ ..] = rest
+        && flag == MONGO_ENV_FLAG
+        && is_mongo_env_name(name)
+        && !lean
+    {
+        rest = tail;
+    }
     rest.is_empty() || rest == with_recall_source(Vec::new(), client).as_slice()
+}
+
+/// The `--mongo-env` variable name adapter-shaped server arguments carry, if
+/// any.
+pub fn server_mongo_env(args: &[String]) -> Option<&str> {
+    args.windows(2)
+        .find(|pair| pair[0] == MONGO_ENV_FLAG && is_mongo_env_name(&pair[1]))
+        .map(|pair| pair[1].as_str())
 }
 
 /// The `--sql-env` variable name adapter-shaped server arguments carry, if
@@ -679,6 +719,46 @@ mod tests {
             .chain([SQL_ENV_FLAG.to_owned()])
             .collect::<Vec<_>>();
         assert!(!is_adapter_args(&missing_value, &serve_args(), "codex"));
+    }
+
+    #[test]
+    fn test_a_mongo_env_entry_is_exact_only_in_canonical_order_with_a_valid_name() {
+        let name = "COMPRESSO_MONGO_MAIN";
+        let sql = "COMPRESSO_SQL_MAIN";
+        let mongo = with_mongo_env(serve_args(), name);
+        assert!(is_adapter_args(&mongo, &serve_args(), "codex"));
+        assert_eq!(server_mongo_env(&mongo), Some(name));
+        assert_eq!(server_mongo_env(&serve_args()), None);
+        assert_eq!(server_sql_env(&mongo), None);
+        let full = with_recall_source(
+            with_mongo_env(with_sql_env(with_edits(serve_args()), sql), name),
+            "claude-code",
+        );
+        assert!(is_adapter_args(&full, &serve_args(), "claude-code"));
+        assert_eq!(server_sql_env(&full), Some(sql));
+        assert_eq!(server_mongo_env(&full), Some(name));
+        // Out of order, repeated, or with an invalid name: not adapter-written.
+        let swapped = with_sql_env(with_mongo_env(serve_args(), name), sql);
+        assert!(!is_adapter_args(&swapped, &serve_args(), "codex"));
+        let twice = with_mongo_env(mongo.clone(), name);
+        assert!(!is_adapter_args(&twice, &serve_args(), "codex"));
+        let mut after_recall = with_recall_source(serve_args(), "codex");
+        after_recall.extend([MONGO_ENV_FLAG.to_owned(), name.to_owned()]);
+        assert!(!is_adapter_args(&after_recall, &serve_args(), "codex"));
+        for invalid in [
+            "MONGO_URL",
+            "COMPRESSO_MONGO_",
+            "COMPRESSO_MONGO_a",
+            "COMPRESSO_SQL_MAIN",
+            "--edits",
+        ] {
+            let entry = with_mongo_env(serve_args(), invalid);
+            assert!(
+                !is_adapter_args(&entry, &serve_args(), "codex"),
+                "{invalid}"
+            );
+            assert_eq!(server_mongo_env(&entry), None);
+        }
     }
 
     #[test]

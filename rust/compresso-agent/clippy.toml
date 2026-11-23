@@ -1,0 +1,2 @@
+# E17-52 (D117): this crate may start processes (capability class supervisor);
+# it replaces the workspace clippy.toml, which disallows process spawning.

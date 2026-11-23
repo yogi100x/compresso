@@ -64,9 +64,9 @@ pub use receipt::{
     RECEIPT_SCHEMA_VERSION, ReceiptError, ReceiptStore,
 };
 pub use server_entry::{
-    ConfiguredServer, is_sql_env_name, read_configured_server, recall_source_for_client,
-    receipt_authenticates_server, server_enables_edits, server_recall_source,
-    server_serves_lean_session, server_sql_env,
+    ConfiguredServer, is_mongo_env_name, is_sql_env_name, read_configured_server,
+    recall_source_for_client, receipt_authenticates_server, server_enables_edits, server_mongo_env,
+    server_recall_source, server_serves_lean_session, server_sql_env,
 };
 pub use session_commands::{SESSION_COMMANDS, SESSION_COMMANDS_SKILL, SessionCommandsIntegration};
 

@@ -11,7 +11,8 @@ use serde_json::{Map, Value, json};
 
 use crate::plan::MutationRequest;
 use crate::server_entry::{
-    is_adapter_args, with_edits, with_lean_session, with_recall_source, with_sql_env,
+    is_adapter_args, with_edits, with_lean_session, with_mongo_env, with_recall_source,
+    with_sql_env,
 };
 use crate::text_fidelity::strip_bom;
 use crate::{
@@ -80,9 +81,13 @@ pub struct ClaudeCodeIntegration {
     edits: bool,
     /// Install an entry that starts `mcp serve --sql-env NAME` (E17-50, D115).
     sql_env: Option<String>,
+    /// Install an entry that starts `mcp serve --mongo-env NAME` (E17-52,
+    /// D117).
+    mongo_env: Option<String>,
     /// Install the main-session profile `--tools lean --session-tools`
-    /// (E17-51, D116), unless `sql_env` is set: the lean profile never
-    /// serves the SQL tool, so such an entry keeps the full profile.
+    /// (E17-51, D116), unless `sql_env` or `mongo_env` is set: the lean
+    /// profile never serves the database tools, so such an entry keeps the
+    /// full profile.
     lean_session: bool,
 }
 
@@ -95,6 +100,7 @@ impl ClaudeCodeIntegration {
             compresso_version: env!("CARGO_PKG_VERSION").to_owned(),
             edits: false,
             sql_env: None,
+            mongo_env: None,
             lean_session: false,
         }
     }
@@ -115,10 +121,19 @@ impl ClaudeCodeIntegration {
         self
     }
 
+    /// Makes install write an entry that also serves the opt-in MongoDB
+    /// tool, reading its server URL from the variable `name` at server
+    /// start. The configuration stores only the name.
+    pub fn with_mongo_env(mut self, name: Option<String>) -> Self {
+        self.mongo_env = name;
+        self
+    }
+
     /// Makes install write the main-session profile (`--tools lean
     /// --session-tools`, E17-51) that the default main-session agent is
-    /// measured with. Ignored when `--sql-env` is set (the entry then keeps
-    /// the full profile). Verify, status, and uninstall accept either entry.
+    /// measured with. Ignored when `--sql-env` or `--mongo-env` is set (the
+    /// entry then keeps the full profile). Verify, status, and uninstall
+    /// accept either entry.
     pub fn with_lean_session(mut self, lean_session: bool) -> Self {
         self.lean_session = lean_session;
         self
@@ -126,7 +141,7 @@ impl ClaudeCodeIntegration {
 
     /// Whether install writes the main-session profile.
     pub fn writes_lean_session(&self) -> bool {
-        self.lean_session && self.sql_env.is_none()
+        self.lean_session && self.sql_env.is_none() && self.mongo_env.is_none()
     }
 
     /// Overrides the receipt version, primarily for deterministic embedders.
@@ -227,6 +242,12 @@ impl Integration for ClaudeCodeIntegration {
             args = with_sql_env(args, name);
             warnings.push(format!(
                 "compresso_sql reads its database URL from {name} when Claude Code starts the server; set {name} in the environment Claude Code runs in (the configuration stores only the name, never the URL), then restart Claude Code"
+            ));
+        }
+        if let Some(name) = &self.mongo_env {
+            args = with_mongo_env(args, name);
+            warnings.push(format!(
+                "compresso_mongo reads its server URL from {name} when Claude Code starts the server; set {name} in the environment Claude Code runs in (the configuration stores only the name, never the URL), then restart Claude Code"
             ));
         }
         if context.session_recall {

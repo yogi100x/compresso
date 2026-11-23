@@ -1,0 +1,8 @@
+[package]
+name = "compresso-sql"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+tokio = { path = "../../deps/tokio", features = ["net"] }
+mongodb = { path = "../../deps/mongodb" }

@@ -1,5 +1,50 @@
 #!/usr/bin/env node
 
+/**
+ * Capability boundaries per workspace crate: manifests, each member's own
+ * resolved dependency tree, a lexical scan of the crate's Rust sources, and
+ * the process tripwire (D117).
+ *
+ * What the process check is: a tripwire against introducing process
+ * spawning by accident or casually. It is enforced by name-resolved lints
+ * (a workspace `clippy.toml` disallowing the std and Tokio process types and
+ * `Command::new`, which CI's `cargo clippy -D warnings` applies to every
+ * crate except the two whose class may start processes) plus structural
+ * checks here: the configuration and every entry are present (parsed as
+ * TOML); no crate-level `clippy.toml` replaces it; no attribute (tokenised,
+ * `cfg_attr` and macro-built ones included), manifest `[lints]` table, or
+ * `.cargo/config` lowers those lints, `warnings`, or `unsafe_code`, except
+ * the process lints in the files the matrix already lets start a process;
+ * `compresso-mcp` and `compresso-cli` forbid `unsafe` code and
+ * `compresso-sql` denies it outside one pinned site; no extern block or FFI
+ * attribute, and no direct FFI or process dependency beyond those on main
+ * (`libc` in `compresso-atlas`, `windows-sys` in `compresso-integrations`),
+ * in a crate that may not start processes; no `#[path]` module, build
+ * script, or target outside the scanned folders.
+ *
+ * What it is not: proof against a contributor deliberately obfuscating
+ * code, against what a dependency does inside its own functions, or against
+ * code expanded from another crate's macro. Review remains the control for
+ * those. Known residual evasions: a dependency that spawns or calls FFI on
+ * the crate's behalf (including one that re-exports a process API under
+ * another name); a procedural or declarative macro from another crate that
+ * emits process or `unsafe` code (Clippy does not lint external macro
+ * expansions); lint or flag overrides outside the repository (user-level
+ * `~/.cargo/config.toml`, `RUSTFLAGS` or `CLIPPY_CONF_DIR` set in the CI
+ * environment); a crate whose class may start processes; and Clippy not
+ * being run at all.
+ *
+ * The lexical scan is the only source check for network APIs and a
+ * secondary one for process APIs. It reads text, not resolved names: it
+ * blanks comments, strings, and character literals, removes raw-identifier
+ * prefixes, and refuses direct paths, groups (nested too), leading `::`,
+ * aliases, glob imports, macro-built paths under `std`, `tokio`,
+ * `async_std`, and `smol`, a macro given a root and a member as neighbouring
+ * tokens, `include!` outside the crate's sources, and
+ * `<dependency>::process::<member>` paths. A macro assembling a path some
+ * other way, or a dependency's re-export under another name, evades it.
+ */
+
 import { execFile } from "node:child_process";
 import type { Dirent } from "node:fs";
 import {
@@ -48,6 +93,7 @@ type CargoTarget = {
 type CargoPackage = {
   id: string;
   name: string;
+  version: string;
   source?: string | null;
   manifest_path: string;
   dependencies: CargoDependency[];
@@ -380,17 +426,21 @@ async function cargoMetadata(manifestPath: string, resolved: boolean) {
 }
 
 function stripRustCommentsAndStrings(source: string) {
-  const output = [...source];
+  // Works on code points, so a character outside the Basic Multilingual
+  // Plane cannot shift later positions.
+  const chars = [...source];
+  const output = [...chars];
+  const ahead = (index: number, length: number) =>
+    chars.slice(index, index + length).join("");
   let blockDepth = 0;
   let inLineComment = false;
   let inString = false;
   let escaped = false;
   let rawTerminator: string | undefined;
 
-  for (let index = 0; index < source.length; index += 1) {
-    const rest = source.slice(index);
-    const character = source[index];
-    const next = source[index + 1];
+  for (let index = 0; index < chars.length; index += 1) {
+    const character = chars[index];
+    const next = chars[index + 1];
 
     if (inLineComment) {
       if (character === "\n") {
@@ -417,7 +467,7 @@ function stripRustCommentsAndStrings(source: string) {
 
     if (rawTerminator) {
       output[index] = " ";
-      if (rest.startsWith(rawTerminator)) {
+      if (ahead(index, rawTerminator.length) === rawTerminator) {
         for (let offset = 1; offset < rawTerminator.length; offset += 1) {
           output[index + offset] = " ";
         }
@@ -433,9 +483,6 @@ function stripRustCommentsAndStrings(source: string) {
         inString = false;
       }
       escaped = character === "\\" && !escaped;
-      if (character !== "\\") {
-        escaped = false;
-      }
       continue;
     }
 
@@ -454,13 +501,33 @@ function stripRustCommentsAndStrings(source: string) {
       continue;
     }
 
-    const rawStart = rest.match(/^(?:br|r)(#*)"/u);
+    const previous = chars[index - 1] ?? " ";
+    const startsToken = !/[A-Za-z0-9_]/u.test(previous);
+    const window = ahead(index, 300);
+    const rawStart = startsToken ? window.match(/^(?:br|cr|r)(#*)"/u) : null;
     if (rawStart) {
-      for (let offset = 0; offset < rawStart[0].length; offset += 1) {
+      const length = [...rawStart[0]].length;
+      for (let offset = 0; offset < length; offset += 1) {
         output[index + offset] = " ";
       }
-      index += rawStart[0].length - 1;
+      index += length - 1;
       rawTerminator = `"${rawStart[1]}`;
+      continue;
+    }
+
+    // Character and byte literals ('"', b'"', '\'', '\u{..}'), so a quote
+    // inside one cannot open a string; a lifetime ('a) is left alone.
+    const literal = startsToken
+      ? window.match(
+          /^b?'(?:\\(?:x[0-9A-Fa-f]{2}|u\{[0-9A-Fa-f]{1,6}\}|[^\n])|[^\\'\n])'/u,
+        )
+      : null;
+    if (literal) {
+      const length = [...literal[0]].length;
+      for (let offset = 0; offset < length; offset += 1) {
+        output[index + offset] = " ";
+      }
+      index += length - 1;
       continue;
     }
 
@@ -473,7 +540,10 @@ function stripRustCommentsAndStrings(source: string) {
   return output.join("");
 }
 
-function sourceCapabilityUses(source: string) {
+function sourceCapabilityUses(
+  source: string,
+  dependencyRoots: Set<string> = new Set(),
+) {
   const uses = stdProcessCapabilityUses(source);
 
   for (const path of sourceCapabilityPaths) {
@@ -530,7 +600,655 @@ function sourceCapabilityUses(source: string) {
     }
   }
 
+  // D117 review: forms a lexical scan cannot follow are refused outright.
+  // A glob import of a capability root brings `process` or `net` into scope
+  // under a bare name; a macro that builds a path under such a root can name
+  // any member.
+  for (const root of capabilityRoots) {
+    const escaped = regexEscape(root.name);
+    const glob = new RegExp(
+      `\\buse\\s+(?:::\\s*)?${escaped}\\s*::\\s*(?:\\*|\\{[^}]*\\*)`,
+      "u",
+    );
+    const macroPath = new RegExp(`\\b${escaped}\\s*::\\s*\\$`, "u");
+    for (const capability of root.capabilities) {
+      if (glob.test(source)) {
+        uses.push({ capability, label: `${root.name}::* (glob import)` });
+      }
+      if (macroPath.test(source)) {
+        uses.push({
+          capability,
+          label: `${root.name}::$... (path built by a macro)`,
+        });
+      }
+    }
+  }
+  // Groups (nested ones too, up to the end of the `use` statement), a
+  // leading `::`, aliases made by `use ROOT as x` or `extern crate ROOT as
+  // x` and then used in a group, and a macro given both the root and the
+  // member as tokens (`m!(tokio, process)`).
+  const memberNames: Record<string, Capability> = {
+    net: "network",
+    process: "process",
+  };
+  for (const root of capabilityRoots) {
+    const escaped = regexEscape(root.name);
+    const aliases = new Set<string>([root.name]);
+    for (const match of source.matchAll(
+      new RegExp(
+        `\\b(?:use\\s+(?:::\\s*)?${escaped}|extern\\s+crate\\s+${escaped})\\s+as\\s+([A-Za-z_][A-Za-z0-9_]*)`,
+        "gu",
+      ),
+    )) {
+      aliases.add(match[1]);
+    }
+    for (const match of source.matchAll(
+      new RegExp(
+        `\\buse\\s+(?:::\\s*)?${escaped}\\s*::\\s*\\{[^;]*\\bself\\s+as\\s+([A-Za-z_][A-Za-z0-9_]*)`,
+        "gu",
+      ),
+    )) {
+      aliases.add(match[1]);
+    }
+    for (const [member, capability] of Object.entries(memberNames)) {
+      if (!root.capabilities.includes(capability)) {
+        continue;
+      }
+      for (const alias of aliases) {
+        const group = new RegExp(
+          `\\buse\\s+(?:::\\s*)?${regexEscape(alias)}\\s*::\\s*\\{([^;]*)`,
+          "gu",
+        );
+        for (const match of source.matchAll(group)) {
+          if (
+            groupReaches(
+              match[1],
+              member,
+              root.name === "std" && member === "process",
+            )
+          ) {
+            uses.push({
+              capability,
+              label: `${alias}::{..${member}..} (group of ${root.name})`,
+            });
+          }
+        }
+        if (alias !== root.name) {
+          const direct = new RegExp(
+            `(?:^|[^A-Za-z0-9_])(?:::\\s*)?${regexEscape(alias)}\\s*::\\s*${member}\\b`,
+            "u",
+          );
+          if (direct.test(source)) {
+            uses.push({
+              capability,
+              label: `${alias}::${member} (alias of ${root.name})`,
+            });
+          }
+        }
+      }
+      // A macro given the root and the member as neighbouring bare tokens
+      // (`m!(tokio, process)`, either order); other spellings are left to
+      // Clippy (see the file header).
+      const pair = new RegExp(
+        `!\\s*[([{][^;]*?(?:\\b${escaped}\\s*,\\s*${member}\\b|\\b${member}\\s*,\\s*${escaped}\\b)`,
+        "u",
+      );
+      if (pair.test(source)) {
+        uses.push({
+          capability,
+          label: `a macro given ${root.name} and ${member}`,
+        });
+      }
+    }
+  }
+  // `std::os::<platform>::process` (process extension traits).
+  if (
+    /\bstd\s*::\s*os\s*::\s*[A-Za-z_][A-Za-z0-9_]*\s*::\s*process\b/u.test(
+      source,
+    )
+  ) {
+    uses.push({ capability: "process", label: "std::os::<platform>::process" });
+  }
+  // A `process` module of a dependency (one it re-exports) counts as
+  // process use unless the member is inert. Local modules named `process`
+  // (`crate::process`, `jobs::process`) are not dependencies and pass.
+  for (const match of source.matchAll(
+    /(?:^|[^A-Za-z0-9_:])(?:::\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*::\s*process\s*::\s*([A-Za-z_][A-Za-z0-9_]*)/gu,
+  )) {
+    if (
+      match[1] !== "std" &&
+      dependencyRoots.has(match[1]) &&
+      !inertStdProcessMembers.has(match[2])
+    ) {
+      uses.push({
+        capability: "process",
+        label: `${match[1]}::process::${match[2]} (a process module of a dependency)`,
+      });
+    }
+  }
+
   return uses;
+}
+
+/**
+ * Whether the inside of a `use ROOT::{...}` group reaches `member`. For
+ * `std::process` the inert members alone (`ExitCode`, `id`) do not count.
+ */
+function groupReaches(group: string, member: string, inertAllowed: boolean) {
+  for (const match of group.matchAll(
+    new RegExp(
+      `\\b${member}\\b(\\s*::\\s*(?:([A-Za-z_][A-Za-z0-9_]*)|\\{([^}]*)\\}))?`,
+      "gu",
+    ),
+  )) {
+    if (!inertAllowed) {
+      return true;
+    }
+    const single = match[2];
+    const list = match[3];
+    if (single && inertStdProcessMembers.has(single)) {
+      continue;
+    }
+    if (
+      list
+        ?.split(",")
+        .map((item) => item.trim().split(/\s+/u)[0])
+        .filter((item) => item.length > 0)
+        .every((item) => inertStdProcessMembers.has(item))
+    ) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+/**
+ * The process tripwire (D117). A workspace `clippy.toml` disallows the std
+ * and Tokio process types and `Command::new` for every crate; Clippy
+ * resolves those paths after name resolution and CI runs it with
+ * `-D warnings`. Only crates whose class may start processes (agent,
+ * updater) may carry their own `clippy.toml`; a lint `allow` for those paths
+ * is accepted only in the files the matrix already lets start a process
+ * (`sanctionedProcessSources` and bounded-local integration tests). The
+ * script also refuses manifest `[lints]` and `.cargo/config` settings that
+ * lower the lints, `unsafe` code outside one pinned site, FFI blocks and
+ * attributes, and direct dependencies on process or FFI crates. It is a
+ * tripwire against introducing process spawning by accident or casually; it
+ * is not proof against deliberate obfuscation (see the file header).
+ */
+const requiredClippyPaths = {
+  "disallowed-types": [
+    "std::process::Command",
+    "std::process::Child",
+    "tokio::process::Command",
+    "tokio::process::Child",
+  ],
+  "disallowed-methods": [
+    "std::process::Command::new",
+    "tokio::process::Command::new",
+  ],
+};
+/** Lints whose lowering would switch the tripwire off. */
+const guardedLints = new Set([
+  "clippy::disallowed_types",
+  "clippy::disallowed_methods",
+  "clippy::disallowed_macros",
+  "clippy::all",
+  "clippy::style",
+  "warnings",
+  "unsafe_code",
+]);
+/** Lints the sanctioned process files may allow. */
+const sanctionedProcessLints = new Set([
+  "clippy::disallowed_types",
+  "clippy::disallowed_methods",
+]);
+/** The one `unsafe` site allowed (SQLite's memory counter). */
+const unsafeSites = new Map<string, string>([
+  ["compresso-sql", "src/sqlite.rs"],
+]);
+/** Crate roots that must carry `#![forbid(unsafe_code)]` or `deny`. */
+const unsafeDenied = new Map<string, "forbid" | "deny">([
+  ["compresso-mcp", "forbid"],
+  ["compresso-cli", "forbid"],
+  ["compresso-sql", "deny"],
+]);
+/** Direct dependencies that give FFI or process access, and where they were
+ * already present on main. */
+const ffiDependencies = new Set([
+  "libc",
+  "nix",
+  "rustix",
+  "windows-sys",
+  "winapi",
+  "command-group",
+  "duct",
+  "subprocess",
+  "process-wrap",
+  "shared_child",
+  "async-process",
+]);
+const ffiDependencyAllowances = new Map<string, string[]>([
+  ["compresso-atlas", ["libc"]],
+  ["compresso-integrations", ["windows-sys"]],
+]);
+
+/** Parses a TOML file through Python's `tomllib` (no text matching). */
+async function parseToml(
+  path: string,
+): Promise<Record<string, unknown> | undefined> {
+  try {
+    await stat(path);
+  } catch {
+    return undefined;
+  }
+  const { stdout } = await execFileAsync(
+    "python3",
+    [
+      "-I",
+      "-c",
+      "import json,sys,tomllib; print(json.dumps(tomllib.load(open(sys.argv[1],'rb')), default=str))",
+      path,
+    ],
+    { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+  );
+  return JSON.parse(stdout) as Record<string, unknown>;
+}
+
+function clippyPaths(config: Record<string, unknown>, key: string) {
+  const entries = Array.isArray(config[key]) ? (config[key] as unknown[]) : [];
+  return new Set(
+    entries
+      .map((entry) =>
+        typeof entry === "string"
+          ? entry
+          : typeof entry === "object" && entry !== null
+            ? (entry as { path?: unknown }).path
+            : undefined,
+      )
+      .filter((path): path is string => typeof path === "string"),
+  );
+}
+
+/** Attribute bodies (`#[...]`, `#![...]`) with whitespace removed. */
+function attributeBodies(strippedSource: string) {
+  const bodies: Array<{ inner: boolean; body: string }> = [];
+  const opener = /#\s*(!?)\s*\[/gu;
+  for (const match of strippedSource.matchAll(opener)) {
+    let depth = 1;
+    let index = (match.index ?? 0) + match[0].length;
+    const start = index;
+    while (index < strippedSource.length && depth > 0) {
+      const character = strippedSource[index];
+      if (character === "[") depth += 1;
+      if (character === "]") depth -= 1;
+      index += 1;
+    }
+    bodies.push({
+      inner: match[1] === "!",
+      body: strippedSource.slice(start, index - 1).replace(/\s+/gu, ""),
+    });
+  }
+  return bodies;
+}
+
+/** Lints an attribute body lowers (`allow`, `expect`, `warn`, in
+ * `cfg_attr` too), and whether it builds a lint name from a macro. */
+function loweredLints(body: string) {
+  const lints: string[] = [];
+  let built = body.startsWith("$");
+  for (const match of body.matchAll(
+    /(?:^|[(,])(?:allow|expect|warn)\(([^()]*)\)/gu,
+  )) {
+    for (const lint of match[1].split(",").filter((lint) => lint.length > 0)) {
+      if (lint.includes("$")) {
+        built = true;
+      }
+      lints.push(lint);
+    }
+  }
+  return { lints, built };
+}
+
+async function allRustFiles(root: string) {
+  const files: string[] = [];
+  async function visit(directory: string) {
+    let entries: Dirent[];
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.name === "target" || entry.name === "node_modules") {
+        continue;
+      }
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(path);
+      } else if (entry.isFile() && entry.name.endsWith(".rs")) {
+        files.push(path);
+      }
+    }
+  }
+  await visit(root);
+  return files.sort();
+}
+
+/** Lint levels a manifest's `[lints]` or `[workspace.lints]` lowers. */
+function manifestLowering(manifest: Record<string, unknown>) {
+  const tables: unknown[] = [
+    manifest.lints,
+    (manifest.workspace as Record<string, unknown> | undefined)?.lints,
+  ];
+  const lowered: string[] = [];
+  for (const table of tables) {
+    if (typeof table !== "object" || table === null) {
+      continue;
+    }
+    for (const [tool, lints] of Object.entries(
+      table as Record<string, unknown>,
+    )) {
+      if (typeof lints !== "object" || lints === null) {
+        continue;
+      }
+      for (const [name, setting] of Object.entries(
+        lints as Record<string, unknown>,
+      )) {
+        const level =
+          typeof setting === "string"
+            ? setting
+            : (setting as { level?: unknown } | null)?.level;
+        const full = tool === "rust" ? name : `${tool}::${name}`;
+        if (guardedLints.has(full.replaceAll("-", "_")) && level === "allow") {
+          lowered.push(full);
+        }
+      }
+    }
+  }
+  return lowered;
+}
+
+/** Settings in a `.cargo/config` that could weaken the lints. */
+function cargoConfigProblems(config: Record<string, unknown>) {
+  const problems: string[] = [];
+  const build = config.build as Record<string, unknown> | undefined;
+  if (build && ("rustflags" in build || "rustdocflags" in build)) {
+    problems.push("build.rustflags");
+  }
+  const target = config.target as
+    | Record<string, Record<string, unknown>>
+    | undefined;
+  for (const [name, settings] of Object.entries(target ?? {})) {
+    if (
+      typeof settings === "object" &&
+      settings !== null &&
+      "rustflags" in settings
+    ) {
+      problems.push(`target.${name}.rustflags`);
+    }
+  }
+  for (const name of Object.keys(
+    (config.env as Record<string, unknown>) ?? {},
+  )) {
+    if (
+      /^(CLIPPY|RUSTFLAGS|CARGO_ENCODED_RUSTFLAGS|CARGO_BUILD_RUSTFLAGS|RUSTC)/u.test(
+        name,
+      )
+    ) {
+      problems.push(`env.${name}`);
+    }
+  }
+  const alias = config.alias as Record<string, unknown> | undefined;
+  if (alias && "clippy" in alias) {
+    problems.push("alias.clippy");
+  }
+  return problems;
+}
+
+/** The workspace-level tripwire checks (once per workspace). */
+async function workspaceTripwireViolations(workspaceRoot: string) {
+  const violations: string[] = [];
+  const config = await parseToml(join(workspaceRoot, "clippy.toml"));
+  if (!config) {
+    violations.push(
+      "workspace: clippy.toml is missing; it must disallow the std and Tokio process types and Command::new",
+    );
+  } else {
+    for (const [key, paths] of Object.entries(requiredClippyPaths)) {
+      const present = clippyPaths(config, key);
+      for (const path of paths) {
+        if (!present.has(path)) {
+          violations.push(`workspace: clippy.toml ${key} must list ${path}`);
+        }
+      }
+    }
+  }
+  try {
+    await stat(join(workspaceRoot, ".clippy.toml"));
+    violations.push("workspace: .clippy.toml must not exist");
+  } catch {
+    // Absent, as required.
+  }
+  const manifest = await parseToml(join(workspaceRoot, "Cargo.toml"));
+  for (const lint of manifest ? manifestLowering(manifest) : []) {
+    violations.push(`workspace: Cargo.toml lowers ${lint}`);
+  }
+  for (const name of ["config.toml", "config"]) {
+    const cargoConfig = await parseToml(join(workspaceRoot, ".cargo", name));
+    for (const problem of cargoConfig ? cargoConfigProblems(cargoConfig) : []) {
+      violations.push(`workspace: .cargo/${name} sets ${problem}`);
+    }
+  }
+  return violations;
+}
+
+/** The per-crate tripwire checks. */
+async function crateTripwireViolations(
+  pkg: CargoPackage,
+  className: CapabilityClassName,
+  crateRoot: string,
+  workspaceRoot: string,
+  sanctioned: Set<string>,
+) {
+  const violations: string[] = [];
+  const mayStartProcesses = capabilityClasses[className].process;
+  // Clippy uses the nearest clippy.toml, from the crate up to the
+  // workspace: none may sit in between for a crate that may not spawn.
+  if (!mayStartProcesses) {
+    let directory = crateRoot;
+    while (directory.startsWith(workspaceRoot) && directory !== workspaceRoot) {
+      for (const name of ["clippy.toml", ".clippy.toml"]) {
+        try {
+          await stat(join(directory, name));
+          violations.push(
+            `${join(directory, name)} would replace the workspace clippy.toml`,
+          );
+        } catch {
+          // Absent, as required.
+        }
+      }
+      for (const name of ["config.toml", "config"]) {
+        const cargoConfig = await parseToml(join(directory, ".cargo", name));
+        for (const problem of cargoConfig
+          ? cargoConfigProblems(cargoConfig)
+          : []) {
+          violations.push(`${join(directory, ".cargo", name)} sets ${problem}`);
+        }
+      }
+      directory = dirname(directory);
+    }
+  }
+  const manifest = await parseToml(pkg.manifest_path);
+  for (const lint of manifest ? manifestLowering(manifest) : []) {
+    violations.push(`Cargo.toml lowers ${lint}`);
+  }
+  if (!mayStartProcesses) {
+    const allowed = ffiDependencyAllowances.get(pkg.name) ?? [];
+    for (const dependency of pkg.dependencies) {
+      if (
+        ffiDependencies.has(dependency.name) &&
+        !allowed.includes(dependency.name)
+      ) {
+        violations.push(
+          `direct dependency ${dependency.name} gives FFI or process access`,
+        );
+      }
+    }
+  }
+  const unsafeSite = unsafeSites.get(pkg.name);
+  let unsafeAllowances = 0;
+  for (const file of await allRustFiles(crateRoot)) {
+    const stripped = stripRustCommentsAndStrings(await readFile(file, "utf8"));
+    for (const { body } of attributeBodies(stripped)) {
+      const { lints, built } = loweredLints(body);
+      if (built) {
+        violations.push(
+          `a lint attribute built by a macro is forbidden in ${file}`,
+        );
+      }
+      for (const lint of lints) {
+        if (!guardedLints.has(lint)) {
+          continue;
+        }
+        if (sanctionedProcessLints.has(lint) && sanctioned.has(resolve(file))) {
+          continue;
+        }
+        if (
+          lint === "unsafe_code" &&
+          unsafeSite !== undefined &&
+          resolve(file) === resolve(crateRoot, unsafeSite)
+        ) {
+          unsafeAllowances += 1;
+          continue;
+        }
+        violations.push(
+          `an attribute lowering ${lint} is forbidden in ${file}`,
+        );
+      }
+      if (
+        !mayStartProcesses &&
+        /^(?:link|link_name|no_mangle|export_name|unsafe\((?:no_mangle|export_name|link_section))/u.test(
+          body,
+        )
+      ) {
+        violations.push(
+          `an FFI attribute (#[${body.split("(")[0]}]) is forbidden in ${file}`,
+        );
+      }
+    }
+    if (!mayStartProcesses && /\bextern\b(?!\s+crate\b)/u.test(stripped)) {
+      violations.push(`an extern block or ABI is forbidden in ${file}`);
+    }
+  }
+  if (unsafeAllowances > 1) {
+    violations.push(
+      `more than one allow(unsafe_code) site (${unsafeAllowances})`,
+    );
+  }
+  const required = unsafeDenied.get(pkg.name);
+  if (required) {
+    for (const target of pkg.targets.filter((target) =>
+      target.kind.some((kind) => kind === "lib" || kind === "bin"),
+    )) {
+      const stripped = stripRustCommentsAndStrings(
+        await readFile(target.src_path, "utf8"),
+      );
+      const levels = attributeBodies(stripped)
+        .filter((attribute) => attribute.inner)
+        .map((attribute) => attribute.body);
+      const ok =
+        levels.includes("forbid(unsafe_code)") ||
+        (required === "deny" && levels.includes("deny(unsafe_code)"));
+      if (!ok) {
+        violations.push(
+          `${target.src_path} must start with #![${required}(unsafe_code)]`,
+        );
+      }
+    }
+  }
+  return violations;
+}
+
+/**
+ * Sources the lexical scan does not read: a `#[path]` module, a target
+ * (binary, test, build script) outside the crate's scanned directories.
+ */
+async function layoutViolations(pkg: CargoPackage, crateRoot: string) {
+  const violations: string[] = [];
+  const scanned = ["src", "tests", "benches", "examples"].map((directory) =>
+    join(crateRoot, directory),
+  );
+  for (const target of pkg.targets) {
+    const path = resolve(target.src_path);
+    if (target.kind.includes("custom-build")) {
+      violations.push(`a build script (${path}) is forbidden`);
+    } else if (
+      !scanned.some((directory) => path.startsWith(`${directory}${sep}`))
+    ) {
+      violations.push(
+        `target ${target.name} at ${path} is outside the scanned directories`,
+      );
+    }
+  }
+  for (const file of await allRustFiles(crateRoot)) {
+    const text = stripRustCommentsAndStrings(await readFile(file, "utf8"));
+    if (
+      /#\s*!?\s*\[\s*path\s*=/u.test(text) ||
+      /#\s*!?\s*\[\s*cfg_attr\s*\([^\]]*\bpath\s*=/u.test(text)
+    ) {
+      violations.push(`a #[path] module is forbidden in ${file}`);
+    }
+  }
+  return violations;
+}
+
+/**
+ * Roots whose glob import or macro-built path the scan refuses, with the
+ * capabilities their members can grant.
+ */
+const capabilityRoots: Array<{ name: string; capabilities: Capability[] }> = [
+  { name: "std", capabilities: ["network", "process"] },
+  { name: "tokio", capabilities: ["network", "process"] },
+  { name: "async_std", capabilities: ["network", "process"] },
+  { name: "smol", capabilities: ["network", "process"] },
+];
+
+/**
+ * `include!` targets in one source file (read before strings are stripped).
+ * Each is refused unless it is a plain string literal naming a file inside
+ * the crate's scanned directories (which the scan reads anyway); a target
+ * built by another macro cannot be checked and is refused.
+ */
+function includeViolations(
+  rawSource: string,
+  sourcePath: string,
+  crateRoot: string,
+) {
+  const violations: string[] = [];
+  const scanned = ["src", "tests", "benches", "examples"].map((directory) =>
+    join(crateRoot, directory),
+  );
+  for (const match of rawSource.matchAll(
+    /\binclude\s*!\s*[(\[{]\s*([^)\]}]*)[)\]}]/gu,
+  )) {
+    const argument = match[1].trim();
+    const literal = argument.match(/^"([^"\\]*)"$/u);
+    if (!literal) {
+      violations.push(
+        `include! with a computed path is forbidden in ${sourcePath}`,
+      );
+      continue;
+    }
+    const target = resolve(dirname(sourcePath), literal[1]);
+    if (!scanned.some((directory) => target.startsWith(`${directory}${sep}`))) {
+      violations.push(
+        `include! of ${literal[1]} (outside the crate's scanned sources) is forbidden in ${sourcePath}`,
+      );
+    }
+  }
+  return violations;
 }
 
 async function rustSourceFiles(crateRoot: string) {
@@ -795,19 +1513,151 @@ async function memberTree(
 }
 
 /** The first dependency path in `lines` that grants `capability`. */
-function treeCapabilityPath(lines: TreeLine[], capability: Capability) {
+function treeCapabilityPath(
+  lines: TreeLine[],
+  capability: Capability,
+  ignoreTokioProcess = false,
+) {
   const stack: string[] = [];
   for (const line of lines) {
     stack.length = line.depth;
     stack.push(line.name);
+    if (line.depth === 0) {
+      continue;
+    }
+    const capabilities = packageCapabilities(line.name, line.features);
     if (
-      line.depth > 0 &&
-      packageCapabilities(line.name, line.features).has(capability)
+      ignoreTokioProcess &&
+      capability === "process" &&
+      line.name === "tokio" &&
+      !processDependencies.has(line.name)
     ) {
+      capabilities.delete("process");
+    }
+    if (capabilities.has(capability)) {
       return [...stack];
     }
   }
   return undefined;
+}
+
+/**
+ * The MongoDB driver (E17-52, D117) turns on Tokio's `process` feature in
+ * its own manifest, unconditionally; its only use of it (spawning the
+ * encryption helper) is compiled only with the driver's `in-use-encryption`
+ * feature. The feature itself grants no process API to Compresso's code: the
+ * source scan still forbids `std::process` and `tokio::process` in every
+ * workspace crate. So for the database crate and its two consumers the
+ * feature is not counted when, in the member's own resolved tree, every
+ * enabler of `tokio feature "process"` is the `mongodb` package itself and
+ * `mongodb` is built without `in-use-encryption`. Anything else (another
+ * enabler, a Tokio feature such as `full` that implies it, the encryption
+ * feature) keeps the capability, so the check fails closed.
+ */
+const tokioProcessDriver = "mongodb";
+/**
+ * The exemption holds only for the driver from crates.io at exactly the
+ * version `compresso-sql` pins; a path, git, or `[patch]` crate named
+ * `mongodb`, or another version, keeps the capability (fail closed). A
+ * version bump must update this pin after reading the new manifest.
+ */
+export type TokioProcessDriverPin = { source: string | null; version: string };
+const tokioProcessDriverPin: TokioProcessDriverPin = {
+  source: "registry+https://github.com/rust-lang/crates.io-index",
+  version: "3.10.2",
+};
+
+function driverMatchesPin(resolved: CargoMetadata, pin: TokioProcessDriverPin) {
+  const drivers = resolved.packages.filter(
+    (pkg) => pkg.name === tokioProcessDriver,
+  );
+  return (
+    drivers.length > 0 &&
+    drivers.every(
+      (pkg) =>
+        (pkg.source ?? null) === pin.source && pkg.version === pin.version,
+    )
+  );
+}
+const tokioProcessDriverForbiddenFeatures = [
+  "in-use-encryption",
+  "in-use-encryption-unstable",
+];
+
+async function tokioProcessOnlyFromDriver(
+  manifestPath: string,
+  member: string,
+  tree: TreeLine[],
+) {
+  const driverLines = tree.filter((line) => line.name === tokioProcessDriver);
+  if (
+    driverLines.length === 0 ||
+    driverLines.some((line) =>
+      line.features.some((feature) =>
+        tokioProcessDriverForbiddenFeatures.includes(feature),
+      ),
+    )
+  ) {
+    return false;
+  }
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync(
+      "cargo",
+      [
+        "tree",
+        "--locked",
+        "-p",
+        member,
+        "-e",
+        "normal,build,dev,features",
+        "--target",
+        "all",
+        "--prefix",
+        "depth",
+        "-f",
+        "{p}",
+        "--manifest-path",
+        manifestPath,
+      ],
+      {
+        cwd: dirname(manifestPath),
+        encoding: "utf8",
+        maxBuffer: 256 * 1024 * 1024,
+      },
+    ));
+  } catch (error) {
+    const stderr = (error as { stderr?: string }).stderr?.trim();
+    throw new Error(
+      `cargo tree -e features failed for ${member}${stderr ? `: ${stderr}` : ""}`,
+      { cause: error },
+    );
+  }
+  const stack: string[] = [];
+  let enablers = 0;
+  for (const line of stdout.split("\n")) {
+    const match = line.match(/^(\d+)(.+?)(?: \(\*\))?$/u);
+    if (!match) {
+      continue;
+    }
+    const depth = Number(match[1]);
+    const text = match[2];
+    stack.length = depth;
+    stack.push(text);
+    if (depth === 0 || text !== 'tokio feature "process"') {
+      continue;
+    }
+    enablers += 1;
+    const parent = stack[depth - 1] ?? "";
+    if (
+      !new RegExp(`^${tokioProcessDriver} v\\S+(?: \\(.*\\))?$`, "u").test(
+        parent,
+      )
+    ) {
+      return false;
+    }
+  }
+  return enablers > 0;
 }
 
 /**
@@ -1005,7 +1855,9 @@ async function hasLockfile(root: string) {
 
 export async function checkWorkspace(
   root = process.cwd(),
+  options: { tokioProcessDriverPin?: TokioProcessDriverPin } = {},
 ): Promise<CheckResult> {
+  const driverPin = options.tokioProcessDriverPin ?? tokioProcessDriverPin;
   const workspaceRoot = resolve(root);
   const manifestPath = join(workspaceRoot, "Cargo.toml");
   const declared = await cargoMetadata(manifestPath, false);
@@ -1053,16 +1905,33 @@ export async function checkWorkspace(
     }
 
     const crateRoot = dirname(pkg.manifest_path);
+    const dependencyRoots = new Set(
+      pkg.dependencies.map((dependency) =>
+        (dependency.rename ?? dependency.name).replaceAll("-", "_"),
+      ),
+    );
     const testProcessSources = boundedLocalTestProcessSources(
       pkg,
       className,
       crateRoot,
     );
     for (const sourcePath of await rustSourceFiles(crateRoot)) {
-      const source = stripRustCommentsAndStrings(
-        await readFile(sourcePath, "utf8"),
+      const rawSource = await readFile(sourcePath, "utf8");
+      if (!capabilities.network || !capabilities.process) {
+        for (const violation of includeViolations(
+          rawSource,
+          sourcePath,
+          crateRoot,
+        )) {
+          violations.add(`${pkg.name} (${className}): ${violation}`);
+        }
+      }
+      // Raw identifiers (`r#process`) name the same items.
+      const source = stripRustCommentsAndStrings(rawSource).replace(
+        /\br#(?=[A-Za-z_])/gu,
+        "",
       );
-      for (const use of sourceCapabilityUses(source)) {
+      for (const use of sourceCapabilityUses(source, dependencyRoots)) {
         const allowedTestProcess =
           use.capability === "process" &&
           testProcessSources.has(resolve(sourcePath));
@@ -1073,6 +1942,23 @@ export async function checkWorkspace(
         }
       }
     }
+    if (!capabilities.network || !capabilities.process) {
+      for (const violation of await layoutViolations(pkg, crateRoot)) {
+        violations.add(`${pkg.name} (${className}): ${violation}`);
+      }
+    }
+    for (const violation of await crateTripwireViolations(
+      pkg,
+      className,
+      crateRoot,
+      workspaceRoot,
+      testProcessSources,
+    )) {
+      violations.add(`${pkg.name} (${className}): ${violation}`);
+    }
+  }
+  for (const violation of await workspaceTripwireViolations(workspaceRoot)) {
+    violations.add(violation);
   }
 
   if (await hasLockfile(workspaceRoot)) {
@@ -1101,6 +1987,20 @@ export async function checkWorkspace(
           }
           let path = treeCapabilityPath(tree, capability);
           let through = "";
+          if (
+            path &&
+            capability === "process" &&
+            path.at(-1) === "tokio" &&
+            (pkg.name === databaseNetworkCrate ||
+              databaseNetworkConsumers.has(pkg.name)) &&
+            driverMatchesPin(resolved, driverPin) &&
+            (await tokioProcessOnlyFromDriver(manifestPath, pkg.name, tree))
+          ) {
+            // D117: Tokio's process feature, turned on only by the MongoDB
+            // driver without its encryption feature; any other process
+            // package still counts.
+            path = treeCapabilityPath(tree, capability, true);
+          }
           if (
             path &&
             capability === "network" &&

@@ -861,6 +861,7 @@ fn prepare_install(
             &scope,
             entry.edits,
             None,
+            None,
             entry.main_agent && matches!(scope, Scope::Project(_)),
         )?
     } else {
@@ -922,6 +923,20 @@ fn execute_mutation(
             "--sql-env needs a variable name matching COMPRESSO_SQL_[A-Z0-9_]+ (the name of the variable, never the URL)",
         ));
     }
+    if arguments.mongo_env.is_some() && action == MutationAction::Uninstall {
+        return Err(IntegrationCliError::new(
+            "invalid_arguments",
+            "--mongo-env applies only to `integrations install`; uninstall removes the whole Compresso entry",
+        ));
+    }
+    if let Some(name) = &arguments.mongo_env
+        && !compresso_integrations::is_mongo_env_name(name)
+    {
+        return Err(IntegrationCliError::new(
+            "invalid_arguments",
+            "--mongo-env needs a variable name matching COMPRESSO_MONGO_[A-Z0-9_]+ (the name of the variable, never the URL)",
+        ));
+    }
     if (arguments.no_main_agent || arguments.no_edits) && action == MutationAction::Uninstall {
         return Err(IntegrationCliError::new(
             "invalid_arguments",
@@ -952,6 +967,12 @@ fn execute_mutation(
         return Err(IntegrationCliError::new(
             "unsupported",
             "--sql-env is available for claude-code only; other clients can run `compresso mcp serve --sql-env NAME` from their own configuration",
+        ));
+    }
+    if arguments.mongo_env.is_some() && arguments.client != IntegrationClientArg::ClaudeCode {
+        return Err(IntegrationCliError::new(
+            "unsupported",
+            "--mongo-env is available for claude-code only; other clients can run `compresso mcp serve --mongo-env NAME` from their own configuration",
         ));
     }
     let requested_scope = if arguments.explore_agent || arguments.session_commands {
@@ -1016,13 +1037,23 @@ fn execute_mutation(
     }
     let wants_main_agent = action == MutationAction::Install
         && main_agent_default(&arguments, &scope)
-        && arguments.sql_env.is_none();
+        && arguments.sql_env.is_none()
+        && arguments.mongo_env.is_none();
     if action == MutationAction::Install
         && main_agent_default(&arguments, &scope)
         && arguments.sql_env.is_some()
     {
         main_agent_warnings.push(
             "main_agent_not_installed: with --sql-env the entry keeps the full tool profile (the lean profile never serves compresso_sql), and the main-session agent was measured only with the lean profile, so it is not installed (an agent an earlier install wrote is removed); install without --sql-env to get the agent and the lean profile instead of the SQL tool".to_owned(),
+        );
+    }
+    if action == MutationAction::Install
+        && main_agent_default(&arguments, &scope)
+        && arguments.sql_env.is_none()
+        && arguments.mongo_env.is_some()
+    {
+        main_agent_warnings.push(
+            "main_agent_not_installed: with --mongo-env the entry keeps the full tool profile (the lean profile never serves compresso_mongo), and the main-session agent was measured only with the lean profile, so it is not installed (an agent an earlier install wrote is removed); install without --mongo-env to get the agent and the lean profile instead of the MongoDB tool".to_owned(),
         );
     }
     let mut main_agent_companion = if wants_main_agent {
@@ -1044,7 +1075,8 @@ fn execute_mutation(
     };
     let main_agent = wants_main_agent && main_agent_companion.is_complete();
     if !main_agent && project_entry {
-        // An uninstall, --no-main-agent, --sql-env, or a skipped step: remove
+        // An uninstall, --no-main-agent, --sql-env, --mongo-env, or a skipped
+        // step: remove
         // what earlier receipts cover, so no agent runs against an entry that
         // does not serve its measured profile.
         main_agent_companion = super::main_agent::plan_uninstall(
@@ -1061,12 +1093,13 @@ fn execute_mutation(
         SelectedIntegration::explore_agent(arguments.client, environment, &scope, arguments.edits)?
     } else if arguments.session_commands {
         SelectedIntegration::session_commands(arguments.client, environment, &scope)?
-    } else if main_agent || edits || arguments.sql_env.is_some() {
+    } else if main_agent || edits || arguments.sql_env.is_some() || arguments.mongo_env.is_some() {
         SelectedIntegration::claude_code_with_operator_tools(
             environment,
             &scope,
             edits,
             arguments.sql_env.clone(),
+            arguments.mongo_env.clone(),
             main_agent,
         )?
     } else {
@@ -1149,6 +1182,7 @@ fn execute_mutation(
                 environment,
                 &scope,
                 true,
+                None,
                 None,
                 false,
             )?
@@ -1630,6 +1664,7 @@ fn removed_entry_flags(
         .map(|flag| {
             let keep = match flag.as_str() {
                 "--sql-env" => "pass --sql-env NAME again to keep it".to_owned(),
+                "--mongo-env" => "pass --mongo-env NAME again to keep it".to_owned(),
                 "--edits" if arguments.no_edits => "drop --no-edits to keep it".to_owned(),
                 "--edits" => "pass --edits, or install without --no-main-agent, to keep it".to_owned(),
                 "--recall-source" => "drop --no-recall to keep it".to_owned(),
@@ -2114,13 +2149,14 @@ impl SelectedIntegration {
 
 impl SelectedIntegration {
     /// The Claude Code MCP adapter writing an entry that starts
-    /// `mcp serve` with `--edits` (E17-32, D97) and/or `--sql-env NAME`
-    /// (E17-50, D115).
+    /// `mcp serve` with `--edits` (E17-32, D97), `--sql-env NAME` (E17-50,
+    /// D115), and/or `--mongo-env NAME` (E17-52, D117).
     fn claude_code_with_operator_tools(
         environment: &IntegrationEnvironment,
         scope: &Scope,
         edits: bool,
         sql_env: Option<String>,
+        mongo_env: Option<String>,
         lean_session: bool,
     ) -> Result<Self, IntegrationCliError> {
         let adapter = ClaudeCodeIntegration::new(
@@ -2129,6 +2165,7 @@ impl SelectedIntegration {
         )
         .with_edits(edits)
         .with_sql_env(sql_env)
+        .with_mongo_env(mongo_env)
         .with_lean_session(lean_session);
         let config_path = adapter.config_path(scope)?;
         Ok(Self {

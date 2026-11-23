@@ -173,6 +173,33 @@ TLS with certificate verification (`sslmode=verify-full`,
 `ssl-mode=VERIFY_IDENTITY`, or no mode at all). Results go to your coding
 client and may be sent to its model provider.
 
+## Optional: read-only MongoDB queries
+
+`compresso_mongo` (E17-52, ADR-0038) is off unless you turn it on. MongoDB
+has no read-only session, so the tool's own allow-list and its account check
+are the whole control: give it a user with only the `read` role on one
+database, on a server that runs with access control on.
+
+```javascript
+// mongosh, as an administrator
+use app
+db.createUser({ user: "mongo_reader", pwd: passwordPrompt(),
+                roles: [{ role: "read", db: "app" }] })
+```
+
+```sh
+export COMPRESSO_MONGO_APP='mongodb://mongo_reader:...@db.internal:27017/app'
+compresso integrations install claude-code --mongo-env COMPRESSO_MONGO_APP
+```
+
+Other clients can start `compresso mcp serve --mongo-env COMPRESSO_MONGO_APP`
+from their own configuration. One host only (`mongodb+srv://`, several hosts,
+and `replicaSet` are refused; the tool always connects directly). Accepted
+options: `authSource`, `authMechanism` (SCRAM-SHA-256 or SCRAM-SHA-1),
+`directConnection=true`, `tls`/`ssl`, and `tlsCAFile=/absolute/ca.pem` for a
+private root; any host but loopback gets verified TLS. The live tests have
+passed only on the build machine against MongoDB 8.0.38 so far.
+
 ## Test the installer
 
 The test suite builds deterministic stub artifacts through the E1-06 packager and exercises local

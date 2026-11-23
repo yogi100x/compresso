@@ -17,6 +17,15 @@ allow = [
   "Zlib",
 ]
 confidence-threshold = 0.93
+# E17-52 (D117, owner decision 2026-11-23): the two licences the MongoDB
+# driver brings, allowed for exactly the one crate that carries each. The
+# bundled root certificates the driver's TLS uses are CDLA-Permissive-2.0;
+# a hash crate used only at build time by the driver's macro dependencies
+# (const-random-macro) is CC0-1.0.
+exceptions = [
+  { crate = "webpki-roots", allow = ["CDLA-Permissive-2.0"] },
+  { crate = "tiny-keccak", allow = ["CC0-1.0"] },
+]
 include-dev = true
 unused-allowed-license = "allow"
 

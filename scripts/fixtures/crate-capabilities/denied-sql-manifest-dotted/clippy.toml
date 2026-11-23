@@ -1,0 +1,19 @@
+# E17-52 (D117): the workspace default for every crate. No crate may start a
+# process except those the capability matrix allows: compresso-agent and
+# compresso-updater (their own clippy.toml), and in compresso-cli the two
+# sanctioned files and the integration tests of bounded-local crates (an
+# `allow` attribute in exactly those files; scripts/check-crate-capabilities.ts
+# refuses one anywhere else). Clippy resolves these paths after name
+# resolution; CI runs it with -D warnings. This is a tripwire against
+# introducing process spawning by accident or casually, not proof against
+# deliberate obfuscation (see the script's header).
+disallowed-types = [
+  { path = "std::process::Command", reason = "no process spawning outside the allow-listed crates and files (D117)" },
+  { path = "std::process::Child", reason = "no process spawning outside the allow-listed crates and files (D117)" },
+  { path = "tokio::process::Command", reason = "no process spawning outside the allow-listed crates and files (D117)" },
+  { path = "tokio::process::Child", reason = "no process spawning outside the allow-listed crates and files (D117)" },
+]
+disallowed-methods = [
+  { path = "std::process::Command::new", reason = "no process spawning outside the allow-listed crates and files (D117)" },
+  { path = "tokio::process::Command::new", reason = "no process spawning outside the allow-listed crates and files (D117)" },
+]

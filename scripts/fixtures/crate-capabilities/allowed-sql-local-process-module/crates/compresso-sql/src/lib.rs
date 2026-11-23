@@ -1,0 +1,2 @@
+#![deny(unsafe_code)]
+pub mod process { pub fn run() {} } pub fn f02() { crate::process::run(); self::process::run(); } pub mod jobs { pub mod process { pub struct Step; } } pub fn f05() -> jobs::process::Step { jobs::process::Step } pub fn f01<'a>(x: &'a str) -> &'a str { x } pub fn c() -> char { '"' } pub fn f03() -> std::process::ExitCode { std::process::ExitCode::SUCCESS }

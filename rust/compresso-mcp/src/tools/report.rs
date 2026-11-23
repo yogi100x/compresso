@@ -72,6 +72,8 @@ pub(crate) struct ReportContext<'a> {
     pub(crate) edits_enabled: bool,
     /// The SQL tool's surface: shown as on/off and the engine kind only.
     pub(crate) sql: super::sql::SqlSurface,
+    /// The MongoDB tool's surface: shown as on, not configured, or nothing.
+    pub(crate) mongo: super::mongo::MongoSurface,
     pub(crate) profile: McpToolProfile,
 }
 
@@ -211,6 +213,12 @@ fn facts(context: &ReportContext<'_>) -> Result<Facts, ToolFailure> {
     if context.sql.is_on() {
         options.push_str("; sql ");
         options.push_str(context.sql.engine_name().unwrap_or("not configured"));
+    }
+    // Likewise only whether MongoDB is on (E17-52, D117).
+    match context.mongo {
+        super::mongo::MongoSurface::Off => {}
+        super::mongo::MongoSurface::Unconfigured => options.push_str("; mongo not configured"),
+        super::mongo::MongoSurface::On => options.push_str("; mongo on"),
     }
     let index = match context.repository_root {
         None => IndexState::Unbound,

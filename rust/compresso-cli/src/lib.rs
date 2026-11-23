@@ -1,5 +1,9 @@
 //! Command-line application boundaries shared by the Compresso binary.
 
+// D117: no unsafe code (no FFI process spawning); the capability check
+// requires this line.
+#![forbid(unsafe_code)]
+
 pub mod commands;
 pub mod surface;
 

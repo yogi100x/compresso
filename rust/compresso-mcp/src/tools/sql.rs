@@ -187,18 +187,29 @@ fn payload(outcome: &SqlOutcome, engine: &str) -> Value {
     body
 }
 
-/// The result's JSON, with rows (or tables, or described columns) dropped
-/// from the end until it fits `max_tokens`.
+/// The result's JSON, fitted to `max_tokens`: rows (or tables, or described
+/// columns) are dropped from the end, and then (E17-52) the first row that
+/// does not fit is kept with its text cells cut evenly, so a result with
+/// rows never comes back empty; `rows_omitted` counts the rows left out for
+/// the budget. Only if not even a cut row fits are trailing columns dropped.
 fn fit(
     mut outcome: SqlOutcome,
     engine: &str,
     max_tokens: usize,
     counter: &dyn TokenCounter,
 ) -> String {
-    let render = |outcome: &SqlOutcome| payload(outcome, engine).to_string();
-    let fits = |outcome: &SqlOutcome| counter.count(&render(outcome)) <= max_tokens;
-    if fits(&outcome) {
-        return render(&outcome);
+    let render = |outcome: &SqlOutcome, omitted: usize| {
+        let mut value = payload(outcome, engine);
+        if omitted > 0
+            && let Value::Object(object) = &mut value
+        {
+            object.insert("rows_omitted".to_owned(), Value::from(omitted));
+        }
+        value
+    };
+    let fits = |value: &Value| counter.count(&value.to_string()) <= max_tokens;
+    if fits(&render(&outcome, 0)) {
+        return render(&outcome, 0).to_string();
     }
     let length = match &outcome {
         SqlOutcome::Query(result) => result.rows.len(),
@@ -223,15 +234,41 @@ fn fit(
         let middle = (low + high).div_ceil(2);
         let mut candidate = outcome.clone();
         keep(&mut candidate, middle);
-        if fits(&candidate) {
+        if fits(&render(&candidate, length - middle)) {
             low = middle;
         } else {
             high = middle - 1;
         }
     }
+    let next = match &outcome {
+        SqlOutcome::Query(result) if low < length => Some(result.rows[low].clone()),
+        _ => None,
+    };
     keep(&mut outcome, low);
-    // Column names count too: with no rows left, drop trailing columns.
-    if !fits(&outcome)
+    let mut omitted = match &outcome {
+        SqlOutcome::Query(_) => length - low,
+        _ => 0,
+    };
+    if let Some(row) = next {
+        let with = |budget: usize| {
+            let mut candidate = outcome.clone();
+            if let SqlOutcome::Query(result) = &mut candidate {
+                result.rows.push(super::shrink::shrink_cells(&row, budget));
+                result.row_count = result.rows.len();
+            }
+            candidate
+        };
+        let limit = serde_json::to_string(&row).map_or(0, |text| text.len());
+        if let Some(budget) =
+            super::shrink::largest_budget(limit, |budget| fits(&render(&with(budget), omitted - 1)))
+        {
+            outcome = with(budget);
+            omitted -= 1;
+        }
+    }
+    // Column names count too: if even that does not fit, drop trailing
+    // columns.
+    if !fits(&render(&outcome, omitted))
         && let SqlOutcome::Query(result) = &outcome
     {
         let (mut low, mut high) = (0, result.columns.len());
@@ -239,7 +276,7 @@ fn fit(
             let middle = (low + high).div_ceil(2);
             let mut candidate = outcome.clone();
             keep_columns(&mut candidate, middle);
-            if fits(&candidate) {
+            if fits(&render(&candidate, omitted)) {
                 low = middle;
             } else {
                 high = middle - 1;
@@ -247,7 +284,7 @@ fn fit(
         }
         keep_columns(&mut outcome, low);
     }
-    let mut value = payload(&outcome, engine);
+    let mut value = render(&outcome, omitted);
     if let (SqlOutcome::Describe(_), Value::Object(object)) = (&outcome, &mut value) {
         object.insert("truncated".to_owned(), Value::Bool(true));
     }
@@ -297,5 +334,29 @@ mod tests {
         let rows = value["rows"].as_array().expect("rows").len();
         assert!(rows > 0 && rows < 200);
         assert_eq!(value["row_count"], rows);
+    }
+
+    /// One row with huge cells used to fit as zero rows; it is now kept with
+    /// its cells cut, and the rows after it are counted.
+    #[test]
+    fn test_fit_cuts_a_huge_row_instead_of_dropping_it() {
+        let counter = counter_for(TokenProvider::OpenAiO200k);
+        let wide = vec![Value::from("é".repeat(1_000)); 60];
+        let result = QueryResult {
+            columns: (0..60).map(|index| format!("c{index}")).collect(),
+            columns_omitted: 0,
+            rows: vec![wide.clone(), wide],
+            row_count: 2,
+            truncated: false,
+            truncation_reason: None,
+            elapsed_ms: 1,
+        };
+        let text = fit(SqlOutcome::Query(result), "postgres", 2_000, counter);
+        assert!(counter.count(&text) <= 2_000, "{}", counter.count(&text));
+        let value: Value = serde_json::from_str(&text).expect("json");
+        assert_eq!(value["row_count"], 1);
+        assert_eq!(value["rows"][0].as_array().expect("row").len(), 60);
+        assert_eq!(value["rows_omitted"], 1);
+        assert_eq!(value["truncation_reason"], "max_tokens");
     }
 }

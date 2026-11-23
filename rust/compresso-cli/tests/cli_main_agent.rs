@@ -2,6 +2,9 @@
 //!
 //! Every path here is under a scratch home and project directory.
 #![cfg(unix)]
+// Integration tests of a bounded-local crate may start processes (the
+// capability matrix); the workspace clippy.toml disallows them elsewhere.
+#![allow(clippy::disallowed_types, clippy::disallowed_methods)]
 
 use std::fs;
 use std::io::{Cursor, Read};
@@ -609,6 +612,54 @@ fn test_sql_env_keeps_the_full_profile_without_the_agent_or_edits() {
         "{human}"
     );
     assert!(!human.contains("COMPRESSO_SQL_APP"), "{human}");
+}
+
+#[test]
+fn test_mongo_env_keeps_the_full_profile_without_the_agent_or_edits() {
+    // E17-52: --mongo-env behaves exactly like --sql-env here.
+    let fixture = Fixture::new();
+    fixture.install(&[]);
+    let output = fixture.install(&["--mongo-env", "COMPRESSO_MONGO_APP"]);
+    let args = fixture.entry_args();
+    assert!(!has_lean_session(&args), "{args:?}");
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == ["--mongo-env", "COMPRESSO_MONGO_APP"]),
+        "{args:?}"
+    );
+    assert!(!args.iter().any(|arg| arg == "--edits"), "{args:?}");
+    assert!(!fixture.agent_path().exists());
+    assert!(!fixture.settings_path().exists());
+    assert!(
+        warnings(&output)
+            .iter()
+            .any(|warning| warning.starts_with("main_agent_not_installed")
+                && warning.contains("--mongo-env")),
+        "{output}"
+    );
+    // A re-install without it names the flag, never its value.
+    let (_, output, _) = fixture.integrations(&[
+        "install",
+        "claude-code",
+        "--project",
+        fixture.root_arg(),
+        "--dry-run",
+        "--json",
+    ]);
+    let dropped = warnings(&output)
+        .into_iter()
+        .filter(|warning| warning.starts_with("entry_flag_removed"))
+        .collect::<Vec<_>>();
+    assert!(
+        dropped
+            .iter()
+            .any(|w| w.contains("--mongo-env") && w.contains("pass --mongo-env NAME again")),
+        "{dropped:?}"
+    );
+    assert!(
+        !dropped.iter().any(|w| w.contains("COMPRESSO_MONGO_APP")),
+        "{dropped:?}"
+    );
 }
 
 #[test]

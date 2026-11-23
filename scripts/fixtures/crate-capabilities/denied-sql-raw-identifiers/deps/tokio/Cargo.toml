@@ -1,0 +1,12 @@
+[package]
+name = "tokio"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+socket2 = { path = "../socket2", optional = true }
+
+[features]
+net = ["dep:socket2"]
+process = []
+full = ["net", "process"]
