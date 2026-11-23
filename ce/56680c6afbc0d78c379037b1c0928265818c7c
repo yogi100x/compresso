@@ -1,0 +1,23 @@
+rust/compresso-sql/tests/live.rs
+  s_89a704cfae63f5::t_e58f2edce2d52f 336-347
+.github/workflows/ci.yml
+  s_89a704cfae63f5::t_63cc6ac452fcc9 257-259,267,275-276,307,325-401
+rust/compresso-mcp/src/server.rs
+  s_89a704cfae63f5::t_12920fcc3e09b6 1826,1834-1839,1841
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ce56680c6afbc0d78c379037b1c0928265818c7c",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
