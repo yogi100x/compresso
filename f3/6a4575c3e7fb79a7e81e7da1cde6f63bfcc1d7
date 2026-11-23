@@ -1,0 +1,50 @@
+rust/compresso-integrations/src/main_agent.rs
+  s_89a704cfae63f5::t_7cd472e362c0b5 124-126
+  s_89a704cfae63f5::t_48b7be9e53206d 551-626
+  s_89a704cfae63f5::t_799c7404ed8d94 528
+  s_89a704cfae63f5::t_991bdf355aaf0a 63,65-68
+  s_89a704cfae63f5::t_79cef20a2b48cb 73
+  s_89a704cfae63f5::t_32fb24bd38bbea 69
+  s_89a704cfae63f5::t_453eb1563d2a82 627
+  s_95a14f3f1f43a5::t_076cf112c8c88a 52-56,59-61,76
+README.md
+  s_89a704cfae63f5::t_5e5b47ed88e11f 120-126
+docs/adr/0037-default-main-session-agent.md
+  s_89a704cfae63f5::t_8fd396beacf978 257-259
+  s_89a704cfae63f5::t_b1fcbd1eecbc02 254-256
+  s_89a704cfae63f5::t_b377a8ed0fbfaa 260-262
+  s_95a14f3f1f43a5::t_aa138ed740e39d 232-253,263-266
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_ba47418d7b689b 900
+  s_89a704cfae63f5::t_b0a490f6024401 24
+decisions.md
+  s_95a14f3f1f43a5::t_5db4aa5389f616 110
+docs/plan/05-tickets.md
+  s_95a14f3f1f43a5::t_78d731b4b52a0c 3716-3731,3747,3778-3780
+rust/compresso-integrations/tests/fixtures/compresso-main-e17-51.md
+  s_95a14f3f1f43a5::t_b9bdf7a1a63ec5 1-25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f36a4575c3e7fb79a7e81e7da1cde6f63bfcc1d7",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_95a14f3f1f43a5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a35665d09f12269c5",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
