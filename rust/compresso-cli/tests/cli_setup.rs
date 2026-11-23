@@ -1551,3 +1551,108 @@ fn test_setup_adds_the_main_agent_for_claude_code_unless_opted_out() {
             .contains("lean")
     );
 }
+
+/// E17-51 review: `setup --no-main-agent` over a default install removes the
+/// agent file and the key through their receipts, so no agent is left
+/// running against the full-profile entry.
+#[test]
+fn test_setup_no_main_agent_over_a_default_install_removes_the_agent() {
+    let fixture = Fixture::new();
+    let (exit, _, errors) = fixture.run_setup_json(
+        &[
+            "setup",
+            "claude-code",
+            fixture.root_str(),
+            "--yes",
+            "--json",
+        ],
+        Some(&fixture.store),
+        &mut std::io::empty(),
+    );
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert!(
+        fixture
+            .root
+            .join(".claude/agents/compresso-main.md")
+            .is_file()
+    );
+    let (exit, output, errors) = fixture.run_setup_json(
+        &[
+            "setup",
+            "claude-code",
+            fixture.root_str(),
+            "--no-main-agent",
+            "--yes",
+            "--json",
+        ],
+        Some(&fixture.store),
+        &mut std::io::empty(),
+    );
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert!(
+        !fixture
+            .root
+            .join(".claude/agents/compresso-main.md")
+            .exists(),
+        "{output}"
+    );
+    assert!(
+        !fixture.root.join(".claude/settings.local.json").exists(),
+        "{output}"
+    );
+    let removed = output["data"]["result"]["main_agent"]["steps"]
+        .as_array()
+        .expect("steps")
+        .iter()
+        .filter(|step| step["result"]["removed"] == true)
+        .count();
+    assert_eq!(removed, 2, "{output}");
+}
+
+/// E17-51 review: setup writes the main-session agent only when it is
+/// exactly what was previewed.
+#[test]
+fn test_setup_writes_no_main_agent_file_that_changed_since_the_preview() {
+    let fixture = Fixture::new();
+    let runtime = TestSetupRuntime::new(
+        fixture.environment.data_dir.join("compresso.db"),
+        Arc::new(SequenceClock::new([1_000])),
+    )
+    .with_open_write(
+        fixture.root.join(".claude/settings.local.json"),
+        b"{\"model\": \"x\"}\n".to_vec(),
+    );
+    let (exit, output, errors) = fixture.run_setup_json_with_runtime(
+        &[
+            "setup",
+            "claude-code",
+            fixture.root_str(),
+            "--yes",
+            "--json",
+        ],
+        None,
+        &runtime,
+        &mut std::io::empty(),
+    );
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert!(
+        output["data"]["result"]["main_agent"]["warnings"]
+            .as_array()
+            .expect("warnings")
+            .iter()
+            .any(|warning| warning
+                .as_str()
+                .is_some_and(|text| text.contains("changed after the setup preview"))),
+        "{output}"
+    );
+    assert!(
+        !fixture
+            .root
+            .join(".claude/agents/compresso-main.md")
+            .exists()
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join(".claude/settings.local.json")).expect("settings"),
+        "{\"model\": \"x\"}\n"
+    );
+}

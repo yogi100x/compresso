@@ -869,8 +869,8 @@ pub fn advertised_surface_for(
 
 /// The lean surface of a server started with `--tools lean --session-tools`
 /// (E17-51, D116): the lean tools, then `compresso_stats` and
-/// `compresso_report` for the `/compresso` session commands, with the lean
-/// instructions unchanged.
+/// `compresso_report` for the `/compresso` session commands; the lean
+/// instructions' first sentence says what `compresso_report` writes.
 pub fn advertised_lean_session_surface(
     recall_enabled: bool,
     edits_enabled: bool,

@@ -270,7 +270,7 @@ fn test_user_scope_install_is_unchanged_and_says_why() {
 }
 
 #[test]
-fn test_another_agent_value_is_kept_and_install_succeeds_with_a_warning() {
+fn test_another_agent_value_is_kept_and_the_entry_is_written_as_without_the_agent() {
     let fixture = Fixture::new();
     fs::create_dir_all(fixture.root.join(".claude")).expect("claude dir");
     let original = "{\n  \"agent\": \"my-reviewer\",\n  \"model\": \"x\"\n}\n";
@@ -280,10 +280,16 @@ fn test_another_agent_value_is_kept_and_install_succeeds_with_a_warning() {
         fs::read_to_string(fixture.settings_path()).expect("settings"),
         original
     );
-    assert!(fixture.agent_path().is_file());
+    // Without the prompt the lean profile is not the measured setup.
+    assert!(!fixture.agent_path().exists());
+    let args = fixture.entry_args();
+    assert!(!has_lean_session(&args) && !args.iter().any(|arg| arg == "--edits"));
     assert!(
         warnings(&output).iter().any(|warning| {
-            warning.starts_with("main_agent_setting_skipped") && warning.contains("my-reviewer")
+            warning.starts_with("main_agent_setting_skipped")
+                && warning.contains("my-reviewer")
+                && warning.contains("full profile")
+                && warning.contains("install again")
         }),
         "{output}"
     );
@@ -344,6 +350,8 @@ fn test_a_user_agent_file_is_never_overwritten_and_the_key_is_not_added() {
     let output = fixture.install(&[]);
     assert_eq!(fs::read_to_string(fixture.agent_path()).unwrap(), user);
     assert!(!fixture.settings_path().exists());
+    let args = fixture.entry_args();
+    assert!(!has_lean_session(&args) && !args.iter().any(|arg| arg == "--edits"));
     assert!(
         warnings(&output)
             .iter()
@@ -458,38 +466,26 @@ fn test_a_git_repository_that_does_not_ignore_the_settings_file_gets_one_warning
             .filter(|warning| warning.starts_with("settings_local_not_ignored"))
             .count()
     };
-    let global = |relative: &str| compresso_atlas::is_globally_git_ignored(Path::new(relative));
-    let file = ".claude/settings.local.json";
-    let backup = ".claude/settings.local.json.compresso-backup-2000-01-01T00-00-00Z";
+    let relative = Path::new(".claude/settings.local.json");
 
     let fixture = Fixture::new();
     fs::create_dir_all(fixture.root.join(".git")).expect("git dir");
     let output = fixture.install(&[]);
-    // The user's own global excludes file may already ignore both.
-    let expected = usize::from(!(global(file) && global(backup)));
+    // The user's own global excludes file may already ignore it.
+    let expected = usize::from(!compresso_atlas::is_globally_git_ignored(relative));
     assert_eq!(not_ignored(&output), expected, "{output}");
     assert!(
         !fixture.root.join(".gitignore").exists(),
         "nothing is edited"
     );
 
-    // Ignoring only the file still names the backups kept beside it.
     let fixture = Fixture::new();
     fs::create_dir_all(fixture.root.join(".git")).expect("git dir");
-    fs::write(fixture.root.join(".gitignore"), format!("{file}\n")).expect("ignore");
-    let output = fixture.install(&[]);
-    if !global(backup) {
-        assert_eq!(not_ignored(&output), 1, "{output}");
-        assert!(
-            warnings(&output)
-                .iter()
-                .any(|w| w.contains("compresso-backup-*"))
-        );
-    }
-
-    let fixture = Fixture::new();
-    fs::create_dir_all(fixture.root.join(".git")).expect("git dir");
-    fs::write(fixture.root.join(".gitignore"), format!("{file}*\n")).expect("ignore");
+    fs::write(
+        fixture.root.join(".gitignore"),
+        ".claude/settings.local.json\n",
+    )
+    .expect("ignore");
     let output = fixture.install(&[]);
     assert_eq!(not_ignored(&output), 0, "{output}");
 
@@ -575,8 +571,9 @@ fn test_no_main_agent_over_a_default_install_removes_the_agent_and_its_key() {
 }
 
 #[test]
-fn test_sql_env_keeps_the_full_profile_and_installs_the_agent_with_a_warning() {
+fn test_sql_env_keeps_the_full_profile_without_the_agent_or_edits() {
     let fixture = Fixture::new();
+    fixture.install(&[]);
     let output = fixture.install(&["--sql-env", "COMPRESSO_SQL_APP"]);
     let args = fixture.entry_args();
     assert!(!has_lean_session(&args), "{args:?}");
@@ -585,28 +582,174 @@ fn test_sql_env_keeps_the_full_profile_and_installs_the_agent_with_a_warning() {
             .any(|pair| pair == ["--sql-env", "COMPRESSO_SQL_APP"]),
         "{args:?}"
     );
-    assert!(args.iter().any(|arg| arg == "--edits"), "{args:?}");
-    assert!(fixture.agent_path().is_file());
+    assert!(!args.iter().any(|arg| arg == "--edits"), "{args:?}");
+    // The agent an earlier install wrote is removed with its key.
+    assert!(!fixture.agent_path().exists());
+    assert!(!fixture.settings_path().exists());
     assert!(
         warnings(&output)
             .iter()
-            .any(|warning| warning.starts_with("main_agent_full_profile")),
+            .any(|warning| warning.starts_with("main_agent_not_installed")
+                && warning.contains("--sql-env")),
         "{output}"
     );
-    let (_, verify, _) = fixture.integrations(&[
-        "verify",
+    // The preview names every flag and redacts only the variable name.
+    let (_, human, _) = fixture.integrations_raw(&[
+        "install",
         "claude-code",
         "--project",
         fixture.root_arg(),
+        "--sql-env",
+        "COMPRESSO_SQL_APP",
+        "--edits",
+        "--dry-run",
+    ]);
+    assert!(
+        human.contains("\"--edits\", \"--sql-env\", \"<redacted>\", \"--recall-source\""),
+        "{human}"
+    );
+    assert!(!human.contains("COMPRESSO_SQL_APP"), "{human}");
+}
+
+#[test]
+fn test_a_reinstall_that_drops_an_opt_in_flag_says_so() {
+    let fixture = Fixture::new();
+    fixture.install(&["--no-main-agent", "--sql-env", "COMPRESSO_SQL_APP"]);
+    // Any opt-in a newer version added is named generically too.
+    let path = fixture.root.join(".mcp.json");
+    let text = fs::read_to_string(&path).expect("entry");
+    fs::write(
+        &path,
+        text.replace(
+            "\"--recall-source\"",
+            "\"--mongo-env\",\n        \"COMPRESSO_MONGO_X\",\n        \"--recall-source\"",
+        ),
+    )
+    .expect("entry");
+    let (_, output, _) = fixture.integrations(&[
+        "install",
+        "claude-code",
+        "--project",
+        fixture.root_arg(),
+        "--dry-run",
         "--json",
     ]);
-    let profile = verify["data"]["checks"]
-        .as_array()
-        .expect("checks")
-        .iter()
-        .find(|check| check["name"] == "main_agent_server_profile")
-        .expect("profile check");
-    assert_eq!(profile["passed"], true, "{verify}");
+    let dropped = warnings(&output)
+        .into_iter()
+        .filter(|warning| warning.starts_with("entry_flag_removed"))
+        .collect::<Vec<_>>();
+    assert!(
+        dropped
+            .iter()
+            .any(|w| w.contains("--sql-env") && w.contains("pass --sql-env NAME again")),
+        "{dropped:?}"
+    );
+    assert!(
+        dropped.iter().any(|w| w.contains("--mongo-env")),
+        "{dropped:?}"
+    );
+    assert!(
+        !dropped.iter().any(|w| w.contains("COMPRESSO_MONGO_X")),
+        "{dropped:?}"
+    );
+}
+
+#[test]
+fn test_a_full_install_and_uninstall_cycle_leaves_no_extra_file_in_claude() {
+    let fixture = Fixture::new();
+    fs::create_dir_all(fixture.root.join(".claude")).expect("claude dir");
+    let original = "{\n  \"env\": {\"TOKEN\": \"secret\"}\n}\n";
+    fs::write(fixture.settings_path(), original).expect("settings");
+    fixture.install(&[]);
+    fixture.install(&["--no-edits"]);
+    let (exit, _, errors) = fixture.integrations(&[
+        "uninstall",
+        "claude-code",
+        "--project",
+        fixture.root_arg(),
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    let files = files_under(&fixture.root.join(".claude"))
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect::<Vec<_>>();
+    assert_eq!(files, [PathBuf::from("settings.local.json")]);
+    assert_eq!(
+        fs::read_to_string(fixture.settings_path()).unwrap(),
+        original
+    );
+}
+
+#[test]
+fn test_uninstall_keeps_the_agent_file_when_the_key_cannot_be_removed() {
+    let fixture = Fixture::new();
+    fixture.install(&[]);
+    fs::write(fixture.settings_path(), "{\"agent\": \"compresso-main\",").expect("broken");
+    let (exit, output, errors) = fixture.integrations(&[
+        "uninstall",
+        "claude-code",
+        "--project",
+        fixture.root_arg(),
+        "--yes",
+        "--json",
+    ]);
+    assert_eq!(exit, CliExitCode::Success, "{errors}");
+    assert!(fixture.agent_path().is_file(), "{output}");
+    let warnings = warnings(&output);
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.starts_with("main_agent_setting_not_removed")),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.starts_with("main_agent_not_removed")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn test_a_dry_run_never_recovers_a_pending_journal() {
+    let fixture = Fixture::new();
+    fs::create_dir_all(fixture.root.join(".claude/agents")).expect("dirs");
+    let journal = fixture
+        .root
+        .join(".claude/settings.local.json.compresso-journal");
+    fs::write(&journal, "{\"not\": \"a journal\"}").expect("journal");
+    let before = files_under(&fixture.root);
+    let (exit, _, errors) = fixture.integrations(&[
+        "install",
+        "claude-code",
+        "--project",
+        fixture.root_arg(),
+        "--dry-run",
+        "--json",
+    ]);
+    // Planning stops at the pending journal; recovery (which would read,
+    // replay, or reject it) is never attempted by a dry run.
+    assert_eq!(exit, CliExitCode::Failure);
+    assert!(errors.contains("pending_recovery"), "{errors}");
+    assert_eq!(files_under(&fixture.root), before);
+    assert!(!fixture.environment_data_written());
+}
+
+#[test]
+fn test_status_says_an_out_of_date_skill_is_installed() {
+    let fixture = Fixture::new();
+    fixture.install(&[]);
+    let skill = fixture.root.join(".claude/skills/compresso/SKILL.md");
+    let text = fs::read_to_string(&skill).expect("skill");
+    fs::write(&skill, text.replace("only with --session-tools", "not")).expect("older skill");
+    let (_, human, _) =
+        fixture.integrations_raw(&["status", "claude-code", "--project", fixture.root_arg()]);
+    assert!(
+        human.contains("session commands: installed, out of date; re-install to update"),
+        "{human}"
+    );
 }
 
 #[test]

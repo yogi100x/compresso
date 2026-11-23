@@ -293,9 +293,9 @@ async fn test_lean_profile_with_operator_enabled_recall_serves_recall_last() {
 }
 
 /// E17-51 (D116): `--session-tools` adds exactly the two tools the
-/// `/compresso` session commands call, after the lean tools, and leaves the
-/// lean instructions byte-identical, so the main-session default keeps the
-/// lean behaviour while `/compresso stats` and `/compresso status` work.
+/// `/compresso` session commands call, after the lean tools; the lean
+/// instructions change only their first sentence, to say what
+/// `compresso_report` writes.
 #[tokio::test]
 async fn test_lean_session_tools_add_stats_and_report_and_keep_the_lean_instructions() {
     let mut harness = Harness::start_with(McpToolProfile::Lean, true, true, true).await;
@@ -326,7 +326,23 @@ async fn test_lean_session_tools_add_stats_and_report_and_keep_the_lean_instruct
 
     let (_, lean) = compresso_mcp::advertised_surface_with(McpToolProfile::Lean, true, true);
     let (session, instructions) = compresso_mcp::advertised_lean_session_surface(true, true);
-    assert_eq!(instructions, lean);
+    // Only the first sentence changes, to say what compresso_report writes.
+    assert_ne!(instructions, lean);
+    assert!(
+        instructions.contains(
+            "compresso_report saves a report under Compresso's data directory when asked."
+        )
+    );
+    assert_eq!(
+        instructions.split_once(" Use these tools").unwrap().1,
+        lean.split_once(" Use these tools").unwrap().1
+    );
+    let (_, read_only) = compresso_mcp::advertised_lean_session_surface(false, false);
+    assert!(!read_only.contains("read-only"), "{read_only}");
+    assert!(
+        read_only.contains("writes no repository file"),
+        "{read_only}"
+    );
     assert_eq!(
         session
             .iter()

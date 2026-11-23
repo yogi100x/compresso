@@ -117,6 +117,18 @@ pub enum ConfigFormat {
 pub const UNMODIFIED_FILE_REMOVED_BACKUP_SENTINEL: &str =
     "(none: unmodified Compresso file removed)";
 
+/// Backup sentinel for a change to a file whose copies Compresso must not
+/// keep (E17-51, D116: the personal `.claude/settings.local.json`, which may
+/// hold secrets). The splice is exactly reversible, the write is atomic, and
+/// apply refuses a file that changed since the plan, so no copy is written.
+pub const NO_BACKUP_KEPT_SENTINEL: &str = "(none: no copy kept of a personal settings file)";
+
+/// Backup sentinel for replacing a whole owned file whose bytes are exactly a
+/// render this Compresso version writes: nothing user-authored is lost, so
+/// no copy is left beside it (E17-51).
+pub const UNMODIFIED_FILE_REPLACED_BACKUP_SENTINEL: &str =
+    "(none: unmodified Compresso file replaced)";
+
 /// The file state a plan produces: a whole-file Markdown target that is
 /// empty means the file is deleted. So does an empty JSON target, which
 /// [`validate_request`] allows only for an uninstall that leaves a file
@@ -364,6 +376,21 @@ pub struct MutationPlanPreview<'a> {
 }
 
 impl MutationPlan {
+    /// The `mcpServers.compresso.args` a JSON plan writes, if any, so a
+    /// caller can compare them with the entry it replaces (E17-51).
+    pub fn target_server_args(&self) -> Option<Vec<String>> {
+        if self.config_format != ConfigFormat::Json {
+            return None;
+        }
+        let document: serde_json::Value =
+            serde_json::from_str(strip_bom_str(&self.target_contents)).ok()?;
+        document["mcpServers"]["compresso"]["args"]
+            .as_array()?
+            .iter()
+            .map(|value| value.as_str().map(str::to_owned))
+            .collect()
+    }
+
     /// Whether applying this plan deletes the target file.
     pub fn removes_file(&self) -> bool {
         matches!(
@@ -650,9 +677,25 @@ impl PlanManager {
 
     /// Issues a short-lived preview bound to the current full target state.
     #[allow(dead_code)] // Called by the adapter modules added in E6-02..04.
-    pub(crate) fn issue(
+    pub(crate) fn issue(&self, request: MutationRequest) -> Result<MutationPlan, IntegrationError> {
+        self.issue_with_backup(request, None)
+    }
+
+    /// [`Self::issue`] for a change of which no backup copy is written: the
+    /// plan records `sentinel` ([`NO_BACKUP_KEPT_SENTINEL`] or
+    /// [`UNMODIFIED_FILE_REPLACED_BACKUP_SENTINEL`]) instead of a path.
+    pub(crate) fn issue_without_backup(
+        &self,
+        request: MutationRequest,
+        sentinel: &'static str,
+    ) -> Result<MutationPlan, IntegrationError> {
+        self.issue_with_backup(request, Some(sentinel))
+    }
+
+    fn issue_with_backup(
         &self,
         mut request: MutationRequest,
+        no_backup: Option<&'static str>,
     ) -> Result<MutationPlan, IntegrationError> {
         validate_request(&request)?;
         if journal_path(&request.config_path).exists() {
@@ -694,6 +737,8 @@ impl PlanManager {
             // Ownership semantics allow deletion only while the file still
             // equals the installed bytes.
             UNMODIFIED_FILE_REMOVED_BACKUP_SENTINEL.to_owned()
+        } else if let Some(sentinel) = no_backup {
+            sentinel.to_owned()
         } else {
             planned_backup_path(&request.config_path, issued_at)?
                 .to_string_lossy()
@@ -1696,7 +1741,10 @@ fn ensure_backup(commit: &PendingCommit) -> Result<(), IntegrationError> {
     let Some(base_contents) = &commit.base_contents else {
         return Ok(());
     };
-    if commit.plan.backup_path == UNMODIFIED_FILE_REMOVED_BACKUP_SENTINEL {
+    if commit.plan.backup_path == UNMODIFIED_FILE_REMOVED_BACKUP_SENTINEL
+        || commit.plan.backup_path == NO_BACKUP_KEPT_SENTINEL
+        || commit.plan.backup_path == UNMODIFIED_FILE_REPLACED_BACKUP_SENTINEL
+    {
         return Ok(());
     }
     let path = PathBuf::from(&commit.plan.backup_path);
@@ -2334,9 +2382,18 @@ fn safe_args_value(all_arguments: &[&str]) -> String {
         }
         _ => all_arguments,
     };
-    // So are the main-session profile flags and `--edits` (E17-51), in the
-    // order an adapter writes them.
+    // So are the main-session profile flags, `--edits`, and `--sql-env`
+    // with its variable name redacted (E17-51), in the order an adapter
+    // writes them.
     let mut arguments = arguments;
+    let mut sql_name = None;
+    if let [base @ .., flag, name] = arguments
+        && *flag == crate::server_entry::SQL_ENV_FLAG
+        && crate::server_entry::is_sql_env_name(name)
+    {
+        arguments = base;
+        sql_name = Some(*name);
+    }
     if let [base @ .., flag] = arguments
         && *flag == crate::server_entry::EDITS_FLAG
     {
@@ -2358,7 +2415,13 @@ fn safe_args_value(all_arguments: &[&str]) -> String {
         "[{}]",
         all_arguments
             .iter()
-            .map(|value| quoted_preview_value(value))
+            .map(|value| {
+                if sql_name == Some(*value) {
+                    redacted_preview_value()
+                } else {
+                    quoted_preview_value(value)
+                }
+            })
             .collect::<Vec<_>>()
             .join(", ")
     )

@@ -33,6 +33,7 @@ use serde_json::Value;
 
 use crate::main_agent::{MAIN_AGENT_NAME, check_path_types, checked_project_claude_dir};
 use crate::plan::MutationRequest;
+use crate::plan::NO_BACKUP_KEPT_SENTINEL;
 use crate::receipt::CREATED_FILE_BACKUP_SENTINEL;
 use crate::text_fidelity::strip_bom_str;
 use crate::{
@@ -169,17 +170,20 @@ impl Integration for MainAgentSettingIntegration {
                 }
             }
         };
-        manager.issue(MutationRequest {
-            operation: MutationKind::Install,
-            client: CLIENT_ID.to_owned(),
-            config_path,
-            config_format: ConfigFormat::Json,
-            target_contents,
-            owned_paths: vec![AGENT_SETTING_KEY.to_owned()],
-            compresso_version: self.compresso_version.clone(),
-            prior_receipt: None,
-            warnings: Vec::new(),
-        })
+        manager.issue_without_backup(
+            MutationRequest {
+                operation: MutationKind::Install,
+                client: CLIENT_ID.to_owned(),
+                config_path,
+                config_format: ConfigFormat::Json,
+                target_contents,
+                owned_paths: vec![AGENT_SETTING_KEY.to_owned()],
+                compresso_version: self.compresso_version.clone(),
+                prior_receipt: None,
+                warnings: Vec::new(),
+            },
+            NO_BACKUP_KEPT_SENTINEL,
+        )
     }
 
     fn verify(&self, scope: &Scope) -> VerificationReport {
@@ -231,17 +235,20 @@ impl Integration for MainAgentSettingIntegration {
                 (text, vec![format!("key_modified:{AGENT_SETTING_KEY}")])
             }
         };
-        manager.issue(MutationRequest {
-            operation: MutationKind::Uninstall,
-            client: CLIENT_ID.to_owned(),
-            config_path,
-            config_format: ConfigFormat::Json,
-            target_contents,
-            owned_paths: vec![AGENT_SETTING_KEY.to_owned()],
-            compresso_version: receipt.compresso_version.clone(),
-            prior_receipt: Some(receipt.clone()),
-            warnings,
-        })
+        manager.issue_without_backup(
+            MutationRequest {
+                operation: MutationKind::Uninstall,
+                client: CLIENT_ID.to_owned(),
+                config_path,
+                config_format: ConfigFormat::Json,
+                target_contents,
+                owned_paths: vec![AGENT_SETTING_KEY.to_owned()],
+                compresso_version: receipt.compresso_version.clone(),
+                prior_receipt: Some(receipt.clone()),
+                warnings,
+            },
+            NO_BACKUP_KEPT_SENTINEL,
+        )
     }
 }
 
@@ -351,7 +358,6 @@ struct Member {
 #[derive(Debug)]
 struct Members {
     open: usize,
-    close: usize,
     members: Vec<Member>,
 }
 
@@ -366,11 +372,7 @@ fn scan_members(text: &str) -> Option<Members> {
     at = skip_whitespace(bytes, at + 1);
     let mut members = Vec::new();
     if bytes.get(at) == Some(&b'}') {
-        return Some(Members {
-            open,
-            close: at,
-            members,
-        });
+        return Some(Members { open, members });
     }
     loop {
         let key_start = at;
@@ -393,11 +395,7 @@ fn scan_members(text: &str) -> Option<Members> {
         match bytes.get(at) {
             Some(b',') => at = skip_whitespace(bytes, at + 1),
             Some(b'}') => {
-                return Some(Members {
-                    open,
-                    close: at,
-                    members,
-                });
+                return Some(Members { open, members });
             }
             _ => return None,
         }
@@ -486,9 +484,11 @@ fn insert_agent(path: &Path, text: &str) -> Result<String, IntegrationError> {
     match scanned.members.last() {
         None => {
             let newline = if body.contains("\r\n") { "\r\n" } else { "\n" };
+            // The member goes right after `{` on its own line; whatever
+            // stood between the braces follows it unchanged.
             result.push_str(&body[..=scanned.open]);
             result.push_str(&format!("{newline}  {key}: {value}{newline}"));
-            result.push_str(&body[scanned.close..]);
+            result.push_str(&body[scanned.open + 1..]);
         }
         Some(last) => {
             let separator_start = match scanned.members.len() {
@@ -530,7 +530,16 @@ fn remove_agent(path: &Path, text: &str) -> Result<String, IntegrationError> {
     };
     let count = scanned.members.len();
     let (start, end) = if count == 1 {
-        (scanned.open + 1, scanned.close)
+        // The inverse of inserting into an empty object: the member and the
+        // one line break after it; what stood between the braces stays.
+        let value_end = scanned.members[index].value_end;
+        let rest = &body[value_end..];
+        let line_break = if rest.starts_with("\r\n") {
+            2
+        } else {
+            usize::from(rest.starts_with('\n'))
+        };
+        (scanned.open + 1, value_end + line_break)
     } else if index + 1 == count {
         // The last member: from the end of the previous value.
         (
@@ -656,6 +665,9 @@ mod tests {
             "\u{feff}{\n  \"bom\": 1\n}\n",
             "{}\n",
             "{}",
+            "{ }\n",
+            "{\n}\n",
+            "{\r\n}\r\n",
         ] {
             let harness = Harness::new();
             fs::write(harness.path(), original).unwrap();
@@ -678,6 +690,74 @@ mod tests {
             // A file the user had is never deleted; its bytes come back.
             assert_eq!(harness.read(), original);
         }
+    }
+
+    /// The exact bytes the splice writes, not checked against its inverse.
+    #[test]
+    fn test_the_inserted_member_copies_the_file_layout_exactly() {
+        for (original, expected) in [
+            (
+                "{\n  \"model\": \"x\"\n}\n",
+                "{\n  \"model\": \"x\",\n  \"agent\": \"compresso-main\"\n}\n",
+            ),
+            (
+                "{\n\t\"a\": 1,\n\t\"b\": 2\n}",
+                "{\n\t\"a\": 1,\n\t\"b\": 2,\n\t\"agent\": \"compresso-main\"\n}",
+            ),
+            (
+                "{\"z\":true,\"y\":null}\n",
+                "{\"z\":true,\"y\":null,\"agent\":\"compresso-main\"}\n",
+            ),
+            (
+                "{ \"spaced\" :  \"v\" }",
+                "{ \"spaced\" :  \"v\", \"agent\" :  \"compresso-main\" }",
+            ),
+            (
+                "{\r\n  \"c\": 1\r\n}\r\n",
+                "{\r\n  \"c\": 1,\r\n  \"agent\": \"compresso-main\"\r\n}\r\n",
+            ),
+            ("{}", "{\n  \"agent\": \"compresso-main\"\n}"),
+            ("{ }\n", "{\n  \"agent\": \"compresso-main\"\n }\n"),
+        ] {
+            let harness = Harness::new();
+            fs::write(harness.path(), original).unwrap();
+            harness.install().expect("install");
+            assert_eq!(harness.read(), expected, "{original:?}");
+        }
+    }
+
+    #[test]
+    fn test_a_settings_file_over_one_mebibyte_is_refused() {
+        let harness = Harness::new();
+        let padding = "x".repeat(1024 * 1024);
+        let original = format!("{{\"pad\": \"{padding}\"}}");
+        fs::write(harness.path(), &original).unwrap();
+        let error = harness.plan().expect_err("refused").to_string();
+        assert!(error.contains("too large"), "{error}");
+        // Just under the limit is read.
+        let harness = Harness::new();
+        let padding = "x".repeat(1024 * 1024 - 20);
+        fs::write(harness.path(), format!("{{\"pad\": \"{padding}\"}}")).unwrap();
+        harness.plan().expect("read");
+    }
+
+    #[test]
+    fn test_no_backup_copy_of_the_settings_file_is_ever_written() {
+        let mut harness = Harness::new();
+        fs::write(harness.path(), "{\"env\": {\"TOKEN\": \"secret\"}}\n").unwrap();
+        let receipt = harness.install().expect("install");
+        assert_eq!(receipt.backup_path, crate::NO_BACKUP_KEPT_SENTINEL);
+        harness.uninstall(&receipt);
+        // A fresh plan session, so the second plan's hash is new.
+        harness.manager = PlanManager::new("second-cycle").expect("manager");
+        let receipt = harness.install().expect("install again");
+        harness.uninstall(&receipt);
+        let names = fs::read_dir(harness.project.join(".claude"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["settings.local.json"]);
+        assert_eq!(harness.read(), "{\"env\": {\"TOKEN\": \"secret\"}}\n");
     }
 
     #[test]

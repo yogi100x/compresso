@@ -54,8 +54,9 @@ pub use main_agent_setting::{
 pub use plan::{
     ApplyReport, ConfigFormat, DeferredInstallApplyReport, DeferredInstallAuthorization, Detection,
     InstallCtx, IntegrationError, MutationKind, MutationPlan, MutationPlanPreview,
-    OwnedKeyMutation, PLAN_SCHEMA_VERSION, PLAN_TTL_SECONDS, PlanApproval, PlanClock, PlanManager,
-    RestoreReport, Scope, SystemPlanClock, UNMODIFIED_FILE_REMOVED_BACKUP_SENTINEL,
+    NO_BACKUP_KEPT_SENTINEL, OwnedKeyMutation, PLAN_SCHEMA_VERSION, PLAN_TTL_SECONDS, PlanApproval,
+    PlanClock, PlanManager, RestoreReport, Scope, SystemPlanClock,
+    UNMODIFIED_FILE_REMOVED_BACKUP_SENTINEL, UNMODIFIED_FILE_REPLACED_BACKUP_SENTINEL,
     VerificationCheck, VerificationReport,
 };
 pub use receipt::{

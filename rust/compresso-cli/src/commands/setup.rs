@@ -193,13 +193,6 @@ fn execute_inner(
     )
     .map_err(SetupCliError::index)?;
     let clock = runtime.plan_clock();
-    // The default main-session agent (E17-51, D116), Claude Code only.
-    let entry = SetupEntry {
-        main_agent: arguments.client == SetupClientArg::ClaudeCode && !arguments.no_main_agent,
-        edits: arguments.client == SetupClientArg::ClaudeCode
-            && !arguments.no_main_agent
-            && !arguments.no_edits,
-    };
     if arguments.client != SetupClientArg::ClaudeCode
         && (arguments.no_main_agent || arguments.no_edits)
     {
@@ -208,6 +201,52 @@ fn execute_inner(
                 reason: "--no-main-agent and --no-edits apply to claude-code only".to_owned(),
             },
         )));
+    }
+    // The default main-session agent (E17-51, D116), Claude Code only. The
+    // agent file, the `agent` key, and the entry always agree: when the
+    // agent is not installed in full (--no-main-agent, a user file, another
+    // `agent` value), the entry is written as --no-main-agent writes it and
+    // an agent an earlier install wrote is removed through its receipts.
+    let wanted = SetupEntry {
+        main_agent: arguments.client == SetupClientArg::ClaudeCode && !arguments.no_main_agent,
+        edits: arguments.client == SetupClientArg::ClaudeCode
+            && !arguments.no_main_agent
+            && !arguments.no_edits,
+    };
+    let mut main_agent_warnings = Vec::new();
+    let mut main_agent = MainAgentCompanion::default();
+    if wanted.main_agent {
+        main_agent = plan_setup_main_agent(
+            &root,
+            wanted,
+            !arguments.no_recall,
+            environment,
+            runtime.hook_plan_clock(),
+            true,
+            false,
+            &mut main_agent_warnings,
+        )
+        .map_err(SetupCliError::integration)?
+        .0;
+    }
+    let entry = if main_agent.is_complete() {
+        wanted
+    } else {
+        SetupEntry::default()
+    };
+    if arguments.client == SetupClientArg::ClaudeCode && !entry.main_agent {
+        main_agent = plan_setup_main_agent(
+            &root,
+            entry,
+            !arguments.no_recall,
+            environment,
+            runtime.hook_plan_clock(),
+            true,
+            true,
+            &mut main_agent_warnings,
+        )
+        .map_err(SetupCliError::integration)?
+        .0;
     }
     let prepared = prepare_setup_install(
         arguments.client.integration_client(),
@@ -218,22 +257,6 @@ fn execute_inner(
         Arc::clone(&clock),
     )
     .map_err(SetupCliError::integration)?;
-    let mut main_agent_warnings = Vec::new();
-    let main_agent = if entry.main_agent {
-        plan_setup_main_agent(
-            &root,
-            entry,
-            !arguments.no_recall,
-            environment,
-            runtime.hook_plan_clock(),
-            true,
-            &mut main_agent_warnings,
-        )
-        .map_err(SetupCliError::integration)?
-        .0
-    } else {
-        MainAgentCompanion::default()
-    };
     let (hook_preview, hook_prepared) =
         plan_compaction_hook(&arguments, &root, environment, runtime.hook_plan_clock());
     // The hook is user-level; a hook an earlier version installed in this
@@ -903,7 +926,7 @@ fn render_plan_with_hook(
     if !plan.main_agent.is_empty() {
         writeln!(
             output,
-            "Main-session agent for this project (skip with --no-main-agent):"
+            "Main-session agent for this project (skip with --no-main-agent; removal when it is not installed):"
         )
         .map_err(SetupCliError::io)?;
         plan.main_agent

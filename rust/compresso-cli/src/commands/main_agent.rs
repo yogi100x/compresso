@@ -50,6 +50,15 @@ impl MainAgentCompanion {
         self.steps.is_empty()
     }
 
+    /// Whether both the agent file and the `agent` key are planned: only
+    /// then may the entry serve the main-session profile.
+    pub(crate) fn is_complete(&self) -> bool {
+        !self.removal
+            && ["main_agent", "main_agent_setting"]
+                .iter()
+                .all(|label| self.steps.iter().any(|step| step.label == *label))
+    }
+
     /// Whether the steps install (not remove) the main-session agent.
     pub(crate) fn installs(&self) -> bool {
         !self.removal
@@ -102,8 +111,9 @@ impl MainAgentCompanion {
         )
     }
 
-    /// Applies every step in order. A failure is reported, never raised, and
-    /// an agent file that failed to install stops the settings key.
+    /// Applies every step in order. A failure is reported, never raised. An
+    /// agent file that failed to install stops the settings key; a key that
+    /// could not be removed keeps the agent file it names.
     pub(crate) fn apply(
         &self,
         manager: &PlanManager,
@@ -112,16 +122,24 @@ impl MainAgentCompanion {
         let install = !self.removal;
         let mut outcomes = Vec::new();
         for step in &self.steps {
-            if install
-                && step.label == "main_agent_setting"
-                && outcomes
-                    .iter()
-                    .any(|(_, outcome)| matches!(outcome, StepOutcome::Failed(_)))
-            {
+            let earlier_failed = outcomes
+                .iter()
+                .any(|(_, outcome)| matches!(outcome, StepOutcome::Failed(_)));
+            if earlier_failed && install && step.label == "main_agent_setting" {
                 outcomes.push((
                     step.label,
                     StepOutcome::Failed(
                         "not set because the agent file was not installed".to_owned(),
+                    ),
+                ));
+                continue;
+            }
+            if earlier_failed && !install && step.label == "main_agent" {
+                outcomes.push((
+                    step.label,
+                    StepOutcome::Failed(
+                        "kept because the \"agent\" setting that names it was not removed"
+                            .to_owned(),
                     ),
                 ));
                 continue;
@@ -253,7 +271,7 @@ fn plan_install_checked(
         }),
         Err(IntegrationError::UserFilePresent { path }) => {
             warnings.push(format!(
-                "main_agent_skipped: {} is a file Compresso did not write, so it is left unchanged and the \"agent\" setting is not added; the MCP entry is installed",
+                "main_agent_skipped: {} is a file Compresso did not write, so it is left unchanged, the \"agent\" setting is not added, and the MCP entry is written as --no-main-agent writes it (full profile); to get the default, move that file away and install again",
                 path.display()
             ));
             return Ok(companion);
@@ -262,7 +280,7 @@ fn plan_install_checked(
     }
     if let Some(value) = foreign {
         warnings.push(format!(
-            "main_agent_setting_skipped: {} already sets \"agent\" to {value}; Compresso never overwrites it. To use the Compresso main-session agent, set \"agent\" to \"{MAIN_AGENT_NAME}\" yourself or start Claude Code with --agent {MAIN_AGENT_NAME}",
+            "main_agent_setting_skipped: {} already sets \"agent\" to {value}; Compresso never overwrites it, so the main-session agent is not installed and the MCP entry is written as --no-main-agent writes it (full profile); to get the default, remove that \"agent\" value and install again",
             setting_path.display()
         ));
         return Ok(companion);
@@ -304,15 +322,30 @@ pub(crate) fn plan_uninstall(
             ("main_agent", Box::new(agent), agent_path),
         ]
     };
+    let mut setting_kept = false;
     for (label, adapter, path) in adapters {
         let Ok(path) = path else {
             continue;
         };
+        if label == "main_agent" && setting_kept {
+            if receipts
+                .active_for(adapter.client_id(), &path)
+                .ok()
+                .flatten()
+                .is_some()
+            {
+                warnings.push(
+                    "main_agent_not_removed: the \"agent\" setting that names it could not be removed, so the agent file is kept too".to_owned(),
+                );
+            }
+            continue;
+        }
         if !dry_run && let Err(error) = manager.recover(&path, receipts) {
             warnings.push(format!(
                 "{label}_not_removed: {}",
                 IntegrationCliError::from(error).message
             ));
+            setting_kept |= label == "main_agent_setting";
             continue;
         }
         let Some(receipt) = receipts
@@ -328,10 +361,13 @@ pub(crate) fn plan_uninstall(
                 adapter,
                 plan,
             }),
-            Err(error) => warnings.push(format!(
-                "{label}_not_removed: {}",
-                IntegrationCliError::from(error).message
-            )),
+            Err(error) => {
+                warnings.push(format!(
+                    "{label}_not_removed: {}",
+                    IntegrationCliError::from(error).message
+                ));
+                setting_kept |= label == "main_agent_setting";
+            }
         }
     }
     companion
@@ -339,33 +375,19 @@ pub(crate) fn plan_uninstall(
 
 /// A one-line warning when `root` is a git repository whose rules (its own
 /// `.gitignore` files, `info/exclude`, or the user's global excludes file)
-/// do not ignore `.claude/settings.local.json`, or the timestamped backups
-/// Compresso keeps beside it (`settings.local.json.compresso-backup-*`).
-/// Nothing is changed.
+/// do not ignore `.claude/settings.local.json`. Nothing is changed.
 pub(crate) fn settings_not_ignored_warning(root: &Path) -> Option<String> {
     if !root.join(".git").exists() {
         return None;
     }
-    let ignored = |relative: &Path| {
-        compresso_atlas::is_scanner_excluded(root, relative)
-            || compresso_atlas::is_globally_git_ignored(relative)
-    };
-    let file = ignored(Path::new(LOCAL_SETTINGS_FILE));
-    let backups = ignored(Path::new(&format!(
-        "{LOCAL_SETTINGS_FILE}.compresso-backup-2000-01-01T00-00-00Z"
-    )));
-    let what = match (file, backups) {
-        (true, true) => return None,
-        (false, true) => LOCAL_SETTINGS_FILE.to_owned(),
-        (true, false) => format!(
-            "the backups Compresso keeps beside {LOCAL_SETTINGS_FILE} when it changes an existing file ({LOCAL_SETTINGS_FILE}.compresso-backup-*)"
-        ),
-        (false, false) => format!(
-            "{LOCAL_SETTINGS_FILE} or the backups Compresso keeps beside it when it changes an existing file ({LOCAL_SETTINGS_FILE}.compresso-backup-*)"
-        ),
-    };
+    let relative = Path::new(LOCAL_SETTINGS_FILE);
+    if compresso_atlas::is_scanner_excluded(root, relative)
+        || compresso_atlas::is_globally_git_ignored(relative)
+    {
+        return None;
+    }
     Some(format!(
-        "settings_local_not_ignored: this git repository does not ignore {what}; the file names your personal agent. Add `{LOCAL_SETTINGS_FILE}*` to .gitignore if they should not be committed"
+        "settings_local_not_ignored: this git repository does not ignore {LOCAL_SETTINGS_FILE}, which now names your personal agent; Compresso did not edit .gitignore: add the file there yourself if it should not be committed"
     ))
 }
 
@@ -389,30 +411,153 @@ pub(crate) fn verify_checks(
     }
     let mut checks = agent.verify(scope).checks;
     checks.extend(setting.verify(scope).checks);
-    // The entry serves the main-session profile, or the full profile when
-    // it carries --sql-env (the lean profile never serves the SQL tool).
-    let profile = entry_args.is_some_and(|args| {
-        server_serves_lean_session(args) || compresso_integrations::server_sql_env(args).is_some()
-    });
+    // Since the E17-51 review the agent runs only against the lean session
+    // profile, with --edits when its body names the edit tool.
+    let lean = entry_args.is_some_and(server_serves_lean_session);
     let edits = entry_args.is_some_and(server_enables_edits);
-    // An agent told to use compresso_edit needs a server that serves it.
     let edit_body = agent
         .config_path(scope)
         .ok()
         .and_then(|path| std::fs::read_to_string(path).ok())
         .is_some_and(|text| text == MainAgentIntegration::render(true));
-    let profile = profile && (edits || !edit_body);
+    let fix = "run `compresso integrations install claude-code --project DIR` to restore the default, or add --no-main-agent to remove the agent";
+    let (passed, detail) = if entry_args.is_none() {
+        (
+            false,
+            format!(
+                "the main-session agent is installed but the project has no readable compresso entry; {fix}"
+            ),
+        )
+    } else if !lean {
+        (
+            false,
+            format!(
+                "mismatch: the main-session agent is installed but the compresso entry serves the full profile, not --tools lean --session-tools; {fix}"
+            ),
+        )
+    } else if edit_body && !edits {
+        (
+            false,
+            format!(
+                "mismatch: the agent file tells the model to use compresso_edit but the compresso entry has no --edits; {fix}"
+            ),
+        )
+    } else {
+        (
+            true,
+            format!(
+                "the compresso entry serves the main-session profile {} compresso_edit, as the agent file expects",
+                if edits { "with" } else { "without" }
+            ),
+        )
+    };
     checks.push(VerificationCheck {
         name: "main_agent_server_profile".to_owned(),
-        passed: profile,
-        detail: if profile {
-            format!(
-                "the project's compresso entry serves the main-session profile ({})",
-                if edits { "with compresso_edit" } else { "without compresso_edit" }
-            )
-        } else {
-            "the project's compresso entry does not serve the main-session profile (--tools lean --session-tools, and --edits when the agent file uses compresso_edit); reinstall with `compresso integrations install claude-code --project DIR`".to_owned()
-        },
+        passed,
+        detail,
     });
     checks
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use compresso_integrations::MemoryReceiptStore;
+
+    use super::*;
+
+    /// The key is never written when the agent file step failed at apply
+    /// time, even though both were planned (E17-51 review, mutation M14).
+    #[test]
+    fn test_the_key_is_not_applied_after_the_agent_file_failed() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let base = fs::canonicalize(directory.path()).expect("canonical");
+        let home = base.join("home");
+        let project = base.join("project");
+        fs::create_dir_all(&home).expect("home");
+        fs::create_dir_all(&project).expect("project");
+        let launcher = base.join("compresso");
+        fs::write(&launcher, "").expect("launcher");
+        let manager = PlanManager::new("main-agent-apply-test").expect("manager");
+        let receipts = MemoryReceiptStore::default();
+        let scope = Scope::Project(project.clone());
+        let companion = plan_install(
+            &home,
+            &scope,
+            true,
+            &manager,
+            &receipts,
+            &launcher,
+            true,
+            false,
+            &mut Vec::new(),
+        )
+        .expect("plan");
+        assert!(companion.is_complete());
+        // The agent file changes between the preview and the apply.
+        let agent = project.join(".claude/agents/compresso-main.md");
+        fs::create_dir_all(agent.parent().unwrap()).expect("agents dir");
+        fs::write(&agent, "mine\n").expect("user file");
+        let outcomes = companion.apply(&manager, &receipts);
+        assert!(matches!(
+            outcomes[0],
+            ("main_agent", StepOutcome::Failed(_))
+        ));
+        assert!(matches!(
+            outcomes[1],
+            ("main_agent_setting", StepOutcome::Failed(_))
+        ));
+        assert!(!project.join(".claude/settings.local.json").exists());
+        assert_eq!(fs::read_to_string(&agent).unwrap(), "mine\n");
+    }
+
+    /// A key whose removal fails at apply time keeps the agent file it
+    /// names (E17-51 review).
+    #[test]
+    fn test_the_agent_file_is_kept_when_the_key_removal_failed() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let base = fs::canonicalize(directory.path()).expect("canonical");
+        let home = base.join("home");
+        let project = base.join("project");
+        fs::create_dir_all(&home).expect("home");
+        fs::create_dir_all(&project).expect("project");
+        let launcher = base.join("compresso");
+        fs::write(&launcher, "").expect("launcher");
+        let manager = PlanManager::new("main-agent-removal-test").expect("manager");
+        let receipts = MemoryReceiptStore::default();
+        let scope = Scope::Project(project.clone());
+        let install = plan_install(
+            &home,
+            &scope,
+            true,
+            &manager,
+            &receipts,
+            &launcher,
+            true,
+            false,
+            &mut Vec::new(),
+        )
+        .expect("plan");
+        install.apply(&manager, &receipts);
+        let removal = plan_uninstall(&home, &scope, &manager, &receipts, false, &mut Vec::new());
+        assert_eq!(removal.steps.len(), 2);
+        // The settings file changes between the preview and the apply.
+        let settings = project.join(".claude/settings.local.json");
+        fs::write(
+            &settings,
+            "{\"agent\": \"compresso-main\", \"model\": \"x\"}\n",
+        )
+        .unwrap();
+        let outcomes = removal.apply(&manager, &receipts);
+        assert!(matches!(
+            outcomes[0],
+            ("main_agent_setting", StepOutcome::Failed(_))
+        ));
+        assert!(matches!(
+            outcomes[1],
+            ("main_agent", StepOutcome::Failed(_))
+        ));
+        assert!(project.join(".claude/agents/compresso-main.md").is_file());
+    }
 }

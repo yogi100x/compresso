@@ -358,8 +358,11 @@ pub(crate) fn prepare_setup_install(
 }
 
 /// Plans setup's main-session agent step (E17-51) without writing
-/// anything, for the combined preview. A hard refusal fails setup before it
-/// changes anything; skips are warnings.
+/// anything, for the combined preview: installing it, or (`remove`, for
+/// `--no-main-agent` or a skipped step) removing what earlier receipts
+/// cover. A hard refusal fails setup before it changes anything; skips are
+/// warnings.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_setup_main_agent(
     root: &Path,
     entry: SetupEntry,
@@ -367,12 +370,24 @@ pub(crate) fn plan_setup_main_agent(
     environment: &IntegrationEnvironment,
     clock: Arc<dyn PlanClock>,
     dry_run: bool,
+    remove: bool,
     warnings: &mut Vec<String>,
 ) -> Result<(super::main_agent::MainAgentCompanion, PlanManager), IntegrationCliError> {
     let scope = resolve_scope(Some(root), &environment.cwd)?;
     let launcher_path = validate_stable_launcher(environment.compresso_bin.clone())?;
     let manager = PlanManager::with_clock(&environment.session_id, clock)?;
     let receipts = FileReceiptStore::new(environment.receipt_store_path());
+    if remove {
+        let companion = super::main_agent::plan_uninstall(
+            &environment.home_dir,
+            &scope,
+            &manager,
+            &receipts,
+            dry_run,
+            warnings,
+        );
+        return Ok((companion, manager));
+    }
     let companion = super::main_agent::plan_install(
         &environment.home_dir,
         &scope,
@@ -384,10 +399,7 @@ pub(crate) fn plan_setup_main_agent(
         dry_run,
         warnings,
     )?;
-    if companion
-        .steps
-        .iter()
-        .any(|step| step.label == "main_agent_setting")
+    if companion.is_complete()
         && let Some(warning) = super::main_agent::settings_not_ignored_warning(&scope_root(&scope))
     {
         warnings.push(warning);
@@ -417,6 +429,7 @@ pub(crate) fn apply_setup_main_agent(
         environment,
         clock,
         false,
+        !previewed.installs(),
         &mut Vec::new(),
     );
     let (companion, manager) = match planned {
@@ -900,10 +913,24 @@ fn execute_mutation(
     } else {
         (requested_scope, None)
     };
+    let manager = PlanManager::new(&environment.session_id)?;
+    let receipts = FileReceiptStore::new(environment.receipt_store_path());
+    let launcher_path = match action {
+        MutationAction::Install => {
+            Some(validate_stable_launcher(environment.compresso_bin.clone())?)
+        }
+        MutationAction::Uninstall => None,
+    };
     // The default main-session agent (E17-51, D116): a plain Claude Code
-    // project install adds it unless --no-main-agent; its entry serves the
-    // main-session profile with the edit tool unless --no-edits.
-    let main_agent = action == MutationAction::Install && main_agent_default(&arguments, &scope);
+    // project install adds it unless --no-main-agent or --sql-env; its entry
+    // serves the main-session profile with the edit tool unless --no-edits.
+    // The agent file, the `agent` key, and the entry always agree: when the
+    // agent cannot be installed in full, the entry is written exactly as
+    // --no-main-agent writes it and any agent an earlier install left is
+    // removed through its receipts. Everything is planned before any write.
+    let project_entry = arguments.client == IntegrationClientArg::ClaudeCode
+        && plain_entry_change(&arguments)
+        && matches!(scope, Scope::Project(_));
     let mut main_agent_warnings = Vec::new();
     if action == MutationAction::Install
         && arguments.client == IntegrationClientArg::ClaudeCode
@@ -915,12 +942,49 @@ fn execute_mutation(
             "main_agent_not_installed: the main-session agent is a project setting; install with --project DIR to add it to a repository".to_owned(),
         );
     }
-    let edits = arguments.edits || (main_agent && !arguments.no_edits);
-    if main_agent && arguments.sql_env.is_some() {
+    let wants_main_agent = action == MutationAction::Install
+        && main_agent_default(&arguments, &scope)
+        && arguments.sql_env.is_none();
+    if action == MutationAction::Install
+        && main_agent_default(&arguments, &scope)
+        && arguments.sql_env.is_some()
+    {
         main_agent_warnings.push(
-            "main_agent_full_profile: with --sql-env the server keeps the full tool profile (the lean profile never serves compresso_sql), so it serves every Compresso tool and sends JSON results; the main-session agent is installed and uses the same tool names".to_owned(),
+            "main_agent_not_installed: with --sql-env the entry keeps the full tool profile (the lean profile never serves compresso_sql), and the main-session agent was measured only with the lean profile, so it is not installed (an agent an earlier install wrote is removed); install without --sql-env to get the agent and the lean profile instead of the SQL tool".to_owned(),
         );
     }
+    let mut main_agent_companion = if wants_main_agent {
+        super::main_agent::plan_install(
+            &environment.home_dir,
+            &scope,
+            !arguments.no_edits,
+            &manager,
+            &receipts,
+            launcher_path
+                .as_deref()
+                .expect("install actions validate a launcher"),
+            !arguments.no_recall,
+            arguments.dry_run,
+            &mut main_agent_warnings,
+        )?
+    } else {
+        super::main_agent::MainAgentCompanion::default()
+    };
+    let main_agent = wants_main_agent && main_agent_companion.is_complete();
+    if !main_agent && project_entry {
+        // An uninstall, --no-main-agent, --sql-env, or a skipped step: remove
+        // what earlier receipts cover, so no agent runs against an entry that
+        // does not serve its measured profile.
+        main_agent_companion = super::main_agent::plan_uninstall(
+            &environment.home_dir,
+            &scope,
+            &manager,
+            &receipts,
+            arguments.dry_run,
+            &mut main_agent_warnings,
+        );
+    }
+    let edits = arguments.edits || (main_agent && !arguments.no_edits);
     let selected = if arguments.explore_agent {
         SelectedIntegration::explore_agent(arguments.client, environment, &scope, arguments.edits)?
     } else if arguments.session_commands {
@@ -940,14 +1004,6 @@ fn execute_mutation(
             &scope,
             arguments.compaction_hook,
         )?
-    };
-    let manager = PlanManager::new(&environment.session_id)?;
-    let receipts = FileReceiptStore::new(environment.receipt_store_path());
-    let launcher_path = match action {
-        MutationAction::Install => {
-            Some(validate_stable_launcher(environment.compresso_bin.clone())?)
-        }
-        MutationAction::Uninstall => None,
     };
 
     // Recovery can mutate config and receipts, so it is intentionally never
@@ -979,47 +1035,14 @@ fn execute_mutation(
             selected.adapter.plan_uninstall(&manager, &receipt)?
         }
     };
-
-    // Planned before any write: a hard refusal here leaves nothing changed.
-    let main_agent_companion = match action {
-        MutationAction::Install if main_agent => super::main_agent::plan_install(
-            &environment.home_dir,
-            &scope,
-            edits,
-            &manager,
-            &receipts,
-            launcher_path
-                .as_deref()
-                .expect("install actions validate a launcher"),
-            !arguments.no_recall,
-            arguments.dry_run,
-            &mut main_agent_warnings,
-        )?,
-        // An uninstall, or an install with --no-main-agent over a project
-        // that has the agent: remove what its receipts cover, so the agent
-        // never runs against a full-profile entry (E17-51).
-        MutationAction::Uninstall | MutationAction::Install
-            if arguments.client == IntegrationClientArg::ClaudeCode
-                && plain_entry_change(&arguments)
-                && matches!(scope, Scope::Project(_)) =>
-        {
-            super::main_agent::plan_uninstall(
-                &environment.home_dir,
-                &scope,
-                &manager,
-                &receipts,
-                arguments.dry_run,
-                &mut main_agent_warnings,
-            )
-        }
-        _ => super::main_agent::MainAgentCompanion::default(),
-    };
-    if action == MutationAction::Install
-        && main_agent_companion.installs()
-        && main_agent_companion
-            .steps
-            .iter()
-            .any(|step| step.label == "main_agent_setting")
+    if action == MutationAction::Install && arguments.client == IntegrationClientArg::ClaudeCode {
+        main_agent_warnings.extend(removed_entry_flags(
+            &selected.config_path,
+            &plan,
+            &arguments,
+        ));
+    }
+    if main_agent
         && let Scope::Project(root) = &scope
         && let Some(warning) = super::main_agent::settings_not_ignored_warning(root)
     {
@@ -1163,6 +1186,12 @@ fn execute_mutation(
         }
     }
     project_canonical_receipts(&receipts, environment, &mut warnings);
+    if main_agent
+        && let Scope::Project(root) = &scope
+        && let Some(warning) = project_not_indexed_warning(root, environment)
+    {
+        warnings.push(warning);
+    }
     if action == MutationAction::Install && arguments.explore_agent {
         let adapter = ExploreAgentIntegration::new(
             environment.home_dir.clone(),
@@ -1228,6 +1257,84 @@ fn execute_mutation(
             json: arguments.output.json,
         },
     )
+}
+
+/// A warning when the project root is not approved and indexed: the server
+/// then exits at start and the main-session agent falls back to the client's
+/// tools (E17-51 review). Runs after the install, which opens the store
+/// anyway; never during a dry run.
+fn project_not_indexed_warning(
+    root: &Path,
+    environment: &IntegrationEnvironment,
+) -> Option<String> {
+    let canonical = std::fs::canonicalize(root).ok()?;
+    let indexed = Store::open(&environment.database_path())
+        .ok()
+        .and_then(|store| store.repo_by_root(&canonical).ok().flatten())
+        .is_some_and(|record| record.last_indexed_at.is_some());
+    (!indexed).then(|| {
+        format!(
+            "project_not_indexed: {} is not approved and indexed in Compresso, so the server stops at start and the agent tells you to index it; run `compresso index {}` before starting Claude Code",
+            canonical.display(),
+            canonical.display()
+        )
+    })
+}
+
+/// One warning per option the current Claude Code entry starts the server
+/// with that the planned entry drops (E17-51 review): an install never keeps
+/// an opt-in implicitly, so it says what goes and how to keep it. Unknown
+/// flags, such as an opt-in a newer version added, are named generically.
+fn removed_entry_flags(
+    config_path: &Path,
+    plan: &MutationPlan,
+    arguments: &IntegrationMutationArgs,
+) -> Vec<String> {
+    let flags = |args: &[String]| {
+        args.iter()
+            .filter(|arg| arg.starts_with("--") && *arg != "--root")
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let read_args = |bytes: &[u8]| {
+        let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+        serde_json::from_slice::<serde_json::Value>(bytes)
+            .ok()
+            .and_then(|document| {
+                document["mcpServers"]["compresso"]["args"]
+                    .as_array()?
+                    .iter()
+                    .map(|value| value.as_str().map(str::to_owned))
+                    .collect::<Option<Vec<_>>>()
+            })
+    };
+    let Some(old) = std::fs::read(config_path)
+        .ok()
+        .and_then(|bytes| read_args(&bytes))
+    else {
+        return Vec::new();
+    };
+    let Some(new) = plan.target_server_args() else {
+        return Vec::new();
+    };
+    let new = flags(&new);
+    flags(&old)
+        .into_iter()
+        .filter(|flag| !new.contains(flag))
+        .map(|flag| {
+            let keep = match flag.as_str() {
+                "--sql-env" => "pass --sql-env NAME again to keep it".to_owned(),
+                "--edits" if arguments.no_edits => "drop --no-edits to keep it".to_owned(),
+                "--edits" => "pass --edits, or install without --no-main-agent, to keep it".to_owned(),
+                "--recall-source" => "drop --no-recall to keep it".to_owned(),
+                "--tools" | "--session-tools" => "it belongs to the main-session agent, which this install does not install (see the other warnings)".to_owned(),
+                _ => format!("re-run the install with the option that added {flag} to keep it"),
+            };
+            format!(
+                "entry_flag_removed: the current compresso entry starts the server with {flag}; the new entry does not; {keep}"
+            )
+        })
+        .collect()
 }
 
 /// Whether the mutation changes the plain Claude Code MCP entry, not one of
@@ -1340,8 +1447,23 @@ fn execute_status(
     let session_commands = (arguments.client == IntegrationClientArg::ClaudeCode
         && matches!(scope, Scope::Project(_)))
     .then(|| {
-        SelectedIntegration::session_commands(arguments.client, environment, &scope)
-            .is_ok_and(|skill| skill.adapter.verify(&scope).verified)
+        // (installed by Compresso, current with this version)
+        SelectedIntegration::session_commands(arguments.client, environment, &scope).map_or(
+            (false, false),
+            |skill| {
+                let report = skill.adapter.verify(&scope);
+                let passed = |name: &str| {
+                    report
+                        .checks
+                        .iter()
+                        .any(|check| check.name == name && check.passed)
+                };
+                (
+                    passed("session_commands_managed"),
+                    passed("session_commands_current"),
+                )
+            },
+        )
     });
     let server = mcp_server_health(
         arguments.client,
@@ -1363,8 +1485,9 @@ fn execute_status(
                     "mcp_server": server.to_json(),
                 }
             });
-            if let Some(installed) = session_commands {
+            if let Some((installed, current)) = session_commands {
                 document["data"]["session_commands_installed"] = installed.into();
+                document["data"]["session_commands_current"] = current.into();
             }
             document
         })?;
@@ -1384,14 +1507,16 @@ fn execute_status(
             server.state.code(),
             server.detail
         )?;
-        if let Some(installed) = session_commands {
+        if let Some((installed, current)) = session_commands {
             writeln!(
                 output,
                 "session commands: {}",
-                if installed {
-                    "installed (/compresso)"
-                } else {
-                    "not installed (`compresso integrations install claude-code --session-commands --project DIR`)"
+                match (installed, current) {
+                    (true, true) => "installed (/compresso)",
+                    (true, false) =>
+                        "installed, out of date; re-install to update (`compresso integrations install claude-code --project DIR`)",
+                    _ =>
+                        "not installed (`compresso integrations install claude-code --session-commands --project DIR`)",
                 }
             )?;
         }
