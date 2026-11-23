@@ -1,0 +1,35 @@
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_b68a9514da6a1c 3659,3665-3666
+README.md
+  s_f4ca430ed37d9b::t_97e1a375e4e9e7 50-51,55-65,70-75,79-84
+decisions.md
+  s_89a704cfae63f5::t_736bc60ca66bfc 110
+docs/adr/0037-default-main-session-agent.md
+  s_f4ca430ed37d9b::t_a869fe1292ddca 69,80-84,104-139
+docs/plan/04-mcp-and-integrations.md
+  s_f4ca430ed37d9b::t_ed3b825c3a0c6f 52,884-885,888
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "abbaae9f4a2c42de2fc36b7956f687b202e1d986",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_f4ca430ed37d9b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ab0c6ae8c7484240b",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
