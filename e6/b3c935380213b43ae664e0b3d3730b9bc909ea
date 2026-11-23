@@ -1,0 +1,41 @@
+README.md
+  s_89a704cfae63f5::t_cda2e10948100c 87-88
+decisions.md
+  s_89a704cfae63f5::t_d62847da7b5a17 110
+docs/adr/0037-default-main-session-agent.md
+  s_89a704cfae63f5::t_358418f4178e38 218
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_d14400f82fbbfe 767
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_52cbbe8674e353 3705,3707,3710-3712
+rust/compresso-cli/src/commands/integrations.rs
+  s_89a704cfae63f5::t_9e96f509cfd7c8 292-293,301-304,309,319-325,1215-1226
+rust/compresso-cli/src/commands/setup.rs
+  s_89a704cfae63f5::t_2ea5db223b1a62 265-268
+rust/compresso-cli/tests/cli_integrations.rs
+  s_1b3083b6b2059a::t_3a0cc4055798b4 660-661,678,681,800,802-818
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e6b3c935380213b43ae664e0b3d3730b9bc909ea",
+  "prompts": {},
+  "sessions": {
+    "s_1b3083b6b2059a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a5da5ca055198e38d",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
