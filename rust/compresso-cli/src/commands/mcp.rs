@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use compresso_core::{Config, Engine, StreamError, TokenProvider, counter_for};
 use compresso_mcp::{
     McpDeps, McpInputError, McpRecallOptions, McpResultFormat, McpRootError, McpServeOptions,
-    McpToolProfile, SqlSettings,
+    McpToolProfile, MongoSettings, SqlSettings,
 };
 use compresso_recall::{RecallSource, SourceSupport};
 use compresso_store::Store;
@@ -17,6 +17,7 @@ use super::{CliExitCode, McpCommand, write_error};
 /// argument list, so the surface inventory takes the flags from here.
 pub(crate) const SERVE_FLAGS: &[&str] = &[
     "--edits",
+    "--mongo-env",
     "--recall-source",
     "--results",
     "--root",
@@ -24,7 +25,7 @@ pub(crate) const SERVE_FLAGS: &[&str] = &[
     "--tools",
 ];
 
-const USAGE: &str = "mcp serve accepts only optional --root PATH, --recall-source SOURCE, --tools full|lean, --results json|text, --edits, and --sql-env NAME arguments";
+const USAGE: &str = "mcp serve accepts only optional --root PATH, --recall-source SOURCE, --tools full|lean, --results json|text, --edits, --sql-env NAME, and --mongo-env NAME arguments";
 
 /// Operator-supplied `mcp serve` options.
 #[derive(Debug, Default, Eq, PartialEq)]
@@ -42,6 +43,9 @@ struct ServeOptions {
     /// Serve the opt-in read-only SQL tool `compresso_sql`, reading the
     /// database URL from this variable at startup (E17-50, D115).
     sql_env: Option<String>,
+    /// Serve the opt-in read-only MongoDB tool `compresso_mongo`, reading
+    /// the server URL from this variable at startup (E17-52, D117).
+    mongo_env: Option<String>,
 }
 
 pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCode {
@@ -124,6 +128,7 @@ pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCo
         results,
         edits,
         sql_env,
+        mongo_env,
     } = options;
     let recall = if recall_sources.is_empty() {
         None
@@ -153,6 +158,7 @@ pub(super) fn execute(command: McpCommand, errors: &mut impl Write) -> CliExitCo
             // The value is read once, here; it never reaches the
             // configuration, the store, or a log.
             sql: sql_env.as_deref().map(SqlSettings::from_env),
+            mongo: mongo_env.as_deref().map(MongoSettings::from_env),
         },
     ));
     match result {
@@ -247,6 +253,18 @@ fn parse_serve_arguments(arguments: &[OsString]) -> Result<ServeOptions, &'stati
                     "--sql-env requires a variable name matching COMPRESSO_SQL_[A-Z0-9_]+ (the name, never the URL)",
                 )?;
             options.sql_env = Some(name);
+        } else if flag == OsStr::new("--mongo-env") {
+            if options.mongo_env.is_some() {
+                return Err("--mongo-env may be given only once");
+            }
+            let name = inline
+                .or_else(|| arguments.next().cloned())
+                .and_then(|name| name.into_string().ok())
+                .filter(|name| compresso_mcp::is_valid_mongo_env_name(name))
+                .ok_or(
+                    "--mongo-env requires a variable name matching COMPRESSO_MONGO_[A-Z0-9_]+ (the name, never the URL)",
+                )?;
+            options.mongo_env = Some(name);
         } else if flag == OsStr::new("--edits") && inline.is_none() {
             if options.edits {
                 return Err("--edits may be given only once");
@@ -259,6 +277,11 @@ fn parse_serve_arguments(arguments: &[OsString]) -> Result<ServeOptions, &'stati
     if options.sql_env.is_some() && options.tools == McpToolProfile::Lean {
         return Err(
             "--sql-env is not served by the lean tool profile; drop --tools lean to serve compresso_sql",
+        );
+    }
+    if options.mongo_env.is_some() && options.tools == McpToolProfile::Lean {
+        return Err(
+            "--mongo-env is not served by the lean tool profile; drop --tools lean to serve compresso_mongo",
         );
     }
     Ok(options)
@@ -318,6 +341,7 @@ mod tests {
                 results: None,
                 edits: false,
                 sql_env: None,
+                mongo_env: None,
             }
         );
         assert!(parse(&["--recall-source"]).is_err());
@@ -370,6 +394,7 @@ mod tests {
     fn test_every_advertised_serve_flag_is_parsed() {
         for (flag, value) in [
             ("--edits", None),
+            ("--mongo-env", Some("COMPRESSO_MONGO_MAIN")),
             ("--recall-source", Some("codex")),
             ("--results", Some("text")),
             ("--root", Some("/repo")),
@@ -381,7 +406,7 @@ mod tests {
             arguments.extend(value);
             assert!(parse(&arguments).is_ok(), "{flag}");
         }
-        assert_eq!(SERVE_FLAGS.len(), 6);
+        assert_eq!(SERVE_FLAGS.len(), 7);
     }
 
     #[test]
@@ -429,6 +454,45 @@ mod tests {
         // The value is never echoed back in the parse error.
         let url = concat!("postgres://u:", "canary", "-pw@h/db");
         let error = parse(&["--sql-env", url]).unwrap_err();
+        assert!(!error.contains("canary"));
+    }
+
+    #[test]
+    fn test_mongo_tool_is_off_by_default_and_needs_a_valid_variable_name() {
+        assert_eq!(parse(&[]).unwrap().mongo_env, None);
+        assert_eq!(
+            parse(&["--mongo-env", "COMPRESSO_MONGO_MAIN"])
+                .unwrap()
+                .mongo_env,
+            Some("COMPRESSO_MONGO_MAIN".to_owned())
+        );
+        let all = parse(&[
+            "--edits",
+            "--sql-env=COMPRESSO_SQL_DB",
+            "--mongo-env=COMPRESSO_MONGO_DB_2",
+        ])
+        .unwrap();
+        assert_eq!(all.sql_env.as_deref(), Some("COMPRESSO_SQL_DB"));
+        assert_eq!(all.mongo_env.as_deref(), Some("COMPRESSO_MONGO_DB_2"));
+        for invalid in [
+            &["--mongo-env"][..],
+            &["--mongo-env", "MONGO_URL"],
+            &["--mongo-env", "COMPRESSO_MONGO_"],
+            &["--mongo-env", "COMPRESSO_SQL_MAIN"],
+            &["--mongo-env", concat!("mongodb://u:", "p/db")],
+            &["--mongo-env=COMPRESSO_MONGO_a"],
+            &[
+                "--mongo-env",
+                "COMPRESSO_MONGO_A",
+                "--mongo-env",
+                "COMPRESSO_MONGO_B",
+            ],
+            &["--tools", "lean", "--mongo-env", "COMPRESSO_MONGO_A"],
+        ] {
+            assert!(parse(invalid).is_err(), "{invalid:?}");
+        }
+        let url = concat!("mongodb://u:", "canary", "-pw/db");
+        let error = parse(&["--mongo-env", url]).unwrap_err();
         assert!(!error.contains("canary"));
     }
 

@@ -10,7 +10,9 @@ use std::path::{Component, Path, PathBuf};
 use serde_json::{Map, Value, json};
 
 use crate::plan::MutationRequest;
-use crate::server_entry::{is_adapter_args, with_edits, with_recall_source, with_sql_env};
+use crate::server_entry::{
+    is_adapter_args, with_edits, with_mongo_env, with_recall_source, with_sql_env,
+};
 use crate::text_fidelity::strip_bom;
 use crate::{
     ConfigFormat, Detection, InstallCtx, InstallReceipt, Integration, IntegrationError,
@@ -78,6 +80,9 @@ pub struct ClaudeCodeIntegration {
     edits: bool,
     /// Install an entry that starts `mcp serve --sql-env NAME` (E17-50, D115).
     sql_env: Option<String>,
+    /// Install an entry that starts `mcp serve --mongo-env NAME` (E17-52,
+    /// D117).
+    mongo_env: Option<String>,
 }
 
 impl ClaudeCodeIntegration {
@@ -89,6 +94,7 @@ impl ClaudeCodeIntegration {
             compresso_version: env!("CARGO_PKG_VERSION").to_owned(),
             edits: false,
             sql_env: None,
+            mongo_env: None,
         }
     }
 
@@ -105,6 +111,14 @@ impl ClaudeCodeIntegration {
     /// accept the entry either way.
     pub fn with_sql_env(mut self, name: Option<String>) -> Self {
         self.sql_env = name;
+        self
+    }
+
+    /// Makes install write an entry that also serves the opt-in MongoDB
+    /// tool, reading its server URL from the variable `name` at server
+    /// start. The configuration stores only the name.
+    pub fn with_mongo_env(mut self, name: Option<String>) -> Self {
+        self.mongo_env = name;
         self
     }
 
@@ -203,6 +217,12 @@ impl Integration for ClaudeCodeIntegration {
             args = with_sql_env(args, name);
             warnings.push(format!(
                 "compresso_sql reads its database URL from {name} when Claude Code starts the server; set {name} in the environment Claude Code runs in (the configuration stores only the name, never the URL), then restart Claude Code"
+            ));
+        }
+        if let Some(name) = &self.mongo_env {
+            args = with_mongo_env(args, name);
+            warnings.push(format!(
+                "compresso_mongo reads its server URL from {name} when Claude Code starts the server; set {name} in the environment Claude Code runs in (the configuration stores only the name, never the URL), then restart Claude Code"
             ));
         }
         if context.session_recall {

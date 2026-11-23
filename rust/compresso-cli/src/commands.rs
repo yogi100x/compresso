@@ -204,11 +204,22 @@ pub struct IntegrationMutationArgs {
         conflicts_with_all = ["compaction_hook", "explore_agent"]
     )]
     pub sql_env: Option<String>,
+    /// Opt into the read-only MongoDB tool, `compresso_mongo` (Claude Code
+    /// only; `install` only). The MCP server entry starts
+    /// `mcp serve --mongo-env NAME`; the server reads the server URL from
+    /// that environment variable (`COMPRESSO_MONGO_*`) when it starts. Only
+    /// the name is written to the configuration.
+    #[arg(
+        long,
+        value_name = "NAME",
+        conflicts_with_all = ["compaction_hook", "explore_agent"]
+    )]
+    pub mongo_env: Option<String>,
     /// Manage only the Claude Code in-session command skill
     /// (`.claude/skills/compresso/SKILL.md`, typed as `/compresso stats` and
     /// so on) instead of the MCP server entry. Project scope: `--project`, or
     /// else the working directory.
-    #[arg(long, conflicts_with_all = ["compaction_hook", "no_recall", "explore_agent", "edits", "sql_env"])]
+    #[arg(long, conflicts_with_all = ["compaction_hook", "no_recall", "explore_agent", "edits", "sql_env", "mongo_env"])]
     pub session_commands: bool,
     /// Leave out the in-session command skill that a Claude Code project
     /// install adds by default.
