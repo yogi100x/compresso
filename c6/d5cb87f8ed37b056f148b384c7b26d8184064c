@@ -1,0 +1,48 @@
+AGENTS.md
+  s_89a704cfae63f5::t_3e21c5691c5f85 63-65
+  s_89a704cfae63f5::t_812217d649bcec 60-62
+README.md
+  s_89a704cfae63f5::t_4117fc6801a5d0 26-63
+  s_470a2f6e5f0af8::t_b9a6d9c53b1574 11,87
+docs/adr/0038-opt-in-read-only-mongodb.md
+  s_89a704cfae63f5::t_507e2714736f72 1-285
+  s_89a704cfae63f5::t_b759eac94fc45c 286-288
+decisions.md
+  s_89a704cfae63f5::t_dd7213319b9270 110
+docs/plan/01-stack-and-workspace.md
+  s_89a704cfae63f5::t_f4bb28de8a125c 105
+docs/plan/03-interfaces.md
+  s_89a704cfae63f5::t_23fc9cc0ad547e 555-563
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_532f99604118ac 41-42,743-755,805
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_02170be769a7b6 3649-3669,3685,3716-3718
+docs/plan/08-ip-and-secure-deployment.md
+  s_89a704cfae63f5::t_b246bf6cee88b6 140
+docs/runbooks/install-local.md
+  s_470a2f6e5f0af8::t_bef3218cc4f87a 176-202
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c6d5cb87f8ed37b056f148b384c7b26d8184064c",
+  "prompts": {},
+  "sessions": {
+    "s_470a2f6e5f0af8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a2ff873261d314507",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
