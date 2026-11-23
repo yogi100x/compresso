@@ -42,7 +42,8 @@ uninstall of a file Compresso created must remove it.
   exactly Compresso's own render. That plan records the new sentinel
   `(none: unmodified Compresso file removed)` and writes no backup, so no
   backup file is left in a directory a team may commit. Any other write keeps
-  the normal timestamped backup.
+  the normal timestamped backup, which since E17-53 (D118, ADR-0037's
+  amendment) is kept in Compresso's data directory, never beside the file.
 - **Ownership.** Install proceeds only when the file is missing or already
   carries the Compresso marker line and agent name. Any other file of that
   name is refused with `user_file_present` and never changed. A user-edited

@@ -546,7 +546,12 @@ mod tests {
         fs::create_dir_all(&project).expect("project");
         let launcher = base.join("compresso");
         fs::write(&launcher, "").expect("launcher");
-        let manager = PlanManager::new("main-agent-apply-test").expect("manager");
+        let manager = PlanManager::new("main-agent-apply-test")
+            .expect("manager")
+            .with_backup_dir(
+                base.join("data")
+                    .join(compresso_integrations::BACKUP_DIR_NAME),
+            );
         let receipts = MemoryReceiptStore::default();
         let scope = Scope::Project(project.clone());
         let companion = plan_install(
@@ -591,7 +596,12 @@ mod tests {
         fs::create_dir_all(&project).expect("project");
         let launcher = base.join("compresso");
         fs::write(&launcher, "").expect("launcher");
-        let manager = PlanManager::new("main-agent-removal-test").expect("manager");
+        let manager = PlanManager::new("main-agent-removal-test")
+            .expect("manager")
+            .with_backup_dir(
+                base.join("data")
+                    .join(compresso_integrations::BACKUP_DIR_NAME),
+            );
         let receipts = MemoryReceiptStore::default();
         let scope = Scope::Project(project.clone());
         let install = plan_install(

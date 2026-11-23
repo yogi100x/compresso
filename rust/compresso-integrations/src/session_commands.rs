@@ -365,7 +365,9 @@ mod tests {
                 home,
                 project,
                 adapter,
-                manager: PlanManager::new("session-commands-test").expect("manager"),
+                manager: PlanManager::new("session-commands-test")
+                    .expect("manager")
+                    .with_backup_dir(crate::backups::test_dir()),
                 receipts: MemoryReceiptStore::default(),
             }
         }

@@ -151,7 +151,9 @@ fn test_package_upgrade_preserves_client_config_and_uses_new_engine() {
 }
 
 fn install(adapter: &dyn Integration, launcher: &Path, session: &str) {
-    let manager = PlanManager::new(session).expect("plan manager should be created");
+    let manager = PlanManager::new(session)
+        .expect("plan manager should be created")
+        .with_backup_dir(test_backup_dir());
     let receipts = MemoryReceiptStore::default();
     let plan = adapter
         .plan_install(
@@ -216,4 +218,13 @@ fn run_engine(path: &Path) -> String {
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
     String::from_utf8(output.stdout).expect("engine output should be UTF-8")
+}
+
+/// A backup directory private to the calling test thread, removed when the
+/// thread ends (E17-53: backups are kept in the data directory).
+fn test_backup_dir() -> std::path::PathBuf {
+    thread_local! {
+        static DIR: tempfile::TempDir = tempfile::tempdir().expect("test backup directory");
+    }
+    DIR.with(|dir| dir.path().join(compresso_integrations::BACKUP_DIR_NAME))
 }

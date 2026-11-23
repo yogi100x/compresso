@@ -196,3 +196,26 @@ start in a folder the user has not trusted, nor ever under `-p`.
 - After a crash during a commit, `.claude/settings.local.json.compresso-journal`
   (0600, holding the settings bytes) stays until a later Compresso command
   touches the file; nothing removes it on a timer.
+
+## Amendment (2026-11-23, E17-53, D118): no copies in the project folder
+
+The settings-file rule above (no copy, because the key splice is exactly
+reversible, written atomically, and refused on drift) stays. Every other
+file the plan manager changes still gets a copy, but in Compresso's data
+directory, `integration-backups/<hash of the target path>-<UTC time>` (0600 in
+a 0700 directory, the newest three per target kept, never one the plan or its
+prior receipt names), never beside the file: the project `.mcp.json`, the
+hook files, the agent and skill files, `~/.claude.json`, `~/.codex/config.toml`,
+and the Cursor configuration. The copy is what the verbatim JSON restore on
+uninstall reads, so a copy is kept rather than none (D116's reasoning does
+not hold for a JSON file the adapters re-render). A plan manager without a
+backup directory refuses a change that needs a copy.
+
+Copies written beside a file by earlier versions (including the
+`settings.local.json.compresso-backup-*` the git warning above mentions) are
+read when their receipt names them, never required, and never deleted; a
+command that touches such a file prints one `old_backups_kept` warning on
+stderr naming them. No receipt recorded a hash of its copy, so nothing can
+prove a file at that path is still Compresso's: an automatic cleanup step was
+not built. The crash journal (`<file>.compresso-journal`, 0600, holding the
+file's bytes until the commit finishes) is still written beside the file.

@@ -725,7 +725,9 @@ mod tests {
         }
 
         fn install(&self, scope: Scope) -> (PlanManager, MemoryReceiptStore, InstallReceipt) {
-            let manager = PlanManager::new("claude-adapter-test").expect("manager");
+            let manager = PlanManager::new("claude-adapter-test")
+                .expect("manager")
+                .with_backup_dir(crate::backups::test_dir());
             let receipts = MemoryReceiptStore::default();
             let plan = self
                 .adapter
@@ -787,7 +789,9 @@ mod tests {
             PathBuf::from(format!("{parent_text}//compresso")),
             nested.join("../compresso"),
         ];
-        let manager = PlanManager::new("claude-non-normalized-launcher").expect("manager");
+        let manager = PlanManager::new("claude-non-normalized-launcher")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
 
         for path in cases {
             let error = harness
@@ -982,7 +986,9 @@ mod tests {
         fs::write(&outside, outside_bytes).expect("outside target written");
         let user_config = harness.user_config();
         symlink(&outside, &user_config).expect("outside user symlink created");
-        let manager = PlanManager::new("user-symlink").expect("manager");
+        let manager = PlanManager::new("user-symlink")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
 
         let error = harness
             .adapter
@@ -1046,7 +1052,9 @@ mod tests {
             (parent_home, "parent-directory"),
         ] {
             let adapter = ClaudeCodeIntegration::new(home, harness.adapter.discovery.clone());
-            let manager = PlanManager::new("unsafe-home").expect("manager");
+            let manager = PlanManager::new("unsafe-home")
+                .expect("manager")
+                .with_backup_dir(crate::backups::test_dir());
             let error = adapter
                 .plan_install(
                     &manager,
@@ -1131,7 +1139,9 @@ mod tests {
         symlink(&outside, &project_config).expect("outside symlink created");
         let user_original = b"{\"user_only\":true}\n";
         fs::write(harness.user_config(), user_original).expect("user config written");
-        let manager = PlanManager::new("project-symlink").expect("manager");
+        let manager = PlanManager::new("project-symlink")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
 
         let error = harness
             .adapter
@@ -1269,7 +1279,9 @@ mod tests {
     fn test_project_scope_rejects_missing_root_without_creating_it() {
         let harness = Harness::new();
         let missing_root = harness._directory.path().join("missing-project");
-        let manager = PlanManager::new("missing-project").expect("manager");
+        let manager = PlanManager::new("missing-project")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
 
         let error = harness
             .adapter
@@ -1307,7 +1319,9 @@ mod tests {
         let adapter =
             ClaudeCodeIntegration::new(relative_home.clone(), harness.adapter.discovery.clone())
                 .with_compresso_version("0.1.0");
-        let manager = PlanManager::new("project-isolation").expect("manager");
+        let manager = PlanManager::new("project-isolation")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
         let scope = Scope::Project(harness.project.clone());
         let install_plan = adapter
@@ -1451,7 +1465,9 @@ mod tests {
         let harness = Harness::new();
         fs::write(harness.user_config(), b"{ malformed").expect("malformed config written");
         let before = fs::read(harness.user_config()).expect("malformed config readable");
-        let manager = PlanManager::new("malformed").expect("manager");
+        let manager = PlanManager::new("malformed")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
 
         let error = harness
             .adapter
@@ -1477,7 +1493,9 @@ mod tests {
     fn test_install_rejects_config_drift() {
         let harness = Harness::new();
         write_json(&harness.user_config(), &json!({"untouched": 1}));
-        let manager = PlanManager::new("drift").expect("manager");
+        let manager = PlanManager::new("drift")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
         let plan = harness
             .adapter

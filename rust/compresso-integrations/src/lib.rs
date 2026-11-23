@@ -21,6 +21,7 @@
 //! After any later user edit the uninstall removes only the owned entry and
 //! applies the rules above instead, so that edit is never reverted.
 
+mod backups;
 mod claude_code;
 mod codex;
 mod compaction_hook;
@@ -36,6 +37,7 @@ mod text_fidelity;
 
 use std::path::PathBuf;
 
+pub use backups::{BACKUP_DIR_NAME, KEPT_PER_TARGET, backup_dir_in, legacy_backups};
 pub use claude_code::{ClaudeCodeDiscovery, ClaudeCodeIntegration};
 pub use codex::{
     CodexAdapter, CodexIntegration, CodexPlatform, CodexVerificationEvidence,
@@ -178,7 +180,9 @@ mod tests {
         let directory = tempdir().expect("temp directory");
         let path = directory.path().join("config.json");
         fs::write(&path, "{}\n").expect("base written");
-        let manager = PlanManager::new("trait-regression").expect("manager");
+        let manager = PlanManager::new("trait-regression")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
         let installed_config =
             "{\"mcpServers\":{\"compresso\":{\"command\":\"/bin/compresso\"}}}\n";

@@ -387,7 +387,9 @@ fn test_detection_contract_reports_installed_and_not_found() {
 fn test_base_plan_atomic_apply_receipt_and_unknown_key_contract() {
     for client in Client::ALL {
         let harness = Harness::new(client);
-        let manager = PlanManager::new(format!("parity-base-{}", client.id())).expect("manager");
+        let manager = PlanManager::new(format!("parity-base-{}", client.id()))
+            .expect("manager")
+            .with_backup_dir(test_backup_dir());
         let receipts = harness.file_receipts();
         let plan = harness.plan_install(&manager);
 
@@ -478,7 +480,9 @@ fn test_base_plan_atomic_apply_receipt_and_unknown_key_contract() {
 fn test_full_file_drift_rejects_without_receipt_or_rewrite() {
     for client in Client::ALL {
         let harness = Harness::new(client);
-        let manager = PlanManager::new(format!("parity-drift-{}", client.id())).expect("manager");
+        let manager = PlanManager::new(format!("parity-drift-{}", client.id()))
+            .expect("manager")
+            .with_backup_dir(test_backup_dir());
         let receipts = harness.file_receipts();
         let plan = harness.plan_install(&manager);
         harness.drift_target();
@@ -515,8 +519,9 @@ fn test_full_file_drift_rejects_without_receipt_or_rewrite() {
 fn test_atomic_receipt_failure_recovers_each_adapter_commit() {
     for client in Client::ALL {
         let harness = Harness::new(client);
-        let manager =
-            PlanManager::new(format!("parity-recovery-{}", client.id())).expect("manager");
+        let manager = PlanManager::new(format!("parity-recovery-{}", client.id()))
+            .expect("manager")
+            .with_backup_dir(test_backup_dir());
         let receipts = FailOnceReceiptStore::new(&harness.receipt_path);
         let plan = harness.plan_install(&manager);
 
@@ -578,8 +583,9 @@ fn test_malformed_configs_fail_closed_without_side_effects() {
         let harness = Harness::new(client);
         harness.write_malformed_fixture();
         let malformed = fs::read(&harness.config_path).expect("malformed config readable");
-        let manager =
-            PlanManager::new(format!("parity-malformed-{}", client.id())).expect("manager");
+        let manager = PlanManager::new(format!("parity-malformed-{}", client.id()))
+            .expect("manager")
+            .with_backup_dir(test_backup_dir());
 
         let error = harness
             .adapter
@@ -605,8 +611,9 @@ fn test_clean_uninstall_restores_unknown_keys_and_repeats_idempotently() {
     for client in Client::ALL {
         let harness = Harness::new(client);
         let receipts = harness.file_receipts();
-        let install_manager =
-            PlanManager::new(format!("parity-roundtrip-install-{}", client.id())).expect("manager");
+        let install_manager = PlanManager::new(format!("parity-roundtrip-install-{}", client.id()))
+            .expect("manager")
+            .with_backup_dir(test_backup_dir());
         let (_plan, receipt) = harness.install(&install_manager, &receipts);
         harness.assert_unowned_state_preserved();
 
@@ -623,7 +630,8 @@ fn test_clean_uninstall_restores_unknown_keys_and_repeats_idempotently() {
 
         let uninstall_manager =
             PlanManager::new(format!("parity-roundtrip-uninstall-{}", client.id()))
-                .expect("manager");
+                .expect("manager")
+                .with_backup_dir(test_backup_dir());
         let uninstall_plan = harness
             .adapter
             .plan_uninstall(&uninstall_manager, &receipt)
@@ -665,14 +673,17 @@ fn test_user_disabled_entries_are_retained_with_content_free_reports() {
     for client in Client::ALL {
         let harness = Harness::new(client);
         let receipts = harness.file_receipts();
-        let install_manager =
-            PlanManager::new(format!("parity-disable-install-{}", client.id())).expect("manager");
+        let install_manager = PlanManager::new(format!("parity-disable-install-{}", client.id()))
+            .expect("manager")
+            .with_backup_dir(test_backup_dir());
         let (_plan, receipt) = harness.install(&install_manager, &receipts);
         harness.modify_owned_entry();
         let modified = fs::read(&harness.config_path).expect("modified config readable");
 
         let uninstall_manager =
-            PlanManager::new(format!("parity-disable-uninstall-{}", client.id())).expect("manager");
+            PlanManager::new(format!("parity-disable-uninstall-{}", client.id()))
+                .expect("manager")
+                .with_backup_dir(test_backup_dir());
         let uninstall_plan = harness
             .adapter
             .plan_uninstall(&uninstall_manager, &receipt)
@@ -807,4 +818,13 @@ fn cursor_platform() -> CursorPlatform {
     } else {
         CursorPlatform::Linux
     }
+}
+
+/// A backup directory private to the calling test thread, removed when the
+/// thread ends (E17-53: backups are kept in the data directory).
+fn test_backup_dir() -> std::path::PathBuf {
+    thread_local! {
+        static DIR: tempfile::TempDir = tempfile::tempdir().expect("test backup directory");
+    }
+    DIR.with(|dir| dir.path().join(compresso_integrations::BACKUP_DIR_NAME))
 }

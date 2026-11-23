@@ -677,7 +677,9 @@ mod tests {
                 project,
                 bin,
                 adapter,
-                manager: PlanManager::new("explore-agent-test").expect("manager"),
+                manager: PlanManager::new("explore-agent-test")
+                    .expect("manager")
+                    .with_backup_dir(crate::backups::test_dir()),
                 receipts: MemoryReceiptStore::default(),
             }
         }

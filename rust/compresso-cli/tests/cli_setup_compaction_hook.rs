@@ -143,7 +143,9 @@ impl Fixture {
     fn install_legacy_project_hook(&self) {
         let adapter =
             CompactionHookIntegration::new(CompactionHookClient::ClaudeCode, self.home.clone());
-        let manager = PlanManager::new("legacy-install").expect("manager");
+        let manager = PlanManager::new("legacy-install")
+            .expect("manager")
+            .with_backup_dir(test_backup_dir());
         let receipts = FileReceiptStore::new(self.base.join("data/integration-receipts.json"));
         let plan = adapter
             .plan_install(
@@ -900,4 +902,13 @@ fn test_setup_warns_when_the_user_level_hook_would_run_a_launcher_inside_the_rep
             .is_some_and(|warning| warning.starts_with("launcher_in_repository")),
         "{planned}"
     );
+}
+
+/// A backup directory private to the calling test thread, removed when the
+/// thread ends (E17-53: backups are kept in the data directory).
+fn test_backup_dir() -> std::path::PathBuf {
+    thread_local! {
+        static DIR: tempfile::TempDir = tempfile::tempdir().expect("test backup directory");
+    }
+    DIR.with(|dir| dir.path().join(compresso_integrations::BACKUP_DIR_NAME))
 }

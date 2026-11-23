@@ -558,7 +558,9 @@ fn test_codex_recovery_rejects_config_directory_replaced_by_symlink() {
         env!("CARGO_PKG_VERSION"),
     )
     .expect("Codex adapter");
-    let manager = PlanManager::new("cli-codex-recovery-symlink").expect("plan manager");
+    let manager = PlanManager::new("cli-codex-recovery-symlink")
+        .expect("plan manager")
+        .with_backup_dir(test_backup_dir());
     let plan = adapter
         .plan_install(
             &manager,
@@ -644,6 +646,174 @@ impl ReceiptStore for FailOnceReceiptStore {
     fn verify_journal(&self, payload: &[u8], mac: &str) -> Result<(), ReceiptError> {
         self.inner.verify_journal(payload, mac)
     }
+}
+
+/// Files (not directories) under `root`, relative to it.
+fn files_under(root: &Path) -> Vec<PathBuf> {
+    snapshot(root)
+        .into_iter()
+        .filter(|path| root.join(path).is_file())
+        .collect()
+}
+
+impl Fixture {
+    /// Like [`Fixture::run`], with stderr returned as text: a warning line
+    /// there is not JSON.
+    fn run_with_stderr(&self, arguments: &[&str]) -> (CliExitCode, Value, String) {
+        let cli =
+            Cli::try_parse_from(std::iter::once("compresso").chain(arguments.iter().copied()))
+                .expect("integration command should parse");
+        let RootCommand::Integrations { command } = cli.command else {
+            panic!("expected integration command");
+        };
+        let mut output = Vec::new();
+        let mut errors = Vec::new();
+        let exit = execute_integrations(
+            command,
+            &self.environment,
+            &mut Cursor::new(Vec::new()),
+            &mut output,
+            &mut errors,
+        );
+        (
+            exit,
+            parse_json(&output),
+            String::from_utf8(errors).expect("UTF-8 stderr"),
+        )
+    }
+
+    fn project_arguments<'a>(&'a self, action: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
+        let mut arguments = vec![
+            "integrations",
+            action,
+            "claude-code",
+            "--project",
+            self.project.to_str().expect("UTF-8 project"),
+        ];
+        arguments.extend_from_slice(extra);
+        arguments
+    }
+}
+
+/// Install, a changed re-install, and uninstall over an existing project
+/// `.mcp.json` that holds another server's token leave no file of any kind
+/// behind in the project: the copies are kept in the data directory, private
+/// to the user (E17-53).
+#[test]
+fn test_install_reinstall_uninstall_cycle_leaves_no_extra_file_in_the_project() {
+    let fixture = Fixture::new();
+    let original = "{\n    \"mcpServers\": {\"other\": {\"command\": \"x\", \"env\": {\"TOKEN\": \"secret\"}}}\n}\n";
+    fs::write(fixture.project.join(".mcp.json"), original).expect("existing project config");
+    let before = files_under(&fixture.project);
+    let backups = fixture.data.join(compresso_integrations::BACKUP_DIR_NAME);
+
+    // A dry run names where the copy would go, and writes nothing.
+    let (exit, output, _) =
+        fixture.run_with_stderr(&fixture.project_arguments("install", &["--dry-run", "--json"]));
+    assert_eq!(exit, CliExitCode::Success, "{output}");
+    let diff = output["data"]["plan"]["unified_diff"]
+        .as_str()
+        .expect("diff");
+    assert!(
+        diff.contains(&format!("; backup: {}", backups.display())),
+        "{diff}"
+    );
+    assert!(!fixture.data.exists());
+
+    for extra in [
+        &["--yes", "--json"][..],
+        &["--no-recall", "--yes", "--json"][..],
+    ] {
+        let (exit, output, _) =
+            fixture.run_with_stderr(&fixture.project_arguments("install", extra));
+        assert_eq!(exit, CliExitCode::Success, "{output}");
+        let stray = files_under(&fixture.project)
+            .into_iter()
+            .filter(|path| {
+                let name = path.to_string_lossy();
+                name.contains("compresso-backup") || name.contains("compresso-journal")
+            })
+            .collect::<Vec<_>>();
+        assert!(stray.is_empty(), "{stray:?}");
+    }
+    let (exit, output, _) =
+        fixture.run_with_stderr(&fixture.project_arguments("uninstall", &["--yes", "--json"]));
+    assert_eq!(exit, CliExitCode::Success, "{output}");
+
+    assert_eq!(files_under(&fixture.project), before);
+    // The re-install's copy already holds the entry, so the uninstall
+    // re-renders instead of restoring bytes (as before E17-53); the user's
+    // server and its token are kept.
+    let restored: Value = serde_json::from_str(
+        &fs::read_to_string(fixture.project.join(".mcp.json")).expect("restored"),
+    )
+    .expect("JSON");
+    assert_eq!(
+        restored,
+        serde_json::json!({"mcpServers": {"other": {"command": "x", "env": {"TOKEN": "secret"}}}})
+    );
+    let kept = files_under(&backups);
+    assert!(!kept.is_empty(), "the copies are in the data directory");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = |path: &Path| fs::metadata(path).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(mode(&backups), 0o700);
+        for copy in kept {
+            assert_eq!(mode(&backups.join(&copy)), 0o600, "{}", copy.display());
+        }
+    }
+}
+
+/// A copy an earlier version wrote beside `.mcp.json` and named in its
+/// receipt is reported once on stderr (never in the JSON report), is still
+/// used to restore the original bytes, and is never deleted, nor is a file
+/// merely named like one (E17-53).
+#[cfg(unix)]
+#[test]
+fn test_old_copies_beside_the_file_are_warned_about_and_never_deleted() {
+    let fixture = Fixture::new();
+    let config = fs::canonicalize(&fixture.project)
+        .expect("project")
+        .join(".mcp.json");
+    let original = "{\n    \"mcpServers\": {\"other\": {\"command\": \"x\"}}\n}\n";
+    fs::write(&config, original).expect("existing project config");
+    let (exit, output, _) = fixture.run_with_stderr(
+        &fixture.project_arguments("install", &["--no-main-agent", "--yes", "--json"]),
+    );
+    assert_eq!(exit, CliExitCode::Success, "{output}");
+
+    // Make the receipt look like one an earlier version wrote.
+    let receipts = FileReceiptStore::new(fixture.data.join("integration-receipts.json"));
+    let mut receipt = receipts
+        .active_for("claude-code", &config)
+        .expect("receipt lookup")
+        .expect("active receipt");
+    let legacy = config.with_file_name(".mcp.json.compresso-backup-2026-01-01T00-00-00Z");
+    let look_alike = config.with_file_name(".mcp.json.compresso-backup-2025-01-01T00-00-00Z");
+    fs::write(&legacy, original).expect("old copy");
+    fs::write(&look_alike, "user file").expect("look-alike");
+    receipt.backup_path = legacy.to_string_lossy().into_owned();
+    receipts.save(&receipt).expect("old-style receipt");
+
+    let (exit, output, stderr) =
+        fixture.run_with_stderr(&fixture.project_arguments("uninstall", &["--yes", "--json"]));
+
+    assert_eq!(exit, CliExitCode::Success, "{output}");
+    assert_eq!(fs::read_to_string(&config).expect("restored"), original);
+    assert_eq!(fs::read_to_string(&legacy).expect("kept"), original);
+    assert_eq!(fs::read_to_string(&look_alike).expect("kept"), "user file");
+    let warnings = stderr
+        .lines()
+        .filter(|line| line.contains("old_backups_kept"))
+        .collect::<Vec<_>>();
+    assert_eq!(warnings.len(), 1, "{stderr}");
+    assert!(warnings[0].contains(&*legacy.to_string_lossy()), "{stderr}");
+    assert!(!warnings[0].contains("2025-01-01"), "{stderr}");
+    assert!(
+        !output.to_string().contains("compresso-backup-2026"),
+        "{output}"
+    );
 }
 
 fn parse_json(bytes: &[u8]) -> Value {
@@ -839,4 +1009,13 @@ fn test_no_recall_is_rejected_where_it_has_no_meaning() {
         .is_err(),
         "the hook surface has no recall setting"
     );
+}
+
+/// A backup directory private to the calling test thread, removed when the
+/// thread ends (E17-53: backups are kept in the data directory).
+fn test_backup_dir() -> std::path::PathBuf {
+    thread_local! {
+        static DIR: tempfile::TempDir = tempfile::tempdir().expect("test backup directory");
+    }
+    DIR.with(|dir| dir.path().join(compresso_integrations::BACKUP_DIR_NAME))
 }

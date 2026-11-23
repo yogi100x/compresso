@@ -484,6 +484,7 @@ fn test_setup_rejects_valid_pending_journal_injected_after_final_plan() {
     // occur only after all post-setup fail-closed assertions above.
     let recovered = PlanManager::new("explicit-journal-fixture-proof")
         .expect("recovery manager should initialize")
+        .with_backup_dir(test_backup_dir())
         .recover(&fixture.codex_config(), &receipts)
         .expect("authenticated journal should recover")
         .expect("pending journal should produce a recovery report");
@@ -1162,7 +1163,8 @@ impl PlanClock for JournalInjectClock {
 
 fn authenticated_install_journal(fixture: &Fixture) -> (PathBuf, Vec<u8>) {
     let manager = PlanManager::new("authenticated-journal-fixture")
-        .expect("journal fixture manager should initialize");
+        .expect("journal fixture manager should initialize")
+        .with_backup_dir(test_backup_dir());
     let adapter = CodexIntegration::new(
         fixture.environment.home_dir.clone(),
         fixture.environment.path_entries.clone(),
@@ -1707,4 +1709,13 @@ fn test_setup_refuses_a_pending_settings_journal() {
         assert!(errors.to_string().contains("compresso-journal"), "{errors}");
         assert!(!fixture.root.join(".mcp.json").exists());
     }
+}
+
+/// A backup directory private to the calling test thread, removed when the
+/// thread ends (E17-53: backups are kept in the data directory).
+fn test_backup_dir() -> std::path::PathBuf {
+    thread_local! {
+        static DIR: tempfile::TempDir = tempfile::tempdir().expect("test backup directory");
+    }
+    DIR.with(|dir| dir.path().join(compresso_integrations::BACKUP_DIR_NAME))
 }

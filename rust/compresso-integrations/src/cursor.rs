@@ -1156,7 +1156,9 @@ mod tests {
             }
         });
         write_json(&harness.user_config(), &original);
-        let manager = PlanManager::new("cursor-install").expect("manager");
+        let manager = PlanManager::new("cursor-install")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
 
         let receipt = harness.install(Scope::User, &manager, &receipts);
@@ -1175,7 +1177,12 @@ mod tests {
             })
         );
         assert_eq!(receipt.keys_owned, [OWNED_PATH]);
-        assert!(receipt.backup_path.contains(".compresso-backup-"));
+        // The copy is kept in the backup directory, never beside the file.
+        assert_eq!(
+            Path::new(&receipt.backup_path).parent(),
+            Some(crate::backups::test_dir().as_path())
+        );
+        assert!(Path::new(&receipt.backup_path).is_file());
         assert!(harness.adapter.verify(&Scope::User).verified);
     }
 
@@ -1192,7 +1199,9 @@ mod tests {
             PathBuf::from(format!("{parent_text}//compresso")),
             nested.join("../compresso"),
         ];
-        let manager = PlanManager::new("cursor-non-normalized-launcher").expect("manager");
+        let manager = PlanManager::new("cursor-non-normalized-launcher")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
 
         for path in cases {
             let error = harness
@@ -1222,7 +1231,9 @@ mod tests {
             "}\n"
         );
         write_bytes(&harness.user_config(), original.as_bytes());
-        let install_manager = PlanManager::new("cursor-order-install").expect("manager");
+        let install_manager = PlanManager::new("cursor-order-install")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
 
         let receipt = harness.install(Scope::User, &install_manager, &receipts);
@@ -1231,7 +1242,9 @@ mod tests {
         assert_in_order(&installed, &["\"second\"", "\"first\""]);
         assert_in_order(&installed, &["\"z\"", "\"a\""]);
 
-        let uninstall_manager = PlanManager::new("cursor-order-uninstall").expect("manager");
+        let uninstall_manager = PlanManager::new("cursor-order-uninstall")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let plan = harness
             .adapter
             .plan_uninstall(&uninstall_manager, &receipt)
@@ -1254,10 +1267,14 @@ mod tests {
             "mcpServers": {"other": {"url": "http://127.0.0.1:7000"}}
         });
         write_json(&harness.user_config(), &original);
-        let install_manager = PlanManager::new("cursor-uninstall-install").expect("manager");
+        let install_manager = PlanManager::new("cursor-uninstall-install")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
         let receipt = harness.install(Scope::User, &install_manager, &receipts);
-        let uninstall_manager = PlanManager::new("cursor-uninstall").expect("manager");
+        let uninstall_manager = PlanManager::new("cursor-uninstall")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
 
         let plan = harness
             .adapter
@@ -1278,7 +1295,9 @@ mod tests {
         let harness = Harness::new(CursorPlatform::Linux);
         let user_original = b"{\"userOnly\":true}\n";
         write_bytes(&harness.user_config(), user_original);
-        let manager = PlanManager::new("cursor-project").expect("manager");
+        let manager = PlanManager::new("cursor-project")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
 
         let receipt = harness.install(Scope::Project(harness.project.clone()), &manager, &receipts);
@@ -1332,11 +1351,15 @@ mod tests {
     #[test]
     fn test_fresh_install_leaves_empty_parent_on_uninstall() {
         let harness = Harness::new(CursorPlatform::Linux);
-        let install_manager = PlanManager::new("cursor-fresh-install").expect("manager");
+        let install_manager = PlanManager::new("cursor-fresh-install")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
         let receipt = harness.install(Scope::User, &install_manager, &receipts);
         assert_eq!(receipt.backup_path, crate::CREATED_FILE_BACKUP_SENTINEL);
-        let uninstall_manager = PlanManager::new("cursor-fresh-uninstall").expect("manager");
+        let uninstall_manager = PlanManager::new("cursor-fresh-uninstall")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let plan = harness
             .adapter
             .plan_uninstall(&uninstall_manager, &receipt)
@@ -1352,13 +1375,17 @@ mod tests {
     #[test]
     fn test_modified_owned_key_is_retained_with_warning() {
         let harness = Harness::new(CursorPlatform::Linux);
-        let install_manager = PlanManager::new("cursor-modified-install").expect("manager");
+        let install_manager = PlanManager::new("cursor-modified-install")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
         let receipt = harness.install(Scope::User, &install_manager, &receipts);
         let mut modified = read_json(&harness.user_config());
         modified["mcpServers"]["compresso"]["args"] = json!(["mcp", "serve", "--user-change"]);
         write_json(&harness.user_config(), &modified);
-        let uninstall_manager = PlanManager::new("cursor-modified-uninstall").expect("manager");
+        let uninstall_manager = PlanManager::new("cursor-modified-uninstall")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
 
         let plan = harness
             .adapter
@@ -1380,7 +1407,9 @@ mod tests {
         let harness = Harness::new(CursorPlatform::Linux);
         let malformed = b"{ malformed Cursor JSON";
         write_bytes(&harness.user_config(), malformed);
-        let manager = PlanManager::new("cursor-malformed").expect("manager");
+        let manager = PlanManager::new("cursor-malformed")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
 
         let error = harness
             .adapter
@@ -1428,7 +1457,9 @@ mod tests {
     #[test]
     fn test_repeat_install_and_uninstall_are_idempotent() {
         let harness = Harness::new(CursorPlatform::Linux);
-        let manager = PlanManager::new("cursor-repeat").expect("manager");
+        let manager = PlanManager::new("cursor-repeat")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
         let first_receipt = harness.install(Scope::User, &manager, &receipts);
 
@@ -1449,7 +1480,9 @@ mod tests {
             .expect("repeat install");
         assert_eq!(repeat_receipt, first_receipt);
 
-        let uninstall_manager = PlanManager::new("cursor-repeat-uninstall").expect("manager");
+        let uninstall_manager = PlanManager::new("cursor-repeat-uninstall")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let uninstall_plan = harness
             .adapter
             .plan_uninstall(&uninstall_manager, &first_receipt)
@@ -1554,7 +1587,9 @@ mod tests {
             Detection::Unsupported { .. }
         ));
         assert!(!unsupported.verify(&Scope::User).verified);
-        let manager = PlanManager::new("cursor-unsupported").expect("manager");
+        let manager = PlanManager::new("cursor-unsupported")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let error = unsupported
             .plan_install(
                 &manager,
@@ -1703,7 +1738,9 @@ mod tests {
     #[test]
     fn test_verify_requires_artifact_bound_live_probe_and_emits_restart_instruction() {
         let harness = Harness::new(CursorPlatform::Linux);
-        let manager = PlanManager::new("cursor-probe-install").expect("manager");
+        let manager = PlanManager::new("cursor-probe-install")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
         harness.install(Scope::User, &manager, &receipts);
 
@@ -1783,12 +1820,16 @@ mod tests {
     #[test]
     fn test_missing_uninstall_is_typed_and_does_not_write() {
         let harness = Harness::new(CursorPlatform::Linux);
-        let install_manager = PlanManager::new("cursor-missing-install").expect("manager");
+        let install_manager = PlanManager::new("cursor-missing-install")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
         let receipts = MemoryReceiptStore::default();
         let receipt = harness.install(Scope::User, &install_manager, &receipts);
         fs::remove_file(&receipt.config_path).expect("installed config removed by user");
         let before = directory_entries(receipt.config_path.parent().expect("config parent"));
-        let uninstall_manager = PlanManager::new("cursor-missing-uninstall").expect("manager");
+        let uninstall_manager = PlanManager::new("cursor-missing-uninstall")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
 
         let error = harness
             .adapter
@@ -1822,7 +1863,9 @@ mod tests {
             harness.project.join(".cursor"),
         )
         .expect("malicious project symlink created");
-        let manager = PlanManager::new("cursor-project-symlink").expect("manager");
+        let manager = PlanManager::new("cursor-project-symlink")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
 
         let error = harness
             .adapter
@@ -1855,7 +1898,9 @@ mod tests {
         fs::create_dir(harness.project.join(".cursor")).expect("project Cursor directory");
         symlink(harness.user_config(), harness.project_config())
             .expect("malicious project file symlink created");
-        let manager = PlanManager::new("cursor-project-file-symlink").expect("manager");
+        let manager = PlanManager::new("cursor-project-file-symlink")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
 
         let error = harness
             .adapter
@@ -1897,7 +1942,8 @@ mod tests {
                     .expect("malicious user config symlink created");
             }
             let manager = PlanManager::new(format!("cursor-user-symlink-{symlink_directory}"))
-                .expect("manager");
+                .expect("manager")
+                .with_backup_dir(crate::backups::test_dir());
 
             let error = harness
                 .adapter
@@ -1939,7 +1985,9 @@ mod tests {
             harness.adapter.discovery.clone(),
         )
         .with_live_probe_evidence(expected_probe(&harness.compresso));
-        let manager = PlanManager::new("cursor-project-unsafe-home").expect("manager");
+        let manager = PlanManager::new("cursor-project-unsafe-home")
+            .expect("manager")
+            .with_backup_dir(crate::backups::test_dir());
 
         let plan = adapter
             .plan_install(

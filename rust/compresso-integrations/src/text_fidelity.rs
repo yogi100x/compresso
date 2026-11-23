@@ -164,21 +164,20 @@ pub(crate) fn preserve_text_fidelity(base: &[u8], rendered: &str) -> String {
 /// the owned entry and formatting Compresso itself introduced, so restoring
 /// the backup cannot revert a user edit. Anything else (another key changed,
 /// the owned entry is being retained, the backup is missing or is not a
-/// regular file beside the config) returns `None` and the caller writes the
+/// regular file that [`crate::backups::is_backup_of`] accepts for the
+/// config: one in the backup directory named for it, or one an earlier
+/// version wrote beside it) returns `None` and the caller writes the
 /// reshaped rendering instead. This never widens what an uninstall may
 /// change: the plan manager still validates the returned text against the
 /// owned paths.
 pub(crate) fn pristine_json_backup(
     config_path: &Path,
     backup_path: &Path,
+    backup_dir: Option<&Path>,
     current: &[u8],
     rendered: &str,
 ) -> Option<String> {
-    let config_name = config_path.file_name()?.to_str()?;
-    let backup_name = backup_path.file_name()?.to_str()?;
-    if backup_path.parent() != config_path.parent()
-        || !backup_name.starts_with(&format!("{config_name}.compresso-backup-"))
-    {
+    if !crate::backups::is_backup_of(config_path, backup_path, backup_dir) {
         return None;
     }
     let metadata = fs::symlink_metadata(backup_path).ok()?;
@@ -333,34 +332,36 @@ mod tests {
         let uninstalled = "{\n  \"b\": 1,\n  \"a\": [\n    1,\n    2\n  ]\n}\n";
 
         assert_eq!(
-            pristine_json_backup(&config, &backup, installed.as_bytes(), uninstalled).as_deref(),
+            pristine_json_backup(&config, &backup, None, installed.as_bytes(), uninstalled)
+                .as_deref(),
             Some(original)
         );
         // A whitespace-only user edit since the install disables the reuse.
         let reformatted = installed.replace("  \"owned\"", "\t\"owned\"");
         assert_ne!(reformatted, installed);
         assert_eq!(
-            pristine_json_backup(&config, &backup, reformatted.as_bytes(), uninstalled),
+            pristine_json_backup(&config, &backup, None, reformatted.as_bytes(), uninstalled),
             None
         );
         // A changed value, a changed key order, and a backup outside the
         // config directory or naming scheme all fall back to the rendering.
         for different in ["{\"b\":2,\"a\":[1,2]}", "{\"a\":[1,2],\"b\":1}"] {
             assert_eq!(
-                pristine_json_backup(&config, &backup, installed.as_bytes(), different),
+                pristine_json_backup(&config, &backup, None, installed.as_bytes(), different),
                 None
             );
         }
         let foreign = directory.path().join("other.json.compresso-backup-x");
         fs::write(&foreign, original).expect("foreign backup written");
         assert_eq!(
-            pristine_json_backup(&config, &foreign, installed.as_bytes(), uninstalled),
+            pristine_json_backup(&config, &foreign, None, installed.as_bytes(), uninstalled),
             None
         );
         assert_eq!(
             pristine_json_backup(
                 &config,
                 &directory.path().join("mcp.json.compresso-backup-missing"),
+                None,
                 installed.as_bytes(),
                 uninstalled
             ),
