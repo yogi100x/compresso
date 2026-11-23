@@ -573,7 +573,16 @@ impl ChildGuard {
             !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit()),
             "recorded child id {pid:?}"
         );
+        // The lookup must work at all, or "gone" below would prove nothing:
+        // the test process itself has to be seen.
+        let own = Self::observe(&std::process::id().to_string())
+            .unwrap_or_else(|error| panic!("process lookup failed: {error}"));
+        assert!(
+            own.is_some_and(|(_, identity)| !identity.is_empty()),
+            "process lookup does not see the test process"
+        );
         let identity = Self::observe(&pid)
+            .unwrap_or_else(|error| panic!("process lookup for {pid} failed: {error}"))
             .filter(|(state, identity)| {
                 !state.starts_with('Z') && identity.ends_with(CHILD_COMMAND)
             })
@@ -581,33 +590,54 @@ impl ChildGuard {
         Self { pid, identity }
     }
 
-    /// The state letter, and the start time and command, of process `pid`.
-    fn observe(pid: &str) -> Option<(String, String)> {
+    /// The state letter, and the start time and command, of process `pid`;
+    /// `None` when no such process exists; an error when the lookup itself
+    /// failed, so the caller never mistakes a failed lookup for "gone".
+    fn observe(pid: &str) -> Result<Option<(String, String)>, String> {
         let output = Command::new("ps")
             .args(["-o", "stat=", "-o", "lstart=", "-o", "command=", "-p", pid])
             .output()
-            .ok()
-            .filter(|output| output.status.success())?;
+            .map_err(|error| format!("ps did not run: {error}"))?;
         let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        let (state, identity) = text.split_once(char::is_whitespace)?;
-        Some((state.to_owned(), identity.trim().to_owned()))
+        if !output.status.success() {
+            // `ps -p` exits 1 with no output for a process that does not exist.
+            return if text.is_empty() && output.stderr.is_empty() {
+                Ok(None)
+            } else {
+                Err(format!(
+                    "ps failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ))
+            };
+        }
+        let (state, identity) = text
+            .split_once(char::is_whitespace)
+            .ok_or_else(|| format!("unexpected ps output {text:?}"))?;
+        Ok(Some((state.to_owned(), identity.trim().to_owned())))
     }
 
-    /// The child still runs: the same process (start time and command) and
-    /// not a zombie, which has exited and runs nothing.
-    fn alive(&self) -> bool {
+    /// Whether the child still runs: the same process (start time and
+    /// command) and not a zombie, which has exited and runs nothing. A
+    /// failed lookup is an error, never "gone".
+    fn running(&self) -> Result<bool, String> {
         let Some(identity) = &self.identity else {
-            return false;
+            return Ok(false);
         };
-        Self::observe(&self.pid)
-            .is_some_and(|(state, now)| &now == identity && !state.starts_with('Z'))
+        Ok(Self::observe(&self.pid)?
+            .is_some_and(|(state, now)| &now == identity && !state.starts_with('Z')))
+    }
+
+    fn alive(&self) -> bool {
+        self.running()
+            .unwrap_or_else(|error| panic!("process lookup for {} failed: {error}", self.pid))
     }
 }
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
-        // Only a process confirmed to be the child is signalled.
-        if self.alive() {
+        // Only a process confirmed to be the child is signalled; a failed
+        // lookup signals nothing.
+        if matches!(self.running(), Ok(true)) {
             let _ = Command::new("kill").args(["-KILL", &self.pid]).output();
         }
     }
