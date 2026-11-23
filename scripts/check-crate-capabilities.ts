@@ -739,9 +739,8 @@ function groupReaches(group: string, member: string, inertAllowed: boolean) {
       continue;
     }
     if (
-      list !== undefined &&
       list
-        .split(",")
+        ?.split(",")
         .map((item) => item.trim().split(/\s+/u)[0])
         .filter((item) => item.length > 0)
         .every((item) => inertStdProcessMembers.has(item))

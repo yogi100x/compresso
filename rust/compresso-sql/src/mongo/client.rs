@@ -897,7 +897,9 @@ mod tests {
     fn test_a_large_document_is_cut_into_the_result_not_dropped() {
         let mut wide = Document::new();
         for index in 0..9 {
-            let items = (0..100).map(|_| Bson::String("y".repeat(1_000))).collect::<Vec<_>>();
+            let items = (0..100)
+                .map(|_| Bson::String("y".repeat(1_000)))
+                .collect::<Vec<_>>();
             wide.insert(format!("k{index}"), items);
         }
         let document = raw(&wide);

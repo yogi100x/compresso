@@ -323,7 +323,7 @@ fn render_value(element: Element<'_>, depth: usize, budget: &mut Budget) -> Valu
     };
     // Output bytes each kind costs beyond its text (markers are objects).
     budget.spend(match element.kind {
-        0x02 | 0x03 | 0x04 => 2,
+        0x02..=0x04 => 2,
         0x08 | 0x0A | 0x10 | 0x12 => 12,
         0x01 => 24,
         _ => 48,
