@@ -314,35 +314,8 @@ fn test_go_multi_name_value_signatures_are_per_name_and_bounded() {
     assert!(long.signature.as_deref().unwrap_or_default().len() <= 1_024);
 }
 
-fn const_block(count: usize) -> String {
-    let mut source = String::from("package p\n\nconst (\n");
-    for index in 0..count {
-        source.push_str(&format!("\tC{index} = {index}\n"));
-    }
-    source.push_str(")\n");
-    source
-}
-
-/// A grouped declaration is expanded in time linear in its size: eight
-/// times the specs cost well under eight squared times the time.
-#[test]
-fn test_go_huge_const_block_extracts_in_bounded_time() {
-    let time = |count: usize| {
-        let source = const_block(count);
-        let started = std::time::Instant::now();
-        let extraction =
-            ParserRegistry::extract(Language::Go, &source).expect("Go source extracts");
-        assert_eq!(extraction.symbols.len(), count);
-        started.elapsed()
-    };
-    let small = time(30_000);
-    let large = time(240_000);
-    eprintln!("30k specs {small:?}, 240k specs {large:?}");
-    assert!(
-        large < small * 14,
-        "30k specs {small:?}, 240k specs {large:?}"
-    );
-}
+// The huge-const-block bound (E17-37) is pinned by counting work, not by
+// timing: `parsers::go::tests::test_go_huge_const_block_expands_in_linear_work`.
 
 #[test]
 fn test_go_blank_function_and_type_names_are_not_symbols() {

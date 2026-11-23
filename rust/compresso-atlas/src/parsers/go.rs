@@ -105,6 +105,7 @@ fn specs<'tree>(declaration: Node<'tree>, spec_kinds: &[&str]) -> (bool, Vec<Nod
     let mut specs = Vec::new();
     let mut cursor = declaration.walk();
     for child in declaration.children(&mut cursor) {
+        count_declaration_step();
         match child.kind() {
             "(" => grouped = true,
             "var_spec_list" => {
@@ -113,6 +114,7 @@ fn specs<'tree>(declaration: Node<'tree>, spec_kinds: &[&str]) -> (bool, Vec<Nod
                 specs.extend(
                     child
                         .named_children(&mut inner)
+                        .inspect(|_| count_declaration_step())
                         .filter(|spec| spec_kinds.contains(&spec.kind())),
                 );
             }
@@ -121,6 +123,22 @@ fn specs<'tree>(declaration: Node<'tree>, spec_kinds: &[&str]) -> (bool, Vec<Nod
         }
     }
     (grouped, specs)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Children of package-level declarations walked on this thread (tests
+    /// only): the cost driver of expanding a grouped declaration, so a group
+    /// expanded once per spec instead of once per declaration shows here as
+    /// quadratic growth, whatever the machine's load (E17-53).
+    static DECLARATION_STEPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// One child of a declaration walked; counted in test builds only.
+#[inline]
+fn count_declaration_step() {
+    #[cfg(test)]
+    DECLARATION_STEPS.with(|steps| steps.set(steps.get() + 1));
 }
 
 fn types(declaration: Node<'_>, source: &str, output: &mut Vec<SymbolRecord>) {
@@ -305,5 +323,45 @@ mod tests {
         assert_eq!(package_local_name("github.com/go-chi/chi/v5"), "chi");
         assert_eq!(package_local_name("gopkg.in/yaml.v3"), "yaml");
         assert_eq!(package_local_name("example.com/go-kit"), "go_kit");
+    }
+
+    fn const_block(count: usize) -> String {
+        let mut source = String::from("package p\n\nconst (\n");
+        for index in 0..count {
+            source.push_str(&format!("\tC{index} = {index}\n"));
+        }
+        source.push_str(")\n");
+        source
+    }
+
+    /// Declaration children walked to extract a block of `count` specs.
+    fn declaration_steps(count: usize) -> usize {
+        let source = const_block(count);
+        super::DECLARATION_STEPS.with(|steps| steps.set(0));
+        let extraction =
+            crate::parsers::ParserRegistry::extract(crate::parsers::Language::Go, &source)
+                .expect("Go source extracts");
+        assert_eq!(extraction.symbols.len(), count);
+        super::DECLARATION_STEPS.with(std::cell::Cell::get)
+    }
+
+    /// A grouped declaration is expanded once, not once per spec (E17-37,
+    /// D102): the children walked grow linearly with the block. Counted, not
+    /// timed (E17-53), so machine load cannot fail it and a quadratic
+    /// expansion fails it at every size.
+    #[test]
+    fn test_go_huge_const_block_expands_in_linear_work() {
+        // Each size is checked before the next is built, so a quadratic
+        // expansion fails at the second size instead of running long.
+        let mut previous = declaration_steps(1_000);
+        assert!(previous >= 1_000, "every spec is walked: {previous}");
+        for count in [4_000, 16_000] {
+            let steps = declaration_steps(count);
+            assert!(
+                steps * 10 <= previous * 45,
+                "{count} specs walked {steps} declaration steps, a quarter of them {previous}"
+            );
+            previous = steps;
+        }
     }
 }

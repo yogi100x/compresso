@@ -48,9 +48,18 @@ while IFS= read -r line; do
 done
 "#;
 const HANGING_STUB: &str = "#!/bin/sh\nexec sleep 30\n";
+/// Starts a child that lives until it is killed, publishes its process id
+/// (renamed into place, so a reader never sees a partial id), and only then
+/// answers `initialize`; it never answers `tools/list`. The probe therefore
+/// times out after the child provably exists, however slowly the host runs
+/// the script.
 const HANGING_TREE_STUB: &str = r#"#!/bin/sh
-sleep 30 &
-echo $! > "$(dirname "$0")/child.pid"
+here="$(dirname "$0")"
+sleep 2147483647 &
+echo $! > "$here/child.pid.partial"
+mv "$here/child.pid.partial" "$here/child.pid"
+IFS= read -r line
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{},"serverInfo":{"name":"compresso","version":"0.0.0"}}}'
 wait
 "#;
 const HANGS_AFTER_INITIALIZE_STUB: &str = r#"#!/bin/sh
@@ -276,8 +285,14 @@ fn assert_failure(script: &str, timeout: Duration, state: &str, fix_fragment: &s
     let (exit, payload) = fixture.doctor(Some(timeout));
 
     assert!(started.elapsed() < BOUNDED, "probe must be bounded");
+    assert_failure_report(exit, &payload, state, fix_fragment);
+    fixture
+}
+
+/// The doctor verdict [`assert_failure`] checks, without its timing bound.
+fn assert_failure_report(exit: CliExitCode, payload: &Value, state: &str, fix_fragment: &str) {
     assert_eq!(exit, CliExitCode::Failure);
-    let check = mcp_check(&payload);
+    let check = mcp_check(payload);
     assert_eq!(check["passed"], false, "{check}");
     assert_eq!(check["severity"], "error", "{check}");
     assert!(
@@ -292,11 +307,10 @@ fn assert_failure(script: &str, timeout: Duration, state: &str, fix_fragment: &s
             .is_some_and(|hint| hint.contains(fix_fragment)),
         "{check}"
     );
-    let server = server(&payload, "claude-code");
+    let server = server(payload, "claude-code");
     assert_eq!(server["state"], state);
     assert_eq!(server["healthy"], false);
     assert_eq!(server["severity"], "error");
-    fixture
 }
 
 /// Asserts that `doctor` passed with the MCP check downgraded to a warning
@@ -503,25 +517,75 @@ fn test_doctor_reports_handshake_timeout_for_unresponsive_server() {
 
 #[test]
 fn test_timeout_kills_the_server_process_tree() {
-    let fixture = assert_failure(
-        HANGING_TREE_STUB,
-        Duration::from_secs(8),
-        "handshake_timeout",
-        "Restart the coding client",
-    );
-    let pid = fs::read_to_string(fixture.stub.with_file_name("child.pid"))
-        .expect("stub should record its child");
-    let alive = || {
-        Command::new("kill")
-            .args(["-0", pid.trim()])
-            .output()
-            .is_ok_and(|output| output.status.success())
+    // The stub records its child before it answers `initialize`, so a
+    // recorded id proves the child existed before the probe gave up. Only a
+    // host too slow to run the stub's first lines within the deadline leaves
+    // no id; that run proves nothing and is repeated with a longer deadline
+    // (E17-53). Nothing here asserts on elapsed time.
+    let mut deadline = Duration::from_secs(4);
+    let (fixture, pid) = loop {
+        let fixture = Fixture::with_installed_stub(HANGING_TREE_STUB);
+        let (exit, payload) = fixture.doctor(Some(deadline));
+        let recorded = fs::read_to_string(fixture.stub.with_file_name("child.pid")).ok();
+        let guard = recorded.as_deref().map(ChildGuard::new);
+        assert_failure_report(
+            exit,
+            &payload,
+            "handshake_timeout",
+            "Restart the coding client",
+        );
+        match guard {
+            Some(guard) => break (fixture, guard),
+            None if deadline < Duration::from_secs(64) => deadline *= 2,
+            None => panic!("the stub never started within {deadline:?}"),
+        }
     };
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while alive() && Instant::now() < deadline {
+    // The end state is the assertion: the child is gone. The bound below only
+    // stops a hang; a child that was not killed lives until the guard kills
+    // it, so it can never pass by expiring on its own.
+    let gone_by = Instant::now() + Duration::from_secs(120);
+    while pid.alive() && Instant::now() < gone_by {
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(!alive(), "descendant {pid} outlived the probe");
+    assert!(!pid.alive(), "descendant {} outlived the probe", pid.0);
+    drop(fixture);
+}
+
+/// A process id recorded by a stub; killed when dropped if it still runs,
+/// so a failing run never leaves the child behind.
+struct ChildGuard(String);
+
+impl ChildGuard {
+    fn new(recorded: &str) -> Self {
+        let pid = recorded.trim().to_owned();
+        assert!(
+            !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit()),
+            "recorded child id {pid:?}"
+        );
+        Self(pid)
+    }
+
+    /// Running, as opposed to gone or exited but not yet reaped by its new
+    /// parent (a zombie, `Z`), which no longer runs anything.
+    fn alive(&self) -> bool {
+        Command::new("ps")
+            .args(["-o", "stat=", "-p", &self.0])
+            .output()
+            .is_ok_and(|output| {
+                let state = String::from_utf8_lossy(&output.stdout);
+                output.status.success()
+                    && !state.trim().is_empty()
+                    && !state.trim().starts_with('Z')
+            })
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if self.alive() {
+            let _ = Command::new("kill").args(["-KILL", &self.0]).output();
+        }
+    }
 }
 
 #[test]
