@@ -1,0 +1,108 @@
+rust/compresso-mcp/tests/tool_profile.rs
+  s_89a704cfae63f5::t_2ddeeaedcc952e 330-336
+  s_89a704cfae63f5::t_9804b4d56c51c9 54-62,82-83,295-329,337-365
+rust/compresso-integrations/src/main_agent.rs
+  s_89a704cfae63f5::t_8d3bb9f863bb2d 1-556
+  s_89a704cfae63f5::t_9c12e39c17897c 557-575
+rust/compresso-cli/src/commands.rs
+  s_89a704cfae63f5::t_f5a3cae27ce2e5 218-229
+  s_89a704cfae63f5::t_9c15d25acc1044 18
+rust/compresso-mcp/src/profile.rs
+  s_89a704cfae63f5::t_10f0f5ae090892 155-171
+  s_89a704cfae63f5::t_8ef7ae9549289b 207-214,217
+  s_89a704cfae63f5::t_05678de739e645 249-258
+rust/compresso-integrations/src/plan.rs
+  s_89a704cfae63f5::t_79e62674fc13c2 1946,2337-2348
+  s_89a704cfae63f5::t_df57c17f18e07a 367-374
+  s_89a704cfae63f5::t_3382c0ac27b686 1943-1945
+  s_89a704cfae63f5::t_c9b5702a62cc70 1947-1949
+rust/compresso-integrations/src/main_agent_setting.rs
+  s_89a704cfae63f5::t_f86bcff48c3312 1-658,664-665,667-792
+  s_89a704cfae63f5::t_42a7afd47b6c19 659-663,666
+  s_89a704cfae63f5::t_6e2e85c73a2f4b 793-795
+  s_f4ca430ed37d9b::t_c9620eb439b250 796-825
+rust/compresso-integrations/src/server_entry.rs
+  s_89a704cfae63f5::t_983bb09b2f3d17 131,622-645
+  s_89a704cfae63f5::t_90c28f98e66893 128-130
+  s_89a704cfae63f5::t_a9d89356f843dc 621
+  s_f4ca430ed37d9b::t_34bd5f6e0c0b1b 58-76,111-114,121-127,140
+rust/compresso-cli/src/commands/main_agent.rs
+  s_89a704cfae63f5::t_8bccbb49dbfdde 141-175
+  s_89a704cfae63f5::t_11592dc6cc2d80 1-66,68-140,176-189,224-282,287-372,380-388,390-393
+  s_89a704cfae63f5::t_3e43c283cba5ce 190-223
+  s_89a704cfae63f5::t_52d493af3c6a1f 67
+  s_89a704cfae63f5::t_117d6667da441c 283-286
+  s_89a704cfae63f5::t_1f194d0dcc6c7c 373-375,377-379
+  s_89a704cfae63f5::t_91f68e782328f6 389
+  s_f4ca430ed37d9b::t_9e6cfb58887907 376
+rust/compresso-cli/src/commands/integrations.rs
+  s_89a704cfae63f5::t_0269b4fc640204 349,364,380,404,438-439,446,454,481,914-915,1016,1021,1027,1157,1570,1573-1577,1582-1591,1698,2065,2077-2078
+  s_89a704cfae63f5::t_dc176c9c9dd4bf 1578-1581
+  s_89a704cfae63f5::t_b44e483ba7dbef 345,350-363,365-379,381-403,405-437,440-445,447-453,455-460,475-480,482-483,763-771,777,783-796,853-866,903-913,916-923,928,932,934,983-1015,1017-1020,1022-1023,1053-1054,1069,1086-1087,1150-1152,1158-1161,1223-1224,1230-1244,1571-1572,1690,1697,2004-2006,2050-2064,2079-2080,2107-2109,2301
+rust/compresso-mcp/src/server.rs
+  s_89a704cfae63f5::t_b2cc0d2470e954 917
+  s_f4ca430ed37d9b::t_6b1a8f2793d745 225,231,236,417,445,490,518-522,558,599,630,662,685,726,866-892
+rust/compresso-cli/src/commands/mcp.rs
+  s_89a704cfae63f5::t_11b5e793c3f442 337
+  s_f4ca430ed37d9b::t_e2bb3aa80759d0 23,28,46-48,131,161,256-260,275-279,393,400-402,405-418
+rust/compresso-cli/tests/cli_main_agent.rs
+  s_89a704cfae63f5::t_160524a31b5e42 1-494
+  s_89a704cfae63f5::t_963039d69e620e 495-497
+  s_f4ca430ed37d9b::t_08b09bf39befe7 498-536
+rust/compresso-atlas/src/scanner.rs
+  s_89a704cfae63f5::t_1808a39db8ace9 671-690
+rust/compresso-atlas/src/lib.rs
+  s_89a704cfae63f5::t_c62bf746eb7c51 53
+rust/compresso-integrations/src/lib.rs
+  s_89a704cfae63f5::t_8f3db5d36c57f6 29-30,50-53,67-68
+rust/compresso-integrations/src/session_commands.rs
+  s_89a704cfae63f5::t_abfaeb1fcee5a0 70,456
+rust/compresso-cli/src/commands/setup.rs
+  s_470a2f6e5f0af8::t_d2589c115c92e5 16-18,20,109-119,196-211,216,221-236,255-257,413-415,425-437,446-448,462-470,506-507,773-790,834-837,903-915,964,1028,1034-1043
+rust/compresso-cli/tests/cli_explore_agent.rs
+  s_f4ca430ed37d9b::t_460e6cf3698f44 146-159
+rust/compresso-cli/tests/cli_explore_agent_server.rs
+  s_f4ca430ed37d9b::t_bdd5b7f5feeb2e 212-214,236
+rust/compresso-cli/tests/cli_session_commands.rs
+  s_f4ca430ed37d9b::t_b86643a7ef1462 194
+rust/compresso-cli/tests/cli_setup.rs
+  s_f4ca430ed37d9b::t_f38864394a2730 578-592,1477-1553
+rust/compresso-cli/tests/cli_setup_compaction_hook.rs
+  s_f4ca430ed37d9b::t_cf04ae4de954f4 777-790
+rust/compresso-integrations/src/claude_code.rs
+  s_470a2f6e5f0af8::t_0c28c6bbce0639 13-15,83-86,98,118-131,219-221
+rust/compresso-mcp/src/lib.rs
+  s_f4ca430ed37d9b::t_e30b8f0f3db973 20-23
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4fa16f3f69cea9028e522885b14fda6631f154b9",
+  "prompts": {},
+  "sessions": {
+    "s_470a2f6e5f0af8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a2ff873261d314507",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_f4ca430ed37d9b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ab0c6ae8c7484240b",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
