@@ -294,6 +294,72 @@ test("test_network_through_sql_fails_for_every_other_crate", async () => {
   );
 });
 
+// D117: Tokio's process feature turned on only by the MongoDB driver (without
+// its encryption feature) is not counted for compresso-sql and its two
+// consumers; every other route to it still is.
+test("test_tokio_process_only_from_the_driver_passes", async () => {
+  const result = await checkWorkspace(
+    fixture("allowed-sql-driver-tokio-process"),
+  );
+
+  assert.deepEqual(result, { ok: true, checkedCrates: 3, violations: [] });
+});
+
+test("test_tokio_process_beside_the_driver_still_fails", async () => {
+  const result = await checkWorkspace(
+    fixture("denied-mcp-tokio-process-beside-driver"),
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(
+    result.violations.join("\n"),
+    /compresso-mcp \(pure-local\): resolved dependency path compresso-mcp -> compresso-sql -> mongodb -> tokio grants process capability/u,
+  );
+});
+
+test("test_a_tokio_feature_implying_process_beside_the_driver_fails", async () => {
+  const result = await checkWorkspace(
+    fixture("denied-mcp-tokio-full-beside-driver"),
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(
+    result.violations.join("\n"),
+    /compresso-mcp \(pure-local\): resolved dependency path compresso-mcp -> compresso-sql -> mongodb -> tokio grants process capability/u,
+  );
+});
+
+test("test_the_driver_encryption_feature_keeps_the_process_capability", async () => {
+  const result = await checkWorkspace(
+    fixture("denied-sql-driver-encryption-process"),
+  );
+  const violations = result.violations.join("\n");
+
+  assert.equal(result.ok, false);
+  assert.match(
+    violations,
+    /compresso-sql \(database-network\): resolved dependency path compresso-sql -> mongodb -> tokio grants process capability/u,
+  );
+  assert.match(violations, /compresso-cli \(bounded-local\)/u);
+});
+
+test("test_the_driver_outside_the_database_crate_fails", async () => {
+  const result = await checkWorkspace(
+    fixture("denied-store-process-through-driver"),
+  );
+  const violations = result.violations.join("\n");
+
+  assert.equal(result.ok, false);
+  assert.match(
+    violations,
+    /compresso-store \(pure-local\): resolved dependency path compresso-store -> mongodb -> tokio grants process capability/u,
+  );
+  assert.match(
+    violations,
+    /compresso-store \(pure-local\): resolved dependency path compresso-store -> mongodb -> tokio -> socket2 grants network capability/u,
+  );
+});
+
 test("test_network_through_non_member_sql_crate_fails_closed", async () => {
   await assert.rejects(
     checkWorkspace(fixture("denied-mcp-network-through-impostor-sql")),

@@ -795,19 +795,127 @@ async function memberTree(
 }
 
 /** The first dependency path in `lines` that grants `capability`. */
-function treeCapabilityPath(lines: TreeLine[], capability: Capability) {
+function treeCapabilityPath(
+  lines: TreeLine[],
+  capability: Capability,
+  ignoreTokioProcess = false,
+) {
   const stack: string[] = [];
   for (const line of lines) {
     stack.length = line.depth;
     stack.push(line.name);
+    if (line.depth === 0) {
+      continue;
+    }
+    const capabilities = packageCapabilities(line.name, line.features);
     if (
-      line.depth > 0 &&
-      packageCapabilities(line.name, line.features).has(capability)
+      ignoreTokioProcess &&
+      capability === "process" &&
+      line.name === "tokio" &&
+      !processDependencies.has(line.name)
     ) {
+      capabilities.delete("process");
+    }
+    if (capabilities.has(capability)) {
       return [...stack];
     }
   }
   return undefined;
+}
+
+/**
+ * The MongoDB driver (E17-52, D117) turns on Tokio's `process` feature in
+ * its own manifest, unconditionally; its only use of it (spawning the
+ * encryption helper) is compiled only with the driver's `in-use-encryption`
+ * feature. The feature itself grants no process API to Compresso's code: the
+ * source scan still forbids `std::process` and `tokio::process` in every
+ * workspace crate. So for the database crate and its two consumers the
+ * feature is not counted when, in the member's own resolved tree, every
+ * enabler of `tokio feature "process"` is the `mongodb` package itself and
+ * `mongodb` is built without `in-use-encryption`. Anything else (another
+ * enabler, a Tokio feature such as `full` that implies it, the encryption
+ * feature) keeps the capability, so the check fails closed.
+ */
+const tokioProcessDriver = "mongodb";
+const tokioProcessDriverForbiddenFeatures = [
+  "in-use-encryption",
+  "in-use-encryption-unstable",
+];
+
+async function tokioProcessOnlyFromDriver(
+  manifestPath: string,
+  member: string,
+  tree: TreeLine[],
+) {
+  const driverLines = tree.filter((line) => line.name === tokioProcessDriver);
+  if (
+    driverLines.length === 0 ||
+    driverLines.some((line) =>
+      line.features.some((feature) =>
+        tokioProcessDriverForbiddenFeatures.includes(feature),
+      ),
+    )
+  ) {
+    return false;
+  }
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync(
+      "cargo",
+      [
+        "tree",
+        "--locked",
+        "-p",
+        member,
+        "-e",
+        "normal,build,dev,features",
+        "--target",
+        "all",
+        "--prefix",
+        "depth",
+        "-f",
+        "{p}",
+        "--manifest-path",
+        manifestPath,
+      ],
+      {
+        cwd: dirname(manifestPath),
+        encoding: "utf8",
+        maxBuffer: 256 * 1024 * 1024,
+      },
+    ));
+  } catch (error) {
+    const stderr = (error as { stderr?: string }).stderr?.trim();
+    throw new Error(
+      `cargo tree -e features failed for ${member}${stderr ? `: ${stderr}` : ""}`,
+      { cause: error },
+    );
+  }
+  const stack: string[] = [];
+  let enablers = 0;
+  for (const line of stdout.split("\n")) {
+    const match = line.match(/^(\d+)(.+?)(?: \(\*\))?$/u);
+    if (!match) {
+      continue;
+    }
+    const depth = Number(match[1]);
+    const text = match[2];
+    stack.length = depth;
+    stack.push(text);
+    if (depth === 0 || text !== 'tokio feature "process"') {
+      continue;
+    }
+    enablers += 1;
+    const parent = stack[depth - 1] ?? "";
+    if (
+      !new RegExp(`^${tokioProcessDriver} v\\S+(?: \\(.*\\))?$`, "u").test(
+        parent,
+      )
+    ) {
+      return false;
+    }
+  }
+  return enablers > 0;
 }
 
 /**
@@ -1101,6 +1209,19 @@ export async function checkWorkspace(
           }
           let path = treeCapabilityPath(tree, capability);
           let through = "";
+          if (
+            path &&
+            capability === "process" &&
+            path.at(-1) === "tokio" &&
+            (pkg.name === databaseNetworkCrate ||
+              databaseNetworkConsumers.has(pkg.name)) &&
+            (await tokioProcessOnlyFromDriver(manifestPath, pkg.name, tree))
+          ) {
+            // D117: Tokio's process feature, turned on only by the MongoDB
+            // driver without its encryption feature; any other process
+            // package still counts.
+            path = treeCapabilityPath(tree, capability, true);
+          }
           if (
             path &&
             capability === "network" &&
