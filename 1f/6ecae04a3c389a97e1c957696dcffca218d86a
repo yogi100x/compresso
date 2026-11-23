@@ -1,0 +1,81 @@
+README.md
+  s_89a704cfae63f5::t_bcb5ee7662fe91 79-125
+decisions.md
+  s_89a704cfae63f5::t_d2f5d2dd4b471d 111,124,135
+docs/adr/0037-default-main-session-agent.md
+  s_89a704cfae63f5::t_7d793f638fa953 1-198
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_5ec3bdad2f6aee 31,45,54,826-827,878,897-907
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_a1d20d7d2294a0 3649-3669,3711,3742-3744
+rust/compresso-atlas/src/lib.rs
+  s_89a704cfae63f5::t_6193ad77b5d888 53
+rust/compresso-atlas/src/scanner.rs
+  s_89a704cfae63f5::t_8e804f645aaad3 671-690
+rust/compresso-cli/src/commands.rs
+  s_89a704cfae63f5::t_68dc21f7672d5e 18,192-197,232-243
+rust/compresso-cli/src/commands/integrations.rs
+  s_89a704cfae63f5::t_65a21723949f63 41-43,60,68-73,106-110,119,128,361,365-532,547-555,835-843,849,855-869,940-953,996-1091,1096,1100,1103,1120-1131,1133-1139,1144-1172,1174,1176-1214,1218,1244-1246,1261-1264,1281-1283,1319-1374,1376-1390,1392,1413,1417-1421,1423-1429,1481,1490-1492,1498-1695,1791-1807,1829,1831,1851,1855-1860,2039-2060,2160,2168-2169,2475-2479,2523-2542,2554-2560,2587-2589,2781
+rust/compresso-cli/src/commands/main_agent.rs
+  s_89a704cfae63f5::t_2ade36561c56e9 1-630
+rust/compresso-cli/src/commands/mcp.rs
+  s_89a704cfae63f5::t_1d0c1ae391b79c 24,29,50-52,136,167,274-278,298-302,361,418,425-427,430-443
+rust/compresso-cli/src/commands/setup.rs
+  s_89a704cfae63f5::t_5ea155d255ea25 16-18,20,109-119,196-255,260,265-281,300-303,342-348,425-427,443-478,482-486,510-513,523-538,547-550,564-572,608-609,875-894,938-942,1008-1030,1079,1143,1149-1158
+rust/compresso-cli/tests/cli_explore_agent.rs
+  s_89a704cfae63f5::t_7a778869c868e4 149-162
+rust/compresso-cli/tests/cli_explore_agent_server.rs
+  s_89a704cfae63f5::t_4814a3cbc39875 215-217,239
+rust/compresso-cli/tests/cli_main_agent.rs
+  s_89a704cfae63f5::t_7dc2791b528fa9 1-1097
+rust/compresso-cli/tests/cli_session_commands.rs
+  s_89a704cfae63f5::t_8ba6d472e52a7a 194
+rust/compresso-cli/tests/cli_setup.rs
+  s_89a704cfae63f5::t_2657d774af9ce8 578-592,1477-1710
+rust/compresso-cli/tests/cli_setup_compaction_hook.rs
+  s_89a704cfae63f5::t_5853d31a973181 777-790
+rust/compresso-integrations/src/claude_code.rs
+  s_89a704cfae63f5::t_731b45af953dde 14-15,87-91,104,132-146,234-236
+rust/compresso-integrations/src/explore_agent.rs
+  s_89a704cfae63f5::t_3087d3164f6f6e 14-16
+rust/compresso-integrations/src/lib.rs
+  s_89a704cfae63f5::t_90b4b430eb2852 29-30,50-53,57-60,69
+rust/compresso-integrations/src/main_agent.rs
+  s_89a704cfae63f5::t_e8eeda8d5ed62c 1-625
+rust/compresso-integrations/src/main_agent_setting.rs
+  s_89a704cfae63f5::t_6f291ab60c2c68 1-919
+rust/compresso-integrations/src/plan.rs
+  s_89a704cfae63f5::t_f618cec4e75330 120-131,133-135,137,379-401,680-695,698,713,740-741,1744-1747,1814-1816,1824-1833,1953,1990-1999,2245,2385-2405,2418-2424,2576-2582
+rust/compresso-integrations/src/server_entry.rs
+  s_89a704cfae63f5::t_b9814a79d6f5db 58-76,135-141,146-156,165,172,661-685
+rust/compresso-integrations/src/session_commands.rs
+  s_89a704cfae63f5::t_8d42deb996af0b 70,456
+rust/compresso-mcp/src/lib.rs
+  s_89a704cfae63f5::t_9165be1ba8c498 24-29
+rust/compresso-mcp/src/profile.rs
+  s_89a704cfae63f5::t_457048b4ea41ce 4-6,157-174,206-210,215-222,225,257-266,295-308
+rust/compresso-mcp/src/server.rs
+  s_89a704cfae63f5::t_30d51259b60e74 228,235,241,431,460,506,539-543,579,621,653,686,710,753,909,915,928-956,984
+rust/compresso-mcp/tests/tool_profile.rs
+  s_89a704cfae63f5::t_a7f924596b744d 54-62,82-83,295-381
+rust/compresso-mcp/tests/tools_mongo.rs
+  s_89a704cfae63f5::t_07463c8673a21f 17-18,231-252
+rust/compresso-store/src/lib.rs
+  s_89a704cfae63f5::t_ec7ee40db008ef 255-260
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1f6ecae04a3c389a97e1c957696dcffca218d86a",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
