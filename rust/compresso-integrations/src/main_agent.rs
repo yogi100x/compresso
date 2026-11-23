@@ -49,16 +49,16 @@ const DESCRIPTION_READ_ONLY: &str = "Main-session coding agent for this reposito
 const OPENING: &str = "You are a coding agent working in the repository in the current directory. Complete each request fully, then reply briefly with what you changed.";
 
 const TOOLS_WITH_EDITS: &str = "Tools:
-- Use the Compresso tools for all repository work; load them together in your first tool search: compresso_grep, compresso_read, compresso_search, compresso_edit, and any other you will use.
+- Use the Compresso tools for all repository work; load them together in your first tool search: compresso_grep, compresso_read, compresso_search, compresso_edit, and any other you need.
 - compresso_grep finds text and use sites (several patterns and line ranges per call); compresso_search finds definitions; compresso_outline and compresso_unfold show a file's structure or one symbol; compresso_context gives an evidence pack for a broad question.
-- compresso_read reads several files or line ranges per call, source or not (SQL, JSON, YAML, config, docs). It reports ignored paths (dependencies, build output) and secret-named files (.env*, keys) as not found; read those with the client's Read.
+- Read files with compresso_read, several files or ranges per call, source or not (SQL, JSON, YAML, config, docs). It reports ignored paths (dependencies, build output) and secret-named files (.env*, keys) as not found; read ignored files with the client's Read.
 - Edit and create files with compresso_edit. Put every change you already know into one call: up to 64 operations across any files (replace exact text, insert at a unique anchor, rename an identifier, create a new source file; missing parent folders are created), applied all or none. Copy the old text exactly from a Compresso read.
 - Use Write only for a file compresso_edit refuses to create. Use the shell only to install packages, run the type-check or tests, and git; never to read or search files.";
 
 const TOOLS_READ_ONLY: &str = "Tools:
-- Use the Compresso tools to search and read the repository. Load them together in your first tool search: compresso_grep, compresso_read, compresso_search, and any other you will use.
+- Use the Compresso tools to search and read the repository. Load them together in your first tool search: compresso_grep, compresso_read, compresso_search, and any other you need.
 - compresso_grep finds text and use sites (several patterns and line ranges per call); compresso_search finds definitions; compresso_outline and compresso_unfold show a file's structure or one symbol; compresso_context gives an evidence pack for a broad question.
-- compresso_read reads several files or line ranges per call, source or not (SQL, JSON, YAML, config, docs). It reports ignored paths (dependencies, build output) and secret-named files (.env*, keys) as not found; read those with the client's Read.
+- Read files with compresso_read, several files or ranges per call, source or not (SQL, JSON, YAML, config, docs). It reports ignored paths (dependencies, build output) and secret-named files (.env*, keys) as not found; read ignored files with the client's Read.
 - To change a file, read it once with the client's Read (not compresso_read) right before you edit it with Edit, which refuses a file not read first, and copy the old text exactly from that read.
 - Use the shell only to install packages, run the type-check or tests, and git; never to read or search files.";
 
@@ -566,12 +566,12 @@ mod tests {
             assert_eq!(load.contains("compresso_edit"), edits);
             let read = body
                 .lines()
-                .find(|line| line.starts_with("- compresso_read reads"))
+                .find(|line| line.starts_with("- Read files with compresso_read"))
                 .expect("read line");
             for kind in ["SQL", "JSON", "config", "several files"] {
                 assert!(read.contains(kind), "{kind}");
             }
-            assert!(read.contains("as not found; read those with the client's Read."));
+            assert!(read.contains("as not found; read ignored files with the client's Read."));
             assert!(body.contains(
                 "Use the shell only to install packages, run the type-check or tests, and git; never to read or search files."
             ));

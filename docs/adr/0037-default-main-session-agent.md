@@ -243,20 +243,20 @@ early, and say where to change behaviour on the request path.
 The body (both variants) now says, in this order: use the Compresso tools for
 all repository work and load them together in the first tool search
 (`compresso_grep`, `compresso_read`, `compresso_search`, and with edits
-`compresso_edit`); what the lookup tools do; that `compresso_read` reads
-several files or line ranges per call, source or not (SQL, JSON, YAML,
-config, docs), and reports ignored paths (dependencies, build output) and
-secret-named files (`.env*`, keys) as not found, which the client's Read
-reads instead; the edit rules as before; that the shell is only for installing
-packages, the type-check or tests, and git, never to read or search files;
+`compresso_edit`); what the lookup tools do; to read files with
+`compresso_read`, several files or ranges per call, source or not (SQL,
+JSON, YAML, config, docs), noting that it reports ignored paths
+(dependencies, build output) and secret-named files (`.env*`, keys) as not
+found and sending only the ignored paths to the client's Read; the edit
+rules as before; that the shell is only for installing packages, the type-check or tests, and git, never to read or search files;
 the index fallback ("available" instead of "in your tool list", since a
 deferred tool is not listed until loaded). The routing sentence is replaced
 by: before editing a handler or function, trace how the request or call
 reaches it (route or registration, middleware, validators, wrappers, callers)
 and change the first place that decides the behaviour instead of adding a
-parallel mechanism. With edits 2,482 characters, without 2,191 (at
-c1d6b2d, before this change: 2,178 and 1,809); the 2,500 ceiling is
-unchanged.
+parallel mechanism. With edits 2,492 characters, without 2,201 (at
+c1d6b2d, before this change: 2,178 and 1,809; the 2,179 recorded above was
+stale by one); the 2,500 ceiling is unchanged.
 
 An agent file written by an earlier version still carries the marker, so it
 is managed, but `main_agent_current` fails until `integrations install`
