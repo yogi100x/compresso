@@ -143,7 +143,20 @@ fn test_setup_and_default_installs_never_create_the_agent() {
         "--json",
     ]);
     assert_eq!(exit, CliExitCode::Success, "{errors}");
-    assert!(!fixture.root.join(".claude/agents").exists());
+    // The default main-session agent (E17-51) is a different file; the
+    // exploration agent is never written by default.
+    assert!(
+        !fixture
+            .root
+            .join(".claude/agents/compresso-explorer.md")
+            .exists()
+    );
+    assert!(
+        fixture
+            .root
+            .join(".claude/agents/compresso-main.md")
+            .exists()
+    );
     assert!(!fixture.home.join(".claude/agents").exists());
 }
 

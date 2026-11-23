@@ -152,6 +152,23 @@ pub(crate) const LEAN_TOOLS: &[LeanTool] = &[
     },
 ];
 
+/// Tools a lean server adds only with `--session-tools` (E17-51, D116): the
+/// two the `/compresso` session command skill calls that the lean allowlist
+/// lacks (`compresso_recall` is already a lean row). They add no instruction
+/// hint: the skill names them, so the lean instructions stay byte-identical.
+pub(crate) const LEAN_SESSION_TOOLS: &[LeanTool] = &[
+    LeanTool {
+        name: "compresso_stats",
+        description: "Compresso savings summary; for the /compresso stats command.",
+        hint: "",
+    },
+    LeanTool {
+        name: "compresso_report",
+        description: "Status, update steps, share text, bug or feedback report; for the /compresso command. Sends nothing.",
+        hint: "",
+    },
+];
+
 /// The lean grep `context_lines` description (E17-34, D99).
 const LEAN_GREP_CONTEXT_LINES: &str =
     "Lines before and after each listed match, merged; within max_tokens.";
@@ -187,10 +204,17 @@ const LEAN_READ_RANGES: &str = "Up to 8 ranges of any files, sharing max_tokens.
 const EDIT_RULE: &str = "Make multi-site edits and renames with compresso_edit, not shell text substitution; a rename is done only when its report shows 0 remaining whole matches and is not marked incomplete; check the substring and adjacent matches it lists.";
 
 /// Restricts `tools` to the lean allowlist, in allowlist order, with lean
-/// descriptions and without the compatibility-only `root` argument.
-pub(crate) fn lean_tools(tools: Vec<Tool>) -> Vec<Tool> {
+/// descriptions and without the compatibility-only `root` argument; with
+/// `session_tools`, [`LEAN_SESSION_TOOLS`] follow.
+pub(crate) fn lean_tools(tools: Vec<Tool>, session_tools: bool) -> Vec<Tool> {
+    let extras: &[LeanTool] = if session_tools {
+        LEAN_SESSION_TOOLS
+    } else {
+        &[]
+    };
     LEAN_TOOLS
         .iter()
+        .chain(extras)
         .filter_map(|lean| {
             let mut tool = tools.iter().find(|tool| tool.name == lean.name)?.clone();
             tool.description = Some(Cow::Borrowed(lean.description));
@@ -221,6 +245,16 @@ pub(crate) fn lean_tools(tools: Vec<Tool>) -> Vec<Tool> {
                     properties.remove("pattern");
                     properties.insert("patterns".to_owned(), lean_grep_patterns());
                     properties.insert("ranges".to_owned(), lean_grep_ranges());
+                }
+                if lean.name == "compresso_stats" {
+                    // The session command passes at most `since`; the other
+                    // arguments stay accepted but are not advertised.
+                    for unused in ["session_id", "limit", "model"] {
+                        properties.remove(unused);
+                    }
+                    if let Some(Value::Object(property)) = properties.get_mut("since") {
+                        property.insert("description".to_owned(), "e.g. 7d".into());
+                    }
                 }
                 if lean.name == "compresso_read" {
                     // Only `ranges` is advertised (E17-36, D101): one call

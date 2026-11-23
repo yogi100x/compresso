@@ -342,10 +342,122 @@ pub(crate) fn prepare_setup_install(
     client: IntegrationClientArg,
     project: Option<&Path>,
     session_recall: bool,
+    entry: SetupEntry,
     environment: &IntegrationEnvironment,
     clock: Arc<dyn PlanClock>,
 ) -> Result<PreparedSetupInstall, IntegrationCliError> {
-    prepare_install(client, project, false, session_recall, environment, clock)
+    prepare_install(
+        client,
+        project,
+        false,
+        session_recall,
+        entry,
+        environment,
+        clock,
+    )
+}
+
+/// Plans setup's main-session agent step (E17-51) without writing
+/// anything, for the combined preview. A hard refusal fails setup before it
+/// changes anything; skips are warnings.
+pub(crate) fn plan_setup_main_agent(
+    root: &Path,
+    entry: SetupEntry,
+    session_recall: bool,
+    environment: &IntegrationEnvironment,
+    clock: Arc<dyn PlanClock>,
+    dry_run: bool,
+    warnings: &mut Vec<String>,
+) -> Result<(super::main_agent::MainAgentCompanion, PlanManager), IntegrationCliError> {
+    let scope = resolve_scope(Some(root), &environment.cwd)?;
+    let launcher_path = validate_stable_launcher(environment.compresso_bin.clone())?;
+    let manager = PlanManager::with_clock(&environment.session_id, clock)?;
+    let receipts = FileReceiptStore::new(environment.receipt_store_path());
+    let companion = super::main_agent::plan_install(
+        &environment.home_dir,
+        &scope,
+        entry.edits,
+        &manager,
+        &receipts,
+        &launcher_path,
+        session_recall,
+        dry_run,
+        warnings,
+    )?;
+    if companion
+        .steps
+        .iter()
+        .any(|step| step.label == "main_agent_setting")
+        && let Some(warning) = super::main_agent::settings_not_ignored_warning(&scope_root(&scope))
+    {
+        warnings.push(warning);
+    }
+    Ok((companion, manager))
+}
+
+/// Applies setup's main-session agent step after the MCP entry landed: the
+/// step is planned again and applied only if it is exactly what was
+/// previewed; otherwise nothing is written and a warning says so.
+pub(crate) fn apply_setup_main_agent(
+    root: &Path,
+    entry: SetupEntry,
+    session_recall: bool,
+    previewed: &super::main_agent::MainAgentCompanion,
+    environment: &IntegrationEnvironment,
+    clock: Arc<dyn PlanClock>,
+) -> (
+    Vec<(&'static str, super::main_agent::StepOutcome)>,
+    Vec<String>,
+) {
+    let mut warnings = Vec::new();
+    let planned = plan_setup_main_agent(
+        root,
+        entry,
+        session_recall,
+        environment,
+        clock,
+        false,
+        &mut Vec::new(),
+    );
+    let (companion, manager) = match planned {
+        Ok(planned) => planned,
+        Err(error) => {
+            warnings.push(format!("main_agent_not_installed: {}", error.message));
+            return (Vec::new(), warnings);
+        }
+    };
+    let same = companion.steps.len() == previewed.steps.len()
+        && companion
+            .steps
+            .iter()
+            .zip(&previewed.steps)
+            .all(|(now, then)| {
+                now.label == then.label
+                    && now.plan.base_hash == then.plan.base_hash
+                    && now.plan.result_hash == then.plan.result_hash
+            });
+    if !same {
+        warnings.push(
+            "main_agent_not_installed: the main-session agent files changed after the setup preview, so nothing was written; run `compresso integrations install claude-code --project <repository-root>` to review and add it".to_owned(),
+        );
+        return (Vec::new(), warnings);
+    }
+    let receipts = FileReceiptStore::new(environment.receipt_store_path());
+    let outcomes = companion.apply(true, &manager, &receipts);
+    for (label, outcome) in &outcomes {
+        if let super::main_agent::StepOutcome::Failed(message) = outcome {
+            warnings.push(format!("{label}_failed: {message}"));
+        }
+    }
+    project_canonical_receipts(&receipts, environment, &mut warnings);
+    (outcomes, warnings)
+}
+
+fn scope_root(scope: &Scope) -> PathBuf {
+    match scope {
+        Scope::Project(root) => root.clone(),
+        Scope::User => PathBuf::new(),
+    }
 }
 
 /// Prepares the post-compaction routing-reminder hook install for setup, with
@@ -360,7 +472,15 @@ pub(crate) fn prepare_setup_hook_install(
     environment: &IntegrationEnvironment,
     clock: Arc<dyn PlanClock>,
 ) -> Result<PreparedSetupInstall, IntegrationCliError> {
-    prepare_install(client, None, true, false, environment, clock)
+    prepare_install(
+        client,
+        None,
+        true,
+        false,
+        SetupEntry::default(),
+        environment,
+        clock,
+    )
 }
 
 /// What will happen to a reminder hook that an earlier Compresso version
@@ -640,17 +760,40 @@ fn legacy_hook_not_removed(
     )
 }
 
+/// How setup's MCP entry is written: plain, or (Claude Code, E17-51) the
+/// main-session profile with or without the edit tool.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SetupEntry {
+    pub(crate) main_agent: bool,
+    pub(crate) edits: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn prepare_install(
     client: IntegrationClientArg,
     project: Option<&Path>,
     compaction_hook: bool,
     session_recall: bool,
+    entry: SetupEntry,
     environment: &IntegrationEnvironment,
     clock: Arc<dyn PlanClock>,
 ) -> Result<PreparedSetupInstall, IntegrationCliError> {
     let scope = resolve_scope(project, &environment.cwd)?;
     let launcher_path = validate_stable_launcher(environment.compresso_bin.clone())?;
-    let selected = SelectedIntegration::new(client, environment, &scope, compaction_hook)?;
+    let selected = if client == IntegrationClientArg::ClaudeCode
+        && !compaction_hook
+        && (entry.main_agent || entry.edits)
+    {
+        SelectedIntegration::claude_code_with_operator_tools(
+            environment,
+            &scope,
+            entry.edits,
+            None,
+            entry.main_agent && matches!(scope, Scope::Project(_)),
+        )?
+    } else {
+        SelectedIntegration::new(client, environment, &scope, compaction_hook)?
+    };
     let manager = PlanManager::with_clock(&environment.session_id, clock)?;
     let receipts = FileReceiptStore::new(environment.receipt_store_path());
     let plan = selected.adapter.plan_install(
@@ -707,6 +850,20 @@ fn execute_mutation(
             "--sql-env needs a variable name matching COMPRESSO_SQL_[A-Z0-9_]+ (the name of the variable, never the URL)",
         ));
     }
+    if (arguments.no_main_agent || arguments.no_edits) && action == MutationAction::Uninstall {
+        return Err(IntegrationCliError::new(
+            "invalid_arguments",
+            "--no-main-agent and --no-edits apply only to `integrations install`; a project uninstall removes the main-session agent with the entry",
+        ));
+    }
+    if (arguments.no_main_agent || arguments.no_edits)
+        && arguments.client != IntegrationClientArg::ClaudeCode
+    {
+        return Err(IntegrationCliError::new(
+            "unsupported",
+            "--no-main-agent and --no-edits are available for claude-code only",
+        ));
+    }
     if arguments.no_session_commands && action == MutationAction::Uninstall {
         return Err(IntegrationCliError::new(
             "invalid_arguments",
@@ -743,16 +900,38 @@ fn execute_mutation(
     } else {
         (requested_scope, None)
     };
+    // The default main-session agent (E17-51, D116): a plain Claude Code
+    // project install adds it unless --no-main-agent; its entry serves the
+    // main-session profile with the edit tool unless --no-edits.
+    let main_agent = action == MutationAction::Install && main_agent_default(&arguments, &scope);
+    let mut main_agent_warnings = Vec::new();
+    if action == MutationAction::Install
+        && arguments.client == IntegrationClientArg::ClaudeCode
+        && !arguments.no_main_agent
+        && plain_entry_change(&arguments)
+        && matches!(scope, Scope::User)
+    {
+        main_agent_warnings.push(
+            "main_agent_not_installed: the main-session agent is a project setting; install with --project DIR to add it to a repository".to_owned(),
+        );
+    }
+    let edits = arguments.edits || (main_agent && !arguments.no_edits);
+    if main_agent && arguments.sql_env.is_some() {
+        main_agent_warnings.push(
+            "main_agent_full_profile: with --sql-env the server keeps the full tool profile (the lean profile never serves compresso_sql), so it serves every Compresso tool and sends JSON results; the main-session agent is installed and uses the same tool names".to_owned(),
+        );
+    }
     let selected = if arguments.explore_agent {
         SelectedIntegration::explore_agent(arguments.client, environment, &scope, arguments.edits)?
     } else if arguments.session_commands {
         SelectedIntegration::session_commands(arguments.client, environment, &scope)?
-    } else if arguments.edits || arguments.sql_env.is_some() {
+    } else if main_agent || edits || arguments.sql_env.is_some() {
         SelectedIntegration::claude_code_with_operator_tools(
             environment,
             &scope,
-            arguments.edits,
+            edits,
             arguments.sql_env.clone(),
+            main_agent,
         )?
     } else {
         SelectedIntegration::new(
@@ -801,10 +980,51 @@ fn execute_mutation(
         }
     };
 
+    // Planned before any write: a hard refusal here leaves nothing changed.
+    let main_agent_companion = match action {
+        MutationAction::Install if main_agent => super::main_agent::plan_install(
+            &environment.home_dir,
+            &scope,
+            edits,
+            &manager,
+            &receipts,
+            launcher_path
+                .as_deref()
+                .expect("install actions validate a launcher"),
+            !arguments.no_recall,
+            arguments.dry_run,
+            &mut main_agent_warnings,
+        )?,
+        MutationAction::Uninstall
+            if arguments.client == IntegrationClientArg::ClaudeCode
+                && plain_entry_change(&arguments)
+                && matches!(scope, Scope::Project(_)) =>
+        {
+            super::main_agent::plan_uninstall(
+                &environment.home_dir,
+                &scope,
+                &manager,
+                &receipts,
+                arguments.dry_run,
+                &mut main_agent_warnings,
+            )
+        }
+        _ => super::main_agent::MainAgentCompanion::default(),
+    };
+    if action == MutationAction::Install
+        && main_agent_companion
+            .steps
+            .iter()
+            .any(|step| step.label == "main_agent_setting")
+        && let Scope::Project(root) = &scope
+        && let Some(warning) = super::main_agent::settings_not_ignored_warning(root)
+    {
+        main_agent_warnings.push(warning);
+    }
     let migration = migration_root
         .as_deref()
         .and_then(|root| plan_legacy_hook_migration(arguments.client, root, environment));
-    let mut companion_warnings = Vec::new();
+    let mut companion_warnings = main_agent_warnings;
     let companion = plan_session_commands_companion(
         action,
         &arguments,
@@ -830,6 +1050,8 @@ fn execute_mutation(
                 migration_outcome: None,
                 session_commands: companion.as_ref().map(|companion| &companion.plan),
                 session_commands_result: None,
+                main_agent: &main_agent_companion,
+                main_agent_result: &[],
                 json: arguments.output.json,
             },
         );
@@ -844,6 +1066,7 @@ fn execute_mutation(
         if let Some(companion) = &companion {
             write_session_commands_preview(output, &companion.plan)?;
         }
+        main_agent_companion.write_preview(output)?;
     }
     if !arguments.yes {
         if arguments.output.json {
@@ -860,6 +1083,8 @@ fn execute_mutation(
                     migration_outcome: None,
                     session_commands: companion.as_ref().map(|companion| &companion.plan),
                     session_commands_result: None,
+                    main_agent: &main_agent_companion,
+                    main_agent_result: &[],
                     json: true,
                 },
             )?;
@@ -922,9 +1147,17 @@ fn execute_mutation(
         }
         .map_err(|error| IntegrationCliError::from(error).message)
     });
+    // The main-session agent follows the entry; a failure is a warning.
+    let main_agent_result =
+        main_agent_companion.apply(action == MutationAction::Install, &manager, &receipts);
     let mut warnings = companion_warnings;
     if let Some(Err(message)) = &session_commands_result {
         warnings.push(format!("session_commands_failed: {message}"));
+    }
+    for (label, outcome) in &main_agent_result {
+        if let super::main_agent::StepOutcome::Failed(message) = outcome {
+            warnings.push(format!("{label}_failed: {message}"));
+        }
     }
     project_canonical_receipts(&receipts, environment, &mut warnings);
     if action == MutationAction::Install && arguments.explore_agent {
@@ -987,9 +1220,26 @@ fn execute_mutation(
             session_commands_result: session_commands_result
                 .as_ref()
                 .and_then(|result| result.as_ref().ok()),
+            main_agent: &main_agent_companion,
+            main_agent_result: &main_agent_result,
             json: arguments.output.json,
         },
     )
+}
+
+/// Whether the mutation changes the plain Claude Code MCP entry, not one of
+/// the separately managed files.
+fn plain_entry_change(arguments: &IntegrationMutationArgs) -> bool {
+    !arguments.explore_agent && !arguments.session_commands && !arguments.compaction_hook
+}
+
+/// Whether a Claude Code install adds the default main-session agent
+/// (E17-51, D116): a plain project install without --no-main-agent.
+fn main_agent_default(arguments: &IntegrationMutationArgs, scope: &Scope) -> bool {
+    arguments.client == IntegrationClientArg::ClaudeCode
+        && plain_entry_change(arguments)
+        && !arguments.no_main_agent
+        && matches!(scope, Scope::Project(_))
 }
 
 /// The reminder hook is user-level and shared by every repository, with its
@@ -1317,6 +1567,28 @@ fn execute_verify(
         && !arguments.explore_agent
         && !arguments.session_commands
     {
+        // The main-session agent checks (E17-51) apply when its file or its
+        // setting is present in the project.
+        if matches!(scope, Scope::Project(_)) {
+            let entry_args = std::fs::read(&selected.config_path)
+                .ok()
+                .and_then(|bytes| {
+                    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(&bytes);
+                    serde_json::from_slice::<serde_json::Value>(bytes).ok()
+                })
+                .and_then(|document| {
+                    document["mcpServers"]["compresso"]["args"]
+                        .as_array()?
+                        .iter()
+                        .map(|value| value.as_str().map(str::to_owned))
+                        .collect::<Option<Vec<_>>>()
+                });
+            report.checks.extend(super::main_agent::verify_checks(
+                &environment.home_dir,
+                &scope,
+                entry_args.as_deref(),
+            ));
+        }
         report.checks.push(VerificationCheck {
             name: "live_client_evidence".to_owned(),
             passed: false,
@@ -1415,13 +1687,15 @@ impl SelectedIntegration {
         scope: &Scope,
         edits: bool,
         sql_env: Option<String>,
+        lean_session: bool,
     ) -> Result<Self, IntegrationCliError> {
         let adapter = ClaudeCodeIntegration::new(
             environment.home_dir.clone(),
             ClaudeCodeDiscovery::new(environment.path_entries.clone(), None),
         )
         .with_edits(edits)
-        .with_sql_env(sql_env);
+        .with_sql_env(sql_env)
+        .with_lean_session(lean_session);
         let config_path = adapter.config_path(scope)?;
         Ok(Self {
             adapter: Box::new(adapter),
@@ -1727,6 +2001,9 @@ struct PlanRendering<'a> {
     /// The in-session command skill changed with the MCP entry (E17-48).
     session_commands: Option<&'a MutationPlan>,
     session_commands_result: Option<&'a MutationResult>,
+    /// The main-session agent changed with the MCP entry (E17-51).
+    main_agent: &'a super::main_agent::MainAgentCompanion,
+    main_agent_result: &'a [(&'static str, super::main_agent::StepOutcome)],
     json: bool,
 }
 
@@ -1770,6 +2047,22 @@ fn render_plan(
                 "result": outcome_json(rendering.session_commands_result)?,
             });
         }
+        if !rendering.main_agent.is_empty() {
+            let mut steps = rendering.main_agent.to_json();
+            if let Some(steps) = steps.as_array_mut() {
+                for step in steps {
+                    let label = step["step"].as_str().unwrap_or_default().to_owned();
+                    step["result"] = rendering
+                        .main_agent_result
+                        .iter()
+                        .find(|(name, _)| *name == label)
+                        .map_or(serde_json::Value::Null, |(_, outcome)| {
+                            super::main_agent::outcome_json(outcome)
+                        });
+                }
+            }
+            document["data"]["main_agent"] = steps;
+        }
         serde_json::to_writer(&mut *output, &document)?;
         writeln!(output)?;
     } else if rendering.dry_run {
@@ -1780,6 +2073,10 @@ fn render_plan(
         }
         if let Some(plan) = rendering.session_commands {
             write_session_commands_preview(output, plan)?;
+        }
+        rendering.main_agent.write_preview(output)?;
+        for warning in rendering.warnings {
+            writeln!(output, "warning: {warning}")?;
         }
     } else {
         writeln!(
@@ -1806,6 +2103,9 @@ fn render_plan(
                 }
             }
             None => {}
+        }
+        for (label, outcome) in rendering.main_agent_result {
+            super::main_agent::write_outcome(output, label, outcome)?;
         }
         if let Some(MutationResult::Uninstall(report)) = rendering.result {
             for warning in &report.warnings {
@@ -1998,7 +2298,7 @@ pub(crate) struct IntegrationCliError {
 }
 
 impl IntegrationCliError {
-    fn new(code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),

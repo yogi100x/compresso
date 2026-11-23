@@ -668,6 +668,26 @@ pub fn is_scanner_excluded(root: &Path, relative: &Path) -> bool {
     ScannerExclusions::load(root).excludes(root, relative)
 }
 
+/// Whether git's global excludes file (`core.excludesFile` from the user's
+/// git configuration, or else `$XDG_CONFIG_HOME/git/ignore` or
+/// `~/.config/git/ignore`) ignores the repository-relative `relative` or one
+/// of its directories. Read-only and advisory: a scan never applies global
+/// rules (see [`is_scanner_excluded`]); the integration installer uses this
+/// only to avoid a false "not ignored" warning (E17-51).
+pub fn is_globally_git_ignored(relative: &Path) -> bool {
+    let (matcher, _) = Gitignore::global();
+    let mut directories = relative
+        .ancestors()
+        .skip(1)
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .collect::<Vec<_>>();
+    directories.reverse();
+    directories
+        .into_iter()
+        .any(|directory| matcher.matched(directory, true).is_ignore())
+        || matcher.matched(relative, false).is_ignore()
+}
+
 /// The scanner's exclusion policy for one repository, loaded once and shared
 /// by every path an operation judges.
 pub struct ScannerExclusions {

@@ -118,9 +118,11 @@ pub const UNMODIFIED_FILE_REMOVED_BACKUP_SENTINEL: &str =
     "(none: unmodified Compresso file removed)";
 
 /// The file state a plan produces: a whole-file Markdown target that is
-/// empty means the file is deleted.
+/// empty means the file is deleted. So does an empty JSON target, which
+/// [`validate_request`] allows only for an uninstall that leaves a file
+/// Compresso created holding nothing else (E17-51).
 fn planned_result(format: ConfigFormat, target_contents: &str) -> TargetState {
-    if format == ConfigFormat::Markdown && target_contents.is_empty() {
+    if matches!(format, ConfigFormat::Markdown | ConfigFormat::Json) && target_contents.is_empty() {
         TargetState::Missing
     } else {
         TargetState::Present(target_contents.as_bytes().to_vec())
@@ -362,6 +364,14 @@ pub struct MutationPlanPreview<'a> {
 }
 
 impl MutationPlan {
+    /// Whether applying this plan deletes the target file.
+    pub fn removes_file(&self) -> bool {
+        matches!(
+            planned_result(self.config_format, &self.target_contents),
+            TargetState::Missing
+        )
+    }
+
     /// Returns the only representation safe to expose at a user-facing
     /// process boundary.
     pub fn public_preview(&self) -> MutationPlanPreview<'_> {
@@ -657,6 +667,7 @@ impl PlanManager {
         let base = read_target(&request.config_path)?;
         if let TargetState::Present(bytes) = &base
             && request.config_format != ConfigFormat::Markdown
+            && !request.target_contents.is_empty()
         {
             // Bind the plan to bytes that keep the file's byte-order mark and
             // line endings; every hash below covers this final shaping.
@@ -1752,6 +1763,9 @@ fn validate_request(request: &MutationRequest) -> Result<(), IntegrationError> {
             if request.prior_receipt.is_some() {
                 return Err(invalid("install must not carry a prior receipt"));
             }
+            if request.config_format == ConfigFormat::Json && request.target_contents.is_empty() {
+                return Err(invalid("an install target must not be empty"));
+            }
         }
         MutationKind::Uninstall => {
             let receipt = request
@@ -1759,6 +1773,16 @@ fn validate_request(request: &MutationRequest) -> Result<(), IntegrationError> {
                 .as_ref()
                 .ok_or_else(|| invalid("uninstall requires a prior receipt"))?;
             receipt.validate()?;
+            // A JSON file is deleted only when Compresso created it; the
+            // owned-path check then proves nothing else is left in it.
+            if request.config_format == ConfigFormat::Json
+                && request.target_contents.is_empty()
+                && receipt.backup_path != CREATED_FILE_BACKUP_SENTINEL
+            {
+                return Err(invalid(
+                    "a JSON configuration is removed only when Compresso created it",
+                ));
+            }
             let requested = request
                 .owned_paths
                 .iter()
@@ -1878,10 +1902,7 @@ fn derive_json_owned_mutations(
     owned_paths: &[String],
 ) -> Result<Vec<OwnedKeyMutation>, IntegrationError> {
     let mut base_document = parse_json_target(base, "base")?;
-    let mut target_document: serde_json::Value = serde_json::from_str(strip_bom_str(target))
-        .map_err(|error| IntegrationError::InvalidRequest {
-            reason: format!("target JSON is malformed: {error}"),
-        })?;
+    let mut target_document = parse_json_text_target(target)?;
     if !target_document.is_object() {
         return Err(invalid("target JSON must be an object"));
     }
@@ -1916,6 +1937,16 @@ fn derive_json_owned_mutations(
         ));
     }
     Ok(changes)
+}
+
+/// A JSON target document; the empty target of a file removal is `{}`.
+fn parse_json_text_target(target: &str) -> Result<serde_json::Value, IntegrationError> {
+    if target.is_empty() {
+        return Ok(serde_json::json!({}));
+    }
+    serde_json::from_str(strip_bom_str(target)).map_err(|error| IntegrationError::InvalidRequest {
+        reason: format!("target JSON is malformed: {error}"),
+    })
 }
 
 fn parse_json_target(
@@ -2163,12 +2194,7 @@ fn safe_owned_projections(
         )),
         ConfigFormat::Json => {
             let base = parse_json_target(base, "base")?;
-            let target: serde_json::Value =
-                serde_json::from_str(strip_bom_str(target)).map_err(|error| {
-                    IntegrationError::InvalidRequest {
-                        reason: format!("target JSON is malformed: {error}"),
-                    }
-                })?;
+            let target = parse_json_text_target(target)?;
             Ok((
                 safe_json_projection(json_value_at(&base, &segments)),
                 safe_json_projection(json_value_at(&target, &segments)),
@@ -2308,6 +2334,18 @@ fn safe_args_value(all_arguments: &[&str]) -> String {
         }
         _ => all_arguments,
     };
+    // So are the main-session profile flags and `--edits` (E17-51), in the
+    // order an adapter writes them.
+    let mut arguments = arguments;
+    if let [base @ .., flag] = arguments
+        && *flag == crate::server_entry::EDITS_FLAG
+    {
+        arguments = base;
+    }
+    let session = crate::server_entry::LEAN_SESSION_ARGS;
+    if arguments.len() >= session.len() && arguments[arguments.len() - session.len()..] == session {
+        arguments = &arguments[..arguments.len() - session.len()];
+    }
     let safe = arguments == ["mcp", "serve"]
         || (arguments.len() == 4
             && arguments[..3] == ["mcp", "serve", "--root"]

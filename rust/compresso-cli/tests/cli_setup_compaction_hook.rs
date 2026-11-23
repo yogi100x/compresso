@@ -774,7 +774,20 @@ fn test_setup_does_not_follow_a_symlinked_project_hook_directory() {
     fs::write(outside.join("settings.json"), planted).expect("outside settings");
     std::os::unix::fs::symlink(&outside, fixture.root.join(".claude")).expect("symlink");
 
-    let (exit, output, errors) = fixture.setup_json(&["claude-code", fixture.root_str(), "--yes"]);
+    // The main-session agent refuses a linked `.claude` before setup writes
+    // anything (E17-51); this test is about the hook, so it opts out.
+    let (exit, _, _) = fixture.setup_json(&["claude-code", fixture.root_str(), "--yes"]);
+    assert_eq!(exit, CliExitCode::Failure);
+    assert_eq!(
+        fs::read_to_string(outside.join("settings.json")).expect("outside settings"),
+        planted
+    );
+    let (exit, output, errors) = fixture.setup_json(&[
+        "claude-code",
+        fixture.root_str(),
+        "--no-main-agent",
+        "--yes",
+    ]);
     assert_eq!(exit, CliExitCode::Success, "{errors}");
     assert_eq!(
         output["data"]["result"]["compaction_hook"]["status"],

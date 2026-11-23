@@ -55,6 +55,25 @@ pub(crate) fn with_recall_source(mut args: Vec<String>, client: &str) -> Vec<Str
     args
 }
 
+/// Arguments that select the main-session profile a default Claude Code
+/// project install writes (E17-51, D116): the lean tools plus the two tools
+/// the `/compresso` session commands call. They follow the base arguments.
+pub(crate) const LEAN_SESSION_ARGS: [&str; 3] = ["--tools", "lean", "--session-tools"];
+
+/// Appends the main-session profile arguments to adapter-written base
+/// arguments, before any `--edits`.
+pub(crate) fn with_lean_session(mut args: Vec<String>) -> Vec<String> {
+    args.extend(LEAN_SESSION_ARGS.iter().map(|arg| (*arg).to_owned()));
+    args
+}
+
+/// Whether adapter-shaped server arguments select the main-session profile
+/// (`--tools lean --session-tools`).
+pub fn server_serves_lean_session(args: &[String]) -> bool {
+    args.windows(LEAN_SESSION_ARGS.len())
+        .any(|window| window.iter().zip(LEAN_SESSION_ARGS).all(|(a, b)| a == b))
+}
+
 /// Flag that enables the opt-in `compresso_edit` tool (E17-32, D97).
 pub(crate) const EDITS_FLAG: &str = "--edits";
 
@@ -89,14 +108,27 @@ pub(crate) fn with_sql_env(mut args: Vec<String>, name: &str) -> Vec<String> {
     args
 }
 
-/// Whether `args` is `base`, optionally followed by `--edits`, optionally
-/// followed by `--sql-env NAME` (a valid name), optionally followed by
+/// Whether `args` is `base`, optionally followed (Claude Code only) by the
+/// main-session profile `--tools lean --session-tools`, optionally followed
+/// by `--edits`, optionally followed by `--sql-env NAME` (a valid name; never
+/// with the lean profile, which refuses it), optionally followed by
 /// `client`'s own recall source, in that canonical order. Another client's
 /// source, a repeated flag, or any other argument never matches.
 pub(crate) fn is_adapter_args(args: &[String], base: &[String], client: &str) -> bool {
     let Some(mut rest) = args.strip_prefix(base) else {
         return false;
     };
+    let mut lean = false;
+    if client == CLAUDE_CODE_CLIENT
+        && rest.len() >= LEAN_SESSION_ARGS.len()
+        && rest
+            .iter()
+            .zip(LEAN_SESSION_ARGS)
+            .all(|(argument, expected)| argument == expected)
+    {
+        rest = &rest[LEAN_SESSION_ARGS.len()..];
+        lean = true;
+    }
     if let [flag, tail @ ..] = rest
         && flag == EDITS_FLAG
     {
@@ -105,6 +137,7 @@ pub(crate) fn is_adapter_args(args: &[String], base: &[String], client: &str) ->
     if let [flag, name, tail @ ..] = rest
         && flag == SQL_ENV_FLAG
         && is_sql_env_name(name)
+        && !lean
     {
         rest = tail;
     }
@@ -583,6 +616,31 @@ mod tests {
             &serve_args(),
             "claude-code"
         ));
+    }
+
+    #[test]
+    fn test_a_main_session_entry_is_exact_only_for_claude_code_in_canonical_order() {
+        let lean = with_lean_session(serve_args());
+        assert!(server_serves_lean_session(&lean));
+        assert!(!server_serves_lean_session(&serve_args()));
+        assert!(is_adapter_args(&lean, &serve_args(), "claude-code"));
+        let full = with_recall_source(with_edits(lean.clone()), "claude-code");
+        assert!(is_adapter_args(&full, &serve_args(), "claude-code"));
+        assert!(server_enables_edits(&full));
+        // Codex and Cursor never write it.
+        assert!(!is_adapter_args(&lean, &serve_args(), "codex"));
+        assert!(!is_adapter_args(&lean, &serve_args(), "cursor"));
+        // Out of order, partial, or repeated: not adapter-written.
+        let after_edits = with_lean_session(with_edits(serve_args()));
+        assert!(!is_adapter_args(&after_edits, &serve_args(), "claude-code"));
+        let mut partial = serve_args();
+        partial.extend(["--tools".to_owned(), "lean".to_owned()]);
+        assert!(!is_adapter_args(&partial, &serve_args(), "claude-code"));
+        let twice = with_lean_session(lean.clone());
+        assert!(!is_adapter_args(&twice, &serve_args(), "claude-code"));
+        // The lean profile refuses --sql-env, so that shape is never written.
+        let sql = with_sql_env(lean, "COMPRESSO_SQL_MAIN");
+        assert!(!is_adapter_args(&sql, &serve_args(), "claude-code"));
     }
 
     #[test]

@@ -26,6 +26,8 @@ mod codex;
 mod compaction_hook;
 mod cursor;
 mod explore_agent;
+mod main_agent;
+mod main_agent_setting;
 mod plan;
 mod receipt;
 mod server_entry;
@@ -45,6 +47,10 @@ pub use cursor::{
     CursorLiveProbeEvidence, CursorPlatform,
 };
 pub use explore_agent::{EXPLORE_AGENT_NAME, ExploreAgentIntegration};
+pub use main_agent::{MAIN_AGENT_BODY_MAX_CHARS, MAIN_AGENT_NAME, MainAgentIntegration};
+pub use main_agent_setting::{
+    AGENT_SETTING_KEY, AgentSetting, LOCAL_SETTINGS_FILE, MainAgentSettingIntegration,
+};
 pub use plan::{
     ApplyReport, ConfigFormat, DeferredInstallApplyReport, DeferredInstallAuthorization, Detection,
     InstallCtx, IntegrationError, MutationKind, MutationPlan, MutationPlanPreview,
@@ -58,7 +64,8 @@ pub use receipt::{
 };
 pub use server_entry::{
     ConfiguredServer, is_sql_env_name, read_configured_server, recall_source_for_client,
-    receipt_authenticates_server, server_enables_edits, server_recall_source, server_sql_env,
+    receipt_authenticates_server, server_enables_edits, server_recall_source,
+    server_serves_lean_session, server_sql_env,
 };
 pub use session_commands::{SESSION_COMMANDS, SESSION_COMMANDS_SKILL, SessionCommandsIntegration};
 
