@@ -58,7 +58,9 @@ The three always agree. If the agent cannot be installed in full (an
 `agent` value you already set, which is never overwritten, or a
 `compresso-main.md` that Compresso did not write), the entry is written as
 `--no-main-agent` writes it and a warning says what was skipped and how to
-get the default. `--sql-env` keeps the full profile, because the lean profile
+get the default. The agent file and the key are written before the
+entry; if either cannot be written (a file changed after the preview), the
+full-profile entry the preview also shows is written instead. `--sql-env` keeps the full profile, because the lean profile
 never serves `compresso_sql`, so it installs no agent either. If the project
 is a git repository that does not ignore `.claude/settings.local.json`, the
 install warns; it never edits `.gitignore` itself. If the project is not yet

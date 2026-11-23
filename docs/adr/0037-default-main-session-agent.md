@@ -137,6 +137,36 @@ start in a folder the user has not trusted, nor ever under `-p`.
 - **Refusals.** The file-system root and paths inside `~/.claude` are refused
   like the home directory. `{ }` keeps its inner whitespace.
 
+## Amendments after the confirmation check (2026-11-23)
+
+- **Apply order.** The invariant now holds at apply time too. With the
+  agent, `integrations install` and `setup` write the agent file and the key
+  first and the lean entry only if both landed. Otherwise they remove the
+  agent file just written and write the fallback entry, exactly what
+  `--no-main-agent` writes; that entry is planned and shown in the preview
+  (JSON `fallback_entry`). A lean entry that then fails removes the agent
+  again. An uninstall removes the key and the agent file before the entry,
+  and an entry that is already gone (or whose receipt an interrupted run
+  consumed) no longer stops them (`entry_not_removed`).
+- **Verify.** The main-agent checks are required whenever the entry serves
+  `--tools lean --session-tools` or Compresso's marked agent file is present.
+  A user's own `agent` value or own `compresso-main.md` is reported as
+  `main_agent_not_managed` (passed, informational), never as a mismatch.
+- **Journal.** A commit to the agent or settings file writes
+  `<file>.compresso-journal` beside it (mode 0600). It holds the plan, the
+  previewed target, and the file's previous bytes, so for
+  `.claude/settings.local.json` it holds the settings bytes. It is removed
+  when the commit finishes. After a crash it stays in `.claude/` until a
+  later command recovers it: `integrations install` and `uninstall` recover
+  it first; a dry run and `setup` refuse, naming it.
+- **Store.** `project_not_indexed` reads the index database `compresso
+  index` and `mcp serve` use, whatever `XDG_DATA_HOME` says (the integration
+  commands' receipt projection uses it too).
+- **Warnings.** `entry_flag_removed` names a flag, never its value.
+- **Body.** The `--no-edits` body explores with Compresso and, for a file it
+  is about to change, reads it once with the client's Read right before
+  Edit.
+
 ## Consequences
 
 - A default project install now changes how every Claude Code session in that
@@ -163,3 +193,6 @@ start in a folder the user has not trusted, nor ever under `-p`.
   validator that guards every client configuration change.
 - Removing the agent leaves an empty `.claude/agents/` directory if
   Compresso created it.
+- After a crash during a commit, `.claude/settings.local.json.compresso-journal`
+  (0600, holding the settings bytes) stays until a later Compresso command
+  touches the file; nothing removes it on a timer.
