@@ -1133,7 +1133,25 @@ fn normalize_use_path(path: &str) -> String {
 }
 
 fn node_text<'source>(node: Node<'_>, source: &'source str) -> Option<&'source str> {
-    source.get(node.start_byte()..node.end_byte())
+    let text = source.get(node.start_byte()..node.end_byte());
+    #[cfg(test)]
+    count_text_read(text.map_or(0, str::len));
+    text
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Bytes of source text handed out by [`node_text`] (and Go's other
+    /// source reads) on this thread (tests only): text a per-spec path
+    /// reads is counted, so reading a whole declaration once per spec shows
+    /// as quadratic growth (E17-53 review).
+    pub(crate) static TEXT_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Counts `bytes` of source text read; test builds only.
+#[cfg(test)]
+pub(crate) fn count_text_read(bytes: usize) {
+    TEXT_BYTES.with(|total| total.set(total.get() + bytes));
 }
 
 fn line_number(zero_based_row: usize) -> u32 {

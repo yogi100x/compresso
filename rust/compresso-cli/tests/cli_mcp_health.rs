@@ -547,13 +547,24 @@ fn test_timeout_kills_the_server_process_tree() {
     while pid.alive() && Instant::now() < gone_by {
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(!pid.alive(), "descendant {} outlived the probe", pid.0);
+    assert!(!pid.alive(), "descendant {} outlived the probe", pid.pid);
     drop(fixture);
 }
 
-/// A process id recorded by a stub; killed when dropped if it still runs,
-/// so a failing run never leaves the child behind.
-struct ChildGuard(String);
+/// The stub's child, identified by its process id together with its start
+/// time and command line as first seen. A process id can be reused once the
+/// child is gone, so the guard treats a process whose start time or command
+/// differs as not the child: it never reports it alive and never signals
+/// it. Dropped while the child still runs (a failing run), it kills it.
+struct ChildGuard {
+    pid: String,
+    /// `ps` start time and command of the child, if it was running when the
+    /// guard was made; `None` means it was already gone.
+    identity: Option<String>,
+}
+
+/// The command the stub gives its child.
+const CHILD_COMMAND: &str = "sleep 2147483647";
 
 impl ChildGuard {
     fn new(recorded: &str) -> Self {
@@ -562,28 +573,42 @@ impl ChildGuard {
             !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit()),
             "recorded child id {pid:?}"
         );
-        Self(pid)
+        let identity = Self::observe(&pid)
+            .filter(|(state, identity)| {
+                !state.starts_with('Z') && identity.ends_with(CHILD_COMMAND)
+            })
+            .map(|(_, identity)| identity);
+        Self { pid, identity }
     }
 
-    /// Running, as opposed to gone or exited but not yet reaped by its new
-    /// parent (a zombie, `Z`), which no longer runs anything.
-    fn alive(&self) -> bool {
-        Command::new("ps")
-            .args(["-o", "stat=", "-p", &self.0])
+    /// The state letter, and the start time and command, of process `pid`.
+    fn observe(pid: &str) -> Option<(String, String)> {
+        let output = Command::new("ps")
+            .args(["-o", "stat=", "-o", "lstart=", "-o", "command=", "-p", pid])
             .output()
-            .is_ok_and(|output| {
-                let state = String::from_utf8_lossy(&output.stdout);
-                output.status.success()
-                    && !state.trim().is_empty()
-                    && !state.trim().starts_with('Z')
-            })
+            .ok()
+            .filter(|output| output.status.success())?;
+        let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let (state, identity) = text.split_once(char::is_whitespace)?;
+        Some((state.to_owned(), identity.trim().to_owned()))
+    }
+
+    /// The child still runs: the same process (start time and command) and
+    /// not a zombie, which has exited and runs nothing.
+    fn alive(&self) -> bool {
+        let Some(identity) = &self.identity else {
+            return false;
+        };
+        Self::observe(&self.pid)
+            .is_some_and(|(state, now)| &now == identity && !state.starts_with('Z'))
     }
 }
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
+        // Only a process confirmed to be the child is signalled.
         if self.alive() {
-            let _ = Command::new("kill").args(["-KILL", &self.0]).output();
+            let _ = Command::new("kill").args(["-KILL", &self.pid]).output();
         }
     }
 }
