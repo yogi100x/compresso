@@ -220,7 +220,7 @@ const MAX_PEM_BYTES: u64 = 1024 * 1024;
 /// Checks a PEM file named by a URL parameter: an absolute path to a regular
 /// file (not a symbolic link), readable, at most 1 MiB, holding a PEM block
 /// whose label contains `marker`. The error names only `what`.
-fn checked_pem(path: &str, what: &str, marker: &str) -> Result<PathBuf, String> {
+pub(crate) fn checked_pem(path: &str, what: &str, marker: &str) -> Result<PathBuf, String> {
     let refused = || {
         format!(
             "the {what} must be an absolute path to a readable PEM file of at most 1 MiB that is not a symbolic link"
@@ -244,7 +244,7 @@ fn checked_pem(path: &str, what: &str, marker: &str) -> Result<PathBuf, String> 
     Ok(path)
 }
 
-fn decoded(text: &str, part: &str) -> Result<String, String> {
+pub(crate) fn decoded(text: &str, part: &str) -> Result<String, String> {
     percent_decode_str(text)
         .decode_utf8()
         .map(|text| text.into_owned())
@@ -580,7 +580,7 @@ fn parse_mode(engine: SqlEngine, mode: &str) -> Result<LocalTls, String> {
     Ok(parsed)
 }
 
-fn is_loopback_text(host: &str) -> bool {
+pub(crate) fn is_loopback_text(host: &str) -> bool {
     host.eq_ignore_ascii_case("localhost")
         || host
             .trim_start_matches('[')
