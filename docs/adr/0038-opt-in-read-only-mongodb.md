@@ -383,7 +383,15 @@ A second review found the following, all fixed in this round:
   six. It now charges the bytes actually written (names and strings as
   JSON), and a document larger than what is left is cut and marked
   `$truncated`, not dropped. Rows after a full result are not read; the
-  result says `max_bytes` (their number is not known). Dates outside years
+  result says `max_bytes` (their number is not known). This was true of
+  the library only: the MCP token fit then dropped whole documents from the
+  end, so a large document could still come back as zero rows. The third
+  confirmation round fixed the token fit (both tools): rows are dropped from
+  the end, the first row that does not fit is cut (strings shortened, the
+  rest marked `$truncated`; SQL cells cut evenly so columns stay aligned)
+  and kept, and `rows_omitted` counts rows left out for the budget, so a
+  result with rows never comes back empty. The SQL tool had the same
+  drop-to-zero behaviour with one huge row and is fixed the same way. Dates outside years
   1 to 9999 show raw milliseconds (`{"$date": <ms>}`) instead of a clamped
   date.
 - **Escaping is injective**: backslashes in stored names and strings are
@@ -396,8 +404,10 @@ A second review found the following, all fixed in this round:
   through the root account): equal for scalars, an explicit `null`, a
   subdocument, and an array at the end of the path. It differs where the
   path crosses an array of subdocuments (`b.c` over `[{c: 5}, {c: [6, 7]}]`
-  gives 5 and `[6, 7]`; the server's gives 5, 6, 7) and for `undefined`,
-  which aggregation turns into `null`. The tool description calls it
+  gives 5 and `[6, 7]`; the server's gives 5, 6, 7). (An earlier version
+  of this record said `undefined` became `null`; on 8.0.38 the server's
+  `distinct`, `$group`, and the tool all keep them apart.) The tool
+  description calls it
   distinct values of a field; these differences are its contract.
 - **Memory, stated as measured**: peak RSS per call in a release build was
   22 to 26 MB for single 11-15 MB documents through `find`, `distinct`, and
@@ -439,12 +449,16 @@ A string beginning with `$` or `$$` means a field path or a variable only
 where the server reads an aggregation expression; elsewhere it is data or
 is not accepted at all. The gate's default is expression (system variables
 checked, only `ROOT`, `CURRENT`, `REMOVE`, `NOW`, and lower-case pipeline
-variables allowed) unless a row below proves data. Rows marked *data* have
-a live test showing `"$$USER_ROLES"` comes back as the literal string
-(`test_live_mongo_data_positions_return_variables_as_literal_strings`).
+variables allowed) unless a row below proves data. Every row marked *data*
+has a live test showing `"$$USER_ROLES"` comes back as the literal string
+(`test_live_mongo_data_positions_return_variables_as_literal_strings`). A
+filter takes query operators only; expression operators are accepted inside
+`$expr` alone. No component of a field path may start with `$`.
 
 | Position | Server reads `$`/`$$` strings as | Gate |
 |---|---|---|
+| `collection` (every action) | a collection name | 1-120 characters, no `$`, not `system.*` |
+| `max_rows`, `max_tokens`, `timeout_ms` | (tool arguments, never sent as strings) | integers in range |
 | find filter, field value | data | data |
 | find filter, `$in`/`$nin`/`$all`/`$eq`/... arguments | data | data |
 | find filter, `$elemMatch` | data (a query) | data |
@@ -452,16 +466,16 @@ a live test showing `"$$USER_ROLES"` comes back as the literal string
 | find projection | expression | only 0, 1, true, false, integer `$slice`; strings refused |
 | find projection, `$elemMatch` | data (a query) | data |
 | find sort | keys only | 1 or -1 only |
-| find skip, limit | numbers | numbers |
+| find skip | a number | a number |
 | find hint, collation | (not sent) | not accepted |
 | count filter | data | data |
-| distinct field | a field path (the tool builds `"$field"`) | field name, no leading `$` |
+| distinct field | a field path (the tool builds `"$field"`) | field path, no component starting with `$` |
 | distinct filter | data | data |
 | `$match` | data (a query) | data |
 | `$match` `$expr` | expression | expression |
 | `$project` | expression | expression |
 | `$addFields` / `$set` | expression | expression |
-| `$unset` | field names | expression (conservative) |
+| `$unset` | field names | field paths, no component starting with `$` |
 | `$group` `_id` and accumulators | expression | expression |
 | `$sort` | keys only | 1 or -1 only |
 | `$limit`, `$skip` | numbers | numbers |
@@ -471,17 +485,18 @@ a live test showing `"$$USER_ROLES"` comes back as the literal string
 | `$unwind` `path` and options | a field path, flags | expression (conservative) |
 | `$replaceRoot` `newRoot`, `$replaceWith` | expression | expression |
 | `$bucket` `groupBy`, `output` | expression | expression |
-| `$bucket` `boundaries`, `default` | constants | expression (conservative) |
+| `$bucket` `boundaries`, `default` | expressions that must fold to constants | expression (system variables checked; anything else that is not constant the server refuses) |
 | `$bucketAuto` `groupBy`, `output` | expression | expression |
 | `$bucketAuto` `buckets`, `granularity` | a number, a name | expression (conservative) |
 | `$lookup` `from` | a collection name | collection name, no `$` |
-| `$lookup` `localField`, `foreignField`, `as` | field names | field names, no leading `$` |
+| `$lookup` `localField`, `foreignField`, `as` | field paths | field paths, no component starting with `$` |
 | `$lookup` `let` | expression | expression |
 | `$lookup` `pipeline`, `$facet` pipelines | stages | per stage, as above |
+| `$facet` output names | field names | field names, no `$` at the start |
 | `$literal` content (any expression) | data | data |
 
-34 positions: 8 data, 16 expression (5 of them conservative, where the
-server reads a name or a constant), and 10 that take only numbers, keys,
+37 positions: 8 data, 15 expression (3 of them conservative, where the
+server reads a name or a number), and 14 that take only numbers, keys,
 names, or the fixed projection forms.
 
 ## Known gaps
