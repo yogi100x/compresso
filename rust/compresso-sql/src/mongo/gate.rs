@@ -238,9 +238,10 @@ pub const ADMIN_STAGES: &[&str] = &[
 /// with a lower-case letter in MongoDB, so they are not affected.
 pub const SYSTEM_VARIABLES: &[&str] = &["CURRENT", "NOW", "REMOVE", "ROOT"];
 
-/// Refuses a string naming a system variable off [`SYSTEM_VARIABLES`]
-/// (`$$NAME` or `$$NAME.path`). A name that does not start with a
-/// lower-case letter is treated as a system variable.
+/// Refuses, in an aggregation expression, a string naming a system variable
+/// off [`SYSTEM_VARIABLES`] (`$$NAME` or `$$NAME.path`). A name that does
+/// not start with a lower-case letter is treated as a system variable. A
+/// value compared in a filter is data, not a variable, and is not checked.
 pub(crate) fn check_variable(text: &str) -> Result<(), SqlError> {
     let Some(rest) = text.strip_prefix("$$") else {
         return Ok(());
@@ -252,7 +253,7 @@ pub(crate) fn check_variable(text: &str) -> Result<(), SqlError> {
         return Ok(());
     }
     Err(refused(format!(
-        "the system variable is not on the allow-list ({}); use $$ROOT, $$CURRENT, $$REMOVE, or $$NOW.",
+        "the system variable is not on the allow-list ({}); use $$ROOT, $$CURRENT, $$REMOVE, or $$NOW. In an expression a literal string that starts with $ must be wrapped: {{\"$literal\": \"$$...\"}}.",
         if name.len() <= 40 && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
             format!("$${name}")
         } else {
@@ -301,6 +302,9 @@ fn refusal_for(key: &str, place: &str) -> SqlError {
 struct Allowed {
     sets: &'static [&'static [&'static str]],
     place: &'static str,
+    /// Whether a string here is an aggregation expression (where `$$name`
+    /// names a variable) rather than data (a value compared in a filter).
+    expression: bool,
 }
 
 impl Allowed {
@@ -312,18 +316,27 @@ impl Allowed {
 const FILTER: Allowed = Allowed {
     sets: &[QUERY_OPERATORS, EXPRESSION_OPERATORS],
     place: "a filter",
+    expression: false,
+};
+const MATCH: Allowed = Allowed {
+    sets: &[QUERY_OPERATORS, EXPRESSION_OPERATORS],
+    place: "a pipeline stage",
+    expression: false,
 };
 const PROJECTION: Allowed = Allowed {
     sets: &[PROJECTION_OPERATORS, QUERY_OPERATORS],
     place: "a projection",
+    expression: false,
 };
 const STAGE_BODY: Allowed = Allowed {
     sets: &[QUERY_OPERATORS, EXPRESSION_OPERATORS, ACCUMULATORS],
     place: "a pipeline stage",
+    expression: true,
 };
 const LITERAL: Allowed = Allowed {
     sets: &[],
     place: "a value",
+    expression: false,
 };
 
 /// Counts what one argument has used against the size bounds.
@@ -525,6 +538,7 @@ fn stages(
             },
             "$sort" => Bson::Document(sort(body)?),
             "$sample" => sample(body)?,
+            "$match" => value_to_bson(body, MATCH, depth + 1, budget)?,
             _ => value_to_bson(body, STAGE_BODY, depth + 1, budget)?,
         };
         let mut document = Document::new();
@@ -640,10 +654,16 @@ fn document(
         } else {
             check_field(key)?;
         }
-        built.insert(
-            key.clone(),
-            value_to_bson(value, allowed, depth + 1, budget)?,
-        );
+        // `$expr` turns a filter into an aggregation expression.
+        let inner = if key == "$expr" {
+            Allowed {
+                expression: true,
+                ..allowed
+            }
+        } else {
+            allowed
+        };
+        built.insert(key.clone(), value_to_bson(value, inner, depth + 1, budget)?);
     }
     Ok(built)
 }
@@ -682,7 +702,9 @@ fn value_to_bson(
         }
         Value::String(text) => {
             budget.visit(depth)?;
-            check_variable(text)?;
+            if allowed.expression {
+                check_variable(text)?;
+            }
             Ok(Bson::String(text.clone()))
         }
         Value::Array(items) => {
@@ -781,7 +803,6 @@ pub(crate) fn assert_sendable(document: &Document) -> Result<(), SqlError> {
             Bson::Array(items) => items
                 .iter()
                 .try_for_each(|item| walk(item, known, depth + 1)),
-            Bson::String(text) => check_variable(text),
             _ => Ok(()),
         }
     }
@@ -1026,7 +1047,6 @@ mod tests {
             json!([{"$set": {"m": "$$SEARCH_META"}}]),
             json!([{"$match": {"$expr": {"$in": ["read", "$$USER_ROLES.role"]}}}]),
             json!([{"$lookup": {"from": "b", "as": "c", "let": {"r": "$$USER_ROLES"}, "pipeline": []}}]),
-            json!([{"$project": {"x": {"$literal": "$$USER_ROLES"}}}]),
         ] {
             let text = code(pipeline(&value));
             assert!(text.contains("system variable"), "{value}: {text}");
@@ -1041,9 +1061,21 @@ mod tests {
             {"$set": {"s": {"$reduce": {"input": "$a", "initialValue": 0, "in": {"$add": ["$$value", "$$this"]}}}}}
         ]))
         .expect("allowed variables");
-        let mut document = Document::new();
-        document.insert("a", Bson::String("$$USER_ROLES".to_owned()));
-        assert!(code(assert_sendable(&document)).contains("system variable"));
+        // Data, not variables: filter values and $literal content pass.
+        for value in [
+            json!({"note": "$$$"}),
+            json!({"note": "$$USER_ROLES"}),
+            json!({"note": {"$in": ["$$ROOT", "$$x", "$$$"]}}),
+        ] {
+            filter(&value).expect("data");
+        }
+        pipeline(&json!([
+            {"$match": {"note": "$$$"}},
+            {"$project": {"x": {"$literal": "$$USER_ROLES"}}}
+        ]))
+        .expect("data in $match and $literal");
+        let text = code(pipeline(&json!([{"$set": {"x": "$$$"}}])));
+        assert!(text.contains("$literal"), "{text}");
     }
 
     #[test]
@@ -1051,8 +1083,9 @@ mod tests {
         for bad in ["a\u{7}b", "a\nb", "a\u{9f}b"] {
             assert!(code(check_collection(bad)).contains("control"), "{bad:?}");
         }
-        let long = "f".repeat(MAX_FIELD_CHARS + 1);
-        assert!(code(check_field(&long)).contains("1 to"));
+        // Literal bounds, so raising a constant fails this test.
+        assert!(code(check_field(&"f".repeat(257))).contains("1 to"));
+        assert!(check_collection(&"c".repeat(121)).is_err());
         check_field(&"f".repeat(MAX_FIELD_CHARS)).expect("at the bound");
         let long_collection = "c".repeat(MAX_COLLECTION_CHARS + 1);
         assert!(check_collection(&long_collection).is_err());

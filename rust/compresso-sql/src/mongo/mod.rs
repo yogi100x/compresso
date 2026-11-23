@@ -18,6 +18,7 @@ pub mod account;
 mod client;
 pub mod gate;
 mod output;
+mod raw;
 mod target;
 
 use std::fmt;
@@ -380,9 +381,17 @@ pub(crate) fn prepare(request: &MongoRequest) -> Result<Prepared, SqlError> {
     checked(prepared)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How often [`checked`] ran on this thread (tests only).
+    static CHECKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The last step of [`prepare`]: the walk over everything the call will
 /// send, whatever built it.
 pub(crate) fn checked(prepared: Prepared) -> Result<Prepared, SqlError> {
+    #[cfg(test)]
+    CHECKED.with(|count| count.set(count.get() + 1));
     prepared.assert_sendable()?;
     Ok(prepared)
 }
@@ -646,11 +655,45 @@ mod tests {
             Prepared::Distinct {
                 collection: "c".to_owned(),
                 field: "a".to_owned(),
-                filter: doc! {"r": "$$USER_ROLES"},
+                filter: doc! {"r": {"$where": "1"}},
             },
         ] {
             let error = checked(prepared).expect_err("refused");
             assert_eq!(error.code(), "mongo_refused");
+        }
+    }
+
+    #[test]
+    fn test_prepare_always_ends_with_the_final_walk() {
+        for action in [
+            MongoAction::Find {
+                collection: "c".to_owned(),
+                filter: json!({}),
+                projection: None,
+                sort: None,
+                skip: 0,
+            },
+            MongoAction::Aggregate {
+                collection: "c".to_owned(),
+                pipeline: json!([{"$match": {}}]),
+            },
+            MongoAction::Count {
+                collection: "c".to_owned(),
+                filter: json!({}),
+            },
+            MongoAction::Distinct {
+                collection: "c".to_owned(),
+                field: "a".to_owned(),
+                filter: json!({}),
+            },
+            MongoAction::Collections,
+            MongoAction::Describe {
+                collection: "c".to_owned(),
+            },
+        ] {
+            let before = CHECKED.with(std::cell::Cell::get);
+            prepare(&MongoRequest::new(action)).expect("allowed");
+            assert_eq!(CHECKED.with(std::cell::Cell::get), before + 1);
         }
     }
 

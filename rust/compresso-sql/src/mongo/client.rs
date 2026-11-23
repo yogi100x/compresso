@@ -1,39 +1,43 @@
 //! MongoDB through the official driver (E17-52, D117).
 //!
 //! Every call builds a fresh client with options set field by field (never
-//! from the URL text), runs the account check, runs one command the tool
-//! built, and shuts the client down. Per call:
+//! from the URL text), runs the checks, runs one command the tool built, and
+//! shuts the client down. Per call:
 //!
 //! 1. connect: one host, a direct connection, a pool of one, no retries, no
 //!    compression, read concern `local`, read preference `primaryPreferred`
 //!    (so a direct connection to a secondary member still reads), TLS per
 //!    [`super::target::MongoTls`] (10 s for server selection and connect);
-//! 2. `connectionStatus` with `showPrivileges`, checked by
-//!    [`super::account::check`] (fail closed), then `hostInfo` on `admin`,
-//!    which must be refused as `Unauthorized` (the server enforces access
-//!    control);
-//! 3. `listCollections` (names only) for every collection the call reads,
-//!    the action's own and each `$lookup` source: a view is refused, since
-//!    reading it runs a stored pipeline the allow-list never saw;
-//! 4. the action, with `maxTimeMS` set to the call's time limit, a row
-//!    limit one past `max_rows` (to tell a full result from a cut one), and
-//!    `allowDiskUse: false`. Documents are read as raw BSON (never through
-//!    an extended-JSON reading) and reading stops at the row cap, the 256 KiB
-//!    result cap, or [`MAX_READ_BYTES`] of raw documents, whichever comes
-//!    first; `describe` stops at [`MAX_SAMPLE_BYTES`] and tracks at most
-//!    [`MAX_TRACKED_PATHS`] field paths;
-//! 5. an immediate shutdown, waited on for at most 2 s.
+//! 2. [`preflight`]: `connectionStatus` with `showPrivileges`, checked by
+//!    [`super::account::check`] (fail closed); `hostInfo` on `admin`, which
+//!    must be refused as `Unauthorized` (the server enforces access
+//!    control); and a names-only `listCollections` for every collection the
+//!    call reads (its own and each `$lookup` source), refusing a view;
+//! 3. the action, with `maxTimeMS` set to the call's time limit, a row
+//!    limit one past `max_rows`, `allowDiskUse: false`, and batches of at
+//!    most [`BATCH_DOCUMENTS`] documents. Replies are read as raw bytes
+//!    ([`super::raw`]): no `Document` tree of a result document is built.
+//!    Reading stops at the row cap, the 256 KiB result cap, or
+//!    [`MAX_READ_BYTES`] of raw documents; `distinct` runs as a `$group`
+//!    aggregation through the same path; `describe` stops at
+//!    [`MAX_SAMPLE_BYTES`] and tracks at most [`MAX_TRACKED_PATHS`] paths.
+//!    What remains: the driver holds one server reply in memory while it is
+//!    read (at most 16 MiB of documents, a 48 MiB message at the protocol
+//!    limit);
+//! 4. an immediate shutdown, waited on for at most 2 s.
 //!
 //! The client deadline is the time limit plus a grace period; when it passes
 //! the call is abandoned (the server's own limit stops the command). Errors
-//! carry a fixed message, the server's numeric code and code name, and at
-//! most a cut, escaped copy of the server's own message: never the driver's
-//! rendering of a reply document.
+//! carry fixed text, the server's numeric code and code name, and the
+//! server's own message; the service scrubs URL parts from it and then cuts
+//! it, never the reverse. The driver's rendering of a reply is never used.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
+use std::pin::Pin;
 use std::time::{Duration, Instant};
 
-use bson::{Bson, Document, RawDocumentBuf, Utf8Lossy, doc};
+use bson::{Bson, Document, doc};
 use futures_util::TryStreamExt;
 use mongodb::Client;
 use mongodb::error::ErrorKind;
@@ -41,36 +45,37 @@ use mongodb::options::{
     AggregateOptions, AuthMechanism, ClientOptions, Credential, FindOptions, ReadConcern,
     ReadPreference, SelectionCriteria, ServerAddress, ServerMonitoringMode, Tls, TlsOptions,
 };
+use serde_json::Value;
 use tokio::runtime::Runtime;
 
-use super::output::{self, ValueCollector};
+use super::output::ValueCollector;
+use super::raw;
 use super::target::{Mechanism, MongoTarget, MongoTls};
 use super::{
     CollectionEntry, CollectionsResult, CountResult, DESCRIBE_SAMPLE, DocumentsResult, FieldEntry,
     MAX_DESCRIBED_FIELDS, MongoDescribeResult, MongoIndexEntry, MongoOutcome, MongoRequest,
     Prepared, account, timeout,
 };
-use crate::cells::cut;
 use crate::{MAX_TABLES, SqlError, Truncation};
 
 /// Time the client waits past the server-side time limit.
 const CLIENT_GRACE: Duration = Duration::from_secs(2);
-/// Longest wait for the account check once connected.
+/// Longest wait for each check once connected.
 const ACCOUNT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Longest wait for the client to shut down; a stalled peer is not awaited.
 const FINISH_TIMEOUT: Duration = Duration::from_secs(2);
 /// Raw document bytes one `find`, `aggregate`, or `distinct` reads at most.
-/// The server sends at most 16 MiB per reply, so this admits one
-/// maximum-size document and a full reply besides, while 1,000 rows of
-/// 16 MiB each (16 GiB) can never be held: reading stops at the first
-/// document past it, marked `max_bytes`.
+/// The server sends at most 16 MiB of documents per reply, so this admits a
+/// full reply and a maximum-size document besides; past it reading stops,
+/// marked `max_bytes`.
 pub(crate) const MAX_READ_BYTES: usize = 32 * 1024 * 1024;
-/// Raw document bytes `describe` samples at most (100 documents of about
-/// 80 KiB each); the rest of the sample is not read.
+/// Raw document bytes `describe` samples at most.
 pub(crate) const MAX_SAMPLE_BYTES: usize = 8 * 1024 * 1024;
 /// Distinct field paths `describe` tracks; a path first seen past it is
 /// counted in `fields_omitted` instead.
 pub(crate) const MAX_TRACKED_PATHS: usize = 4 * MAX_DESCRIBED_FIELDS;
+/// Documents asked of the server per reply.
+pub(crate) const BATCH_DOCUMENTS: u32 = 16;
 
 /// The longest one call can take, end to end.
 pub(crate) fn call_limit(connect_timeout: Duration, timeout: Duration) -> Duration {
@@ -141,8 +146,8 @@ pub(crate) fn client_options(target: &MongoTarget, connect_timeout: Duration) ->
     options
 }
 
-/// `find` options: the row limit, batch size, skip, time limit, and no disk
-/// use, plus the checked projection and sort.
+/// `find` options: the row limit, small batches, skip, time limit, and no
+/// disk use, plus the checked projection and sort.
 pub(crate) fn find_options(
     max_rows: usize,
     skip: u64,
@@ -152,7 +157,7 @@ pub(crate) fn find_options(
 ) -> FindOptions {
     let mut options = FindOptions::default();
     options.limit = Some(server_limit(max_rows));
-    options.batch_size = Some(batch_size(max_rows));
+    options.batch_size = Some(BATCH_DOCUMENTS);
     options.skip = Some(skip);
     options.max_time = Some(timeout);
     options.allow_disk_use = Some(false);
@@ -161,13 +166,136 @@ pub(crate) fn find_options(
     options
 }
 
-/// `aggregate` options: time limit, batch size, and no disk use.
-pub(crate) fn aggregate_options(max_rows: usize, timeout: Duration) -> AggregateOptions {
+/// `aggregate` options: time limit, small batches, and no disk use.
+pub(crate) fn aggregate_options(timeout: Duration) -> AggregateOptions {
     let mut options = AggregateOptions::default();
     options.max_time = Some(timeout);
     options.allow_disk_use = Some(false);
-    options.batch_size = Some(batch_size(max_rows));
+    options.batch_size = Some(BATCH_DOCUMENTS);
     options
+}
+
+/// The pipeline `distinct` runs: the values of `field` (array elements
+/// unwound, as `distinct` does), grouped, and limited (unsorted, as
+/// `distinct` is; a sort would hold every value in server memory), so they come
+/// back as `_id` of raw documents through the same bounded path as `find`.
+pub(crate) fn distinct_pipeline(field: &str, filter: Document, max_rows: usize) -> Vec<Document> {
+    let path = format!("${field}");
+    let mut exists = Document::new();
+    exists.insert(field, doc! {"$exists": true});
+    vec![
+        doc! {"$match": {"$and": [filter, exists]}},
+        doc! {"$unwind": path.clone()},
+        doc! {"$group": {"_id": path}},
+        doc! {"$limit": server_limit(max_rows)},
+    ]
+}
+
+/// A command failure as the checks see it: a server error code, or an error
+/// already mapped.
+pub(crate) enum CommandFailure {
+    Code(i32),
+    Other(SqlError),
+}
+
+type CommandFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Document, CommandFailure>> + Send + 'a>>;
+
+/// Runs one command on one database; the seam [`preflight`] is tested
+/// through.
+pub(crate) trait Commands: Sync {
+    fn run<'a>(&'a self, database: &'a str, command: Document, wait: Duration)
+    -> CommandFuture<'a>;
+}
+
+struct DriverCommands<'a> {
+    client: &'a Client,
+}
+
+impl Commands for DriverCommands<'_> {
+    fn run<'a>(
+        &'a self,
+        database: &'a str,
+        command: Document,
+        wait: Duration,
+    ) -> CommandFuture<'a> {
+        Box::pin(async move {
+            match tokio::time::timeout(wait, self.client.database(database).run_command(command))
+                .await
+            {
+                Err(_) => Err(CommandFailure::Other(SqlError::new(
+                    "mongo_connection",
+                    format!("the server did not answer within {} ms", wait.as_millis()),
+                ))),
+                Ok(Ok(reply)) => Ok(reply),
+                Ok(Err(error)) => match error.kind.as_ref() {
+                    ErrorKind::Command(command) => Err(CommandFailure::Code(command.code)),
+                    _ => Err(CommandFailure::Other(map_error(error))),
+                },
+            }
+        })
+    }
+}
+
+fn command_error(failure: CommandFailure) -> SqlError {
+    match failure {
+        CommandFailure::Code(code) => SqlError::new(
+            "mongo_error",
+            format!("MongoDB refused a check command (code {code})."),
+        ),
+        CommandFailure::Other(error) => error,
+    }
+}
+
+/// The checks before any action: the account, access control, and views.
+pub(crate) async fn preflight(
+    commands: &dyn Commands,
+    database: &str,
+    prepared: &Prepared,
+    connect_timeout: Duration,
+) -> Result<(), SqlError> {
+    let status = commands
+        .run(
+            database,
+            doc! {"connectionStatus": 1, "showPrivileges": true},
+            connect_timeout + ACCOUNT_TIMEOUT,
+        )
+        .await
+        .map_err(command_error)?;
+    account::check(&status, database)
+        .map_err(|rule| SqlError::new("mongo_account_refused", rule.message()))?;
+    let probe = match commands
+        .run(
+            "admin",
+            doc! {account::ENFORCEMENT_PROBE: 1},
+            ACCOUNT_TIMEOUT,
+        )
+        .await
+    {
+        Ok(_) => Ok(()),
+        Err(CommandFailure::Code(code)) => Err(Some(code)),
+        Err(CommandFailure::Other(error)) => return Err(error),
+    };
+    account::check_enforcement(probe)
+        .map_err(|rule| SqlError::new("mongo_account_refused", rule.message()))?;
+    let read = prepared.collections_read();
+    if !read.is_empty() {
+        let reply = commands
+            .run(
+                database,
+                doc! {
+                    "listCollections": 1,
+                    "filter": {"name": {"$in": read}},
+                    "nameOnly": true,
+                    "authorizedCollections": true,
+                },
+                ACCOUNT_TIMEOUT,
+            )
+            .await
+            .map_err(command_error)?;
+        check_no_views(&reply)?;
+    }
+    Ok(())
 }
 
 impl Bound<'_> {
@@ -200,89 +328,31 @@ impl Bound<'_> {
     ) -> Result<MongoOutcome, SqlError> {
         let client = Client::with_options(client_options(self.target, self.connect_timeout))
             .map_err(map_error)?;
-        let result = self.session(&client, request, prepared).await;
-        let _ = tokio::time::timeout(FINISH_TIMEOUT, client.shutdown().immediate(true)).await;
-        result
-    }
-
-    async fn session(
-        &self,
-        client: &Client,
-        request: &MongoRequest,
-        prepared: &Prepared,
-    ) -> Result<MongoOutcome, SqlError> {
-        let database = client.database(&self.target.database);
-        let check = tokio::time::timeout(
-            self.connect_timeout + ACCOUNT_TIMEOUT,
-            database.run_command(doc! {"connectionStatus": 1, "showPrivileges": true}),
-        )
-        .await
-        .map_err(|_| {
-            SqlError::new(
-                "mongo_connection",
-                format!(
-                    "could not connect and check the account within {} ms",
-                    (self.connect_timeout + ACCOUNT_TIMEOUT).as_millis()
-                ),
+        let result = async {
+            preflight(
+                &DriverCommands { client: &client },
+                &self.target.database,
+                prepared,
+                self.connect_timeout,
             )
-        })?
-        .map_err(map_error)?;
-        account::check(&check, &self.target.database)
-            .map_err(|rule| SqlError::new("mongo_account_refused", rule.message()))?;
-        let probe = tokio::time::timeout(
-            ACCOUNT_TIMEOUT,
-            client
-                .database("admin")
-                .run_command(doc! {account::ENFORCEMENT_PROBE: 1}),
-        )
-        .await
-        .map_err(|_| {
-            SqlError::new(
-                "mongo_connection",
-                "the server did not answer the access-control check in time",
-            )
-        })?;
-        let probe = match probe {
-            Ok(_) => Ok(()),
-            Err(error) => match error.kind.as_ref() {
-                ErrorKind::Command(command) => Err(Some(command.code)),
-                _ => return Err(map_error(error)),
-            },
-        };
-        account::check_enforcement(probe)
-            .map_err(|rule| SqlError::new("mongo_account_refused", rule.message()))?;
-        let read = prepared.collections_read();
-        if !read.is_empty() {
-            let reply = tokio::time::timeout(
-                ACCOUNT_TIMEOUT,
-                database.run_command(doc! {
-                    "listCollections": 1,
-                    "filter": {"name": {"$in": read.clone()}},
-                    "nameOnly": true,
-                    "authorizedCollections": true,
-                }),
+            .await?;
+            let database = client.database(&self.target.database);
+            tokio::time::timeout(
+                request.timeout + CLIENT_GRACE,
+                action(&database, request, prepared),
             )
             .await
-            .map_err(|_| {
-                SqlError::new(
-                    "mongo_connection",
-                    "the server did not list the collections in time",
-                )
-            })?
-            .map_err(map_error)?;
-            check_no_views(&reply)?;
+            .unwrap_or_else(|_| Err(timeout(request.timeout)))
         }
-        tokio::time::timeout(
-            request.timeout + CLIENT_GRACE,
-            action(&database, request, prepared),
-        )
-        .await
-        .unwrap_or_else(|_| Err(timeout(request.timeout)))
+        .await;
+        let _ = tokio::time::timeout(FINISH_TIMEOUT, client.shutdown().immediate(true)).await;
+        result
     }
 }
 
 /// Refuses the call if the `listCollections` reply names a view; an
-/// unreadable reply refuses too.
+/// unreadable reply refuses too. A time-series collection is allowed: the
+/// server unpacks its buckets itself, with no pipeline anyone stored.
 pub(crate) fn check_no_views(reply: &Document) -> Result<(), SqlError> {
     let unreadable = || {
         SqlError::new(
@@ -323,18 +393,6 @@ fn server_limit(max_rows: usize) -> i64 {
         .saturating_add(1)
 }
 
-fn batch_size(max_rows: usize) -> u32 {
-    u32::try_from(max_rows + 1).unwrap_or(u32::MAX).min(1_001)
-}
-
-/// A raw document as a `Document`, read element by element: no
-/// extended-JSON reading, so a stored `$oid` key stays a key.
-fn decode(raw: &RawDocumentBuf) -> Result<Document, SqlError> {
-    Utf8Lossy::<Document>::try_from(raw.as_ref())
-        .map(|lossy| lossy.0)
-        .map_err(|_| SqlError::new("mongo_error", "a document in the result is not valid BSON"))
-}
-
 /// Counts raw bytes read against a budget.
 pub(crate) struct ReadBudget {
     used: usize,
@@ -356,39 +414,100 @@ impl ReadBudget {
     }
 }
 
-async fn collect(
-    mut cursor: mongodb::Cursor<RawDocumentBuf>,
-    max_rows: usize,
-    started: Instant,
-) -> Result<DocumentsResult, SqlError> {
-    let mut collector = ValueCollector::new(max_rows);
-    let mut budget = ReadBudget::new(MAX_READ_BYTES);
-    let mut over_budget = false;
-    while let Some(raw) = cursor.try_next().await.map_err(map_error)? {
-        if !budget.admit(raw.as_bytes().len()) {
-            over_budget = true;
-            break;
-        }
-        if !collector.push(output::render_document(&decode(&raw)?)) {
-            break;
-        }
-    }
-    let mut result = finish(collector, started);
-    if over_budget && result.truncation_reason.is_none() {
-        result.truncated = true;
-        result.truncation_reason = Some(Truncation::MaxBytes);
-    }
-    Ok(result)
+/// Reads raw result documents into a bounded result: the read budget first,
+/// then the per-document render, then the row and byte caps.
+pub(crate) struct DocumentReader {
+    collector: ValueCollector,
+    budget: ReadBudget,
+    over_budget: bool,
+    /// `distinct`: show only this top-level field of each document.
+    field: Option<&'static [u8]>,
 }
 
-fn finish(collector: ValueCollector, started: Instant) -> DocumentsResult {
-    let (documents, truncation) = collector.finish();
-    DocumentsResult {
-        count: documents.len(),
-        documents,
-        truncated: truncation.is_some(),
-        truncation_reason: truncation,
-        elapsed_ms: elapsed_ms(started),
+impl DocumentReader {
+    pub(crate) fn new(max_rows: usize, field: Option<&'static [u8]>) -> Self {
+        Self {
+            collector: ValueCollector::new(max_rows),
+            budget: ReadBudget::new(MAX_READ_BYTES),
+            over_budget: false,
+            field,
+        }
+    }
+
+    /// Adds one raw document; `false` once no more are wanted.
+    pub(crate) fn push(&mut self, document: &[u8]) -> bool {
+        if !self.budget.admit(document.len()) {
+            self.over_budget = true;
+            return false;
+        }
+        // Render within what the result may still hold (three quarters of
+        // it: the output estimate is approximate), so a large document is cut
+        // and marked `$truncated` instead of dropped.
+        let limit = self.collector.remaining() / 4 * 3;
+        let value = match self.field {
+            Some(field) => raw::render_field(document, field, limit).unwrap_or(Value::Null),
+            None => raw::render_document(document, limit),
+        };
+        self.collector.push(value)
+    }
+
+    pub(crate) fn finish(self, started: Instant) -> DocumentsResult {
+        let (documents, mut truncation) = self.collector.finish();
+        if self.over_budget && truncation.is_none() {
+            truncation = Some(Truncation::MaxBytes);
+        }
+        DocumentsResult {
+            count: documents.len(),
+            documents,
+            truncated: truncation.is_some(),
+            truncation_reason: truncation,
+            elapsed_ms: elapsed_ms(started),
+        }
+    }
+}
+
+/// Reads one raw-batch cursor into `reader` until it is done or full.
+async fn read_batches(
+    mut cursor: mongodb::raw_batch_cursor::RawBatchCursor,
+    reader: &mut DocumentReader,
+) -> Result<(), SqlError> {
+    while let Some(batch) = cursor.try_next().await.map_err(map_error)? {
+        let documents = raw::batch_documents(batch.as_raw_document().as_bytes())
+            .map_err(|_| SqlError::new("mongo_error", "a server reply could not be read"))?;
+        for document in documents {
+            if !reader.push(document) {
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Reads sampled raw documents into a field summary, under the sample byte
+/// budget and the sample size.
+pub(crate) struct SampleReader {
+    summary: FieldSummary,
+    budget: ReadBudget,
+    sampled: usize,
+}
+
+impl SampleReader {
+    pub(crate) fn new() -> Self {
+        Self {
+            summary: FieldSummary::default(),
+            budget: ReadBudget::new(MAX_SAMPLE_BYTES),
+            sampled: 0,
+        }
+    }
+
+    /// Adds one raw document; `false` once no more are wanted.
+    pub(crate) fn push(&mut self, document: &[u8]) -> bool {
+        if self.sampled == DESCRIBE_SAMPLE || !self.budget.admit(document.len()) {
+            return false;
+        }
+        self.sampled += 1;
+        self.summary.add(document);
+        self.sampled < DESCRIBE_SAMPLE
     }
 }
 
@@ -408,7 +527,7 @@ async fn action(
             skip,
         } => {
             let cursor = database
-                .collection::<RawDocumentBuf>(&collection)
+                .collection::<Document>(&collection)
                 .find(filter)
                 .with_options(find_options(
                     max_rows,
@@ -417,11 +536,12 @@ async fn action(
                     projection,
                     sort,
                 ))
+                .batch()
                 .await
                 .map_err(map_error)?;
-            collect(cursor, max_rows, started)
-                .await
-                .map(MongoOutcome::Documents)
+            let mut reader = DocumentReader::new(max_rows, None);
+            read_batches(cursor, &mut reader).await?;
+            Ok(MongoOutcome::Documents(reader.finish(started)))
         }
         Prepared::Aggregate {
             collection,
@@ -429,19 +549,19 @@ async fn action(
         } => {
             pipeline.push(doc! {"$limit": server_limit(max_rows)});
             let cursor = database
-                .collection::<RawDocumentBuf>(&collection)
+                .collection::<Document>(&collection)
                 .aggregate(pipeline)
-                .with_options(aggregate_options(max_rows, request.timeout))
-                .with_type::<RawDocumentBuf>()
+                .with_options(aggregate_options(request.timeout))
+                .batch()
                 .await
                 .map_err(map_error)?;
-            collect(cursor, max_rows, started)
-                .await
-                .map(MongoOutcome::Documents)
+            let mut reader = DocumentReader::new(max_rows, None);
+            read_batches(cursor, &mut reader).await?;
+            Ok(MongoOutcome::Documents(reader.finish(started)))
         }
         Prepared::Count { collection, filter } => {
             let count = database
-                .collection::<RawDocumentBuf>(&collection)
+                .collection::<Document>(&collection)
                 .count_documents(filter)
                 .max_time(request.timeout)
                 .await
@@ -456,20 +576,16 @@ async fn action(
             field,
             filter,
         } => {
-            // One reply document of at most 16 MiB, bounded by the server.
-            let values = database
-                .collection::<RawDocumentBuf>(&collection)
-                .distinct(field, filter)
-                .max_time(request.timeout)
+            let cursor = database
+                .collection::<Document>(&collection)
+                .aggregate(distinct_pipeline(&field, filter, max_rows))
+                .with_options(aggregate_options(request.timeout))
+                .batch()
                 .await
                 .map_err(map_error)?;
-            let mut collector = ValueCollector::new(max_rows);
-            for value in &values {
-                if !collector.push(output::render(value)) {
-                    break;
-                }
-            }
-            Ok(MongoOutcome::Documents(finish(collector, started)))
+            let mut reader = DocumentReader::new(max_rows, Some(b"_id"));
+            read_batches(cursor, &mut reader).await?;
+            Ok(MongoOutcome::Documents(reader.finish(started)))
         }
         Prepared::Collections => {
             let mut cursor = database
@@ -501,27 +617,27 @@ async fn action(
             }))
         }
         Prepared::Describe { collection } => {
-            let handle = database.collection::<RawDocumentBuf>(&collection);
+            let handle = database.collection::<Document>(&collection);
             let sample = i64::try_from(DESCRIBE_SAMPLE).unwrap_or(100);
             let mut cursor = handle
                 .aggregate(vec![doc! {"$sample": {"size": sample}}])
-                .with_options(aggregate_options(DESCRIBE_SAMPLE, request.timeout))
-                .with_type::<RawDocumentBuf>()
+                .with_options(aggregate_options(request.timeout))
+                .batch()
                 .await
                 .map_err(map_error)?;
-            let mut summary = FieldSummary::default();
-            let mut budget = ReadBudget::new(MAX_SAMPLE_BYTES);
-            let mut sampled = 0;
-            while let Some(raw) = cursor.try_next().await.map_err(map_error)? {
-                if !budget.admit(raw.as_bytes().len()) {
-                    break;
-                }
-                sampled += 1;
-                summary.add(&decode(&raw)?);
-                if sampled == DESCRIBE_SAMPLE {
-                    break;
+            let mut reader = SampleReader::new();
+            'batches: while let Some(batch) = cursor.try_next().await.map_err(map_error)? {
+                let documents =
+                    raw::batch_documents(batch.as_raw_document().as_bytes()).map_err(|_| {
+                        SqlError::new("mongo_error", "a server reply could not be read")
+                    })?;
+                for document in documents {
+                    if !reader.push(document) {
+                        break 'batches;
+                    }
                 }
             }
+            drop(cursor);
             let mut indexes = Vec::new();
             let mut cursor = handle.list_indexes().await.map_err(map_error)?;
             while let Some(index) = cursor.try_next().await.map_err(map_error)? {
@@ -539,7 +655,8 @@ async fn action(
                     unique: options.unique.unwrap_or(false),
                 });
             }
-            let (fields, fields_omitted) = summary.finish();
+            let sampled = reader.sampled;
+            let (fields, fields_omitted) = reader.summary.finish();
             Ok(MongoOutcome::Describe(MongoDescribeResult {
                 collection,
                 sampled,
@@ -561,10 +678,10 @@ fn key_kind(value: &Bson) -> String {
     }
 }
 
-/// Field paths (nested documents to three levels) and the types seen. At
-/// most [`MAX_TRACKED_PATHS`] distinct paths are kept; a path first seen
-/// after that is counted in `untracked` and never stored, so memory does not
-/// grow with the number of keys in the sample.
+/// Field paths (nested documents to three levels) and the types seen, read
+/// from raw documents. At most [`MAX_TRACKED_PATHS`] distinct paths are
+/// kept; a path first seen after that is counted in `untracked` and never
+/// stored, so memory does not grow with the number of keys in the sample.
 #[derive(Default)]
 pub(crate) struct FieldSummary {
     fields: BTreeMap<String, (BTreeSet<&'static str>, usize)>,
@@ -572,28 +689,30 @@ pub(crate) struct FieldSummary {
 }
 
 impl FieldSummary {
-    pub(crate) fn add(&mut self, document: &Document) {
+    pub(crate) fn add(&mut self, document: &[u8]) {
         self.walk(document, "", 0);
     }
 
-    fn walk(&mut self, document: &Document, prefix: &str, depth: usize) {
-        for (key, value) in document {
+    fn walk(&mut self, document: &[u8], prefix: &str, depth: usize) {
+        let Ok(elements) = raw::elements(document) else {
+            return;
+        };
+        for element in elements.flatten() {
+            let name = raw::key_name(element.key);
             let path = if prefix.is_empty() {
-                output::stored_key(key)
+                name
             } else {
-                format!("{prefix}.{}", output::stored_key(key))
+                format!("{prefix}.{name}")
             };
             if !self.fields.contains_key(&path) && self.fields.len() >= MAX_TRACKED_PATHS {
                 self.untracked += 1;
                 continue;
             }
             let entry = self.fields.entry(path.clone()).or_default();
-            entry.0.insert(type_name(value));
+            entry.0.insert(raw::type_name(element.kind));
             entry.1 += 1;
-            if let Bson::Document(inner) = value
-                && depth < 2
-            {
-                self.walk(inner, &path, depth + 1);
+            if element.kind == 0x03 && depth < 2 {
+                self.walk(element.value, &path, depth + 1);
             }
         }
     }
@@ -624,38 +743,9 @@ impl FieldSummary {
     }
 }
 
-/// The BSON type name MongoDB's `$type` uses.
-fn type_name(value: &Bson) -> &'static str {
-    match value {
-        Bson::Double(_) => "double",
-        Bson::String(_) => "string",
-        Bson::Array(_) => "array",
-        Bson::Document(_) => "object",
-        Bson::Boolean(_) => "bool",
-        Bson::Null => "null",
-        Bson::RegularExpression(_) => "regex",
-        Bson::JavaScriptCode(_) => "javascript",
-        Bson::JavaScriptCodeWithScope(_) => "javascriptWithScope",
-        Bson::Int32(_) => "int",
-        Bson::Int64(_) => "long",
-        Bson::Timestamp(_) => "timestamp",
-        Bson::Binary(_) => "binData",
-        Bson::ObjectId(_) => "objectId",
-        Bson::DateTime(_) => "date",
-        Bson::Symbol(_) => "symbol",
-        Bson::Decimal128(_) => "decimal",
-        Bson::Undefined => "undefined",
-        Bson::MaxKey => "maxKey",
-        Bson::MinKey => "minKey",
-        Bson::DbPointer(_) => "dbPointer",
-    }
-}
-
 /// Server error codes the tool names.
 const MAX_TIME_MS_EXPIRED: i32 = 50;
 const UNAUTHORIZED: i32 = 13;
-/// Characters of a server error message kept.
-const MAX_SERVER_MESSAGE_CHARS: usize = 200;
 
 /// A server code name as shown: letters and digits only, else nothing.
 fn code_name(name: &str) -> String {
@@ -674,8 +764,9 @@ fn code_name(name: &str) -> String {
 /// One driver error as a fixed code and message. The driver's own rendering
 /// of an error is never used: it can embed the server's reply document as
 /// hex, where a URL part cannot be scrubbed. A command error keeps the
-/// server's numeric code, its code name, and its message cut to 200
-/// characters with hidden characters escaped (it can quote a stored value).
+/// server's numeric code, its code name, and its message; the service then
+/// scrubs URL parts, escapes hidden characters, and cuts the length, in that
+/// order (a cut before the scrub could leave part of a secret).
 pub(crate) fn map_error(error: mongodb::error::Error) -> SqlError {
     match error.kind.as_ref() {
         ErrorKind::Command(command) if command.code == MAX_TIME_MS_EXPIRED => SqlError::new(
@@ -692,7 +783,7 @@ pub(crate) fn map_error(error: mongodb::error::Error) -> SqlError {
                 "MongoDB refused the command (code {}{}): {}",
                 command.code,
                 code_name(&command.code_name),
-                cut(&command.message, MAX_SERVER_MESSAGE_CHARS)
+                command.message
             ),
         ),
         ErrorKind::Authentication { .. } => SqlError::new(
@@ -733,12 +824,24 @@ pub(crate) fn map_error(error: mongodb::error::Error) -> SqlError {
 mod tests {
     use super::*;
     use crate::mongo::target::MongoTarget;
+    use std::sync::Mutex;
+
+    fn raw(document: &Document) -> Vec<u8> {
+        document.to_vec().expect("raw")
+    }
+
+    /// A document of about `bytes` raw bytes that renders to a few bytes.
+    fn binary_document(bytes: usize) -> Vec<u8> {
+        raw(
+            &doc! {"b": bson::Binary { subtype: bson::spec::BinarySubtype::Generic, bytes: vec![0; bytes] }},
+        )
+    }
 
     #[test]
     fn test_field_summary_counts_paths_and_types() {
         let mut summary = FieldSummary::default();
-        summary.add(&doc! {"a": 1, "b": {"c": "x", "d": {"e": {"f": 1}}}});
-        summary.add(&doc! {"a": "one", "$oid": 1});
+        summary.add(&raw(&doc! {"a": 1, "b": {"c": "x", "d": {"e": {"f": 1}}}}));
+        summary.add(&raw(&doc! {"a": "one", "$oid": 1}));
         let (fields, omitted) = summary.finish();
         assert_eq!(omitted, 0);
         let a = fields.iter().find(|field| field.path == "a").unwrap();
@@ -749,8 +852,8 @@ mod tests {
         assert!(fields.iter().any(|field| field.path == "\\$oid"));
     }
 
-    /// The review's case, scaled: 100 documents of 10,000 distinct keys. Memory
-    /// must stay at the tracked-path bound, not grow with every key.
+    /// The review's case, scaled: memory stays at the tracked-path bound,
+    /// which is 800 (a literal, so raising the constant fails this test).
     #[test]
     fn test_field_summary_memory_is_bounded_by_tracked_paths() {
         let mut summary = FieldSummary::default();
@@ -759,26 +862,99 @@ mod tests {
             for key in 0..10_000 {
                 wide.insert(format!("d{document}k{key}"), 1_i32);
             }
-            summary.add(&wide);
-            assert!(summary.tracked() <= MAX_TRACKED_PATHS);
+            summary.add(&raw(&wide));
+            assert!(summary.tracked() <= 800);
         }
-        assert_eq!(summary.tracked(), MAX_TRACKED_PATHS);
+        assert_eq!(summary.tracked(), 800);
         let (fields, omitted) = summary.finish();
-        assert_eq!(fields.len(), MAX_DESCRIBED_FIELDS);
-        assert_eq!(omitted, 100 * 10_000 - MAX_DESCRIBED_FIELDS);
+        assert_eq!(fields.len(), 200);
+        assert_eq!(omitted, 100 * 10_000 - 200);
+    }
+
+    /// 70 documents of 512 KiB each: the reader stops at the 32 MiB read
+    /// budget (64 documents), marked max_bytes.
+    #[test]
+    fn test_the_document_reader_stops_at_the_read_budget() {
+        let document = binary_document(512 * 1024 - 64);
+        let size = document.len();
+        let mut reader = DocumentReader::new(1_000, None);
+        let mut read = 0;
+        for _ in 0..70 {
+            if !reader.push(&document) {
+                break;
+            }
+            read += 1;
+        }
+        assert_eq!(read, (32 * 1024 * 1024) / size);
+        let result = reader.finish(Instant::now());
+        assert_eq!(result.count, read);
+        assert_eq!(result.truncation_reason, Some(Truncation::MaxBytes));
+    }
+
+    /// A document that renders larger than the result can hold is cut and
+    /// marked, not dropped, and the result stays within its byte cap.
+    #[test]
+    fn test_a_large_document_is_cut_into_the_result_not_dropped() {
+        let mut wide = Document::new();
+        for index in 0..9 {
+            let items = (0..100).map(|_| Bson::String("y".repeat(1_000))).collect::<Vec<_>>();
+            wide.insert(format!("k{index}"), items);
+        }
+        let document = raw(&wide);
+        assert!(document.len() <= raw::MAX_DOCUMENT_BYTES);
+        let mut reader = DocumentReader::new(10, None);
+        assert!(reader.push(&document));
+        reader.push(&document);
+        let result = reader.finish(Instant::now());
+        assert!(result.count >= 1);
+        assert_eq!(result.documents[0]["$truncated"], true);
+        assert!(serde_json::to_string(&result.documents).unwrap().len() <= crate::MAX_RESULT_BYTES);
+    }
+
+    /// The sample reader stops at 8 MiB and at 100 documents.
+    #[test]
+    fn test_the_sample_reader_stops_at_its_byte_budget_and_size() {
+        let document = binary_document(512 * 1024 - 64);
+        let mut reader = SampleReader::new();
+        while reader.push(&document) {}
+        assert_eq!(reader.sampled, (8 * 1024 * 1024) / document.len());
+        let small = raw(&doc! {"a": 1});
+        let mut reader = SampleReader::new();
+        while reader.push(&small) {}
+        assert_eq!(reader.sampled, 100);
     }
 
     #[test]
-    fn test_the_read_budget_stops_before_holding_too_much() {
-        let mut budget = ReadBudget::new(MAX_READ_BYTES);
-        let sixteen = 16 * 1024 * 1024;
-        assert!(budget.admit(sixteen));
-        assert!(budget.admit(sixteen));
-        assert!(!budget.admit(1));
-        let mut budget = ReadBudget::new(MAX_SAMPLE_BYTES);
-        assert!(!budget.admit(MAX_SAMPLE_BYTES + 1));
-        const { assert!(MAX_READ_BYTES <= 32 * 1024 * 1024) };
-        const { assert!(MAX_SAMPLE_BYTES <= 8 * 1024 * 1024) };
+    fn test_distinct_values_render_raw_and_stored_wrappers_stay_escaped() {
+        let mut reader = DocumentReader::new(10, Some(b"_id"));
+        for value in [
+            doc! {"_id": {"$oid": "65a1b2c3d4e5f60718293a4b"}},
+            doc! {"_id": [{"$date": "2020-01-01T00:00:00Z"}]},
+            doc! {"_id": {"x": {"$numberLong": "5"}}},
+            doc! {"_id": bson::oid::ObjectId::parse_str("65a1b2c3d4e5f60718293a4b").unwrap()},
+        ] {
+            assert!(reader.push(&raw(&value)));
+        }
+        let result = reader.finish(Instant::now());
+        assert_eq!(
+            result.documents[0],
+            serde_json::json!({"\\$oid": "65a1b2c3d4e5f60718293a4b"})
+        );
+        assert_eq!(
+            result.documents[1],
+            serde_json::json!([{"\\$date": "2020-01-01T00:00:00Z"}])
+        );
+        assert_eq!(
+            result.documents[2],
+            serde_json::json!({"x": {"\\$numberLong": "5"}})
+        );
+        assert_eq!(
+            result.documents[3],
+            serde_json::json!({"$oid": "65a1b2c3d4e5f60718293a4b"})
+        );
+        let pipeline = distinct_pipeline("a.b", doc! {"k": 1}, 10);
+        assert_eq!(pipeline[1], doc! {"$unwind": "$a.b"});
+        assert_eq!(pipeline[3], doc! {"$limit": 11_i64});
     }
 
     #[test]
@@ -786,7 +962,6 @@ mod tests {
         let limit = call_limit(Duration::from_secs(10), Duration::from_secs(5));
         assert_eq!(limit, Duration::from_secs(10 + 5 + 5 + 5 + 2 + 2));
         assert_eq!(server_limit(100), 101);
-        assert_eq!(batch_size(1_000), 1_001);
     }
 
     #[test]
@@ -802,9 +977,8 @@ mod tests {
             options.server_selection_timeout,
             Some(Duration::from_secs(3))
         );
-        assert!(matches!(options.tls, Some(Tls::Enabled(_))));
         let Some(Tls::Enabled(tls)) = &options.tls else {
-            unreachable!()
+            panic!("tls")
         };
         assert_eq!(tls.allow_invalid_certificates, Some(false));
         let credential = options.credential.as_ref().expect("credential");
@@ -815,9 +989,109 @@ mod tests {
         assert_eq!(find.max_time, Some(Duration::from_millis(700)));
         assert_eq!(find.limit, Some(11));
         assert_eq!(find.skip, Some(3));
-        let aggregate = aggregate_options(10, Duration::from_millis(700));
+        assert_eq!(find.batch_size, Some(16));
+        let aggregate = aggregate_options(Duration::from_millis(700));
         assert_eq!(aggregate.allow_disk_use, Some(false));
         assert_eq!(aggregate.max_time, Some(Duration::from_millis(700)));
+        assert_eq!(aggregate.batch_size, Some(16));
+    }
+
+    /// Canned replies for the preflight checks.
+    struct Fake {
+        enforced: bool,
+        listing: Document,
+        seen: Mutex<Vec<String>>,
+    }
+
+    impl Commands for Fake {
+        fn run<'a>(
+            &'a self,
+            database: &'a str,
+            command: Document,
+            _wait: Duration,
+        ) -> CommandFuture<'a> {
+            let name = command.keys().next().cloned().unwrap_or_default();
+            self.seen.lock().unwrap().push(format!("{database}.{name}"));
+            Box::pin(async move {
+                match name.as_str() {
+                    "connectionStatus" => Ok(doc! {"authInfo": {
+                        "authenticatedUsers": [{"user": "r", "db": "probe"}],
+                        "authenticatedUserRoles": [{"role": "read", "db": "probe"}],
+                        "authenticatedUserPrivileges": [{"resource": {"db": "probe", "collection": ""}, "actions": ["find"]}],
+                    }, "ok": 1}),
+                    "hostInfo" if self.enforced => Err(CommandFailure::Code(13)),
+                    "hostInfo" => Ok(doc! {"ok": 1}),
+                    "listCollections" => Ok(self.listing.clone()),
+                    _ => Err(CommandFailure::Code(59)),
+                }
+            })
+        }
+    }
+
+    fn find_prepared(collection: &str) -> Prepared {
+        Prepared::Find {
+            collection: collection.to_owned(),
+            filter: doc! {},
+            projection: None,
+            sort: None,
+            skip: 0,
+        }
+    }
+
+    #[test]
+    fn test_preflight_refuses_views_and_servers_without_access_control() {
+        let runtime = runtime().expect("runtime");
+        let view = doc! {"cursor": {"firstBatch": [{"name": "v", "type": "view"}]}, "ok": 1};
+        let plain = doc! {"cursor": {"firstBatch": [{"name": "c", "type": "collection"}]}, "ok": 1};
+        let fake = Fake {
+            enforced: true,
+            listing: view,
+            seen: Mutex::default(),
+        };
+        let error = runtime
+            .block_on(preflight(
+                &fake,
+                "probe",
+                &find_prepared("v"),
+                Duration::from_secs(1),
+            ))
+            .expect_err("view refused");
+        assert_eq!(error.code(), "mongo_view_refused");
+        assert_eq!(
+            *fake.seen.lock().unwrap(),
+            [
+                "probe.connectionStatus",
+                "admin.hostInfo",
+                "probe.listCollections"
+            ]
+        );
+        let fake = Fake {
+            enforced: true,
+            listing: plain.clone(),
+            seen: Mutex::default(),
+        };
+        runtime
+            .block_on(preflight(
+                &fake,
+                "probe",
+                &find_prepared("c"),
+                Duration::from_secs(1),
+            ))
+            .expect("plain collection");
+        let fake = Fake {
+            enforced: false,
+            listing: plain,
+            seen: Mutex::default(),
+        };
+        let error = runtime
+            .block_on(preflight(
+                &fake,
+                "probe",
+                &find_prepared("c"),
+                Duration::from_secs(1),
+            ))
+            .expect_err("no access control");
+        assert_eq!(error.code(), "mongo_account_refused");
     }
 
     #[test]

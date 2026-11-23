@@ -527,5 +527,12 @@ mod tests {
         for part in [PASSWORD, "db.example.com", "probe_db", "authdb", "reader"] {
             assert!(!scrubbed.contains(part), "{part}: {scrubbed}");
         }
+        // A secret where the length cut falls is scrubbed before the cut, so
+        // no prefix of it survives.
+        for padding in [195, 595, 598] {
+            let message = format!("{}{PASSWORD} tail", "x".repeat(padding));
+            let scrubbed = target.secrets.scrub(&message);
+            assert!(!scrubbed.contains(&PASSWORD[..4]), "{padding}: {scrubbed}");
+        }
     }
 }

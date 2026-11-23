@@ -147,7 +147,7 @@ impl Live {
             // Review fixtures: a stored value with hidden characters, stored
             // `$` keys, a view, and a document with many keys.
             let database = self.admin.database(DATABASE);
-            for name in ["evil", "dollar", "wide", "items_view"] {
+            for name in ["evil", "dollar", "wide", "items_view", "badkey", "huge", "series"] {
                 let _ = database.collection::<Document>(name).drop().await;
             }
             database
@@ -175,6 +175,37 @@ impl Live {
                 .run_command(doc! {"create": "items_view", "viewOn": "items", "pipeline": [{"$match": {"kind": "even"}}]})
                 .await
                 .expect("create view");
+            // A string that is not valid UTF-8, inserted as raw bytes (the driver
+            // refuses such a key on insert; keys are covered by unit tests).
+            let body: Vec<u8> = [&[0x02_u8][..], b"k\0", &3_i32.to_le_bytes(), b"v\xfe\0"].concat();
+            let mut bytes = ((body.len() + 5) as i32).to_le_bytes().to_vec();
+            bytes.extend_from_slice(&body);
+            bytes.push(0);
+            database
+                .collection::<bson::RawDocumentBuf>("badkey")
+                .insert_one(bson::RawDocumentBuf::from_bytes(bytes).expect("raw document"))
+                .await
+                .expect("seed badkey");
+            database
+                .collection::<Document>("badkey")
+                .insert_one(doc! {"ok": 1})
+                .await
+                .expect("seed badkey 2");
+            // One document of about 15 MB.
+            database
+                .collection::<Document>("huge")
+                .insert_one(doc! {"s": "x".repeat(15 * 1024 * 1024), "small": 1})
+                .await
+                .expect("seed huge");
+            database
+                .run_command(doc! {"create": "series", "timeseries": {"timeField": "t"}})
+                .await
+                .expect("create time series");
+            database
+                .collection::<Document>("series")
+                .insert_one(doc! {"t": bson::DateTime::from_millis(0), "v": 1})
+                .await
+                .expect("seed series");
         });
     }
 
@@ -316,6 +347,9 @@ fn test_live_mongo_reads_work_for_a_read_account() {
             ))
             .expect("distinct"),
     );
+    // distinct does not order its values.
+    let mut values = values;
+    values.sort_by_key(ToString::to_string);
     assert_eq!(values, vec![json!("even"), json!("odd")]);
 
     let describe = service
@@ -711,6 +745,89 @@ fn test_live_mongo_review_cases() {
         let error = failure(service.execute(&request(action, 10, 5_000)));
         assert_eq!(error.code(), "mongo_view_refused", "{error}");
     }
+
+    // distinct shows stored wrappers escaped, real typed values as markers.
+    let (values, _) = documents(
+        service
+            .execute(&request(
+                MongoAction::Distinct {
+                    collection: "dollar".to_owned(),
+                    field: "x".to_owned(),
+                    filter: json!({}),
+                },
+                10,
+                5_000,
+            ))
+            .expect("distinct"),
+    );
+    assert_eq!(values, vec![json!({"\\$oid": "65a1b2c3d4e5f60718293a4b"})]);
+
+    // A string that is not valid UTF-8 does not fail the collection.
+    let (rows, _) = documents(
+        service
+            .execute(&request(
+                MongoAction::Find {
+                    collection: "badkey".to_owned(),
+                    filter: json!({}),
+                    projection: Some(json!({"_id": 0})),
+                    sort: None,
+                    skip: 0,
+                },
+                10,
+                5_000,
+            ))
+            .expect("find badkey"),
+    );
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0]["k"], "v\u{fffd}", "{rows:?}");
+    service
+        .execute(&request(
+            MongoAction::Describe {
+                collection: "badkey".to_owned(),
+            },
+            10,
+            5_000,
+        ))
+        .expect("describe badkey");
+
+    // A 15 MB document is a size marker, never decoded.
+    let (rows, _) = documents(
+        service
+            .execute(&request(
+                MongoAction::Find {
+                    collection: "huge".to_owned(),
+                    filter: json!({}),
+                    projection: None,
+                    sort: None,
+                    skip: 0,
+                },
+                10,
+                10_000,
+            ))
+            .expect("find huge"),
+    );
+    assert!(
+        rows[0]["$document"]["bytes"].as_u64().unwrap() > 15_000_000,
+        "{rows:?}"
+    );
+
+    // A time-series collection is readable.
+    let (rows, _) = documents(
+        service
+            .execute(&request(
+                MongoAction::Find {
+                    collection: "series".to_owned(),
+                    filter: json!({}),
+                    projection: Some(json!({"_id": 0, "v": 1})),
+                    sort: None,
+                    skip: 0,
+                },
+                10,
+                5_000,
+            ))
+            .expect("find series"),
+    );
+    assert_eq!(rows, vec![json!({"v": 1})]);
 
     // A wide document: the field list stays bounded.
     let MongoOutcome::Describe(describe) = service
