@@ -274,6 +274,32 @@ mod tests {
     }
 
     #[test]
+    fn test_cluster_manager_alone_is_refused() {
+        let answer = with_info(|info| {
+            info.insert(
+                "authenticatedUserRoles",
+                vec![Bson::Document(
+                    doc! {"role": "clusterManager", "db": "admin"},
+                )],
+            );
+        });
+        assert_eq!(check(&answer, "probe"), Err(AccountRule::BuiltInRole));
+        for role in BUILT_IN_ROLES.iter().filter(|role| **role != "read") {
+            let answer = with_info(|info| {
+                info.insert(
+                    "authenticatedUserRoles",
+                    vec![Bson::Document(doc! {"role": *role, "db": "probe"})],
+                );
+            });
+            assert_eq!(
+                check(&answer, "probe"),
+                Err(AccountRule::BuiltInRole),
+                "{role}"
+            );
+        }
+    }
+
+    #[test]
     fn test_privileges_outside_the_database_or_beyond_read_are_refused() {
         for resource in [
             doc! {"cluster": true},

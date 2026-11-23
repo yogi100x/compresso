@@ -144,6 +144,37 @@ impl Live {
                 .collection::<Document>("copy")
                 .drop()
                 .await;
+            // Review fixtures: a stored value with hidden characters, stored
+            // `$` keys, a view, and a document with many keys.
+            let database = self.admin.database(DATABASE);
+            for name in ["evil", "dollar", "wide", "items_view"] {
+                let _ = database.collection::<Document>(name).drop().await;
+            }
+            database
+                .collection::<Document>("evil")
+                .insert_one(doc! {"s": "12\u{202e}34\u{200b}x"})
+                .await
+                .expect("seed evil");
+            database
+                .run_command(doc! {"insert": "dollar", "documents": [
+                    {"_id": 1, "$oid": "forged"},
+                    {"_id": 2, "x": {"$oid": "65a1b2c3d4e5f60718293a4b"}},
+                ]})
+                .await
+                .expect("seed dollar");
+            let mut wide = Document::new();
+            for key in 0..5_000 {
+                wide.insert(format!("k{key}"), key);
+            }
+            database
+                .collection::<Document>("wide")
+                .insert_one(wide)
+                .await
+                .expect("seed wide");
+            database
+                .run_command(doc! {"create": "items_view", "viewOn": "items", "pipeline": [{"$match": {"kind": "even"}}]})
+                .await
+                .expect("create view");
         });
     }
 
@@ -581,5 +612,126 @@ fn test_live_mongo_tls_checks_the_host_name_against_the_private_root() {
     assert!(
         error.message().contains("does not enforce access control"),
         "{error}"
+    );
+}
+
+/// E17-52 review: server error text, stored `$` keys, system variables,
+/// views, and a wide sample, against the live server.
+#[test]
+fn test_live_mongo_review_cases() {
+    let Some(live) = Live::start() else { return };
+    let service = live.service("reader");
+
+    // A failed cast quotes the stored value: hidden characters escaped, no
+    // reply document, no database name.
+    let error = failure(service.execute(&request(
+        MongoAction::Aggregate {
+            collection: "evil".to_owned(),
+            pipeline: json!([{"$project": {"x": {"$toInt": "$s"}}}]),
+        },
+        10,
+        5_000,
+    )));
+    assert_eq!(error.code(), "mongo_error", "{error}");
+    let message = error.message();
+    println!("cast error: {message}");
+    assert!(
+        !message.contains('\u{202e}') && !message.contains('\u{200b}'),
+        "{message}"
+    );
+    assert!(
+        !message.contains("RawDocument") && !message.contains(DATABASE),
+        "{message}"
+    );
+    assert!(message.contains("code "), "{message}");
+
+    // Stored `$` keys are shown escaped; a real object id is not.
+    let (rows, _) = documents(
+        service
+            .execute(&request(
+                MongoAction::Find {
+                    collection: "dollar".to_owned(),
+                    filter: json!({}),
+                    projection: None,
+                    sort: Some(json!({"_id": 1})),
+                    skip: 0,
+                },
+                10,
+                5_000,
+            ))
+            .expect("stored $ keys read"),
+    );
+    assert_eq!(rows[0], json!({"_id": 1, "\\$oid": "forged"}));
+    assert_eq!(
+        rows[1],
+        json!({"_id": 2, "x": {"\\$oid": "65a1b2c3d4e5f60718293a4b"}})
+    );
+
+    // $$USER_ROLES never reaches the server.
+    let error = failure(service.execute(&request(
+        MongoAction::Aggregate {
+            collection: "items".to_owned(),
+            pipeline: json!([{"$project": {"r": "$$USER_ROLES"}}]),
+        },
+        10,
+        5_000,
+    )));
+    assert_eq!(error.code(), "mongo_refused", "{error}");
+
+    // Views are listed, but reading one (directly or through $lookup) is
+    // refused.
+    let MongoOutcome::Collections(collections) = service
+        .execute(&request(MongoAction::Collections, 100, 5_000))
+        .expect("collections")
+    else {
+        panic!("collections");
+    };
+    assert!(
+        collections
+            .collections
+            .iter()
+            .any(|entry| entry.name == "items_view" && entry.kind == "view")
+    );
+    for action in [
+        MongoAction::Find {
+            collection: "items_view".to_owned(),
+            filter: json!({}),
+            projection: None,
+            sort: None,
+            skip: 0,
+        },
+        MongoAction::Describe {
+            collection: "items_view".to_owned(),
+        },
+        MongoAction::Aggregate {
+            collection: "items".to_owned(),
+            pipeline: json!([{"$lookup": {"from": "items_view", "as": "v", "pipeline": []}}]),
+        },
+    ] {
+        let error = failure(service.execute(&request(action, 10, 5_000)));
+        assert_eq!(error.code(), "mongo_view_refused", "{error}");
+    }
+
+    // A wide document: the field list stays bounded.
+    let MongoOutcome::Describe(describe) = service
+        .execute(&request(
+            MongoAction::Describe {
+                collection: "wide".to_owned(),
+            },
+            10,
+            5_000,
+        ))
+        .expect("describe wide")
+    else {
+        panic!("describe");
+    };
+    assert_eq!(
+        describe.fields.len(),
+        compresso_sql::mongo::MAX_DESCRIBED_FIELDS
+    );
+    assert!(
+        describe.fields_omitted >= 4_800,
+        "{}",
+        describe.fields_omitted
     );
 }

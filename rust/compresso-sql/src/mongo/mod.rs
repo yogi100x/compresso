@@ -377,11 +377,59 @@ pub(crate) fn prepare(request: &MongoRequest) -> Result<Prepared, SqlError> {
             }
         }
     };
+    checked(prepared)
+}
+
+/// The last step of [`prepare`]: the walk over everything the call will
+/// send, whatever built it.
+pub(crate) fn checked(prepared: Prepared) -> Result<Prepared, SqlError> {
     prepared.assert_sendable()?;
     Ok(prepared)
 }
 
 impl Prepared {
+    /// Every collection the call reads: its own and each `$lookup` source at
+    /// any depth, so a view among them can be refused before the action.
+    pub(crate) fn collections_read(&self) -> Vec<String> {
+        fn lookups(value: &bson::Bson, names: &mut Vec<String>) {
+            match value {
+                bson::Bson::Document(document) => {
+                    for (key, inner) in document {
+                        if key == "$lookup"
+                            && let bson::Bson::Document(lookup) = inner
+                            && let Ok(from) = lookup.get_str("from")
+                        {
+                            names.push(from.to_owned());
+                        }
+                        lookups(inner, names);
+                    }
+                }
+                bson::Bson::Array(items) => items.iter().for_each(|item| lookups(item, names)),
+                _ => {}
+            }
+        }
+        let mut names = Vec::new();
+        match self {
+            Self::Find { collection, .. }
+            | Self::Count { collection, .. }
+            | Self::Distinct { collection, .. }
+            | Self::Describe { collection } => names.push(collection.clone()),
+            Self::Aggregate {
+                collection,
+                pipeline,
+            } => {
+                names.push(collection.clone());
+                for stage in pipeline {
+                    lookups(&bson::Bson::Document(stage.clone()), &mut names);
+                }
+            }
+            Self::Collections => {}
+        }
+        names.sort();
+        names.dedup();
+        names
+    }
+
     /// The final walk over every document this call will send.
     fn assert_sendable(&self) -> Result<(), SqlError> {
         let documents: Vec<&bson::Document> = match self {
@@ -561,5 +609,64 @@ fn bound_metadata(outcome: MongoOutcome) -> MongoOutcome {
             MongoOutcome::Describe(result)
         }
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bson::doc;
+    use serde_json::json;
+
+    #[test]
+    fn test_the_final_walk_runs_on_every_prepared_command() {
+        for prepared in [
+            Prepared::Find {
+                collection: "c".to_owned(),
+                filter: doc! {"$where": "1"},
+                projection: None,
+                sort: None,
+                skip: 0,
+            },
+            Prepared::Find {
+                collection: "c".to_owned(),
+                filter: doc! {},
+                projection: Some(doc! {"a": {"$function": "x"}}),
+                sort: None,
+                skip: 0,
+            },
+            Prepared::Aggregate {
+                collection: "c".to_owned(),
+                pipeline: vec![doc! {"$out": "x"}],
+            },
+            Prepared::Count {
+                collection: "c".to_owned(),
+                filter: doc! {"a": bson::Bson::JavaScriptCode("f".to_owned())},
+            },
+            Prepared::Distinct {
+                collection: "c".to_owned(),
+                field: "a".to_owned(),
+                filter: doc! {"r": "$$USER_ROLES"},
+            },
+        ] {
+            let error = checked(prepared).expect_err("refused");
+            assert_eq!(error.code(), "mongo_refused");
+        }
+    }
+
+    #[test]
+    fn test_collections_read_include_every_lookup_source() {
+        let prepared = prepare(&MongoRequest::new(MongoAction::Aggregate {
+            collection: "orders".to_owned(),
+            pipeline: json!([
+                {"$lookup": {"from": "users", "as": "u", "localField": "a", "foreignField": "b"}},
+                {"$facet": {"x": [{"$lookup": {"from": "items", "as": "i", "pipeline": [
+                    {"$lookup": {"from": "users", "as": "w", "pipeline": []}}
+                ]}}]}}
+            ]),
+        }))
+        .expect("allowed");
+        assert_eq!(prepared.collections_read(), ["items", "orders", "users"]);
+        assert!(Prepared::Collections.collections_read().is_empty());
     }
 }

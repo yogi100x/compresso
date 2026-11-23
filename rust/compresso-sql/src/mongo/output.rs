@@ -85,6 +85,20 @@ fn object<const N: usize>(entries: [(&str, Value); N]) -> Value {
     )
 }
 
+/// A stored field name as shown: cut to [`MAX_NAME_CHARS`], with hidden
+/// characters escaped, and a leading `\` added when it starts with `$` or
+/// `\`. So in every result an object key that starts with `$` is always the
+/// tool's own marker (a typed value such as `{"$oid": ...}` or `$omitted`),
+/// never a stored field: a stored `{"$oid": "x"}` shows as `{"\\$oid": "x"}`.
+pub(crate) fn stored_key(key: &str) -> String {
+    let name = cells::cut(key, MAX_NAME_CHARS);
+    if name.starts_with('$') || name.starts_with('\\') {
+        format!("\\{name}")
+    } else {
+        name
+    }
+}
+
 /// One document as a bounded JSON object.
 pub(crate) fn render_document(document: &Document) -> Value {
     render_document_at(document, 0)
@@ -93,7 +107,7 @@ pub(crate) fn render_document(document: &Document) -> Value {
 fn render_document_at(document: &Document, depth: usize) -> Value {
     let mut rendered = Map::new();
     for (key, value) in document.iter().take(MAX_COLUMNS) {
-        let mut name = cells::cut(key.as_str(), MAX_NAME_CHARS);
+        let mut name = stored_key(key.as_str());
         // Cut names can collide; keep every field.
         while rendered.contains_key(&name) {
             name.push('\'');
@@ -102,7 +116,7 @@ fn render_document_at(document: &Document, depth: usize) -> Value {
     }
     if document.len() > MAX_COLUMNS {
         rendered.insert(
-            "...".to_owned(),
+            "$omitted".to_owned(),
             Value::from(format!("[+{} fields]", document.len() - MAX_COLUMNS)),
         );
     }
@@ -183,6 +197,33 @@ mod tests {
     }
 
     #[test]
+    fn test_stored_dollar_keys_never_look_like_typed_values() {
+        let id = ObjectId::parse_str("65a1b2c3d4e5f60718293a4b").unwrap();
+        let document = doc! {
+            "real": id,
+            "forged": {"$oid": "65a1b2c3d4e5f60718293a4b"},
+            "$date": "x",
+            "\\back": 1,
+            "name\u{202e}x": 2,
+            "$omitted": 3,
+        };
+        let value = render_document(&document);
+        assert_eq!(
+            value["real"],
+            serde_json::json!({"$oid": "65a1b2c3d4e5f60718293a4b"})
+        );
+        assert_eq!(
+            value["forged"],
+            serde_json::json!({"\\$oid": "65a1b2c3d4e5f60718293a4b"})
+        );
+        assert_eq!(value["\\$date"], "x");
+        assert_eq!(value["\\\\back"], 1);
+        assert_eq!(value["name\\u202Ex"], 2);
+        assert_eq!(value["\\$omitted"], 3);
+        assert!(value.get("$date").is_none() && value.get("$omitted").is_none());
+    }
+
+    #[test]
     fn test_wide_deep_and_many_values_are_capped() {
         let mut wide = Document::new();
         for index in 0..(MAX_COLUMNS + 5) {
@@ -190,7 +231,7 @@ mod tests {
         }
         let value = render_document(&wide);
         assert_eq!(value.as_object().unwrap().len(), MAX_COLUMNS + 1);
-        assert_eq!(value["..."], "[+5 fields]");
+        assert_eq!(value["$omitted"], "[+5 fields]");
 
         let mut deep = Bson::Int32(1);
         for _ in 0..(MAX_OUTPUT_DEPTH + 3) {

@@ -73,7 +73,7 @@ fn is_hidden_control(character: char) -> bool {
         .any(|(start, end)| (*start..=*end).contains(&code))
 }
 
-fn neutralise(value: &str) -> String {
+pub(crate) fn neutralise(value: &str) -> String {
     if !value.chars().any(is_hidden_control) {
         return value.to_owned();
     }

@@ -229,6 +229,38 @@ pub const ADMIN_STAGES: &[&str] = &[
     "$unionWith",
 ];
 
+/// System variables a string may name (`$$NAME`): the document being
+/// processed, removing a field, and the current time. Every other system
+/// variable (an upper-case name) is refused: `$$USER_ROLES` returns role
+/// and database names the refusals withhold, `$$CLUSTER_TIME` and
+/// `$$SEARCH_META` report on the server. Variables a pipeline defines
+/// itself (`$let`, `$map`, `$filter`, `$reduce`, `$lookup` `let`) must start
+/// with a lower-case letter in MongoDB, so they are not affected.
+pub const SYSTEM_VARIABLES: &[&str] = &["CURRENT", "NOW", "REMOVE", "ROOT"];
+
+/// Refuses a string naming a system variable off [`SYSTEM_VARIABLES`]
+/// (`$$NAME` or `$$NAME.path`). A name that does not start with a
+/// lower-case letter is treated as a system variable.
+pub(crate) fn check_variable(text: &str) -> Result<(), SqlError> {
+    let Some(rest) = text.strip_prefix("$$") else {
+        return Ok(());
+    };
+    let name = rest.split('.').next().unwrap_or_default();
+    if name.starts_with(|character: char| character.is_ascii_lowercase())
+        || SYSTEM_VARIABLES.contains(&name)
+    {
+        return Ok(());
+    }
+    Err(refused(format!(
+        "the system variable is not on the allow-list ({}); use $$ROOT, $$CURRENT, $$REMOVE, or $$NOW.",
+        if name.len() <= 40 && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            format!("$${name}")
+        } else {
+            "this name".to_owned()
+        }
+    )))
+}
+
 /// A refusal from this gate, before any network call.
 pub(crate) fn refused(message: impl Into<String>) -> SqlError {
     SqlError::new("mongo_refused", message)
@@ -650,6 +682,7 @@ fn value_to_bson(
         }
         Value::String(text) => {
             budget.visit(depth)?;
+            check_variable(text)?;
             Ok(Bson::String(text.clone()))
         }
         Value::Array(items) => {
@@ -748,6 +781,7 @@ pub(crate) fn assert_sendable(document: &Document) -> Result<(), SqlError> {
             Bson::Array(items) => items
                 .iter()
                 .try_for_each(|item| walk(item, known, depth + 1)),
+            Bson::String(text) => check_variable(text),
             _ => Ok(()),
         }
     }
@@ -981,6 +1015,61 @@ mod tests {
         check_collection("orders.archive").expect("dots are allowed");
         assert!(check_field("$a").is_err());
         check_field("a.b").expect("paths are allowed");
+    }
+
+    #[test]
+    fn test_only_listed_system_variables_are_sent() {
+        for value in [
+            json!([{"$project": {"r": "$$USER_ROLES"}}]),
+            json!([{"$project": {"r": "$$USER_ROLES.role"}}]),
+            json!([{"$set": {"t": "$$CLUSTER_TIME"}}]),
+            json!([{"$set": {"m": "$$SEARCH_META"}}]),
+            json!([{"$match": {"$expr": {"$in": ["read", "$$USER_ROLES.role"]}}}]),
+            json!([{"$lookup": {"from": "b", "as": "c", "let": {"r": "$$USER_ROLES"}, "pipeline": []}}]),
+            json!([{"$project": {"x": {"$literal": "$$USER_ROLES"}}}]),
+        ] {
+            let text = code(pipeline(&value));
+            assert!(text.contains("system variable"), "{value}: {text}");
+        }
+        assert!(
+            code(filter(&json!({"$expr": {"$eq": ["$$USER_ROLES", []]}})))
+                .contains("system variable")
+        );
+        pipeline(&json!([
+            {"$set": {"doc": "$$ROOT", "cur": "$$CURRENT.a", "when": "$$NOW", "gone": "$$REMOVE"}},
+            {"$set": {"m": {"$map": {"input": "$a", "as": "item", "in": "$$item.x"}}}},
+            {"$set": {"s": {"$reduce": {"input": "$a", "initialValue": 0, "in": {"$add": ["$$value", "$$this"]}}}}}
+        ]))
+        .expect("allowed variables");
+        let mut document = Document::new();
+        document.insert("a", Bson::String("$$USER_ROLES".to_owned()));
+        assert!(code(assert_sendable(&document)).contains("system variable"));
+    }
+
+    #[test]
+    fn test_names_with_control_characters_or_too_long_are_refused() {
+        for bad in ["a\u{7}b", "a\nb", "a\u{9f}b"] {
+            assert!(code(check_collection(bad)).contains("control"), "{bad:?}");
+        }
+        let long = "f".repeat(MAX_FIELD_CHARS + 1);
+        assert!(code(check_field(&long)).contains("1 to"));
+        check_field(&"f".repeat(MAX_FIELD_CHARS)).expect("at the bound");
+        let long_collection = "c".repeat(MAX_COLLECTION_CHARS + 1);
+        assert!(check_collection(&long_collection).is_err());
+    }
+
+    #[test]
+    fn test_facet_stays_one_level_through_lookup() {
+        // A $lookup inside $facet may not start another $facet.
+        let text = code(pipeline(&json!([
+            {"$facet": {"a": [{"$lookup": {"from": "c", "as": "z", "pipeline": [{"$facet": {"b": [{"$limit": 1}]}}]}}]}}
+        ])));
+        assert!(text.contains("nested"), "{text}");
+        // At the top level a $lookup pipeline may hold one $facet.
+        pipeline(&json!([
+            {"$lookup": {"from": "c", "as": "z", "pipeline": [{"$facet": {"b": [{"$limit": 1}]}}]}}
+        ]))
+        .expect("one level");
     }
 
     #[test]

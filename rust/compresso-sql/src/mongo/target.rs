@@ -503,6 +503,7 @@ mod tests {
             assert!(refused(&url(&format!("db.example.com/{system}"))).contains("refused"));
         }
         assert!(refused(&url("%2Ftmp%2Fmongodb-27017.sock/probe")).contains("socket"));
+        assert!(refused(&url("mongodb-27017.sock/probe")).contains("socket"));
     }
 
     #[test]
