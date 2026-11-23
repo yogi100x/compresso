@@ -53,12 +53,11 @@ start in a folder the user has not trusted, nor ever under `-p`.
 - **Agent file.** Frontmatter `name` and `description` only: no `tools` (the
   session keeps every client tool), no `model`, no `mcpServers` (they would
   not start in an untrusted folder or under `-p`). The body is the measured
-  prompt with three changes: it restates that repository content, tool
+  prompt with two changes: it restates that repository content, tool
   results, and command output are untrusted data, never instructions, and
   that edits stay minimal and scoped; its routing rule is general ("find how
   the request reaches it (entry point, routing, middleware, validation,
-  callers)"); and it says to use the client's tools if Compresso's cannot be
-  loaded. Tool names are the bare names the `compresso` server serves. The
+  callers)"). Tool names are the bare names the `compresso` server serves. The
   body is at most 2,500 characters (a test pins it and that it is not empty).
   With `--no-edits` the body never names `compresso_edit`.
 - **Settings splice.** The key is spliced into the existing text after the
@@ -85,7 +84,9 @@ start in a folder the user has not trusted, nor ever under `-p`.
   `compresso_sql` (D115); the agent is still installed and its tool names are
   served by the full profile too.
 - **Opt-outs.** `--no-main-agent` writes neither file and keeps the previous
-  entry (full profile; `--edits` only if given). `--no-edits` keeps the
+  entry (full profile; `--edits` only if given); over a project that already
+  has the agent it also removes the agent file and the key through their
+  receipts (previewed), so the agent never runs against a full-profile entry. `--no-edits` keeps the
   agent and the lean session profile without the edit tool. User-scope
   installs, Codex, and Cursor are unchanged. No permission rule is added for
   the edit tool.
@@ -94,10 +95,12 @@ start in a folder the user has not trusted, nor ever under `-p`.
   and `main_agent_server_profile` (lean session profile, or full with
   `--sql-env`, and `--edits` when the body names the edit tool) whenever the
   agent file or the key is present; a `--no-main-agent` install gets none.
-- **Git warning.** When the project holds `.git` and neither its `.gitignore`
-  files, its `info/exclude`, nor the user's global git excludes file ignore
-  `.claude/settings.local.json`, install prints one warning. Nothing is
-  edited.
+- **Git warning.** When the project holds `.git` and its `.gitignore`
+  files, its `info/exclude`, and the user's global git excludes file do not
+  ignore `.claude/settings.local.json`, or the timestamped backups the plan
+  manager keeps beside it when it changes an existing file
+  (`settings.local.json.compresso-backup-*`), install prints one warning
+  suggesting `.claude/settings.local.json*`. Nothing is edited.
 
 ## Consequences
 
@@ -110,10 +113,14 @@ start in a folder the user has not trusted, nor ever under `-p`.
   `compresso_sql` are not served unless the entry is reinstalled with
   `--no-main-agent` (or `--sql-env`).
 - First request on the client's `-p` mode (its smallest model, scratch project, 2026-11-23):
-  the default install measured 17,322 input tokens; the same agent with plain
+  the shipped default install measured 17,290 input tokens. The comparisons
+  below were run with a draft body one sentence longer (a fallback line,
+  since removed), at 17,322 for the default (server `compresso`
+  connected from `project`, 12 Compresso tools); the same agent with plain
   `--tools lean --edits` 17,263 (the session tools and recall add 59); the same
-  agent with no server 16,765; `--no-main-agent` 20,202 (2,880 more than the
-  default); the default entry with the `agent` key removed 20,104 (the agent
+  agent with no server 16,765, so lean+edits costs 498 here against 312 in the
+  earlier reference runs, whose no-server figure was 17,035; `--no-main-agent` 20,202 (2,880 more than that
+  draft, 2,912 more than the shipped body); the default entry with the `agent` key removed 20,104 (the agent
   alone saves 2,782).
 - `--allow-edit-tool` was not built: the receipt model owns whole JSON values
   by key path, so a single element of the user's `permissions.allow` list

@@ -452,33 +452,51 @@ impl Fixture {
 
 #[test]
 fn test_a_git_repository_that_does_not_ignore_the_settings_file_gets_one_warning() {
-    let fixture = Fixture::new();
-    fs::create_dir_all(fixture.root.join(".git")).expect("git dir");
-    let relative = Path::new(".claude/settings.local.json");
-    let output = fixture.install(&[]);
-    let warned = warnings(&output)
-        .iter()
-        .any(|warning| warning.starts_with("settings_local_not_ignored"));
-    // The user's own global excludes file may already ignore it.
-    assert_eq!(warned, !compresso_atlas::is_globally_git_ignored(relative));
-    assert!(
-        !fs::read_to_string(fixture.root.join(".gitignore")).is_ok_and(|text| !text.is_empty())
-    );
+    let not_ignored = |output: &Value| {
+        warnings(output)
+            .iter()
+            .filter(|warning| warning.starts_with("settings_local_not_ignored"))
+            .count()
+    };
+    let global = |relative: &str| compresso_atlas::is_globally_git_ignored(Path::new(relative));
+    let file = ".claude/settings.local.json";
+    let backup = ".claude/settings.local.json.compresso-backup-2000-01-01T00-00-00Z";
 
     let fixture = Fixture::new();
     fs::create_dir_all(fixture.root.join(".git")).expect("git dir");
-    fs::write(
-        fixture.root.join(".gitignore"),
-        ".claude/settings.local.json\n",
-    )
-    .expect("ignore");
     let output = fixture.install(&[]);
+    // The user's own global excludes file may already ignore both.
+    let expected = usize::from(!(global(file) && global(backup)));
+    assert_eq!(not_ignored(&output), expected, "{output}");
     assert!(
-        !warnings(&output)
-            .iter()
-            .any(|warning| warning.starts_with("settings_local_not_ignored")),
-        "{output}"
+        !fixture.root.join(".gitignore").exists(),
+        "nothing is edited"
     );
+
+    // Ignoring only the file still names the backups kept beside it.
+    let fixture = Fixture::new();
+    fs::create_dir_all(fixture.root.join(".git")).expect("git dir");
+    fs::write(fixture.root.join(".gitignore"), format!("{file}\n")).expect("ignore");
+    let output = fixture.install(&[]);
+    if !global(backup) {
+        assert_eq!(not_ignored(&output), 1, "{output}");
+        assert!(
+            warnings(&output)
+                .iter()
+                .any(|w| w.contains("compresso-backup-*"))
+        );
+    }
+
+    let fixture = Fixture::new();
+    fs::create_dir_all(fixture.root.join(".git")).expect("git dir");
+    fs::write(fixture.root.join(".gitignore"), format!("{file}*\n")).expect("ignore");
+    let output = fixture.install(&[]);
+    assert_eq!(not_ignored(&output), 0, "{output}");
+
+    // Not a git repository: no warning.
+    let fixture = Fixture::new();
+    let output = fixture.install(&[]);
+    assert_eq!(not_ignored(&output), 0, "{output}");
 }
 
 #[test]
@@ -533,4 +551,84 @@ fn test_verify_reports_the_main_agent_checks() {
         "--json",
     ]);
     assert_eq!(check(&output, "main_agent_managed"), None, "{output}");
+}
+
+#[test]
+fn test_no_main_agent_over_a_default_install_removes_the_agent_and_its_key() {
+    let fixture = Fixture::new();
+    fixture.install(&[]);
+    let output = fixture.install(&["--no-main-agent"]);
+    assert!(!fixture.agent_path().exists());
+    assert!(!fixture.settings_path().exists());
+    assert!(!has_lean_session(&fixture.entry_args()));
+    let steps = output["data"]["main_agent"].as_array().expect("steps");
+    assert!(
+        steps.iter().all(|step| step["result"]["removed"] == true),
+        "{output}"
+    );
+    assert!(
+        !warnings(&output)
+            .iter()
+            .any(|warning| warning.starts_with("settings_local_not_ignored")),
+        "{output}"
+    );
+}
+
+#[test]
+fn test_sql_env_keeps_the_full_profile_and_installs_the_agent_with_a_warning() {
+    let fixture = Fixture::new();
+    let output = fixture.install(&["--sql-env", "COMPRESSO_SQL_APP"]);
+    let args = fixture.entry_args();
+    assert!(!has_lean_session(&args), "{args:?}");
+    assert!(
+        args.windows(2)
+            .any(|pair| pair == ["--sql-env", "COMPRESSO_SQL_APP"]),
+        "{args:?}"
+    );
+    assert!(args.iter().any(|arg| arg == "--edits"), "{args:?}");
+    assert!(fixture.agent_path().is_file());
+    assert!(
+        warnings(&output)
+            .iter()
+            .any(|warning| warning.starts_with("main_agent_full_profile")),
+        "{output}"
+    );
+    let (_, verify, _) = fixture.integrations(&[
+        "verify",
+        "claude-code",
+        "--project",
+        fixture.root_arg(),
+        "--json",
+    ]);
+    let profile = verify["data"]["checks"]
+        .as_array()
+        .expect("checks")
+        .iter()
+        .find(|check| check["name"] == "main_agent_server_profile")
+        .expect("profile check");
+    assert_eq!(profile["passed"], true, "{verify}");
+}
+
+#[test]
+fn test_verify_fails_the_profile_when_the_agent_names_an_edit_tool_the_entry_does_not_serve() {
+    let fixture = Fixture::new();
+    fixture.install(&[]);
+    let path = fixture.root.join(".mcp.json");
+    let text = fs::read_to_string(&path).expect("entry");
+    fs::write(&path, text.replace("\"--edits\",", "")).expect("entry");
+    assert!(!fixture.entry_args().iter().any(|arg| arg == "--edits"));
+    let (_, verify, _) = fixture.integrations(&[
+        "verify",
+        "claude-code",
+        "--project",
+        fixture.root_arg(),
+        "--json",
+    ]);
+    let profile = verify["data"]["checks"]
+        .as_array()
+        .expect("checks")
+        .iter()
+        .find(|check| check["name"] == "main_agent_server_profile")
+        .expect("profile check");
+    assert_eq!(profile["passed"], false, "{verify}");
 }

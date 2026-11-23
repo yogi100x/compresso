@@ -49,8 +49,10 @@ Compresso the session's main agent by default (ADR-0037):
   `.claude/settings.local.json`. Only that one key is added; every other byte
   of the file is kept. An `agent` value you already set is never
   overwritten: the install skips this step and says so. If the project is a
-  git repository that does not ignore this file, the install prints one
-  warning and changes nothing.
+  git repository that does not ignore this file, or the
+  `settings.local.json.compresso-backup-*` copies kept beside it when an
+  existing file is changed, the install prints one warning and changes
+  nothing (`.claude/settings.local.json*` in `.gitignore` covers both).
 - The project's server entry runs
   `mcp serve --tools lean --session-tools --edits`: the lean tools with
   compact text results, the edit tool `compresso_edit`, and the two tools the
@@ -60,7 +62,8 @@ Compresso the session's main agent by default (ADR-0037):
 No permission rule is added for the edit tool, so the client still asks
 before each edit. Pass `--no-edits` to keep the agent without the edit tool,
 or `--no-main-agent` to install the entry as before (full profile) with no
-agent file and no settings change. A plain project uninstall removes the
+agent file and no settings change (over a project that has the agent, it
+also removes the agent file and the key). A plain project uninstall removes the
 key (only while it still names `compresso-main`), the agent file (only while
 unchanged), and the settings file only if Compresso created it and nothing
 else is left in it. User-scope installs, Codex, and Cursor are unchanged.

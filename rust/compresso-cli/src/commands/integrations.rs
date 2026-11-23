@@ -443,7 +443,7 @@ pub(crate) fn apply_setup_main_agent(
         return (Vec::new(), warnings);
     }
     let receipts = FileReceiptStore::new(environment.receipt_store_path());
-    let outcomes = companion.apply(true, &manager, &receipts);
+    let outcomes = companion.apply(&manager, &receipts);
     for (label, outcome) in &outcomes {
         if let super::main_agent::StepOutcome::Failed(message) = outcome {
             warnings.push(format!("{label}_failed: {message}"));
@@ -995,7 +995,10 @@ fn execute_mutation(
             arguments.dry_run,
             &mut main_agent_warnings,
         )?,
-        MutationAction::Uninstall
+        // An uninstall, or an install with --no-main-agent over a project
+        // that has the agent: remove what its receipts cover, so the agent
+        // never runs against a full-profile entry (E17-51).
+        MutationAction::Uninstall | MutationAction::Install
             if arguments.client == IntegrationClientArg::ClaudeCode
                 && plain_entry_change(&arguments)
                 && matches!(scope, Scope::Project(_)) =>
@@ -1012,6 +1015,7 @@ fn execute_mutation(
         _ => super::main_agent::MainAgentCompanion::default(),
     };
     if action == MutationAction::Install
+        && main_agent_companion.installs()
         && main_agent_companion
             .steps
             .iter()
@@ -1148,8 +1152,7 @@ fn execute_mutation(
         .map_err(|error| IntegrationCliError::from(error).message)
     });
     // The main-session agent follows the entry; a failure is a warning.
-    let main_agent_result =
-        main_agent_companion.apply(action == MutationAction::Install, &manager, &receipts);
+    let main_agent_result = main_agent_companion.apply(&manager, &receipts);
     let mut warnings = companion_warnings;
     if let Some(Err(message)) = &session_commands_result {
         warnings.push(format!("session_commands_failed: {message}"));

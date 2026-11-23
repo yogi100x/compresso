@@ -33,6 +33,9 @@ pub(crate) struct MainAgentStep {
 #[derive(Default)]
 pub(crate) struct MainAgentCompanion {
     pub(crate) steps: Vec<MainAgentStep>,
+    /// The steps remove what earlier installs wrote (uninstall, or an
+    /// install with `--no-main-agent`).
+    removal: bool,
 }
 
 /// What applying one step did.
@@ -45,6 +48,11 @@ pub(crate) enum StepOutcome {
 impl MainAgentCompanion {
     pub(crate) fn is_empty(&self) -> bool {
         self.steps.is_empty()
+    }
+
+    /// Whether the steps install (not remove) the main-session agent.
+    pub(crate) fn installs(&self) -> bool {
+        !self.removal
     }
 
     /// Writes each plan's preview, with the exact settings change spelled
@@ -98,10 +106,10 @@ impl MainAgentCompanion {
     /// an agent file that failed to install stops the settings key.
     pub(crate) fn apply(
         &self,
-        install: bool,
         manager: &PlanManager,
         receipts: &dyn ReceiptStore,
     ) -> Vec<(&'static str, StepOutcome)> {
+        let install = !self.removal;
         let mut outcomes = Vec::new();
         for step in &self.steps {
             if install
@@ -278,7 +286,10 @@ pub(crate) fn plan_uninstall(
     dry_run: bool,
     warnings: &mut Vec<String>,
 ) -> MainAgentCompanion {
-    let mut companion = MainAgentCompanion::default();
+    let mut companion = MainAgentCompanion {
+        removal: true,
+        ..MainAgentCompanion::default()
+    };
     let adapters: [(
         &'static str,
         Box<dyn Integration>,
@@ -328,19 +339,33 @@ pub(crate) fn plan_uninstall(
 
 /// A one-line warning when `root` is a git repository whose rules (its own
 /// `.gitignore` files, `info/exclude`, or the user's global excludes file)
-/// do not ignore `.claude/settings.local.json`. Nothing is changed.
+/// do not ignore `.claude/settings.local.json`, or the timestamped backups
+/// Compresso keeps beside it (`settings.local.json.compresso-backup-*`).
+/// Nothing is changed.
 pub(crate) fn settings_not_ignored_warning(root: &Path) -> Option<String> {
     if !root.join(".git").exists() {
         return None;
     }
-    let relative = Path::new(LOCAL_SETTINGS_FILE);
-    if compresso_atlas::is_scanner_excluded(root, relative)
-        || compresso_atlas::is_globally_git_ignored(relative)
-    {
-        return None;
-    }
+    let ignored = |relative: &Path| {
+        compresso_atlas::is_scanner_excluded(root, relative)
+            || compresso_atlas::is_globally_git_ignored(relative)
+    };
+    let file = ignored(Path::new(LOCAL_SETTINGS_FILE));
+    let backups = ignored(Path::new(&format!(
+        "{LOCAL_SETTINGS_FILE}.compresso-backup-2000-01-01T00-00-00Z"
+    )));
+    let what = match (file, backups) {
+        (true, true) => return None,
+        (false, true) => LOCAL_SETTINGS_FILE.to_owned(),
+        (true, false) => format!(
+            "the backups Compresso keeps beside {LOCAL_SETTINGS_FILE} when it changes an existing file ({LOCAL_SETTINGS_FILE}.compresso-backup-*)"
+        ),
+        (false, false) => format!(
+            "{LOCAL_SETTINGS_FILE} or the backups Compresso keeps beside it when it changes an existing file ({LOCAL_SETTINGS_FILE}.compresso-backup-*)"
+        ),
+    };
     Some(format!(
-        "settings_local_not_ignored: this git repository does not ignore {LOCAL_SETTINGS_FILE}, which now names your personal agent; add it to .gitignore if it should not be committed"
+        "settings_local_not_ignored: this git repository does not ignore {what}; the file names your personal agent. Add `{LOCAL_SETTINGS_FILE}*` to .gitignore if they should not be committed"
     ))
 }
 

@@ -1,7 +1,9 @@
 //! Operator-selected tool profiles (D92).
 //!
 //! The default (`full`) profile serves every registered tool with its full
-//! description and is what installed clients use. The opt-in `lean` profile
+//! description and is what installed clients use, except that a default
+//! Claude Code project install (E17-51, D116) writes `--tools lean
+//! --session-tools` for its main-session agent. The `lean` profile
 //! serves only the exploration tools named in [`LEAN_TOOLS`], with shortened
 //! descriptions, no compatibility-only `root` argument, and a shorter
 //! instructions string, so a session that preloads tool schemas pays less

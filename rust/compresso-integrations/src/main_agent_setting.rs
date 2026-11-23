@@ -780,6 +780,24 @@ mod tests {
     }
 
     #[test]
+    fn test_an_empty_json_install_target_is_refused() {
+        let harness = Harness::new();
+        let request = MutationRequest {
+            operation: MutationKind::Install,
+            client: CLIENT_ID.to_owned(),
+            config_path: harness.path(),
+            config_format: ConfigFormat::Json,
+            target_contents: String::new(),
+            owned_paths: vec![AGENT_SETTING_KEY.to_owned()],
+            compresso_version: "0.1.0".to_owned(),
+            prior_receipt: None,
+            warnings: Vec::new(),
+        };
+        let error = harness.manager.issue(request).expect_err("refused");
+        assert!(error.to_string().contains("must not be empty"), "{error}");
+    }
+
+    #[test]
     fn test_dry_run_planning_writes_nothing() {
         let harness = Harness::new();
         harness.plan().expect("plan");

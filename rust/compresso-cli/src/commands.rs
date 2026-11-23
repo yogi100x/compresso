@@ -189,9 +189,12 @@ pub struct IntegrationMutationArgs {
     /// entry. Project scope: `--project`, or else the working directory.
     #[arg(long, conflicts_with_all = ["compaction_hook", "no_recall"])]
     pub explore_agent: bool,
-    /// Opt into the one write tool, `compresso_edit` (Claude Code only;
-    /// `install` only). The MCP server entry starts `mcp serve --edits`; with
-    /// `--explore-agent`, the agent may call `compresso_edit` instead.
+    /// Serve the one write tool, `compresso_edit` (Claude Code only;
+    /// `install` only): the MCP server entry starts `mcp serve --edits`; with
+    /// `--explore-agent`, the agent may call `compresso_edit` instead. A
+    /// default Claude Code project install already serves it (see
+    /// `--no-edits`); this flag matters for user scope, `--no-main-agent`,
+    /// and the exploration agent.
     #[arg(long, conflicts_with = "compaction_hook")]
     pub edits: bool,
     /// Opt into the read-only live SQL tool, `compresso_sql` (Claude Code

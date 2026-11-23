@@ -57,8 +57,6 @@ const TOOLS_READ_ONLY: &str = "Tools:
 - Edit files with the client's own edit tools. Copy the old text exactly from what a Compresso read showed you.
 - Use the shell for installing packages, running the type-check or tests, and git; not for reading or searching source.";
 
-const NO_SERVER: &str = "- If the Compresso tools cannot be found or loaded, say so once and use the client's own tools.";
-
 const STYLE_WITH_EDITS: &str = "Working style:
 - Before changing code, find how the request reaches it (entry point, routing, middleware, validation, callers) and fix the existing mechanism rather than adding a parallel one.
 - Look up what you need in as few calls as possible, then make the change in as few compresso_edit calls as possible.
@@ -115,7 +113,7 @@ impl MainAgentIntegration {
         } else {
             (TOOLS_READ_ONLY, STYLE_READ_ONLY)
         };
-        format!("{MARKER}\n\n{OPENING}\n\n{tools}\n{NO_SERVER}\n\n{style}\n\n{SAFETY}\n")
+        format!("{MARKER}\n\n{OPENING}\n\n{tools}\n\n{style}\n\n{SAFETY}\n")
     }
 
     /// The exact agent file for a server with or without the edit tool.
