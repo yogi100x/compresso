@@ -175,18 +175,24 @@ pub(crate) fn aggregate_options(timeout: Duration) -> AggregateOptions {
     options
 }
 
-/// The pipeline `distinct` runs: the values of `field` (array elements
-/// unwound, as `distinct` does), grouped, and limited (unsorted, as
-/// `distinct` is; a sort would hold every value in server memory), so they come
-/// back as `_id` of raw documents through the same bounded path as `find`.
+/// The pipeline `distinct` runs: documents that have `field` (an explicit
+/// `null` included), its value as an array (a scalar becomes a one-element
+/// array), unwound, grouped, and limited, unordered as `distinct` is. The
+/// values come back as `_id` of raw documents through the same bounded path
+/// as `find`. It matches the server's `distinct` for scalars, `null`, and an
+/// array at the end of the path; it differs where the path crosses an array
+/// of subdocuments (`b.c` over `[{c: 5}, {c: [6, 7]}]` gives `5` and
+/// `[6, 7]`, where `distinct` gives 5, 6, 7) and for `undefined`, which
+/// aggregation turns into `null` (ADR-0038).
 pub(crate) fn distinct_pipeline(field: &str, filter: Document, max_rows: usize) -> Vec<Document> {
     let path = format!("${field}");
     let mut exists = Document::new();
     exists.insert(field, doc! {"$exists": true});
     vec![
         doc! {"$match": {"$and": [filter, exists]}},
-        doc! {"$unwind": path.clone()},
-        doc! {"$group": {"_id": path}},
+        doc! {"$project": {"_id": 0, "value": {"$cond": [{"$isArray": path.clone()}, path.clone(), [path]]}}},
+        doc! {"$unwind": "$value"},
+        doc! {"$group": {"_id": "$value"}},
         doc! {"$limit": server_limit(max_rows)},
     ]
 }
@@ -955,8 +961,8 @@ mod tests {
             serde_json::json!({"$oid": "65a1b2c3d4e5f60718293a4b"})
         );
         let pipeline = distinct_pipeline("a.b", doc! {"k": 1}, 10);
-        assert_eq!(pipeline[1], doc! {"$unwind": "$a.b"});
-        assert_eq!(pipeline[3], doc! {"$limit": 11_i64});
+        assert_eq!(pipeline[2], doc! {"$unwind": "$value"});
+        assert_eq!(pipeline[4], doc! {"$limit": 11_i64});
     }
 
     #[test]

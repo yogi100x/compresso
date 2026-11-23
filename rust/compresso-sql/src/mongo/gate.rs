@@ -323,11 +323,6 @@ const MATCH: Allowed = Allowed {
     place: "a pipeline stage",
     expression: false,
 };
-const PROJECTION: Allowed = Allowed {
-    sets: &[PROJECTION_OPERATORS, QUERY_OPERATORS],
-    place: "a projection",
-    expression: false,
-};
 const STAGE_BODY: Allowed = Allowed {
     sets: &[QUERY_OPERATORS, EXPRESSION_OPERATORS, ACCUMULATORS],
     place: "a pipeline stage",
@@ -415,27 +410,68 @@ pub(crate) fn filter(value: &Value) -> Result<Document, SqlError> {
     document(object, FILTER, 0, &mut budget)
 }
 
-/// A `find` projection: fields with 0, 1, true, or false, `$slice`, or
-/// `$elemMatch`.
+/// A `find` projection. The server evaluates a find projection as an
+/// aggregation expression (a string there can name `$$USER_ROLES`), so only
+/// these forms are accepted, on plain field paths: `0`, `1`, `true`,
+/// `false`, `{"$slice": n}` or `{"$slice": [skip, n]}` with integers, and
+/// `{"$elemMatch": filter}` with a filter checked as any other. Every other
+/// value (a string, an array, any other object) is refused.
 pub(crate) fn projection(value: &Value) -> Result<Document, SqlError> {
-    let mut budget = Budget::new();
     let Value::Object(object) = value else {
         return Err(refused("projection must be a JSON object."));
     };
+    if object.len() > 100 {
+        return Err(refused("projection may name at most 100 fields."));
+    }
+    let shape = || {
+        refused(
+            "a find projection value must be 0, 1, true, false, {\"$slice\": n}, {\"$slice\": [skip, n]}, or {\"$elemMatch\": filter}; expressions are not accepted there.",
+        )
+    };
+    let integer = |value: &Value| value.as_i64().ok_or_else(shape);
+    let mut built = Document::new();
     for (key, field) in object {
         check_field(key)?;
-        match field {
-            Value::Bool(_) => {}
-            Value::Number(number) if matches!(number.as_i64(), Some(0 | 1)) => {}
-            Value::Object(_) => {}
-            _ => {
-                return Err(refused(
-                    "a projection value must be 0, 1, true, false, $slice, or $elemMatch.",
-                ));
+        let value = match field {
+            Value::Bool(flag) => Bson::Boolean(*flag),
+            Value::Number(number) if matches!(number.as_i64(), Some(0 | 1)) => {
+                Bson::Int32(i32::from(number.as_i64() == Some(1)))
             }
-        }
+            Value::Object(operator) if operator.len() == 1 => {
+                let (name, argument) = operator.iter().next().ok_or_else(shape)?;
+                let mut inner = Document::new();
+                match (name.as_str(), argument) {
+                    ("$slice", Value::Array(pair)) if pair.len() == 2 => {
+                        let skip = integer(&pair[0])?;
+                        let count = integer(&pair[1])?;
+                        if count <= 0 {
+                            return Err(shape());
+                        }
+                        inner.insert(
+                            "$slice",
+                            Bson::Array(vec![Bson::Int64(skip), Bson::Int64(count)]),
+                        );
+                    }
+                    ("$slice", count) => {
+                        inner.insert("$slice", Bson::Int64(integer(count)?));
+                    }
+                    ("$elemMatch", Value::Object(_)) => {
+                        inner.insert("$elemMatch", filter(argument)?);
+                    }
+                    _ => {
+                        if JAVASCRIPT_OPERATORS.contains(&name.as_str()) {
+                            return Err(refusal_for(name, "a projection"));
+                        }
+                        return Err(shape());
+                    }
+                }
+                Bson::Document(inner)
+            }
+            _ => return Err(shape()),
+        };
+        built.insert(key.clone(), value);
     }
-    document(object, PROJECTION, 0, &mut budget)
+    Ok(built)
 }
 
 /// A sort: fields with 1 or -1 only. Field order matters and a JSON object's
@@ -767,10 +803,13 @@ fn typed_literal(object: &Map<String, Value>) -> Result<Option<Bson>, SqlError> 
     Ok(None)
 }
 
-/// Refuses any JavaScript, symbol, or database-pointer value, and any `$` key
-/// off every list, anywhere in a finished document. The converter above
+/// Refuses any JavaScript, symbol, or database-pointer value, any `$` key
+/// off every list, and, in an expression position, any string naming a
+/// system variable off [`SYSTEM_VARIABLES`], anywhere in a finished
+/// document. `expression` is the context of the document itself (a filter
+/// is data; a pipeline stage is an expression). The converter above
 /// cannot produce them; this is the check on what is actually sent.
-pub(crate) fn assert_sendable(document: &Document) -> Result<(), SqlError> {
+pub(crate) fn assert_sendable(document: &Document, expression: bool) -> Result<(), SqlError> {
     let known: BTreeSet<&str> = QUERY_OPERATORS
         .iter()
         .chain(PROJECTION_OPERATORS)
@@ -779,7 +818,12 @@ pub(crate) fn assert_sendable(document: &Document) -> Result<(), SqlError> {
         .chain(STAGES)
         .copied()
         .collect();
-    fn walk(value: &Bson, known: &BTreeSet<&str>, depth: usize) -> Result<(), SqlError> {
+    fn walk(
+        value: &Bson,
+        known: &BTreeSet<&str>,
+        depth: usize,
+        expression: bool,
+    ) -> Result<(), SqlError> {
         if depth > MAX_DEPTH * 2 + 4 {
             return Err(refused("the command nests too deeply."));
         }
@@ -796,17 +840,27 @@ pub(crate) fn assert_sendable(document: &Document) -> Result<(), SqlError> {
                     if key.starts_with('$') && !known.contains(key) {
                         return Err(refusal_for(key, "a command"));
                     }
-                    walk(value, known, depth + 1)?;
+                    // The positions proven to be data (ADR-0038's table):
+                    // a filter (`$match`, `$elemMatch`) and `$literal`;
+                    // `$expr` is an expression again. Everything else keeps
+                    // its context.
+                    let inner = match key {
+                        "$expr" => true,
+                        "$match" | "$elemMatch" | "$literal" => false,
+                        _ => expression,
+                    };
+                    walk(value, known, depth + 1, inner)?;
                 }
                 Ok(())
             }
             Bson::Array(items) => items
                 .iter()
-                .try_for_each(|item| walk(item, known, depth + 1)),
+                .try_for_each(|item| walk(item, known, depth + 1, expression)),
+            Bson::String(text) if expression => check_variable(text),
             _ => Ok(()),
         }
     }
-    walk(&Bson::Document(document.clone()), &known, 0)
+    walk(&Bson::Document(document.clone()), &known, 0, expression)
 }
 
 #[cfg(test)]
@@ -841,7 +895,7 @@ mod tests {
             Some(Bson::DateTime(_))
         ));
         assert!(matches!(built.get("_id"), Some(Bson::ObjectId(_))));
-        assert_sendable(&built).expect("sendable");
+        assert_sendable(&built, false).expect("sendable");
     }
 
     #[test]
@@ -962,7 +1016,7 @@ mod tests {
         assert_eq!(stages[0].keys().next().unwrap(), "$match");
         assert_eq!(stages[7].get("$limit"), Some(&Bson::Int64(5)));
         for stage in &stages {
-            assert_sendable(stage).expect("sendable");
+            assert_sendable(stage, true).expect("sendable");
         }
     }
 
@@ -1015,7 +1069,6 @@ mod tests {
                 .contains("needs from")
         );
         assert!(code(projection(&json!({"a": 2}))).contains("projection value"));
-        assert!(code(projection(&json!({"a": {"$function": "x"}}))).contains("JavaScript"));
         projection(&json!({"a": 1, "b": false, "c": {"$slice": [1, 2]}})).expect("allowed");
 
         let mut deep = json!(1);
@@ -1079,6 +1132,67 @@ mod tests {
     }
 
     #[test]
+    fn test_find_projections_accept_only_inclusion_slice_and_elem_match() {
+        let built = projection(&json!({
+            "a": 1, "b": 0, "c": true, "d": false,
+            "e": {"$slice": 3}, "f": {"$slice": [1, 2]},
+            "g": {"$elemMatch": {"x": "$$USER_ROLES", "$expr": {"$eq": ["$y", 1]}}}
+        }))
+        .expect("allowed");
+        assert_sendable(&built, true).expect("sendable");
+        for value in [
+            json!({"a": {"b": "$$USER_ROLES"}}),
+            json!({"a": "$$USER_ROLES"}),
+            json!({"a": "$b"}),
+            json!({"a": {"$slice": ["$$USER_ROLES", 1]}}),
+            json!({"a": {"$slice": [1, 0]}}),
+            json!({"a": {"$in": ["read", "$$USER_ROLES.role"]}}),
+            json!({"a": {"$literal": 1}}),
+            json!({"a": [1]}),
+            json!({"a": 2}),
+            json!({"a": {"$elemMatch": {"$expr": {"$in": ["read", "$$USER_ROLES.role"]}}}}),
+            json!({"$a": 1}),
+        ] {
+            let text = code(projection(&value));
+            assert!(text.starts_with("[mongo_refused]"), "{value}: {text}");
+        }
+        assert!(code(projection(&json!({"a": {"$function": {}}}))).contains("JavaScript"));
+    }
+
+    /// The final walk refuses a system variable in an expression position
+    /// even if the converter let it through, and leaves data alone.
+    #[test]
+    fn test_the_final_walk_checks_variables_by_position() {
+        use bson::doc;
+        for (document, expression) in [
+            (doc! {"$project": {"r": "$$USER_ROLES"}}, true),
+            (doc! {"a": {"b": "$$CLUSTER_TIME"}}, true),
+            (
+                doc! {"$expr": {"$in": ["read", "$$USER_ROLES.role"]}},
+                false,
+            ),
+            (
+                doc! {"$match": {"$expr": {"$eq": ["$$USER_ROLES", 1]}}},
+                true,
+            ),
+        ] {
+            assert!(
+                code(assert_sendable(&document, expression)).contains("system variable"),
+                "{document}"
+            );
+        }
+        for (document, expression) in [
+            (doc! {"note": "$$USER_ROLES"}, false),
+            (doc! {"$match": {"note": "$$USER_ROLES"}}, true),
+            (doc! {"$project": {"x": {"$literal": "$$USER_ROLES"}}}, true),
+            (doc! {"a": {"$elemMatch": {"$eq": "$$USER_ROLES"}}}, true),
+            (doc! {"$set": {"x": "$$ROOT", "y": "$$item.a"}}, true),
+        ] {
+            assert_sendable(&document, expression).expect("data or allowed");
+        }
+    }
+
+    #[test]
     fn test_names_with_control_characters_or_too_long_are_refused() {
         for bad in ["a\u{7}b", "a\nb", "a\u{9f}b"] {
             assert!(code(check_collection(bad)).contains("control"), "{bad:?}");
@@ -1109,14 +1223,14 @@ mod tests {
     fn test_the_final_walk_refuses_javascript_values() {
         let mut document = Document::new();
         document.insert("a", Bson::JavaScriptCode("function(){}".to_owned()));
-        assert!(code(assert_sendable(&document)).contains("JavaScript"));
+        assert!(code(assert_sendable(&document, true)).contains("JavaScript"));
         let mut document = Document::new();
         document.insert("$where", Bson::String("1".to_owned()));
-        assert!(code(assert_sendable(&document)).contains("JavaScript"));
+        assert!(code(assert_sendable(&document, true)).contains("JavaScript"));
         let mut nested = Document::new();
         nested.insert("$out", "x");
         let mut document = Document::new();
         document.insert("a", Bson::Array(vec![Bson::Document(nested)]));
-        assert!(code(assert_sendable(&document)).contains("writes"));
+        assert!(code(assert_sendable(&document, true)).contains("writes"));
     }
 }

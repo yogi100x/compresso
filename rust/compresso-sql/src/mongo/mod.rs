@@ -441,21 +441,32 @@ impl Prepared {
 
     /// The final walk over every document this call will send.
     fn assert_sendable(&self) -> Result<(), SqlError> {
-        let documents: Vec<&bson::Document> = match self {
+        // Filters are data (until `$expr`); a find projection and pipeline
+        // stages are expressions (until `$match`, `$elemMatch`, or
+        // `$literal`).
+        let data_and_expression: Vec<(&bson::Document, bool)> = match self {
             Self::Find {
                 filter,
                 projection,
                 sort,
                 ..
-            } => [Some(filter), projection.as_ref(), sort.as_ref()]
-                .into_iter()
-                .flatten()
-                .collect(),
-            Self::Aggregate { pipeline, .. } => pipeline.iter().collect(),
-            Self::Count { filter, .. } | Self::Distinct { filter, .. } => vec![filter],
+            } => [
+                Some((filter, false)),
+                projection.as_ref().map(|projection| (projection, true)),
+                sort.as_ref().map(|sort| (sort, true)),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+            Self::Aggregate { pipeline, .. } => {
+                pipeline.iter().map(|stage| (stage, true)).collect()
+            }
+            Self::Count { filter, .. } | Self::Distinct { filter, .. } => vec![(filter, false)],
             Self::Collections | Self::Describe { .. } => Vec::new(),
         };
-        documents.into_iter().try_for_each(gate::assert_sendable)
+        data_and_expression
+            .into_iter()
+            .try_for_each(|(document, expression)| gate::assert_sendable(document, expression))
     }
 }
 

@@ -155,19 +155,29 @@ fn char_count(bytes: &[u8]) -> usize {
 pub(crate) fn cut_bytes(bytes: &[u8], limit: usize) -> String {
     let window = &bytes[..bytes.len().min(limit.saturating_mul(4).max(4))];
     let decoded = String::from_utf8_lossy(window);
-    let mut kept = decoded.chars().take(limit).collect::<String>();
+    let kept = decoded.chars().take(limit).collect::<String>();
     let kept_chars = kept.chars().count();
     let total = decoded.chars().count() + char_count(&bytes[window.len()..]);
+    // Backslashes are doubled first, so the `\uXXXX` text written for a
+    // hidden character can never be confused with the same text stored
+    // literally (the escaping is injective).
+    let mut shown = neutralise(&kept.replace('\\', "\\\\"));
     if total > kept_chars {
-        kept.push_str(&format!("... [+{} chars]", total - kept_chars));
+        shown.push_str(&format!("... [+{} chars]", total - kept_chars));
     }
-    neutralise(&kept)
+    shown
 }
 
-/// A stored field name as shown: cut, escaped, and with a leading `\` when
-/// it starts with `$` or `\`.
+/// Bytes a string costs in the JSON output, after JSON's own escaping.
+fn json_len(text: &str) -> usize {
+    serde_json::to_string(text).map_or(text.len() * 6 + 2, |json| json.len())
+}
+
+/// A stored field name as shown (already cut, with backslashes doubled):
+/// a leading `\` is added when it starts with `$`. Since every stored
+/// backslash is doubled, a single leading `\` only ever marks that escape.
 pub(crate) fn stored_name(name: String) -> String {
-    if name.starts_with('$') || name.starts_with('\\') {
+    if name.starts_with('$') {
         format!("\\{name}")
     } else {
         name
@@ -265,26 +275,23 @@ fn render_object(doc: &[u8], depth: usize, budget: &mut Budget, array: bool) -> 
             rest += 1;
             continue;
         }
-        if budget.spent()
-            || !budget.spend(if array {
-                2
-            } else {
-                element.key.len().min(MAX_NAME_CHARS * 4) + 4
-            })
-        {
+        // Charged on the bytes actually written: the name after cutting and
+        // escaping, as JSON, with its colon and comma.
+        let name = (!array).then(|| key_name(element.key));
+        let cost = name.as_deref().map_or(1, |name| json_len(name) + 2);
+        if budget.spent() || !budget.spend(cost) {
             truncated = true;
             break;
         }
         let value = render_value(element, depth + 1, budget);
-        if array {
-            items.push(value);
-        } else {
-            let mut name = key_name(element.key);
+        if let Some(mut name) = name {
             // Cut names can collide; keep every field.
             while fields.contains_key(&name) {
                 name.push('\'');
             }
             fields.insert(name, value);
+        } else {
+            items.push(value);
         }
         shown += 1;
     }
@@ -318,7 +325,7 @@ fn render_value(element: Element<'_>, depth: usize, budget: &mut Budget) -> Valu
     let value = element.value;
     let text = |bytes: &[u8], budget: &mut Budget| {
         let cut = cut_bytes(bytes, MAX_CELL_CHARS);
-        budget.spend(cut.len() + 2);
+        budget.spend(json_len(&cut));
         Value::from(cut)
     };
     // Output bytes each kind costs beyond its text (markers are objects).
@@ -374,11 +381,21 @@ fn render_value(element: Element<'_>, depth: usize, budget: &mut Budget) -> Valu
         0x08 => Value::Bool(value.first().is_some_and(|byte| *byte != 0)),
         0x09 => {
             let millis = i64::from_le_bytes(number::<8>(value));
-            let date = bson::DateTime::from_millis(millis);
+            // RFC 3339 covers years 1 to 9999; outside them the raw
+            // milliseconds are shown (a formatter would clamp them).
+            const FIRST: i64 = -62_135_596_800_000;
+            const LAST: i64 = 253_402_300_799_999;
+            let text = (FIRST..=LAST)
+                .contains(&millis)
+                .then(|| {
+                    bson::DateTime::from_millis(millis)
+                        .try_to_rfc3339_string()
+                        .ok()
+                })
+                .flatten();
             marker(
                 "$date",
-                date.try_to_rfc3339_string()
-                    .map_or_else(|_| Value::from(millis), Value::from),
+                text.map_or_else(|| Value::from(millis), Value::from),
             )
         }
         0x0A => Value::Null,
@@ -586,6 +603,60 @@ mod tests {
         }
         let text = render_document(&bytes(&doc! {"d": deep}), MAX_RESULT_BYTES).to_string();
         assert!(text.contains("\"$document\":{\"bytes\""), "{text}");
+    }
+
+    /// A hidden character and the same `\uXXXX` text stored literally (in a
+    /// key or a value) never render alike.
+    #[test]
+    fn test_escaping_is_injective() {
+        let document = doc! {
+            "a\u{202e}": "v\u{202e}",
+            "a\\u202E": "v\\u202E",
+            "\\$x": 1,
+            "$x": 2,
+        };
+        let value = render_document(&bytes(&document), MAX_RESULT_BYTES);
+        let object = value.as_object().expect("object");
+        assert_eq!(object.len(), 4, "{value}");
+        assert_eq!(value["a\\u202E"], "v\\u202E");
+        assert_eq!(value["a\\\\u202E"], "v\\\\u202E");
+        assert_eq!(value["\\\\$x"], 1);
+        assert_eq!(value["\\$x"], 2);
+        assert!(object.keys().all(|key| !key.ends_with('\'')), "{value}");
+    }
+
+    #[test]
+    fn test_dates_outside_rfc_3339_show_milliseconds() {
+        let far = 253_402_300_800_000_i64;
+        let document = doc! {
+            "late": bson::DateTime::from_millis(far),
+            "early": bson::DateTime::from_millis(i64::MIN),
+            "fine": bson::DateTime::from_millis(0),
+        };
+        let value = render_document(&bytes(&document), MAX_RESULT_BYTES);
+        assert_eq!(value["late"]["$date"], far);
+        assert_eq!(value["early"]["$date"], i64::MIN);
+        assert_eq!(value["fine"]["$date"], "1970-01-01T00:00:00Z");
+    }
+
+    /// Control-character keys grow sixfold when escaped; the budget counts
+    /// what is written, so the output stays near the limit.
+    #[test]
+    fn test_the_budget_counts_escaped_output() {
+        let mut document = Document::new();
+        for index in 0..10 {
+            let key = format!("{}{index}", "\u{1}".repeat(60));
+            let items = (0..100)
+                .map(|_| Bson::String("\u{1}".repeat(900)))
+                .collect::<Vec<_>>();
+            document.insert(key, items);
+        }
+        let raw = bytes(&document);
+        assert!(raw.len() <= MAX_DOCUMENT_BYTES);
+        let limit = 64 * 1024;
+        let text = render_document(&raw, limit).to_string();
+        assert!(text.len() <= limit + 8 * 1024, "{}", text.len());
+        assert!(text.contains("$truncated"));
     }
 
     #[test]

@@ -147,7 +147,7 @@ impl Live {
             // Review fixtures: a stored value with hidden characters, stored
             // `$` keys, a view, and a document with many keys.
             let database = self.admin.database(DATABASE);
-            for name in ["evil", "dollar", "wide", "items_view", "badkey", "huge", "series"] {
+            for name in ["evil", "dollar", "wide", "items_view", "badkey", "huge", "series", "positions", "dset"] {
                 let _ = database.collection::<Document>(name).drop().await;
             }
             database
@@ -197,6 +197,27 @@ impl Live {
                 .insert_one(doc! {"s": "x".repeat(15 * 1024 * 1024), "small": 1})
                 .await
                 .expect("seed huge");
+            database
+                .collection::<Document>("positions")
+                .insert_many(vec![
+                    doc! {"note": "$$USER_ROLES", "tags": ["$$USER_ROLES", "x"]},
+                    doc! {"note": "other", "tags": ["y"]},
+                ])
+                .await
+                .expect("seed positions");
+            database
+                .collection::<Document>("dset")
+                .insert_many(vec![
+                    doc! {"a": 1, "b": [{"c": 5}, {"c": [6, 7]}]},
+                    doc! {"a": 2},
+                    doc! {"a": "1"},
+                    doc! {"a": {"x": 1}},
+                    doc! {"a": bson::Bson::Null},
+                    doc! {"a": [3, 4]},
+                    doc! {"z": 1},
+                ])
+                .await
+                .expect("seed dset");
             database
                 .run_command(doc! {"create": "series", "timeseries": {"timeField": "t"}})
                 .await
@@ -851,4 +872,174 @@ fn test_live_mongo_review_cases() {
         "{}",
         describe.fields_omitted
     );
+}
+
+/// ADR-0038's position table, the data rows: a `$$` string in each position
+/// the gate treats as data comes back as the literal string; expression
+/// positions refuse it before anything is sent.
+#[test]
+fn test_live_mongo_data_positions_return_variables_as_literal_strings() {
+    let Some(live) = Live::start() else { return };
+    let service = live.service("reader");
+    let roles = json!({"note": "$$USER_ROLES"});
+    let find = |filter: Value, projection: Option<Value>| MongoAction::Find {
+        collection: "positions".to_owned(),
+        filter,
+        projection,
+        sort: None,
+        skip: 0,
+    };
+    // find filter
+    let (rows, _) = documents(
+        service
+            .execute(&request(
+                find(roles.clone(), Some(json!({"_id": 0, "note": 1}))),
+                10,
+                5_000,
+            ))
+            .expect("find filter"),
+    );
+    assert_eq!(rows, vec![json!({"note": "$$USER_ROLES"})]);
+    // count filter
+    let count = service
+        .execute(&request(
+            MongoAction::Count {
+                collection: "positions".to_owned(),
+                filter: roles.clone(),
+            },
+            10,
+            5_000,
+        ))
+        .expect("count");
+    assert!(matches!(count, MongoOutcome::Count(result) if result.count == 1));
+    // distinct filter
+    let (values, _) = documents(
+        service
+            .execute(&request(
+                MongoAction::Distinct {
+                    collection: "positions".to_owned(),
+                    field: "note".to_owned(),
+                    filter: roles.clone(),
+                },
+                10,
+                5_000,
+            ))
+            .expect("distinct"),
+    );
+    assert_eq!(values, vec![json!("$$USER_ROLES")]);
+    // $match and $literal
+    let (rows, _) = documents(
+        service
+            .execute(&request(
+                MongoAction::Aggregate {
+                    collection: "positions".to_owned(),
+                    pipeline: json!([
+                        {"$match": {"note": "$$USER_ROLES"}},
+                        {"$project": {"_id": 0, "note": 1, "lit": {"$literal": "$$USER_ROLES"}}}
+                    ]),
+                },
+                10,
+                5_000,
+            ))
+            .expect("match and literal"),
+    );
+    assert_eq!(
+        rows,
+        vec![json!({"note": "$$USER_ROLES", "lit": "$$USER_ROLES"})]
+    );
+    // $elemMatch in a filter and in a projection
+    let (rows, _) = documents(
+        service
+            .execute(&request(
+                find(
+                    json!({"tags": {"$elemMatch": {"$eq": "$$USER_ROLES"}}}),
+                    Some(json!({"_id": 0, "tags": {"$elemMatch": {"$eq": "$$USER_ROLES"}}})),
+                ),
+                10,
+                5_000,
+            ))
+            .expect("elemMatch"),
+    );
+    assert_eq!(rows, vec![json!({"tags": ["$$USER_ROLES"]})]);
+    // Expression positions are refused before anything is sent.
+    for action in [
+        find(json!({}), Some(json!({"a": {"b": "$$USER_ROLES"}}))),
+        find(
+            json!({}),
+            Some(json!({"a": {"$slice": ["$$USER_ROLES", 1]}})),
+        ),
+        find(
+            json!({"$expr": {"$in": ["read", "$$USER_ROLES.role"]}}),
+            None,
+        ),
+        MongoAction::Aggregate {
+            collection: "positions".to_owned(),
+            pipeline: json!([{"$set": {"r": "$$USER_ROLES"}}]),
+        },
+    ] {
+        let error = failure(service.execute(&request(action, 10, 5_000)));
+        assert_eq!(error.code(), "mongo_refused", "{error}");
+    }
+}
+
+/// The tool's distinct against the server's own `distinct` (run here only,
+/// through the root account, as the oracle).
+#[test]
+fn test_live_mongo_distinct_matches_the_server_where_documented() {
+    let Some(live) = Live::start() else { return };
+    let service = live.service("reader");
+    let tool = |field: &str| -> Vec<String> {
+        let (values, _) = documents(
+            service
+                .execute(&request(
+                    MongoAction::Distinct {
+                        collection: "dset".to_owned(),
+                        field: field.to_owned(),
+                        filter: json!({}),
+                    },
+                    100,
+                    5_000,
+                ))
+                .expect("distinct"),
+        );
+        let mut values = values.iter().map(ToString::to_string).collect::<Vec<_>>();
+        values.sort();
+        values
+    };
+    let real = |field: &str| -> Vec<String> {
+        let reply = live
+            .command(DATABASE, doc! {"distinct": "dset", "key": field})
+            .expect("server distinct");
+        let mut values = reply
+            .get_array("values")
+            .expect("values")
+            .iter()
+            .map(|value| plain_json(value).to_string())
+            .collect::<Vec<_>>();
+        values.sort();
+        values
+    };
+    // Scalars, null, a subdocument, and an array at the end of the path.
+    assert_eq!(tool("a"), real("a"));
+    // The documented difference: an array of subdocuments on the path.
+    assert_eq!(real("b.c"), vec!["5", "6", "7"]);
+    assert_eq!(tool("b.c"), vec!["5", "[6,7]"]);
+}
+
+/// The JSON the tool shows for the plain BSON types the distinct fixture uses.
+fn plain_json(value: &bson::Bson) -> Value {
+    match value {
+        bson::Bson::Int32(number) => Value::from(*number),
+        bson::Bson::Int64(number) => Value::from(*number),
+        bson::Bson::String(text) => Value::from(text.clone()),
+        bson::Bson::Null => Value::Null,
+        bson::Bson::Array(items) => Value::Array(items.iter().map(plain_json).collect()),
+        bson::Bson::Document(document) => Value::Object(
+            document
+                .iter()
+                .map(|(key, value)| (key.to_string(), plain_json(value)))
+                .collect(),
+        ),
+        other => panic!("unexpected type in the distinct fixture: {other:?}"),
+    }
 }
