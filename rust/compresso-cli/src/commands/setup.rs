@@ -13,9 +13,11 @@ use serde_json::{Value, json};
 use super::index::{self, IndexCommandError, Rendered as IndexRendered};
 use super::integrations::{
     IntegrationCliError, IntegrationEnvironment, LegacyHookMigration, PreparedSetupInstall,
-    SetupInstallResult, apply_legacy_hook_migration, plan_legacy_hook_migration,
-    prepare_setup_hook_install, prepare_setup_install,
+    SetupEntry, SetupInstallResult, apply_legacy_hook_migration, apply_setup_main_agent,
+    plan_legacy_hook_migration, plan_setup_main_agent, prepare_setup_hook_install,
+    prepare_setup_install, refuse_pending_main_agent, rollback_setup_main_agent,
 };
+use super::main_agent::{MainAgentCompanion, StepOutcome, outcome_json, write_outcome};
 use super::{CliExitCode, IndexArgs, IntegrationClientArg, OutputArgs, write_error};
 
 /// Runtime dependencies kept injectable for write-free and plan-expiry setup tests.
@@ -104,6 +106,17 @@ pub struct SetupArgs {
     /// transcripts (Claude Code and Codex only).
     #[arg(long)]
     pub no_recall: bool,
+    /// Leave out the main-session agent that setup adds for Claude Code by
+    /// default (`.claude/agents/compresso-main.md` and the `agent` key in
+    /// `.claude/settings.local.json`); the MCP entry then keeps the full
+    /// tool profile without the edit tool.
+    #[arg(long)]
+    pub no_main_agent: bool,
+    /// Add the main-session agent without the edit tool (Claude Code): the
+    /// server entry starts without `--edits` and the agent's instructions
+    /// do not mention `compresso_edit`.
+    #[arg(long, conflicts_with = "no_main_agent")]
+    pub no_edits: bool,
 }
 
 /// Executes setup against injected local state and integration paths.
@@ -180,14 +193,92 @@ fn execute_inner(
     )
     .map_err(SetupCliError::index)?;
     let clock = runtime.plan_clock();
+    if arguments.client != SetupClientArg::ClaudeCode
+        && (arguments.no_main_agent || arguments.no_edits)
+    {
+        return Err(SetupCliError::integration(IntegrationCliError::from(
+            compresso_integrations::IntegrationError::InvalidRequest {
+                reason: "--no-main-agent and --no-edits apply to claude-code only".to_owned(),
+            },
+        )));
+    }
+    // The default main-session agent (E17-51, D116), Claude Code only. The
+    // agent file, the `agent` key, and the entry always agree: when the
+    // agent is not installed in full (--no-main-agent, a user file, another
+    // `agent` value), the entry is written as --no-main-agent writes it and
+    // an agent an earlier install wrote is removed through its receipts.
+    let wanted = SetupEntry {
+        main_agent: arguments.client == SetupClientArg::ClaudeCode && !arguments.no_main_agent,
+        edits: arguments.client == SetupClientArg::ClaudeCode
+            && !arguments.no_main_agent
+            && !arguments.no_edits,
+    };
+    if arguments.client == SetupClientArg::ClaudeCode {
+        // An interrupted change to the agent or settings file is never read
+        // or planned over: setup refuses, naming the journal.
+        refuse_pending_main_agent(&root, environment).map_err(SetupCliError::integration)?;
+    }
+    let mut main_agent_warnings = Vec::new();
+    let mut main_agent = MainAgentCompanion::default();
+    if wanted.main_agent {
+        main_agent = plan_setup_main_agent(
+            &root,
+            wanted,
+            !arguments.no_recall,
+            environment,
+            runtime.hook_plan_clock(),
+            true,
+            false,
+            &mut main_agent_warnings,
+        )
+        .map_err(SetupCliError::integration)?
+        .0;
+    }
+    let entry = if main_agent.is_complete() {
+        wanted
+    } else {
+        SetupEntry::default()
+    };
+    if arguments.client == SetupClientArg::ClaudeCode && !entry.main_agent {
+        main_agent = plan_setup_main_agent(
+            &root,
+            entry,
+            !arguments.no_recall,
+            environment,
+            runtime.hook_plan_clock(),
+            true,
+            true,
+            &mut main_agent_warnings,
+        )
+        .map_err(SetupCliError::integration)?
+        .0;
+    }
     let prepared = prepare_setup_install(
         arguments.client.integration_client(),
         arguments.client.project(&root),
         !arguments.no_recall,
+        entry,
         environment,
         Arc::clone(&clock),
     )
     .map_err(SetupCliError::integration)?;
+    // With the agent, the entry written instead when the agent file or the
+    // key cannot be written after indexing; previewed with the rest.
+    let fallback = if entry.main_agent {
+        Some(
+            prepare_setup_install(
+                arguments.client.integration_client(),
+                arguments.client.project(&root),
+                !arguments.no_recall,
+                SetupEntry::default(),
+                environment,
+                runtime.hook_plan_clock(),
+            )
+            .map_err(SetupCliError::integration)?,
+        )
+    } else {
+        None
+    };
     let (hook_preview, hook_prepared) =
         plan_compaction_hook(&arguments, &root, environment, runtime.hook_plan_clock());
     // The hook is user-level; a hook an earlier version installed in this
@@ -206,6 +297,10 @@ fn execute_inner(
         session_recall: !arguments.no_recall,
         compaction_hook: hook_preview,
         hook_migration,
+        main_agent,
+        main_agent_warnings,
+        entry,
+        fallback: fallback.as_ref().map(|prepared| prepared.plan().clone()),
     };
 
     if arguments.dry_run {
@@ -244,6 +339,13 @@ fn execute_inner(
     // This keeps a slow local index from weakening plan expiry while retaining the exact diff and
     // backup path the user just approved.
     let authorization = prepared.authorize().map_err(SetupCliError::integration)?;
+    let fallback = match fallback {
+        Some(fallback) => {
+            let authorization = fallback.authorize().map_err(SetupCliError::integration)?;
+            Some((fallback, authorization))
+        }
+        None => None,
+    };
     let hook_authorized = hook_prepared.map(|prepared| match prepared.authorize() {
         Ok(authorization) => Ok((prepared, authorization)),
         Err(error) => Err(HookNotice::new(error, plan.client)),
@@ -320,6 +422,9 @@ fn execute_inner(
         );
     }
 
+    // With the agent (E17-51 review), the agent file and the key are written
+    // first and the lean entry only if both landed; otherwise the agent file
+    // just written is removed and the previewed fallback entry is written.
     if let Err(error) = prepared.revalidate_target(environment) {
         return fail_after_index(
             output,
@@ -335,9 +440,50 @@ fn execute_inner(
         );
     }
 
+    let mut early_main_agent = None;
+    let agent_written = fallback.is_some();
+    let (prepared, authorization) = match fallback {
+        Some((fallback, fallback_authorization)) => {
+            let (outcomes, mut apply_warnings) = apply_setup_main_agent(
+                &plan.root,
+                plan.entry,
+                plan.session_recall,
+                &plan.main_agent,
+                environment,
+                runtime.hook_plan_clock(),
+            );
+            let landed = outcomes
+                .iter()
+                .filter(|(_, outcome)| matches!(outcome, StepOutcome::Installed))
+                .count()
+                == 2;
+            if landed {
+                early_main_agent = Some((outcomes, apply_warnings));
+                (prepared, authorization)
+            } else {
+                let (rollback, rollback_warnings) =
+                    rollback_setup_main_agent(&plan.root, environment);
+                let mut outcomes = outcomes;
+                outcomes.extend(rollback);
+                apply_warnings.extend(rollback_warnings);
+                apply_warnings.push(
+                    "main_agent_not_installed: the agent file or the \"agent\" setting could not be written after indexing (a file changed after the preview), so the full-profile entry shown as the alternative was written and any agent file just written was removed; run setup again to get the default".to_owned(),
+                );
+                early_main_agent = Some((outcomes, apply_warnings));
+                (fallback, fallback_authorization)
+            }
+        }
+        None => (prepared, authorization),
+    };
+
     let installed = match prepared.apply(authorization, environment) {
         Ok(installed) => installed,
         Err(error) => {
+            // Keep the agent and the entry in agreement: an agent written
+            // just before a failed entry is removed again.
+            if agent_written {
+                let _ = rollback_setup_main_agent(&plan.root, environment);
+            }
             return fail_after_index(
                 output,
                 &plan,
@@ -361,6 +507,10 @@ fn execute_inner(
         session_recall,
         compaction_hook,
         hook_migration,
+        main_agent,
+        main_agent_warnings,
+        entry,
+        fallback,
     } = plan;
     let hook_preview_json = hook_preview_json(&compaction_hook, hook_migration.as_ref());
     // The hook is applied only after the MCP entry landed, and its outcome
@@ -370,6 +520,22 @@ fn execute_inner(
     let migration_outcome = hook_migration.as_ref().map(|migration| {
         apply_legacy_hook_migration(migration, client.integration_client(), &root, environment)
     });
+    // A removal of an earlier agent follows the MCP entry and never fails
+    // setup; an install already ran before the entry.
+    let (main_agent_outcomes, main_agent_apply_warnings) = if let Some(early) = early_main_agent {
+        early
+    } else if main_agent.is_empty() {
+        (Vec::new(), Vec::new())
+    } else {
+        apply_setup_main_agent(
+            &root,
+            entry,
+            session_recall,
+            &main_agent,
+            environment,
+            runtime.hook_plan_clock(),
+        )
+    };
     let plan = SetupPlan {
         client,
         root,
@@ -378,6 +544,10 @@ fn execute_inner(
         session_recall,
         compaction_hook: HookPreview::Disabled,
         hook_migration: None,
+        main_agent,
+        main_agent_warnings,
+        entry,
+        fallback,
     };
 
     if arguments.output.json {
@@ -390,6 +560,15 @@ fn execute_inner(
         result["compaction_hook"] = hook_outcome.to_json();
         if let Some(outcome) = &migration_outcome {
             result["compaction_hook"]["migration"] = outcome.to_json();
+        }
+        if !plan.main_agent.is_empty() {
+            result["main_agent"] = json!({
+                "steps": main_agent_outcomes
+                    .iter()
+                    .map(|(label, outcome)| json!({ "step": label, "result": outcome_json(outcome) }))
+                    .collect::<Vec<_>>(),
+                "warnings": main_agent_apply_warnings,
+            });
         }
         render_plan_with_hook(output, &plan, hook_preview_json, false, Some(result), true)?;
     } else {
@@ -426,6 +605,8 @@ fn execute_inner(
         if let Some(outcome) = &migration_outcome {
             writeln!(output, "{}", outcome.human_line()).map_err(SetupCliError::io)?;
         }
+        write_main_agent_outcomes(output, &main_agent_outcomes, &main_agent_apply_warnings)
+            .map_err(SetupCliError::io)?;
         writeln!(
             output,
             "Setup complete for {} at {}.",
@@ -691,6 +872,26 @@ struct SetupPlan {
     /// A hook an earlier version installed in this repository's own hook
     /// file, which the hook step migrates away.
     hook_migration: Option<LegacyHookMigration>,
+    /// The main-session agent step (E17-51), as previewed.
+    main_agent: MainAgentCompanion,
+    main_agent_warnings: Vec<String>,
+    entry: SetupEntry,
+    /// The entry written instead when the agent cannot be (E17-51 review).
+    fallback: Option<MutationPlan>,
+}
+
+fn write_main_agent_outcomes(
+    output: &mut impl Write,
+    outcomes: &[(&'static str, StepOutcome)],
+    warnings: &[String],
+) -> std::io::Result<()> {
+    for (label, outcome) in outcomes {
+        write_outcome(output, label, outcome)?;
+    }
+    for warning in warnings {
+        writeln!(output, "warning: {warning}")?;
+    }
+    Ok(())
 }
 
 fn render_plan(
@@ -734,6 +935,11 @@ fn render_plan_with_hook(
                         "repository": plan.repository.json["data"].clone(),
                         "integration": plan.integration.public_preview(),
                         "compaction_hook": hook_preview,
+                        "main_agent": {
+                            "steps": plan.main_agent.to_json(),
+                            "warnings": plan.main_agent_warnings,
+                            "fallback_entry": plan.fallback.as_ref().map(MutationPlan::public_preview),
+                        },
                     },
                     "result": result,
                 },
@@ -799,6 +1005,29 @@ fn render_plan_with_hook(
     if let Some(migration) = &plan.hook_migration {
         migration.write_preview(output).map_err(SetupCliError::io)?;
     }
+    if !plan.main_agent.is_empty() {
+        writeln!(
+            output,
+            "Main-session agent for this project (skip with --no-main-agent; removal when it is not installed):"
+        )
+        .map_err(SetupCliError::io)?;
+        plan.main_agent
+            .write_preview(output)
+            .map_err(SetupCliError::io)?;
+    }
+    if let Some(fallback) = &plan.fallback {
+        writeln!(
+            output,
+            "# If the agent file or the \"agent\" setting cannot be written after indexing, this entry is written instead (as --no-main-agent writes it) and the agent file is removed:"
+        )
+        .map_err(SetupCliError::io)?;
+        output
+            .write_all(fallback.unified_diff.as_bytes())
+            .map_err(SetupCliError::io)?;
+    }
+    for warning in &plan.main_agent_warnings {
+        writeln!(output, "warning: {warning}").map_err(SetupCliError::io)?;
+    }
     if dry_run {
         writeln!(output, "Dry run: no setup changes were made.").map_err(SetupCliError::io)?;
     }
@@ -847,6 +1076,7 @@ fn fail_after_index(
     let recovery = partial_failure_recovery(
         plan.client,
         plan.session_recall,
+        plan.entry,
         hook_command.as_deref(),
         failure.cause_code,
         failure.cause_message,
@@ -910,13 +1140,22 @@ impl IntegrationFailureStage {
 fn partial_failure_recovery(
     client: SetupClientArg,
     session_recall: bool,
+    entry: SetupEntry,
     hook_command: Option<&str>,
     cause_code: &str,
     cause_message: &str,
 ) -> String {
     // `integrations install` enables recall by default, so the recovery
-    // command repeats an opt-out the user gave to setup.
-    let no_recall = if session_recall { "" } else { " --no-recall" };
+    // command repeats an opt-out the user gave to setup; for Claude Code it
+    // also repeats the main-session agent opt-outs (E17-51).
+    let mut no_recall = if session_recall { "" } else { " --no-recall" }.to_owned();
+    if client == SetupClientArg::ClaudeCode {
+        if !entry.main_agent {
+            no_recall.push_str(" --no-main-agent");
+        } else if !entry.edits {
+            no_recall.push_str(" --no-edits");
+        }
+    }
     let integration_command = match client {
         SetupClientArg::Codex => format!("compresso integrations install codex --yes{no_recall}"),
         SetupClientArg::ClaudeCode | SetupClientArg::Cursor => format!(

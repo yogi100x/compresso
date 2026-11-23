@@ -222,16 +222,18 @@ impl CompressoServer {
         profile: McpToolProfile,
         results: McpResultFormat,
         edits: bool,
+        session_tools: bool,
         sql: Option<Arc<SqlService>>,
     ) -> Self {
         // The recall, edit, and SQL tools are advertised only after an
         // operator enables them, so the default tool surface is unchanged.
         let recall = recall.filter(McpRecallOptions::is_enabled).map(Arc::new);
-        let (tools, instructions) = advertised_surface_for(
+        let (tools, instructions) = advertised_surface_inner(
             profile,
             recall.is_some(),
             edits,
             SqlSurface::of(sql.as_deref()),
+            session_tools,
         );
         Self {
             deps: Arc::new(deps.0),
@@ -412,6 +414,7 @@ where
         McpToolProfile::Full,
         McpResultFormat::Json,
         false,
+        false,
         None,
     )
     .await
@@ -438,6 +441,7 @@ where
         None,
         McpToolProfile::Full,
         McpResultFormat::Json,
+        false,
         false,
         None,
     )
@@ -483,6 +487,7 @@ where
         McpToolProfile::Full,
         McpResultFormat::Json,
         false,
+        false,
         None,
     )
     .await
@@ -510,6 +515,11 @@ pub struct McpServeOptions {
     /// the database URL read once from the named variable. Off unless the
     /// operator passes `--sql-env NAME`; never served by the lean profile.
     pub sql: Option<SqlSettings>,
+    /// With the lean profile, also serve `compresso_stats` and
+    /// `compresso_report`, the tools the `/compresso` session commands call
+    /// (E17-51, D116). Off unless the operator passes `--session-tools`;
+    /// the full profile serves them anyway.
+    pub session_tools: bool,
 }
 
 /// Starts the MCP server over process stdin/stdout with explicit options.
@@ -545,6 +555,7 @@ where
             .results
             .unwrap_or_else(|| options.tools.default_results()),
         options.edits,
+        options.session_tools,
         options.sql,
     )
     .await
@@ -585,6 +596,7 @@ where
         McpToolProfile::Full,
         McpResultFormat::Json,
         false,
+        false,
         None,
     )
     .await
@@ -614,6 +626,7 @@ where
         None,
         McpToolProfile::Full,
         McpResultFormat::Json,
+        false,
         false,
         None,
     )
@@ -646,6 +659,7 @@ where
         McpToolProfile::Full,
         McpResultFormat::Json,
         false,
+        false,
         None,
     )
     .await
@@ -668,6 +682,7 @@ async fn serve_io_configured<R, W, F>(
     profile: McpToolProfile,
     results: McpResultFormat,
     edits: bool,
+    session_tools: bool,
     sql: Option<SqlSettings>,
 ) -> anyhow::Result<()>
 where
@@ -708,6 +723,7 @@ where
             profile,
             results,
             edits,
+            session_tools,
             sql,
         )
         .serve(transport)
@@ -848,6 +864,33 @@ pub fn advertised_surface_for(
     edits_enabled: bool,
     sql: SqlSurface,
 ) -> (Vec<Tool>, String) {
+    advertised_surface_inner(profile, recall_enabled, edits_enabled, sql, false)
+}
+
+/// The lean surface of a server started with `--tools lean --session-tools`
+/// (E17-51, D116): the lean tools, then `compresso_stats` and
+/// `compresso_report` for the `/compresso` session commands; the lean
+/// instructions' first sentence says what `compresso_report` writes.
+pub fn advertised_lean_session_surface(
+    recall_enabled: bool,
+    edits_enabled: bool,
+) -> (Vec<Tool>, String) {
+    advertised_surface_inner(
+        McpToolProfile::Lean,
+        recall_enabled,
+        edits_enabled,
+        SqlSurface::Off,
+        true,
+    )
+}
+
+fn advertised_surface_inner(
+    profile: McpToolProfile,
+    recall_enabled: bool,
+    edits_enabled: bool,
+    sql: SqlSurface,
+    session_tools: bool,
+) -> (Vec<Tool>, String) {
     let mut tools = tool_declarations();
     if recall_enabled {
         tools.push(recall_tool_declaration());
@@ -871,7 +914,7 @@ pub fn advertised_surface_for(
             (tools, instructions)
         }
         McpToolProfile::Lean => {
-            let tools = lean_tools(tools);
+            let tools = lean_tools(tools, session_tools);
             let instructions = lean_instructions(tools.iter().map(|tool| tool.name.as_ref()));
             (tools, instructions)
         }

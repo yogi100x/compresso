@@ -15,6 +15,7 @@ mod edit;
 mod engine;
 mod index;
 mod integrations;
+mod main_agent;
 pub(crate) mod mcp;
 mod mcp_probe;
 mod pr_post;
@@ -188,9 +189,12 @@ pub struct IntegrationMutationArgs {
     /// entry. Project scope: `--project`, or else the working directory.
     #[arg(long, conflicts_with_all = ["compaction_hook", "no_recall"])]
     pub explore_agent: bool,
-    /// Opt into the one write tool, `compresso_edit` (Claude Code only;
-    /// `install` only). The MCP server entry starts `mcp serve --edits`; with
-    /// `--explore-agent`, the agent may call `compresso_edit` instead.
+    /// Serve the one write tool, `compresso_edit` (Claude Code only;
+    /// `install` only): the MCP server entry starts `mcp serve --edits`; with
+    /// `--explore-agent`, the agent may call `compresso_edit` instead. A
+    /// default Claude Code project install already serves it (see
+    /// `--no-edits`); this flag matters for user scope, `--no-main-agent`,
+    /// and the exploration agent.
     #[arg(long, conflicts_with = "compaction_hook")]
     pub edits: bool,
     /// Opt into the read-only live SQL tool, `compresso_sql` (Claude Code
@@ -214,6 +218,18 @@ pub struct IntegrationMutationArgs {
     /// install adds by default.
     #[arg(long, conflicts_with_all = ["compaction_hook", "explore_agent", "session_commands"])]
     pub no_session_commands: bool,
+    /// Leave out the main-session agent that a Claude Code project install
+    /// adds by default (`.claude/agents/compresso-main.md` and the `agent`
+    /// key in `.claude/settings.local.json`); the MCP server entry then keeps
+    /// the full tool profile, with `compresso_edit` only if `--edits` is
+    /// given.
+    #[arg(long, conflicts_with_all = ["compaction_hook", "explore_agent", "session_commands"])]
+    pub no_main_agent: bool,
+    /// Install the default main-session setup without the edit tool: the
+    /// server entry starts without `--edits` and the agent's instructions
+    /// do not mention `compresso_edit`.
+    #[arg(long, conflicts_with_all = ["compaction_hook", "explore_agent", "session_commands", "edits"])]
+    pub no_edits: bool,
 }
 
 #[derive(Args, Debug)]

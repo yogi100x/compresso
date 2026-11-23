@@ -191,7 +191,7 @@ fn test_no_session_commands_leaves_the_skill_out() {
     let fixture = Fixture::new();
     let output = fixture.install(&["--no-session-commands"]);
     assert!(fixture.entry_path().is_file());
-    assert!(!fixture.root.join(".claude").exists());
+    assert!(!fixture.root.join(".claude/skills").exists());
     assert!(output["data"].get("session_commands").is_none(), "{output}");
 }
 

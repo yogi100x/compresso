@@ -252,6 +252,12 @@ impl Store {
         Self::open(&path)
     }
 
+    /// The platform-specific database path [`Store::open_default`] opens
+    /// (`compresso index` and `mcp serve` use it).
+    pub fn default_path() -> Result<PathBuf, StoreError> {
+        default_database_path()
+    }
+
     /// Opens a database with an explicit operation-retention policy.
     pub fn open_with_options(path: &Path, options: StoreOptions) -> Result<Self, StoreError> {
         Self::open_with_migrations(path, options, MIGRATIONS)

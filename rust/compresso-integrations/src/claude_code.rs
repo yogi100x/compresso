@@ -10,7 +10,9 @@ use std::path::{Component, Path, PathBuf};
 use serde_json::{Map, Value, json};
 
 use crate::plan::MutationRequest;
-use crate::server_entry::{is_adapter_args, with_edits, with_recall_source, with_sql_env};
+use crate::server_entry::{
+    is_adapter_args, with_edits, with_lean_session, with_recall_source, with_sql_env,
+};
 use crate::text_fidelity::strip_bom;
 use crate::{
     ConfigFormat, Detection, InstallCtx, InstallReceipt, Integration, IntegrationError,
@@ -78,6 +80,10 @@ pub struct ClaudeCodeIntegration {
     edits: bool,
     /// Install an entry that starts `mcp serve --sql-env NAME` (E17-50, D115).
     sql_env: Option<String>,
+    /// Install the main-session profile `--tools lean --session-tools`
+    /// (E17-51, D116), unless `sql_env` is set: the lean profile never
+    /// serves the SQL tool, so such an entry keeps the full profile.
+    lean_session: bool,
 }
 
 impl ClaudeCodeIntegration {
@@ -89,6 +95,7 @@ impl ClaudeCodeIntegration {
             compresso_version: env!("CARGO_PKG_VERSION").to_owned(),
             edits: false,
             sql_env: None,
+            lean_session: false,
         }
     }
 
@@ -106,6 +113,20 @@ impl ClaudeCodeIntegration {
     pub fn with_sql_env(mut self, name: Option<String>) -> Self {
         self.sql_env = name;
         self
+    }
+
+    /// Makes install write the main-session profile (`--tools lean
+    /// --session-tools`, E17-51) that the default main-session agent is
+    /// measured with. Ignored when `--sql-env` is set (the entry then keeps
+    /// the full profile). Verify, status, and uninstall accept either entry.
+    pub fn with_lean_session(mut self, lean_session: bool) -> Self {
+        self.lean_session = lean_session;
+        self
+    }
+
+    /// Whether install writes the main-session profile.
+    pub fn writes_lean_session(&self) -> bool {
+        self.lean_session && self.sql_env.is_none()
     }
 
     /// Overrides the receipt version, primarily for deterministic embedders.
@@ -195,6 +216,9 @@ impl Integration for ClaudeCodeIntegration {
         let config_path = self.mutation_config_path(&context.scope)?;
         let command = resolved_compresso_command(&context.compresso_bin)?;
         let mut args = expected_server_args(&context.scope)?;
+        if self.writes_lean_session() {
+            args = with_lean_session(args);
+        }
         if self.edits {
             args = with_edits(args);
         }

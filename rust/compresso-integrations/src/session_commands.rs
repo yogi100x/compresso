@@ -67,7 +67,7 @@ const INSTRUCTIONS: &str = "The user typed `/compresso $ARGUMENTS`. The first wo
 - `share`: call compresso_report with kind \"share\" and show its text in a code block the user can copy. Compresso sends it nowhere.
 - Nothing or anything else: list these seven commands, one line each.
 
-If a Compresso tool named here is not in your tools, this command needs the Compresso server with its full tool profile in this session (the lean profile does not serve compresso_stats or compresso_report): say so, and that `compresso integrations status claude-code --project DIR` shows the server's state.";
+If a Compresso tool named here is not in your tools, this command needs the Compresso server with its full tool profile in this session (the lean profile serves compresso_stats and compresso_report only with --session-tools, which a default project install adds): say so, and that `compresso integrations status claude-code --project DIR` shows the server's state.";
 
 /// Reversible adapter for the Claude Code in-session command skill.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -453,6 +453,7 @@ mod tests {
         let text = SessionCommandsIntegration::render();
         assert!(text.contains("at most 2,000 characters"), "{text}");
         assert!(text.contains("full tool profile"), "{text}");
+        assert!(text.contains("only with --session-tools"), "{text}");
         assert!(!text.contains("not running"), "{text}");
     }
 
