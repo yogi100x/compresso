@@ -14,7 +14,7 @@ awaiting owner confirmation** (listed in D117), including the
 capability-check amendment in decision 11.
 
 **Live status.** The CI job `live-mongo` added by this change has **not yet
-run**: the branch has not been pushed. The eight live tests in
+run**: the branch has not been pushed. The nine live tests in
 `rust/compresso-sql/tests/live_mongo.rs` passed on the build machine on
 2026-11-23 against throwaway local containers the session started and
 removed: MongoDB 8.0.38 with access control on, and MongoDB 8.0.38 with TLS
@@ -227,14 +227,15 @@ stop it.
 - **collections, describe**: the names and kinds of the collections the
   account may list; field names and types from 100 random documents; index
   names and keys.
-- **Every call**: makes the server log a `connectionStatus` and an
-  `Unauthorized` `hostInfo` (an audit log records both); reads role names
-  through `$$USER_ROLES` if it asks. Calls run one at a time per server, so
-  a slow call delays every other tool until it ends.
-- **Reading a view runs the view's stored pipeline**, which an
-  administrator wrote and the allow-list never sees (a view may use
-  `$function`); the account check still refuses any account that could
-  write.
+- **Every call**: makes the server log a `connectionStatus`, an
+  `Unauthorized` `hostInfo` on `admin` (an audit log records both), and,
+  for a call that reads collections, a names-only `listCollections`. Calls
+  run one at a time per server, so a slow call delays every other tool until
+  it ends; an unreachable server holds a call for about 10 s.
+- **Views are refused** (`mongo_view_refused`), directly and as a `$lookup`
+  source: reading one runs a pipeline stored on the server that the
+  allow-list never sees (it could use `$function` or name collections the
+  allow-list refuses). `collections` still lists them, typed `view`.
 - **Cannot**: send a writing or JavaScript stage or operator (refused
   before connecting; seen live for `$out`, `$merge`, and `$function`, with
   the server's aggregate counter unchanged, and for `$where`), use an account that can
@@ -258,6 +259,51 @@ Then `COMPRESSO_MONGO_APP=mongodb://mongo_reader:...@db.example.com/app`
 a private root). The server must run with access control on. The `read`
 role exposes the whole database: keep secrets the model should not see in
 another database.
+
+## Review round (2026-11-23)
+
+An independent review of this change found, and this round fixed:
+
+- **describe memory** (must-fix): the field summary stored every path of
+  every sampled document (100 documents of 60,000 keys took 1.74 GB). It now
+  tracks at most 800 paths (four times the 200 shown) and counts the rest in
+  `fields_omitted`, and reads at most 8 MiB of sample. `find`, `aggregate`,
+  and `distinct` read documents as raw BSON and stop after 32 MiB of them
+  (the server's 16 MiB reply limit, twice), so 1,000 rows of 16 MiB can
+  never be held; the result is then marked `max_bytes`.
+- **Error text**: the driver's rendering of an error embeds the reply
+  document as hex, past the scrub. Errors are now fixed text plus the
+  server's numeric code, its code name (letters and digits only), and its
+  message cut to 200 characters; every message, SQL and MongoDB alike, has
+  hidden characters escaped as result cells are (a failed cast quotes the
+  stored value). The SQL path had the same unescaped-message problem
+  (server messages quoting stored values) and is fixed by the same change in
+  `redact.rs`; it never rendered reply documents.
+- **Stored `$` keys**: results are decoded from raw BSON without any
+  extended-JSON reading (a stored `$oid` key no longer breaks `find`). Output
+  form: a stored field name that starts with `$` or `\` is shown with a
+  leading `\`, so an object key starting with `$` is always the tool's own
+  marker (`$oid`, `$date`, `$timestamp`, `$regex`/`$options`, `$omitted`),
+  never stored data.
+- **System variables**: `$$NAME` is allowed only for `ROOT`, `CURRENT`,
+  `REMOVE`, and `NOW`; any other upper-case name is refused (`$$USER_ROLES`
+  returned role and database names the refusals withhold; `$$CLUSTER_TIME`
+  and `$$SEARCH_META` report on the server). Pipeline-defined variables
+  (lower-case in MongoDB) are unaffected.
+- **Multi-field sorts** only as an ordered array of one-field objects.
+- **Capability check**: the exemption now also requires the `mongodb`
+  package to come from crates.io at exactly 3.10.2 (a path, git, or
+  `[patch]` crate of that name, or another version, fails). The source scan
+  now refuses glob imports and macro-built paths under `std`, `tokio`,
+  `async_std`, and `smol`, `include!` of anything outside the crate's
+  scanned sources, and any `<name>::process::<member>` path; the `std`
+  cases were open on main too and are fixed for every crate. What a lexical
+  scan cannot see is stated in the script's header (a dependency re-export
+  under another name, effects inside a dependency's functions, generated
+  code).
+- **Wording**: the guarantee sentence says the tool reads only the
+  configured database and sends one probe command on `admin` that must be
+  refused.
 
 ## Known gaps
 
