@@ -1,0 +1,141 @@
+rust/compresso-integrations/src/cursor.rs
+  s_89a704cfae63f5::t_8d331ec88580c1 1180-1184,1298,1867,1901
+  s_89a704cfae63f5::t_1add2ab87f477b 1185
+  s_89a704cfae63f5::t_b352e9a67ca90b 1299-1300
+  s_89a704cfae63f5::t_a1da70431ba123 1866
+  s_89a704cfae63f5::t_0ce848762b1ec4 1868
+  s_89a704cfae63f5::t_8088bc43ae7690 1902-1903
+  s_1b3083b6b2059a::t_14938f5769d123 1159-1161,1202-1204,1234-1236,1245-1247,1270-1272,1275-1277,1354-1356,1360-1362,1378-1380,1386-1388,1410-1412,1460-1462,1483-1485,1590-1592,1741-1743,1823-1825,1830-1832,1945-1946,1988-1990
+README.md
+  s_89a704cfae63f5::t_a49e4323854f0f 79-89
+docs/adr/0034-whole-file-agent-definition-ownership.md
+  s_89a704cfae63f5::t_8f901440b33402 45-46
+rust/compresso-cli/tests/cli_integrations.rs
+  s_89a704cfae63f5::t_cf51aca931e1bb 708-719
+  s_89a704cfae63f5::t_ae69ba2777f815 742-748,750-751
+  s_89a704cfae63f5::t_95b8cbe53f921c 651-707,720-741,749,752-813,1014,1016
+  s_89a704cfae63f5::t_2e2818c33b2273 814-816
+  s_89a704cfae63f5::t_6c01940fd9988e 1013
+  s_89a704cfae63f5::t_380ef8c5be172d 1015
+  s_89a704cfae63f5::t_a7f67b9bace50f 1017-1019
+  s_1b3083b6b2059a::t_b790844093580e 561-563,817-818,1020-1021
+rust/compresso-integrations/src/text_fidelity.rs
+  s_89a704cfae63f5::t_6ccb7ea8f4a739 167-169,176,180
+  s_1b3083b6b2059a::t_0bfd16007dd150 335-336,343,350,357,364
+rust/compresso-integrations/src/plan.rs
+  s_89a704cfae63f5::t_31b530afd40176 688,733,1778,1794,1813,1833,2842,2924-2925,3043,3045,3108,3177,3234,3236,3282,3298-3299,3335,3680,3796,3864,3866,4058,4293-4376,4381-4383,4388-4392,4398-4408,4410-4491,4504-4505,4515,4518,4520,4522,4525,4528-4529,4531,4533,4605,4680-4682
+  s_89a704cfae63f5::t_80a04f9a051001 4393-4397
+  s_89a704cfae63f5::t_d8716084fbf493 685-687
+  s_89a704cfae63f5::t_44ee1db1902157 689
+  s_89a704cfae63f5::t_4c8365f98e82a3 731-732
+  s_89a704cfae63f5::t_58bceb25733977 1775-1777
+  s_89a704cfae63f5::t_5060e75136c362 1779
+  s_89a704cfae63f5::t_3ecc8f29743bf7 1791-1793
+  s_89a704cfae63f5::t_a834855784d842 1795
+  s_89a704cfae63f5::t_3a2ef25791e330 1810-1812
+  s_89a704cfae63f5::t_dedccf66ba4704 1814-1816
+  s_89a704cfae63f5::t_fb12c119a55cbb 1830-1832
+  s_89a704cfae63f5::t_de37cea51c1d32 2840-2841
+  s_89a704cfae63f5::t_2f9d8c9e77626f 2923
+  s_89a704cfae63f5::t_4e2fe700ff9d50 3044
+  s_89a704cfae63f5::t_1aed4777d6328e 3107
+  s_89a704cfae63f5::t_8e0944cbf1f090 3176
+  s_89a704cfae63f5::t_50355685ce6602 3235
+  s_89a704cfae63f5::t_c6e53a0d6c1120 3281
+  s_89a704cfae63f5::t_aa4ce429f8b1c6 3283
+  s_89a704cfae63f5::t_4a96c2e1c44e1b 3300
+  s_89a704cfae63f5::t_b74709db8d1685 3333-3334
+  s_89a704cfae63f5::t_3889de86302581 3681-3682
+  s_89a704cfae63f5::t_ffb9be48118221 3794-3795
+  s_89a704cfae63f5::t_4fd073b947a453 3865
+  s_89a704cfae63f5::t_4541be0820735b 4056-4057
+  s_89a704cfae63f5::t_0f1e78fa7c8bf6 4377-4380
+  s_89a704cfae63f5::t_dc6055bcdb31ba 4384-4387
+  s_89a704cfae63f5::t_ba1e3df5c7b600 4409
+  s_89a704cfae63f5::t_251ddd5f42d56d 4492-4494,4501-4503
+  s_89a704cfae63f5::t_24300ad8c522b1 4506-4508,4512-4514
+  s_89a704cfae63f5::t_5e994ebb49c72d 4516-4517
+  s_89a704cfae63f5::t_195166b330aa9c 4519
+  s_89a704cfae63f5::t_96f090a3397a94 4521
+  s_89a704cfae63f5::t_85bc1c770f2ebe 4523-4524
+  s_89a704cfae63f5::t_9f09bba40e1b7e 4526-4527
+  s_89a704cfae63f5::t_59f2af2f370188 4530
+  s_89a704cfae63f5::t_9c173c2410c3aa 4532
+  s_89a704cfae63f5::t_cb596c66b087b3 4534-4536
+  s_89a704cfae63f5::t_6f79e519b86084 4606-4607
+  s_1b3083b6b2059a::t_3ac6cfcdebbef8 650-652,677,681-684,757-763,1504,1772-1774,1790,1803-1809,1817-1825,1829,1847,3096-3098,3519-3521,3594-3596,3758-3760,3935-3937,4030-4032,4495-4500,4509-4511,4537
+rust/compresso-integrations/src/backups.rs
+  s_89a704cfae63f5::t_7956be30f784e1 218-229,331
+  s_89a704cfae63f5::t_d217c17c6f1222 1-206,210-211,213-217,230-330
+  s_89a704cfae63f5::t_20552e82c68b33 207-209,212
+  s_89a704cfae63f5::t_68c6114ac8ef61 332-334
+  s_1b3083b6b2059a::t_951283ce319bc7 335-340
+docs/adr/0037-default-main-session-agent.md
+  s_89a704cfae63f5::t_79e1b1927cce23 199-221
+docs/plan/04-mcp-and-integrations.md
+  s_89a704cfae63f5::t_e32040c3aa9afe 767,782,809,841,863
+docs/plan/05-tickets.md
+  s_89a704cfae63f5::t_51e95025167466 3696-3712,3728,3759-3761
+rust/compresso-cli/src/commands/integrations.rs
+  s_89a704cfae63f5::t_124b3e4138f402 127-142,290-325,446,544,562,760,922,1048,1282-1284
+rust/compresso-cli/src/commands/setup.rs
+  s_89a704cfae63f5::t_26a34c378e2d72 265-267
+rust/compresso-cli/tests/cli_setup.rs
+  s_89a704cfae63f5::t_9c0345550d8189 487,1166-1167,1713-1721
+decisions.md
+  s_1b3083b6b2059a::t_6d2ee2ad10135c 110
+rust/compresso-cli/src/commands/main_agent.rs
+  s_1b3083b6b2059a::t_2755dfe5968383 549-554,599-604
+rust/compresso-cli/tests/cli_compaction_hook.rs
+  s_1b3083b6b2059a::t_a11a01308061ca 93-95,571-579
+rust/compresso-cli/tests/cli_setup_compaction_hook.rs
+  s_1b3083b6b2059a::t_29f3b8e2bd5db5 146-148,906-914
+rust/compresso-integrations/src/claude_code.rs
+  s_1b3083b6b2059a::t_26243ea6e738fc 728-730,792-794,989-991,1055-1057,1142-1144,1282-1284,1322-1324,1468-1470,1496-1498
+rust/compresso-integrations/src/codex.rs
+  s_1b3083b6b2059a::t_3bce7657ef773f 990-992,1041-1043,1071-1073,1144-1146,1162-1164,1183-1185,1210-1212,1235-1237,1264-1266,1277-1279,1303-1305,1322-1324,1328-1330,1348-1350,1367-1369,1374-1376,1407-1409,1654-1656,1682-1684,1709-1711,1779-1781,1813-1815,1834-1836,1867-1869,1880-1882,2010-2012
+rust/compresso-integrations/src/compaction_hook.rs
+  s_1b3083b6b2059a::t_6e8ab02aef4ec2 502-504,592-594,636-638,752-754
+rust/compresso-integrations/src/explore_agent.rs
+  s_1b3083b6b2059a::t_a04c30246e9ea0 680-682
+rust/compresso-integrations/src/lib.rs
+  s_1b3083b6b2059a::t_6462aa2da21423 24,40,183-185
+rust/compresso-integrations/src/main_agent.rs
+  s_1b3083b6b2059a::t_baf320d0a29417 440-442
+rust/compresso-integrations/src/main_agent_setting.rs
+  s_1b3083b6b2059a::t_5e531ce2e4d168 600-602,754-756
+rust/compresso-integrations/src/session_commands.rs
+  s_1b3083b6b2059a::t_3a69627394c916 368-370
+rust/compresso-integrations/tests/launcher_upgrade.rs
+  s_1b3083b6b2059a::t_8cd81f2e1a348a 154-156,222-230
+rust/compresso-integrations/tests/parity.rs
+  s_1b3083b6b2059a::t_b33cdecd4d09e7 390-392,483-485,522-524,586-588,614-616,633-634,676-678,684-686,822-830
+rust/compresso-integrations/tests/session_recall.rs
+  s_1b3083b6b2059a::t_14d09237a93cfa 104-106,115-117,324-326,388-390,467-475
+rust/compresso-integrations/tests/text_fidelity.rs
+  s_1b3083b6b2059a::t_12b7f37102b618 252-254,272-274,533-541
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "315b81ba85fcf55f919d7c5485c215ca34f17836",
+  "prompts": {},
+  "sessions": {
+    "s_1b3083b6b2059a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a5da5ca055198e38d",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
