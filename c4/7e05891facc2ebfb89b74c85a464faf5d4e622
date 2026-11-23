@@ -1,0 +1,50 @@
+rust/compresso-mcp/src/tools/atlas_grep.rs
+  s_89a704cfae63f5::t_c43dafd7b1b338 18-19
+  s_89a704cfae63f5::t_37b0a20ae959be 20
+  s_95a14f3f1f43a5::t_bed2157d132c1b 368
+rust/compresso-mcp/tests/tools_grep.rs
+  s_89a704cfae63f5::t_924d5cf7c86e73 549-551
+rust/compresso-mcp/src/tools/common.rs
+  s_89a704cfae63f5::t_472fae0c5b68cb 580-592,597-598,600-601
+  s_89a704cfae63f5::t_7603f3fc2b8f41 190
+  s_89a704cfae63f5::t_589a698ea39188 144-158,168,529,542,567-568,603-605
+  s_89a704cfae63f5::t_b17e9579fe26a3 526-528
+  s_89a704cfae63f5::t_2b1e92a50691b5 530-532,539-541
+  s_89a704cfae63f5::t_8e31771ef4da60 543-545,564-566
+  s_89a704cfae63f5::t_30a1e6e477dffe 569-571,577-579
+  s_89a704cfae63f5::t_b4f1a5124de5e6 593-596
+  s_89a704cfae63f5::t_0b1848c7c44f9b 599
+  s_89a704cfae63f5::t_c6445873d1a180 602
+  s_89a704cfae63f5::t_530e9133c87109 606-608
+  s_95a14f3f1f43a5::t_e6ff3eab69e300 518-525,533-538,546-563,572-576,609
+rust/compresso-mcp/src/tools/atlas_read.rs
+  s_89a704cfae63f5::t_0f7a0923cb2fb8 16
+  s_89a704cfae63f5::t_f1a57109f93b6e 533
+  s_89a704cfae63f5::t_a3895ba1cbd960 17-18
+rust/compresso-mcp/tests/result_format.rs
+  s_95a14f3f1f43a5::t_0f357d67450db5 2873-2995
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c47e05891facc2ebfb89b74c85a464faf5d4e622",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_95a14f3f1f43a5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a35665d09f12269c5",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
