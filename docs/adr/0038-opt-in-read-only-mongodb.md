@@ -74,7 +74,9 @@ stop it.
      $gt $gte $in $lt $lte $mod $ne $nin $nor $not $options $or $regex
      $size $type`, plus the expression operators inside `$expr`.
    - *Find projections*: inclusion or exclusion (0, 1, true, false),
-     `$slice`, `$elemMatch`. *Sorts*: 1 or -1 only; several fields only as
+     `$slice` with integer arguments, `$elemMatch` with a checked filter;
+     nothing else (the server evaluates a find projection as an
+     expression; see the position table). *Sorts*: 1 or -1 only; several fields only as
      an array of one-field objects (`[{"a": -1}, {"b": 1}]`), so their order
      never depends on how a JSON object keeps key order. Key order inside
      an embedded-document equality value follows the JSON parser (insertion
@@ -317,9 +319,9 @@ A second review found the following, all fixed in this round:
   (cut and marked `$truncated`), and a document over 1 MiB is a size marker
   (`{"$document": {"bytes": N}}`). Servers are asked for batches of 16
   documents. `distinct` runs as `$match`, `$unwind`, `$group`, `$limit`
-  through the same raw path (unordered, as `distinct` is; array elements
-  unwound as `distinct` does; the `$group` is held to the server's 100 MB
-  limit). Measured peak RSS of one call in a release build (macOS arm64,
+  through the same raw path (unordered, as `distinct` is; the `$group` is
+  held to the server's 100 MB limit; where it differs from the server's
+  `distinct`, see the second confirmation round). Measured peak RSS of one call in a release build (macOS arm64,
   MongoDB 8.0.38): one 15 MB document through `find` 26 MB, `distinct` on
   one 15 MB value 26 MB, a pipeline generating 11 MB documents from three
   small ones 22 MB, a `$push` of 300,000 values 25 MB, 60,000-key documents
@@ -352,14 +354,13 @@ A second review found the following, all fixed in this round:
   `extern crate` aliases used in a group; a macro given both names;
   `#[path]` modules, extra `[[bin]]` paths, and build scripts outside the
   scanned folders), and it refused any local module named `process`. The
-  real control for `compresso-sql`, `compresso-mcp`, and `compresso-cli` is
-  now semantic: Clippy's `disallowed_types` and `disallowed_methods` in a
+  round then added, for `compresso-sql`, `compresso-mcp`, and
+  `compresso-cli`, Clippy's `disallowed_types` and `disallowed_methods` in a
   per-crate `clippy.toml` (std and Tokio process types and `Command::new`;
   only Tokio's in `compresso-cli`, whose sanctioned `std::process` files
-  stay), enforced by CI's `-D warnings`. In a scratch crate every evasion
-  above (14 source forms, a `#[path]` module, an extra binary, an
-  integration test, a build script) failed Clippy, and `std::process::ExitCode`
-  did not. The script checks the entries, refuses attributes or manifest
+  stay), enforced by CI's `-D warnings`; in a scratch crate those source
+  forms failed Clippy. That was later found bypassable and is reframed in
+  the second confirmation round. The script checks the entries, refuses attributes or manifest
   settings that lower those lints, `#[path]` modules, build scripts, and
   targets outside the scanned folders. The lexical scan stays as a
   secondary check (character literals, nested groups, leading `::`,
@@ -369,6 +370,119 @@ A second review found the following, all fixed in this round:
   the lint-level check is lexical; and for every other crate the lexical
   scan remains the only source control, which a dependency re-export under
   another name or a macro assembling the path some other way can evade.
+
+## Second confirmation round (2026-11-23)
+
+- **Find projections were an expression hole** (must-fix): the server
+  evaluates a find projection as an aggregation expression, and the gate
+  treated it as data, so `{"a": {"b": "$$USER_ROLES"}}` returned the
+  account's roles. Projections now accept only the forms in decision 4; any
+  string, array, or other object is refused. The final walk over every
+  built command checks system variables again, by position.
+- **Output budget**: it counted raw bytes; escaping can multiply them by
+  six. It now charges the bytes actually written (names and strings as
+  JSON), and a document larger than what is left is cut and marked
+  `$truncated`, not dropped. Rows after a full result are not read; the
+  result says `max_bytes` (their number is not known). Dates outside years
+  1 to 9999 show raw milliseconds (`{"$date": <ms>}`) instead of a clamped
+  date.
+- **Escaping is injective**: backslashes in stored names and strings are
+  doubled before hidden characters are written as `\uXXXX`, so a hidden
+  character and the same text stored literally never render alike, and a
+  single leading `\` only marks a stored name that starts with `$`.
+- **`distinct` is not the server's `distinct`**: it runs `$match` (field
+  exists), the value as an array, `$unwind`, `$group`, `$limit`. A live test
+  compares it with the server's own `distinct` (run only in the test,
+  through the root account): equal for scalars, an explicit `null`, a
+  subdocument, and an array at the end of the path. It differs where the
+  path crosses an array of subdocuments (`b.c` over `[{c: 5}, {c: [6, 7]}]`
+  gives 5 and `[6, 7]`; the server's gives 5, 6, 7) and for `undefined`,
+  which aggregation turns into `null`. The tool description calls it
+  distinct values of a field; these differences are its contract.
+- **Memory, stated as measured**: peak RSS per call in a release build was
+  22 to 26 MB for single 11-15 MB documents through `find`, `distinct`, and
+  `aggregate`, and 37 to 40 MB for many-key and nested-array documents
+  through `find` (60,000-key documents; 200 documents of nested arrays).
+- **The process check, stated honestly.** It is a tripwire against
+  introducing process spawning by accident or casually, enforced by
+  name-resolved lints plus structural checks; it is not proof against a
+  contributor deliberately obfuscating code, a dependency's internals, or
+  code expanded from another crate's macro, and review remains the control
+  for those. Enforcement: a workspace `clippy.toml` disallows the std and
+  Tokio process types and `Command::new` in every crate except
+  `compresso-agent` and `compresso-updater` (their own `clippy.toml`);
+  `allow` attributes for those lints only in `compresso-cli`'s two
+  sanctioned files and bounded-local integration tests. The capability
+  script parses `clippy.toml`, manifests, and `.cargo/config` as TOML,
+  tokenises attributes, and refuses a missing or commented-out entry, a
+  crate-level `clippy.toml`, lint-lowering attributes (spaced, `cfg_attr`,
+  `expect`, or macro-built), `[lints]` tables that lower the guarded lints,
+  cargo `rustflags` or `CLIPPY_*` variables, `unsafe` code
+  (`#![forbid(unsafe_code)]` in `compresso-mcp` and `compresso-cli`,
+  `#![deny]` in `compresso-sql` with one pinned site), extern blocks and FFI
+  attributes, and new direct FFI or process dependencies (`libc` in
+  `compresso-atlas` and `windows-sys` in `compresso-integrations` were on
+  main and stay allowed). Each evasion the second review found
+  (FFI `system`/`posix_spawnp`, spaced or macro-built `allow`, inline and
+  dotted `[lints]`, cargo `[env] CLIPPY_CONF_DIR` and `rustflags`, a helper
+  in another crate using raw identifiers, a commented-out entry) has a
+  fixture the script refuses. Known residual evasions: a dependency that
+  spawns or calls FFI on the crate's behalf, or re-exports a process API
+  under another name; another crate's macro emitting process or `unsafe`
+  code; lint or flag overrides outside the repository (a user-level cargo
+  configuration, `RUSTFLAGS` or `CLIPPY_CONF_DIR` set in the CI
+  environment); and Clippy not being run.
+
+## Positions: data or expression
+
+A string beginning with `$` or `$$` means a field path or a variable only
+where the server reads an aggregation expression; elsewhere it is data or
+is not accepted at all. The gate's default is expression (system variables
+checked, only `ROOT`, `CURRENT`, `REMOVE`, `NOW`, and lower-case pipeline
+variables allowed) unless a row below proves data. Rows marked *data* have
+a live test showing `"$$USER_ROLES"` comes back as the literal string
+(`test_live_mongo_data_positions_return_variables_as_literal_strings`).
+
+| Position | Server reads `$`/`$$` strings as | Gate |
+|---|---|---|
+| find filter, field value | data | data |
+| find filter, `$in`/`$nin`/`$all`/`$eq`/... arguments | data | data |
+| find filter, `$elemMatch` | data (a query) | data |
+| find filter, `$expr` | expression | expression |
+| find projection | expression | only 0, 1, true, false, integer `$slice`; strings refused |
+| find projection, `$elemMatch` | data (a query) | data |
+| find sort | keys only | 1 or -1 only |
+| find skip, limit | numbers | numbers |
+| find hint, collation | (not sent) | not accepted |
+| count filter | data | data |
+| distinct field | a field path (the tool builds `"$field"`) | field name, no leading `$` |
+| distinct filter | data | data |
+| `$match` | data (a query) | data |
+| `$match` `$expr` | expression | expression |
+| `$project` | expression | expression |
+| `$addFields` / `$set` | expression | expression |
+| `$unset` | field names | expression (conservative) |
+| `$group` `_id` and accumulators | expression | expression |
+| `$sort` | keys only | 1 or -1 only |
+| `$limit`, `$skip` | numbers | numbers |
+| `$sample` `size` | number | number |
+| `$count` | an output name | expression (conservative) |
+| `$sortByCount` | expression | expression |
+| `$unwind` `path` and options | a field path, flags | expression (conservative) |
+| `$replaceRoot` `newRoot`, `$replaceWith` | expression | expression |
+| `$bucket` `groupBy`, `output` | expression | expression |
+| `$bucket` `boundaries`, `default` | constants | expression (conservative) |
+| `$bucketAuto` `groupBy`, `output` | expression | expression |
+| `$bucketAuto` `buckets`, `granularity` | a number, a name | expression (conservative) |
+| `$lookup` `from` | a collection name | collection name, no `$` |
+| `$lookup` `localField`, `foreignField`, `as` | field names | field names, no leading `$` |
+| `$lookup` `let` | expression | expression |
+| `$lookup` `pipeline`, `$facet` pipelines | stages | per stage, as above |
+| `$literal` content (any expression) | data | data |
+
+34 positions: 8 data, 16 expression (5 of them conservative, where the
+server reads a name or a constant), and 10 that take only numbers, keys,
+names, or the fixed projection forms.
 
 ## Known gaps
 
@@ -400,5 +514,5 @@ A second review found the following, all fixed in this round:
   unchanged.
 - The allow-list refuses some valid MongoDB (geospatial and text queries,
   `$setWindowFields`, `$densify`, `$graphLookup`, `$unionWith`, window and
-  trigonometric operators, aggregation-expression projections in `find`);
+  trigonometric operators, aggregation-expression projections in `find`, which are refused);
   every refusal names the key and says to rewrite with listed operators.
