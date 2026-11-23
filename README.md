@@ -84,7 +84,8 @@ that `git add -A` could commit; the plan's last line names it, or says
 `<file>.compresso-backup-<time>` beside the file. Compresso still reads such a
 copy when its receipt names it, never deletes it, and prints one
 `old_backups_kept` warning naming it when you install, reinstall, or
-uninstall: it may hold other servers' tokens, so delete it yourself if you do
+uninstall (with `--json`, a warning without the path; run without it to see
+the names): it may hold other servers' tokens, so delete it yourself if you do
 not need it.
 
 For a Claude Code project (`setup claude-code ROOT`, or

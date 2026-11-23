@@ -657,8 +657,8 @@ fn files_under(root: &Path) -> Vec<PathBuf> {
 }
 
 impl Fixture {
-    /// Like [`Fixture::run`], with stderr returned as text: a warning line
-    /// there is not JSON.
+    /// Like [`Fixture::run`], with stderr returned as text (a warning line
+    /// there is not JSON) and text output returned as a JSON string.
     fn run_with_stderr(&self, arguments: &[&str]) -> (CliExitCode, Value, String) {
         let cli =
             Cli::try_parse_from(std::iter::once("compresso").chain(arguments.iter().copied()))
@@ -675,9 +675,10 @@ impl Fixture {
             &mut output,
             &mut errors,
         );
+        let output = String::from_utf8(output).expect("UTF-8 output");
         (
             exit,
-            parse_json(&output),
+            serde_json::from_str(&output).unwrap_or(Value::String(output)),
             String::from_utf8(errors).expect("UTF-8 stderr"),
         )
     }
@@ -796,8 +797,25 @@ fn test_old_copies_beside_the_file_are_warned_about_and_never_deleted() {
     receipt.backup_path = legacy.to_string_lossy().into_owned();
     receipts.save(&receipt).expect("old-style receipt");
 
+    // JSON output: a warning that names no path; stderr stays empty.
     let (exit, output, stderr) =
-        fixture.run_with_stderr(&fixture.project_arguments("uninstall", &["--yes", "--json"]));
+        fixture.run_with_stderr(&fixture.project_arguments("uninstall", &["--dry-run", "--json"]));
+    assert_eq!(exit, CliExitCode::Success, "{output}");
+    assert!(stderr.is_empty(), "{stderr}");
+    let warnings = output["data"]["warnings"].to_string();
+    assert!(warnings.contains("old_backups_kept: 1 copy"), "{output}");
+    assert!(
+        !output.to_string().contains("compresso-backup-2026"),
+        "{output}"
+    );
+    // Verify still runs over the old-style receipt and touches nothing.
+    let (_, verified, _) =
+        fixture.run_with_stderr(&fixture.project_arguments("verify", &["--json"]));
+    assert!(verified["data"].is_object(), "{verified}");
+
+    // Text output: one stderr line naming the copy, never the look-alike.
+    let (exit, output, stderr) =
+        fixture.run_with_stderr(&fixture.project_arguments("uninstall", &["--yes"]));
 
     assert_eq!(exit, CliExitCode::Success, "{output}");
     assert_eq!(fs::read_to_string(&config).expect("restored"), original);
@@ -810,10 +828,6 @@ fn test_old_copies_beside_the_file_are_warned_about_and_never_deleted() {
     assert_eq!(warnings.len(), 1, "{stderr}");
     assert!(warnings[0].contains(&*legacy.to_string_lossy()), "{stderr}");
     assert!(!warnings[0].contains("2025-01-01"), "{stderr}");
-    assert!(
-        !output.to_string().contains("compresso-backup-2026"),
-        "{output}"
-    );
 }
 
 fn parse_json(bytes: &[u8]) -> Value {

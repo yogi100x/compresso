@@ -215,7 +215,7 @@ Copies written beside a file by earlier versions (including the
 `settings.local.json.compresso-backup-*` the git warning above mentions) are
 read when their receipt names them, never required, and never deleted; a
 command that touches such a file prints one `old_backups_kept` warning on
-stderr naming them. No receipt recorded a hash of its copy, so nothing can
+stderr naming them (with `--json`, a path-free warning in the report). No receipt recorded a hash of its copy, so nothing can
 prove a file at that path is still Compresso's: an automatic cleanup step was
 not built. The crash journal (`<file>.compresso-journal`, 0600, holding the
 file's bytes until the commit finishes) is still written beside the file.

@@ -262,8 +262,10 @@ fn execute_inner(
         Arc::clone(&clock),
     )
     .map_err(SetupCliError::integration)?;
-    if let Some(warning) = prepared.legacy_backup_warning() {
-        writeln!(errors, "{warning}").map_err(SetupCliError::io)?;
+    match prepared.legacy_backup_warning(arguments.output.json) {
+        Some(warning) if arguments.output.json => main_agent_warnings.push(warning),
+        Some(warning) => writeln!(errors, "{warning}").map_err(SetupCliError::io)?,
+        None => {}
     }
     // With the agent, the entry written instead when the agent file or the
     // key cannot be written after indexing; previewed with the rest.

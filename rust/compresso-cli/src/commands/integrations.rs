@@ -289,8 +289,8 @@ pub(crate) struct PreparedSetupInstall {
 
 impl PreparedSetupInstall {
     /// [`legacy_backup_warning`] for the files this setup install changes.
-    pub(crate) fn legacy_backup_warning(&self) -> Option<String> {
-        legacy_backup_warning(&self.receipts, &self.scope, &self.plan.config_path)
+    pub(crate) fn legacy_backup_warning(&self, json: bool) -> Option<String> {
+        legacy_backup_warning(&self.receipts, &self.scope, &self.plan.config_path, json)
     }
 }
 
@@ -298,12 +298,15 @@ impl PreparedSetupInstall {
 /// the files this command changes, when a receipt of ours names them and
 /// they still exist (D118). They may hold other servers' tokens; they are
 /// never deleted, because no receipt recorded what a copy held, so nothing
-/// proves a file at that path is still Compresso's copy. Printed on stderr
-/// only: JSON reports name no more backup paths than before.
+/// proves a file at that path is still Compresso's copy. Text output prints
+/// the line, naming the files, on stderr; with `json` the warning names no
+/// path (it joins the report's warnings), so JSON reports name no more
+/// backup paths than before.
 pub(crate) fn legacy_backup_warning(
     receipts: &FileReceiptStore,
     scope: &Scope,
     config_path: &Path,
+    json: bool,
 ) -> Option<String> {
     let all = receipts.all().ok()?;
     let found = compresso_integrations::legacy_backups(&all, |path| match scope {
@@ -312,6 +315,13 @@ pub(crate) fn legacy_backup_warning(
     });
     if found.is_empty() {
         return None;
+    }
+    if json {
+        return Some(format!(
+            "old_backups_kept: {} cop{} of configuration files that an earlier Compresso version left beside them remain and may hold secrets; Compresso does not delete them; run the command without --json to list them",
+            found.len(),
+            if found.len() == 1 { "y" } else { "ies" }
+        ));
     }
     let names = found
         .iter()
@@ -1202,6 +1212,18 @@ fn execute_mutation(
                     .map_err(IntegrationCliError::from)
             }),
     };
+    // Before any path that returns early, so every install or uninstall
+    // that reaches planning warns about old copies (E17-53).
+    match legacy_backup_warning(
+        &receipts,
+        &scope,
+        &selected.config_path,
+        arguments.output.json,
+    ) {
+        Some(warning) if arguments.output.json => main_agent_warnings.push(warning),
+        Some(warning) => writeln!(errors, "{warning}")?,
+        None => {}
+    }
     // Each owned item is removed independently: an entry that is already
     // gone (or whose receipt a crashed run consumed) does not stop the
     // agent file and key from being removed (E17-51 review).
@@ -1279,9 +1301,6 @@ fn execute_mutation(
         &mut companion_warnings,
     );
 
-    if let Some(warning) = legacy_backup_warning(&receipts, &scope, &plan.config_path) {
-        writeln!(errors, "{warning}")?;
-    }
     if arguments.dry_run {
         return render_plan(
             output,
