@@ -23,6 +23,10 @@
 //! driver. Errors carry a fixed code and an engine message with every URL
 //! component scrubbed, and no type here prints the URL through `Debug`.
 
+// D117: unsafe code only at the one allowed site in `sqlite.rs` (SQLite's
+// memory counter); the capability check pins it.
+#![deny(unsafe_code)]
+
 mod cells;
 pub mod gate;
 pub mod mongo;

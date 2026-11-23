@@ -6,6 +6,10 @@
 //! no shell, no argument taken from the ledger, and a bounded wait. It is
 //! reached only after `compresso decisions --pr N --post --yes`.
 
+// Sanctioned process use (ADR-0028, ADR-0031; D117): the workspace
+// clippy.toml disallows process types everywhere else.
+#![allow(clippy::disallowed_types, clippy::disallowed_methods)]
+
 use std::io::Write as _;
 use std::path::Path;
 use std::process::{Command, Stdio};

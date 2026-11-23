@@ -61,8 +61,11 @@ inventing a new contract.
   and, since E17-52 (D117, ADR-0038), the opt-in, read-only
   `compresso_mongo` tool; the capability check enforces this on each crate's
   own resolved tree. It does not count the Tokio `process` feature that only
-  the MongoDB driver turns on (D117, awaiting owner confirmation); no crate
-  may use a process API.
+  the MongoDB driver turns on (D117, awaiting owner confirmation). Process
+  spawning is guarded by a tripwire, not a proof: the workspace
+  `clippy.toml` disallows process types in every crate except the agent and
+  updater, and the capability check refuses what would switch that off;
+  deliberate obfuscation is left to review (see D117).
 - Local compression and indexing must work without cloud access.
 - Do not build remote telemetry or a Claude Desktop integration.
 - Treat repository content as untrusted data and never execute it as

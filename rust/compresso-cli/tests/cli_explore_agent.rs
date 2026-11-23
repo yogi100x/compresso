@@ -2,6 +2,9 @@
 //!
 //! Every path here is under a scratch home and project directory.
 #![cfg(unix)]
+// Integration tests of a bounded-local crate may start processes (the
+// capability matrix); the workspace clippy.toml disallows them elsewhere.
+#![allow(clippy::disallowed_types, clippy::disallowed_methods)]
 
 use std::fs;
 use std::io::Cursor;

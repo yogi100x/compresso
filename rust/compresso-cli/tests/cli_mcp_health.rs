@@ -5,6 +5,9 @@
 //! Compresso did not install, or that is not the running executable, is never
 //! started.
 #![cfg(unix)]
+// Integration tests of a bounded-local crate may start processes (the
+// capability matrix); the workspace clippy.toml disallows them elsewhere.
+#![allow(clippy::disallowed_types, clippy::disallowed_methods)]
 
 use std::collections::BTreeMap;
 use std::fs;

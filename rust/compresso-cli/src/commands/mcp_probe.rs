@@ -20,6 +20,10 @@
 //! group; one MCP `initialize` plus `tools/list` exchange runs under a hard
 //! deadline, after which the whole process group is killed and reaped.
 
+// Sanctioned process use (ADR-0028, ADR-0031; D117): the workspace
+// clippy.toml disallows process types everywhere else.
+#![allow(clippy::disallowed_types, clippy::disallowed_methods)]
+
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};

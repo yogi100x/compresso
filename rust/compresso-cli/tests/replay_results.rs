@@ -27,6 +27,9 @@
 //! header), or lost. The needles file is
 //! `{"facts": ["text", ...], "sites": [{"file": "path", "line": 12}, ...]}`:
 //! a shown line is a needle when it contains a fact or is a site.
+// Integration tests of a bounded-local crate may start processes (the
+// capability matrix); the workspace clippy.toml disallows them elsewhere.
+#![allow(clippy::disallowed_types, clippy::disallowed_methods)]
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;

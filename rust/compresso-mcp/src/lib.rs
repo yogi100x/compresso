@@ -6,6 +6,10 @@
 //! `compresso_report` saves bug and feedback reports as local files beside
 //! the Compresso database (E17-48, D113).
 
+// D117: no unsafe code (no FFI process spawning); the capability check
+// requires this line.
+#![forbid(unsafe_code)]
+
 mod framing;
 mod profile;
 mod reminder;

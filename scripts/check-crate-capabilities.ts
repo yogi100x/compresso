@@ -2,36 +2,47 @@
 
 /**
  * Capability boundaries per workspace crate: manifests, each member's own
- * resolved dependency tree, a lexical scan of the crate's Rust sources, and,
- * for the three crates the MongoDB driver's Tokio `process` feature reaches
- * (`compresso-sql`, `compresso-mcp`, `compresso-cli`), a semantic control.
+ * resolved dependency tree, a lexical scan of the crate's Rust sources, and
+ * the process tripwire (D117).
  *
- * The semantic control (D117) is Clippy's `disallowed_types` and
- * `disallowed_methods`, configured per crate in `clippy.toml` and enforced
- * by CI's `cargo clippy --workspace --all-targets -- -D warnings`. Clippy
- * resolves paths after name resolution, so aliases, globs, nested groups,
- * leading `::`, `extern crate` renames, local macros, `#[path]` modules,
- * extra binaries, and integration tests do not evade it (each shown failing
- * in a scratch crate). This script checks that the configuration and every
- * entry are present, that no attribute or manifest lowers those lints, and
- * that no `#[path]`, build script, or target outside the scanned folders
- * exists. Residual risk: Clippy does not lint code expanded from another
- * crate's macro; a `CLIPPY_CONF_DIR` or `RUSTFLAGS` lint override in the CI
- * environment would weaken it; and the lint-level check here is lexical.
+ * What the process check is: a tripwire against introducing process
+ * spawning by accident or casually. It is enforced by name-resolved lints
+ * (a workspace `clippy.toml` disallowing the std and Tokio process types and
+ * `Command::new`, which CI's `cargo clippy -D warnings` applies to every
+ * crate except the two whose class may start processes) plus structural
+ * checks here: the configuration and every entry are present (parsed as
+ * TOML); no crate-level `clippy.toml` replaces it; no attribute (tokenised,
+ * `cfg_attr` and macro-built ones included), manifest `[lints]` table, or
+ * `.cargo/config` lowers those lints, `warnings`, or `unsafe_code`, except
+ * the process lints in the files the matrix already lets start a process;
+ * `compresso-mcp` and `compresso-cli` forbid `unsafe` code and
+ * `compresso-sql` denies it outside one pinned site; no extern block or FFI
+ * attribute, and no direct FFI or process dependency beyond those on main
+ * (`libc` in `compresso-atlas`, `windows-sys` in `compresso-integrations`),
+ * in a crate that may not start processes; no `#[path]` module, build
+ * script, or target outside the scanned folders.
  *
- * The lexical scan is the only source control for every other crate and is
- * a secondary one for those three. It reads text, not resolved names: it
- * blanks comments, strings, and character literals; refuses direct paths,
- * groups (nested too), leading `::`, aliases, glob imports, macro-built
- * paths under `std`, `tokio`, `async_std`, and `smol`, a macro given a root
- * and a member as neighbouring tokens, `include!` outside the crate's
- * sources, and `<dependency>::process::<member>` paths. It cannot see a
- * dependency's re-export under another name (`pub use std::process as p;`
- * then `p::Command`), a macro that assembles the path some other way,
- * effects inside a dependency's own functions, or generated code; for crates
- * other than the three above those remain unchecked beyond the
- * dependency-level checks (which packages and features each member's tree
- * may contain).
+ * What it is not: proof against a contributor deliberately obfuscating
+ * code, against what a dependency does inside its own functions, or against
+ * code expanded from another crate's macro. Review remains the control for
+ * those. Known residual evasions: a dependency that spawns or calls FFI on
+ * the crate's behalf (including one that re-exports a process API under
+ * another name); a procedural or declarative macro from another crate that
+ * emits process or `unsafe` code (Clippy does not lint external macro
+ * expansions); lint or flag overrides outside the repository (user-level
+ * `~/.cargo/config.toml`, `RUSTFLAGS` or `CLIPPY_CONF_DIR` set in the CI
+ * environment); a crate whose class may start processes; and Clippy not
+ * being run at all.
+ *
+ * The lexical scan is the only source check for network APIs and a
+ * secondary one for process APIs. It reads text, not resolved names: it
+ * blanks comments, strings, and character literals, removes raw-identifier
+ * prefixes, and refuses direct paths, groups (nested too), leading `::`,
+ * aliases, glob imports, macro-built paths under `std`, `tokio`,
+ * `async_std`, and `smol`, a macro given a root and a member as neighbouring
+ * tokens, `include!` outside the crate's sources, and
+ * `<dependency>::process::<member>` paths. A macro assembling a path some
+ * other way, or a dependency's re-export under another name, evades it.
  */
 
 import { execFile } from "node:child_process";
@@ -753,50 +764,152 @@ function groupReaches(group: string, member: string, inertAllowed: boolean) {
 }
 
 /**
- * The semantic control (D117 confirmation round). Clippy's
- * `disallowed_types` and `disallowed_methods` resolve paths after name
- * resolution, so aliases, globs, groups, local macros, `#[path]` modules,
- * extra binaries, and integration tests cannot evade them; CI runs Clippy
- * with `-D warnings`. Each crate that the MongoDB driver's Tokio `process`
- * feature reaches carries a `clippy.toml` naming these paths, and this
- * script checks that the file and every entry are there and that nothing
- * lowers the lint. `compresso-cli` keeps its sanctioned `std::process`
- * files (ADR-0028, ADR-0031) and tests, so only Tokio's are disallowed there.
+ * The process tripwire (D117). A workspace `clippy.toml` disallows the std
+ * and Tokio process types and `Command::new` for every crate; Clippy
+ * resolves those paths after name resolution and CI runs it with
+ * `-D warnings`. Only crates whose class may start processes (agent,
+ * updater) may carry their own `clippy.toml`; a lint `allow` for those paths
+ * is accepted only in the files the matrix already lets start a process
+ * (`sanctionedProcessSources` and bounded-local integration tests). The
+ * script also refuses manifest `[lints]` and `.cargo/config` settings that
+ * lower the lints, `unsafe` code outside one pinned site, FFI blocks and
+ * attributes, and direct dependencies on process or FFI crates. It is a
+ * tripwire against introducing process spawning by accident or casually; it
+ * is not proof against deliberate obfuscation (see the file header).
  */
-const tokioProcessPaths = {
-  types: ["tokio::process::Command", "tokio::process::Child"],
-  methods: ["tokio::process::Command::new"],
-};
-const stdProcessPaths = {
-  types: ["std::process::Command", "std::process::Child"],
-  methods: ["std::process::Command::new"],
-};
-const semanticProcessCrates = new Map<
-  string,
-  { types: string[]; methods: string[] }
->([
-  [
-    "compresso-sql",
-    {
-      types: [...stdProcessPaths.types, ...tokioProcessPaths.types],
-      methods: [...stdProcessPaths.methods, ...tokioProcessPaths.methods],
-    },
+const requiredClippyPaths = {
+  "disallowed-types": [
+    "std::process::Command",
+    "std::process::Child",
+    "tokio::process::Command",
+    "tokio::process::Child",
   ],
-  [
-    "compresso-mcp",
-    {
-      types: [...stdProcessPaths.types, ...tokioProcessPaths.types],
-      methods: [...stdProcessPaths.methods, ...tokioProcessPaths.methods],
-    },
+  "disallowed-methods": [
+    "std::process::Command::new",
+    "tokio::process::Command::new",
   ],
-  ["compresso-cli", tokioProcessPaths],
+};
+/** Lints whose lowering would switch the tripwire off. */
+const guardedLints = new Set([
+  "clippy::disallowed_types",
+  "clippy::disallowed_methods",
+  "clippy::disallowed_macros",
+  "clippy::all",
+  "clippy::style",
+  "warnings",
+  "unsafe_code",
+]);
+/** Lints the sanctioned process files may allow. */
+const sanctionedProcessLints = new Set([
+  "clippy::disallowed_types",
+  "clippy::disallowed_methods",
+]);
+/** The one `unsafe` site allowed (SQLite's memory counter). */
+const unsafeSites = new Map<string, string>([
+  ["compresso-sql", "src/sqlite.rs"],
+]);
+/** Crate roots that must carry `#![forbid(unsafe_code)]` or `deny`. */
+const unsafeDenied = new Map<string, "forbid" | "deny">([
+  ["compresso-mcp", "forbid"],
+  ["compresso-cli", "forbid"],
+  ["compresso-sql", "deny"],
+]);
+/** Direct dependencies that give FFI or process access, and where they were
+ * already present on main. */
+const ffiDependencies = new Set([
+  "libc",
+  "nix",
+  "rustix",
+  "windows-sys",
+  "winapi",
+  "command-group",
+  "duct",
+  "subprocess",
+  "process-wrap",
+  "shared_child",
+  "async-process",
+]);
+const ffiDependencyAllowances = new Map<string, string[]>([
+  ["compresso-atlas", ["libc"]],
+  ["compresso-integrations", ["windows-sys"]],
 ]);
 
-/** Lint-level settings that would switch the disallowed lints off. */
-const lintLowering =
-  /\b(?:allow|expect|warn)\s*\(\s*[^)"]*\b(?:warnings|clippy::all|clippy::style|clippy::disallowed_[a-z_]+)/u;
-const manifestLintLowering =
-  /^\s*(?:"?(?:style|all|disallowed_[a-z_]+|warnings)"?)\s*=/mu;
+/** Parses a TOML file through Python's `tomllib` (no text matching). */
+async function parseToml(
+  path: string,
+): Promise<Record<string, unknown> | undefined> {
+  try {
+    await stat(path);
+  } catch {
+    return undefined;
+  }
+  const { stdout } = await execFileAsync(
+    "python3",
+    [
+      "-I",
+      "-c",
+      "import json,sys,tomllib; print(json.dumps(tomllib.load(open(sys.argv[1],'rb')), default=str))",
+      path,
+    ],
+    { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+  );
+  return JSON.parse(stdout) as Record<string, unknown>;
+}
+
+function clippyPaths(config: Record<string, unknown>, key: string) {
+  const entries = Array.isArray(config[key]) ? (config[key] as unknown[]) : [];
+  return new Set(
+    entries
+      .map((entry) =>
+        typeof entry === "string"
+          ? entry
+          : typeof entry === "object" && entry !== null
+            ? (entry as { path?: unknown }).path
+            : undefined,
+      )
+      .filter((path): path is string => typeof path === "string"),
+  );
+}
+
+/** Attribute bodies (`#[...]`, `#![...]`) with whitespace removed. */
+function attributeBodies(strippedSource: string) {
+  const bodies: Array<{ inner: boolean; body: string }> = [];
+  const opener = /#\s*(!?)\s*\[/gu;
+  for (const match of strippedSource.matchAll(opener)) {
+    let depth = 1;
+    let index = (match.index ?? 0) + match[0].length;
+    const start = index;
+    while (index < strippedSource.length && depth > 0) {
+      const character = strippedSource[index];
+      if (character === "[") depth += 1;
+      if (character === "]") depth -= 1;
+      index += 1;
+    }
+    bodies.push({
+      inner: match[1] === "!",
+      body: strippedSource.slice(start, index - 1).replace(/\s+/gu, ""),
+    });
+  }
+  return bodies;
+}
+
+/** Lints an attribute body lowers (`allow`, `expect`, `warn`, in
+ * `cfg_attr` too), and whether it builds a lint name from a macro. */
+function loweredLints(body: string) {
+  const lints: string[] = [];
+  let built = body.startsWith("$");
+  for (const match of body.matchAll(
+    /(?:^|[(,])(?:allow|expect|warn)\(([^()]*)\)/gu,
+  )) {
+    for (const lint of match[1].split(",").filter((lint) => lint.length > 0)) {
+      if (lint.includes("$")) {
+        built = true;
+      }
+      lints.push(lint);
+    }
+  }
+  return { lints, built };
+}
 
 async function allRustFiles(root: string) {
   const files: string[] = [];
@@ -823,69 +936,236 @@ async function allRustFiles(root: string) {
   return files.sort();
 }
 
-async function semanticControlViolations(
-  pkg: CargoPackage,
-  crateRoot: string,
-  workspaceRoot: string,
-) {
-  const required = semanticProcessCrates.get(pkg.name);
-  const violations: string[] = [];
-  if (!required) {
-    return violations;
-  }
-  let config: string;
-  try {
-    config = await readFile(join(crateRoot, "clippy.toml"), "utf8");
-  } catch {
-    return [
-      `clippy.toml is missing; it must disallow ${[...required.types, ...required.methods].join(", ")}`,
-    ];
-  }
-  try {
-    await stat(join(crateRoot, ".clippy.toml"));
-    violations.push(".clippy.toml must not exist beside clippy.toml");
-  } catch {
-    // Absent, as required.
-  }
-  const section = (name: string) => {
-    const match = config.match(
-      new RegExp(`^\\s*${name}\\s*=\\s*\\[([\\s\\S]*?)^\\]`, "mu"),
-    );
-    return match?.[1] ?? "";
-  };
-  for (const [name, paths] of [
-    ["disallowed-types", required.types],
-    ["disallowed-methods", required.methods],
-  ] as const) {
-    const body = section(name);
-    for (const path of paths) {
-      if (!body.includes(`path = "${path}"`)) {
-        violations.push(`clippy.toml ${name} must list ${path}`);
+/** Lint levels a manifest's `[lints]` or `[workspace.lints]` lowers. */
+function manifestLowering(manifest: Record<string, unknown>) {
+  const tables: unknown[] = [
+    manifest.lints,
+    (manifest.workspace as Record<string, unknown> | undefined)?.lints,
+  ];
+  const lowered: string[] = [];
+  for (const table of tables) {
+    if (typeof table !== "object" || table === null) {
+      continue;
+    }
+    for (const [tool, lints] of Object.entries(
+      table as Record<string, unknown>,
+    )) {
+      if (typeof lints !== "object" || lints === null) {
+        continue;
+      }
+      for (const [name, setting] of Object.entries(
+        lints as Record<string, unknown>,
+      )) {
+        const level =
+          typeof setting === "string"
+            ? setting
+            : (setting as { level?: unknown } | null)?.level;
+        const full = tool === "rust" ? name : `${tool}::${name}`;
+        if (guardedLints.has(full.replaceAll("-", "_")) && level === "allow") {
+          lowered.push(full);
+        }
       }
     }
   }
-  for (const file of await allRustFiles(crateRoot)) {
-    const text = await readFile(file, "utf8");
-    if (lintLowering.test(text)) {
-      violations.push(
-        `a lint attribute that can switch off clippy::disallowed_* is forbidden in ${file}`,
-      );
+  return lowered;
+}
+
+/** Settings in a `.cargo/config` that could weaken the lints. */
+function cargoConfigProblems(config: Record<string, unknown>) {
+  const problems: string[] = [];
+  const build = config.build as Record<string, unknown> | undefined;
+  if (build && ("rustflags" in build || "rustdocflags" in build)) {
+    problems.push("build.rustflags");
+  }
+  const target = config.target as
+    | Record<string, Record<string, unknown>>
+    | undefined;
+  for (const [name, settings] of Object.entries(target ?? {})) {
+    if (
+      typeof settings === "object" &&
+      settings !== null &&
+      "rustflags" in settings
+    ) {
+      problems.push(`target.${name}.rustflags`);
     }
   }
-  for (const file of [
-    pkg.manifest_path,
-    join(workspaceRoot, "Cargo.toml"),
-    join(workspaceRoot, ".cargo", "config.toml"),
-    join(workspaceRoot, ".cargo", "config"),
-  ]) {
-    let text: string;
-    try {
-      text = await readFile(file, "utf8");
-    } catch {
-      continue;
+  for (const name of Object.keys(
+    (config.env as Record<string, unknown>) ?? {},
+  )) {
+    if (
+      /^(CLIPPY|RUSTFLAGS|CARGO_ENCODED_RUSTFLAGS|CARGO_BUILD_RUSTFLAGS|RUSTC)/u.test(
+        name,
+      )
+    ) {
+      problems.push(`env.${name}`);
     }
-    if (manifestLintLowering.test(text) || /disallowed/u.test(text)) {
-      violations.push(`${file} may not set the level of the disallowed lints`);
+  }
+  const alias = config.alias as Record<string, unknown> | undefined;
+  if (alias && "clippy" in alias) {
+    problems.push("alias.clippy");
+  }
+  return problems;
+}
+
+/** The workspace-level tripwire checks (once per workspace). */
+async function workspaceTripwireViolations(workspaceRoot: string) {
+  const violations: string[] = [];
+  const config = await parseToml(join(workspaceRoot, "clippy.toml"));
+  if (!config) {
+    violations.push(
+      "workspace: clippy.toml is missing; it must disallow the std and Tokio process types and Command::new",
+    );
+  } else {
+    for (const [key, paths] of Object.entries(requiredClippyPaths)) {
+      const present = clippyPaths(config, key);
+      for (const path of paths) {
+        if (!present.has(path)) {
+          violations.push(`workspace: clippy.toml ${key} must list ${path}`);
+        }
+      }
+    }
+  }
+  try {
+    await stat(join(workspaceRoot, ".clippy.toml"));
+    violations.push("workspace: .clippy.toml must not exist");
+  } catch {
+    // Absent, as required.
+  }
+  const manifest = await parseToml(join(workspaceRoot, "Cargo.toml"));
+  for (const lint of manifest ? manifestLowering(manifest) : []) {
+    violations.push(`workspace: Cargo.toml lowers ${lint}`);
+  }
+  for (const name of ["config.toml", "config"]) {
+    const cargoConfig = await parseToml(join(workspaceRoot, ".cargo", name));
+    for (const problem of cargoConfig ? cargoConfigProblems(cargoConfig) : []) {
+      violations.push(`workspace: .cargo/${name} sets ${problem}`);
+    }
+  }
+  return violations;
+}
+
+/** The per-crate tripwire checks. */
+async function crateTripwireViolations(
+  pkg: CargoPackage,
+  className: CapabilityClassName,
+  crateRoot: string,
+  workspaceRoot: string,
+  sanctioned: Set<string>,
+) {
+  const violations: string[] = [];
+  const mayStartProcesses = capabilityClasses[className].process;
+  // Clippy uses the nearest clippy.toml, from the crate up to the
+  // workspace: none may sit in between for a crate that may not spawn.
+  if (!mayStartProcesses) {
+    let directory = crateRoot;
+    while (directory.startsWith(workspaceRoot) && directory !== workspaceRoot) {
+      for (const name of ["clippy.toml", ".clippy.toml"]) {
+        try {
+          await stat(join(directory, name));
+          violations.push(
+            `${join(directory, name)} would replace the workspace clippy.toml`,
+          );
+        } catch {
+          // Absent, as required.
+        }
+      }
+      for (const name of ["config.toml", "config"]) {
+        const cargoConfig = await parseToml(join(directory, ".cargo", name));
+        for (const problem of cargoConfig
+          ? cargoConfigProblems(cargoConfig)
+          : []) {
+          violations.push(`${join(directory, ".cargo", name)} sets ${problem}`);
+        }
+      }
+      directory = dirname(directory);
+    }
+  }
+  const manifest = await parseToml(pkg.manifest_path);
+  for (const lint of manifest ? manifestLowering(manifest) : []) {
+    violations.push(`Cargo.toml lowers ${lint}`);
+  }
+  if (!mayStartProcesses) {
+    const allowed = ffiDependencyAllowances.get(pkg.name) ?? [];
+    for (const dependency of pkg.dependencies) {
+      if (
+        ffiDependencies.has(dependency.name) &&
+        !allowed.includes(dependency.name)
+      ) {
+        violations.push(
+          `direct dependency ${dependency.name} gives FFI or process access`,
+        );
+      }
+    }
+  }
+  const unsafeSite = unsafeSites.get(pkg.name);
+  let unsafeAllowances = 0;
+  for (const file of await allRustFiles(crateRoot)) {
+    const stripped = stripRustCommentsAndStrings(await readFile(file, "utf8"));
+    for (const { body } of attributeBodies(stripped)) {
+      const { lints, built } = loweredLints(body);
+      if (built) {
+        violations.push(
+          `a lint attribute built by a macro is forbidden in ${file}`,
+        );
+      }
+      for (const lint of lints) {
+        if (!guardedLints.has(lint)) {
+          continue;
+        }
+        if (sanctionedProcessLints.has(lint) && sanctioned.has(resolve(file))) {
+          continue;
+        }
+        if (
+          lint === "unsafe_code" &&
+          unsafeSite !== undefined &&
+          resolve(file) === resolve(crateRoot, unsafeSite)
+        ) {
+          unsafeAllowances += 1;
+          continue;
+        }
+        violations.push(
+          `an attribute lowering ${lint} is forbidden in ${file}`,
+        );
+      }
+      if (
+        !mayStartProcesses &&
+        /^(?:link|link_name|no_mangle|export_name|unsafe\((?:no_mangle|export_name|link_section))/u.test(
+          body,
+        )
+      ) {
+        violations.push(
+          `an FFI attribute (#[${body.split("(")[0]}]) is forbidden in ${file}`,
+        );
+      }
+    }
+    if (!mayStartProcesses && /\bextern\b(?!\s+crate\b)/u.test(stripped)) {
+      violations.push(`an extern block or ABI is forbidden in ${file}`);
+    }
+  }
+  if (unsafeAllowances > 1) {
+    violations.push(
+      `more than one allow(unsafe_code) site (${unsafeAllowances})`,
+    );
+  }
+  const required = unsafeDenied.get(pkg.name);
+  if (required) {
+    for (const target of pkg.targets.filter((target) =>
+      target.kind.some((kind) => kind === "lib" || kind === "bin"),
+    )) {
+      const stripped = stripRustCommentsAndStrings(
+        await readFile(target.src_path, "utf8"),
+      );
+      const levels = attributeBodies(stripped)
+        .filter((attribute) => attribute.inner)
+        .map((attribute) => attribute.body);
+      const ok =
+        levels.includes("forbid(unsafe_code)") ||
+        (required === "deny" && levels.includes("deny(unsafe_code)"));
+      if (!ok) {
+        violations.push(
+          `${target.src_path} must start with #![${required}(unsafe_code)]`,
+        );
+      }
     }
   }
   return violations;
@@ -1646,7 +1926,11 @@ export async function checkWorkspace(
           violations.add(`${pkg.name} (${className}): ${violation}`);
         }
       }
-      const source = stripRustCommentsAndStrings(rawSource);
+      // Raw identifiers (`r#process`) name the same items.
+      const source = stripRustCommentsAndStrings(rawSource).replace(
+        /\br#(?=[A-Za-z_])/gu,
+        "",
+      );
       for (const use of sourceCapabilityUses(source, dependencyRoots)) {
         const allowedTestProcess =
           use.capability === "process" &&
@@ -1663,15 +1947,18 @@ export async function checkWorkspace(
         violations.add(`${pkg.name} (${className}): ${violation}`);
       }
     }
-    if (semanticProcessCrates.has(pkg.name)) {
-      for (const violation of await semanticControlViolations(
-        pkg,
-        crateRoot,
-        workspaceRoot,
-      )) {
-        violations.add(`${pkg.name} (${className}): ${violation}`);
-      }
+    for (const violation of await crateTripwireViolations(
+      pkg,
+      className,
+      crateRoot,
+      workspaceRoot,
+      testProcessSources,
+    )) {
+      violations.add(`${pkg.name} (${className}): ${violation}`);
     }
+  }
+  for (const violation of await workspaceTripwireViolations(workspaceRoot)) {
+    violations.add(violation);
   }
 
   if (await hasLockfile(workspaceRoot)) {

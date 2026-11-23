@@ -5,6 +5,9 @@
 //! shared full-profile server, both on one scratch store. Every process runs
 //! with a scratch HOME.
 #![cfg(unix)]
+// Integration tests of a bounded-local crate may start processes (the
+// capability matrix); the workspace clippy.toml disallows them elsewhere.
+#![allow(clippy::disallowed_types, clippy::disallowed_methods)]
 
 use std::fs;
 use std::io::{BufRead, BufReader, Write};

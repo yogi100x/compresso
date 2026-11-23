@@ -1,0 +1,8 @@
+[package]
+name = "compresso-mcp"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+tokio = { path = "../../deps/tokio" }
+compresso-sql = { path = "../compresso-sql" }

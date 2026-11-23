@@ -497,11 +497,11 @@ for (const [name, pattern] of [
   ],
   [
     "denied-sql-lint-allowed",
-    /a lint attribute that can switch off clippy::disallowed_\* is forbidden/u,
+    /an attribute lowering clippy::disallowed_methods is forbidden/u,
   ],
   [
     "denied-sql-manifest-lint",
-    /may not set the level of the disallowed lints/u,
+    /Cargo\.toml lowers clippy::disallowed_methods/u,
   ],
 ] as const) {
   test(`test_${name.replaceAll("-", "_")}`, async () => {
@@ -520,3 +520,52 @@ test("test_local_process_modules_lifetimes_and_inert_members_pass", async () => 
 
   assert.deepEqual(result, { ok: true, checkedCrates: 3, violations: [] });
 });
+
+// D117 second confirmation round: holes that passed both Clippy and the
+// script, each now refused.
+for (const [name, pattern] of [
+  ["denied-sql-ffi-system", /an extern block or ABI is forbidden/u],
+  [
+    "denied-mcp-ffi-spawn",
+    /compresso-mcp .*an extern block or ABI is forbidden/u,
+  ],
+  [
+    "denied-sql-allow-spaced",
+    /an attribute lowering clippy::disallowed_methods is forbidden/u,
+  ],
+  ["denied-sql-allow-macro", /a lint attribute built by a macro is forbidden/u],
+  ["denied-sql-manifest-inline", /Cargo\.toml lowers clippy::style/u],
+  ["denied-sql-manifest-dotted", /Cargo\.toml lowers clippy::style/u],
+  [
+    "denied-cargo-config-env",
+    /\.cargo\/config\.toml sets env\.CLIPPY_CONF_DIR/u,
+  ],
+  [
+    "denied-cargo-config-rustflags",
+    /\.cargo\/config\.toml sets build\.rustflags/u,
+  ],
+  ["denied-sql-raw-identifiers", /process API std::process/u],
+  [
+    "denied-sql-crate-clippy-config",
+    /would replace the workspace clippy\.toml/u,
+  ],
+  [
+    "denied-mcp-unsafe-not-forbidden",
+    /must start with #!\[forbid\(unsafe_code\)\]/u,
+  ],
+  [
+    "denied-sql-unsafe-outside-site",
+    /an attribute lowering unsafe_code is forbidden/u,
+  ],
+  [
+    "denied-mcp-ffi-dependency",
+    /direct dependency libc gives FFI or process access/u,
+  ],
+] as const) {
+  test(`test_${name.replaceAll("-", "_")}`, async () => {
+    const result = await checkWorkspace(fixture(name), fixtureDriver);
+
+    assert.equal(result.ok, false);
+    assert.match(result.violations.join("\n"), pattern);
+  });
+}

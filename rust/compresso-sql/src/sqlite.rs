@@ -216,6 +216,7 @@ fn same_file(_metadata: &fs::Metadata, _other: &Path) -> bool {
 }
 
 /// SQLite's memory in use, process-wide (the library keeps the count).
+#[allow(unsafe_code)]
 fn memory_used() -> i64 {
     // SAFETY: sqlite3_memory_used takes no arguments, only reads a counter
     // the library maintains under its own mutex, and is safe to call from
