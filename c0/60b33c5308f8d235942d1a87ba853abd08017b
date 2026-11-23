@@ -1,0 +1,31 @@
+rust/compresso-mcp/tests/tools_edit.rs
+  s_89a704cfae63f5::t_9ade6a62ad4135 889-923
+rust/compresso-integrations/src/main_agent.rs
+  s_89a704cfae63f5::t_58b351fb4b8b2b 583-586,589,592-594,596,598-605,607,612-635
+  s_89a704cfae63f5::t_e6dd9131e9f030 636-638
+  s_95a14f3f1f43a5::t_10a9d39ffd9de0 53-55,60-61,70,74,76
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c060b33c5308f8d235942d1a87ba853abd08017b",
+  "prompts": {},
+  "sessions": {
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_95a14f3f1f43a5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a35665d09f12269c5",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
