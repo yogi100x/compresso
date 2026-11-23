@@ -8,6 +8,7 @@ pub(crate) mod engine_tools;
 pub(crate) mod mongo;
 pub(crate) mod recall;
 pub(crate) mod report;
+pub(crate) mod shrink;
 pub(crate) mod sql;
 pub(crate) mod text;
 

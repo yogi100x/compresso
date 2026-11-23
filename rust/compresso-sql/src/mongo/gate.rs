@@ -313,15 +313,22 @@ impl Allowed {
     }
 }
 
+// A filter takes query operators only; expression operators are accepted
+// inside `$expr`, where the server evaluates them.
 const FILTER: Allowed = Allowed {
-    sets: &[QUERY_OPERATORS, EXPRESSION_OPERATORS],
+    sets: &[QUERY_OPERATORS],
     place: "a filter",
     expression: false,
 };
 const MATCH: Allowed = Allowed {
-    sets: &[QUERY_OPERATORS, EXPRESSION_OPERATORS],
+    sets: &[QUERY_OPERATORS],
     place: "a pipeline stage",
     expression: false,
+};
+const EXPR: Allowed = Allowed {
+    sets: &[QUERY_OPERATORS, EXPRESSION_OPERATORS],
+    place: "an $expr",
+    expression: true,
 };
 const STAGE_BODY: Allowed = Allowed {
     sets: &[QUERY_OPERATORS, EXPRESSION_OPERATORS, ACCUMULATORS],
@@ -371,8 +378,10 @@ pub(crate) fn check_field(name: &str) -> Result<(), SqlError> {
             "a field name must have 1 to {MAX_FIELD_CHARS} characters."
         )));
     }
-    if name.starts_with('$') {
-        return Err(refusal_for(name, "a field name"));
+    // No component of a dotted path may start with `$` (`a.$b` would reach
+    // the server as a field path with a variable-like part).
+    if let Some(component) = name.split('.').find(|component| component.starts_with('$')) {
+        return Err(refusal_for(component, "a field name"));
     }
     if name.contains('\0') {
         return Err(refused("a field name may not contain NUL."));
@@ -425,7 +434,7 @@ pub(crate) fn projection(value: &Value) -> Result<Document, SqlError> {
     }
     let shape = || {
         refused(
-            "a find projection value must be 0, 1, true, false, {\"$slice\": n}, {\"$slice\": [skip, n]}, or {\"$elemMatch\": filter}; expressions are not accepted there.",
+            "a find projection value must be 0, 1, true, false, {\"$slice\": n}, {\"$slice\": [skip, n]}, or {\"$elemMatch\": filter}; for computed fields use action aggregate with a $project stage.",
         )
     };
     let integer = |value: &Value| value.as_i64().ok_or_else(shape);
@@ -575,6 +584,24 @@ fn stages(
             "$sort" => Bson::Document(sort(body)?),
             "$sample" => sample(body)?,
             "$match" => value_to_bson(body, MATCH, depth + 1, budget)?,
+            "$unset" => {
+                let names = match body {
+                    Value::String(name) => vec![name.clone()],
+                    Value::Array(items) => items
+                        .iter()
+                        .map(|item| item.as_str().map(str::to_owned))
+                        .collect::<Option<Vec<_>>>()
+                        .ok_or_else(|| refused("$unset takes a field name or an array of them."))?,
+                    _ => return Err(refused("$unset takes a field name or an array of them.")),
+                };
+                for name in &names {
+                    check_field(name)?;
+                }
+                match body {
+                    Value::String(name) => Bson::String(name.clone()),
+                    _ => Bson::Array(names.into_iter().map(Bson::String).collect()),
+                }
+            }
             _ => value_to_bson(body, STAGE_BODY, depth + 1, budget)?,
         };
         let mut document = Document::new();
@@ -691,11 +718,8 @@ fn document(
             check_field(key)?;
         }
         // `$expr` turns a filter into an aggregation expression.
-        let inner = if key == "$expr" {
-            Allowed {
-                expression: true,
-                ..allowed
-            }
+        let inner = if key == "$expr" && !allowed.expression {
+            EXPR
         } else {
             allowed
         };
@@ -1190,6 +1214,39 @@ mod tests {
         ] {
             assert_sendable(&document, expression).expect("data or allowed");
         }
+    }
+
+    #[test]
+    fn test_expression_operators_only_inside_expr_and_no_dollar_path_components() {
+        for value in [
+            json!({"a": {"$add": [1, 2]}}),
+            json!({"$let": {"vars": {"x": "$$USER_ROLES"}, "in": 1}}),
+            json!({"a": {"$concat": ["$$USER_ROLES"]}}),
+        ] {
+            assert!(
+                code(filter(&value)).starts_with("[mongo_refused]"),
+                "{value}"
+            );
+        }
+        filter(&json!({"$expr": {"$gt": [{"$add": ["$a", 1]}, 2]}, "b": {"$in": [1, 2]}}))
+            .expect("ordinary filters still pass");
+        pipeline(&json!([{"$match": {"$expr": {"$eq": [{"$toLower": "$s"}, "x"]}}}]))
+            .expect("expressions inside $expr");
+        assert!(
+            code(pipeline(&json!([{"$match": {"a": {"$toLower": "x"}}}])))
+                .starts_with("[mongo_refused]")
+        );
+        for name in ["a.$b", "a.b.$$USER_ROLES", "$a.b"] {
+            assert!(check_field(name).is_err(), "{name}");
+        }
+        check_field("a.b$c.d").expect("a $ not at the start of a component");
+        assert!(code(pipeline(&json!([{"$unset": ["a", "b.$c"]}]))).starts_with("[mongo_refused]"));
+        pipeline(&json!([{"$unset": ["a", "b.c"]}, {"$unset": "d"}])).expect("plain names");
+        assert!(
+            code(pipeline(&json!([{"$lookup": {"from": "b", "as": "x.$$USER_ROLES", "localField": "a", "foreignField": "b"}}])))
+                .starts_with("[mongo_refused]")
+        );
+        assert!(code(projection(&json!({"a": "$b"}))).contains("aggregate with a $project stage"));
     }
 
     #[test]

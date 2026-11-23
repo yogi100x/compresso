@@ -275,18 +275,29 @@ fn payload(outcome: &MongoOutcome, action: &str) -> Value {
     body
 }
 
-/// The result's JSON, with documents (or collections, or described fields)
-/// dropped from the end until it fits `max_tokens`.
+/// The result's JSON, fitted to `max_tokens`: documents (or collections, or
+/// described fields) are dropped from the end, and then the first document
+/// that does not fit is cut (strings shortened, the rest marked
+/// `$truncated`) and kept, so a result with documents never comes back
+/// empty. `rows_omitted` counts the documents left out for the budget.
 fn fit(
     mut outcome: MongoOutcome,
     action: &str,
     max_tokens: usize,
     counter: &dyn TokenCounter,
 ) -> String {
-    let render = |outcome: &MongoOutcome| payload(outcome, action).to_string();
-    let fits = |outcome: &MongoOutcome| counter.count(&render(outcome)) <= max_tokens;
-    if fits(&outcome) {
-        return render(&outcome);
+    let render = |outcome: &MongoOutcome, omitted: usize| {
+        let mut value = payload(outcome, action);
+        if omitted > 0
+            && let Value::Object(object) = &mut value
+        {
+            object.insert("rows_omitted".to_owned(), Value::from(omitted));
+        }
+        value.to_string()
+    };
+    let fits = |text: &str| counter.count(text) <= max_tokens;
+    if fits(&render(&outcome, 0)) {
+        return render(&outcome, 0);
     }
     let length = match &outcome {
         MongoOutcome::Documents(result) => result.documents.len(),
@@ -312,14 +323,39 @@ fn fit(
         let middle = (low + high).div_ceil(2);
         let mut candidate = outcome.clone();
         keep(&mut candidate, middle);
-        if fits(&candidate) {
+        if fits(&render(&candidate, length - middle)) {
             low = middle;
         } else {
             high = middle - 1;
         }
     }
+    let next = match &outcome {
+        MongoOutcome::Documents(result) if low < length => Some(result.documents[low].clone()),
+        _ => None,
+    };
     keep(&mut outcome, low);
-    let mut value = payload(&outcome, action);
+    let mut omitted = length - low;
+    if let Some(document) = next {
+        // The first document that did not fit, cut to what is left.
+        let with = |budget: usize| {
+            let mut candidate = outcome.clone();
+            if let MongoOutcome::Documents(result) = &mut candidate {
+                result
+                    .documents
+                    .push(super::shrink::shrink(&document, budget));
+                result.count = result.documents.len();
+            }
+            candidate
+        };
+        let limit = document.to_string().len();
+        if let Some(budget) =
+            super::shrink::largest_budget(limit, |budget| fits(&render(&with(budget), omitted - 1)))
+        {
+            outcome = with(budget);
+            omitted -= 1;
+        }
+    }
+    let mut value: Value = serde_json::from_str(&render(&outcome, omitted)).unwrap_or(Value::Null);
     if let (MongoOutcome::Describe(_), Value::Object(object)) = (&outcome, &mut value) {
         object.insert("truncated".to_owned(), Value::Bool(true));
     }
@@ -368,5 +404,68 @@ mod tests {
         let value: Value = serde_json::from_str(&text).expect("json");
         assert_eq!(value["values"], json!(["a", "b"]));
         assert!(value.get("documents").is_none());
+    }
+
+    fn documents(values: Vec<Value>) -> MongoOutcome {
+        MongoOutcome::Documents(DocumentsResult {
+            count: values.len(),
+            documents: values,
+            truncated: false,
+            truncation_reason: None,
+            elapsed_ms: 1,
+        })
+    }
+
+    fn big(id: i64) -> Value {
+        json!({"_id": id, "s": "\\u0001".repeat(4_000), "list": (0..400).map(|n| format!("item {n} {}", "x".repeat(40))).collect::<Vec<_>>()})
+    }
+
+    /// The third review's shapes: one huge document; a huge one between
+    /// small ones; a huge one last. A result never comes back empty, the
+    /// cut document is marked, and the documents left out are counted.
+    #[test]
+    fn test_fit_cuts_a_huge_document_instead_of_dropping_it() {
+        let counter = counter_for(TokenProvider::OpenAiO200k);
+        for (values, max_tokens, kept_ids, omitted) in [
+            (vec![big(2)], 8_000, vec![2], 0),
+            (vec![big(2)], 2_000, vec![2], 0),
+            (
+                vec![json!({"_id": 1}), big(2), json!({"_id": 3})],
+                2_000,
+                vec![1, 2],
+                1,
+            ),
+            (
+                vec![json!({"_id": 1}), json!({"_id": 3}), big(2)],
+                2_000,
+                vec![1, 3, 2],
+                0,
+            ),
+        ] {
+            let text = fit(documents(values), "find", max_tokens, counter);
+            assert!(
+                counter.count(&text) <= max_tokens,
+                "{}",
+                counter.count(&text)
+            );
+            let value: Value = serde_json::from_str(&text).expect("valid JSON");
+            let ids = value["documents"]
+                .as_array()
+                .expect("documents")
+                .iter()
+                .map(|document| document["_id"].as_i64().expect("id"))
+                .collect::<Vec<_>>();
+            assert_eq!(ids, kept_ids, "{text}");
+            assert_eq!(value["count"], kept_ids.len());
+            assert!(text.contains("\"$truncated\":true"), "{text}");
+            assert_eq!(value["truncation_reason"], "max_tokens");
+            assert_eq!(
+                value
+                    .get("rows_omitted")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                omitted
+            );
+        }
     }
 }

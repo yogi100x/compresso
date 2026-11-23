@@ -395,6 +395,8 @@ jobs:
           docker exec mongoauth mongod --version
           export COMPRESSO_MONGO_TEST_TLS_CA="${RUNNER_TEMP}/mongotls/ca.pem"
           cargo test -p compresso-sql --locked --test live_mongo -- --test-threads=1 --nocapture
+          # The MCP path, against the accounts and data the tests above made.
+          cargo test -p compresso-mcp --locked --test live_mongo_mcp -- --nocapture
       - name: Stop the MongoDB containers
         if: always()
         run: docker rm -f mongoauth mongotls || true

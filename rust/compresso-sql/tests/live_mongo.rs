@@ -900,6 +900,28 @@ fn test_live_mongo_data_positions_return_variables_as_literal_strings() {
             .expect("find filter"),
     );
     assert_eq!(rows, vec![json!({"note": "$$USER_ROLES"})]);
+    // $in, $nin, and $all arguments
+    for (filter, expected) in [
+        (json!({"note": {"$in": ["$$USER_ROLES"]}}), 1),
+        (json!({"tags": {"$all": ["$$USER_ROLES", "x"]}}), 1),
+        (json!({"note": {"$nin": ["$$USER_ROLES"]}}), 1),
+    ] {
+        let (rows, _) = documents(
+            service
+                .execute(&request(
+                    find(filter.clone(), Some(json!({"_id": 0, "note": 1}))),
+                    10,
+                    5_000,
+                ))
+                .expect("operator arguments"),
+        );
+        assert_eq!(rows.len(), expected, "{filter}");
+        if filter["note"].get("$nin").is_none() {
+            assert_eq!(rows[0]["note"], "$$USER_ROLES");
+        } else {
+            assert_eq!(rows[0]["note"], "other");
+        }
+    }
     // count filter
     let count = service
         .execute(&request(

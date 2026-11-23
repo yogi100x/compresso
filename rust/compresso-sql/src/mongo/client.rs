@@ -182,8 +182,8 @@ pub(crate) fn aggregate_options(timeout: Duration) -> AggregateOptions {
 /// as `find`. It matches the server's `distinct` for scalars, `null`, and an
 /// array at the end of the path; it differs where the path crosses an array
 /// of subdocuments (`b.c` over `[{c: 5}, {c: [6, 7]}]` gives `5` and
-/// `[6, 7]`, where `distinct` gives 5, 6, 7) and for `undefined`, which
-/// aggregation turns into `null` (ADR-0038).
+/// `[6, 7]`, where `distinct` gives 5, 6, 7). `undefined` stays apart from
+/// `null`, as in the server's `distinct` (ADR-0038).
 pub(crate) fn distinct_pipeline(field: &str, filter: Document, max_rows: usize) -> Vec<Document> {
     let path = format!("${field}");
     let mut exists = Document::new();
