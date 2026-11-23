@@ -102,7 +102,7 @@ Crate dependency rule: `core` has no internal dependencies; `store → core type
 | providers | Explicit configured provider hosts | none | Keychain credentials and the same host controls |
 | agent | Compresso account/entitlement control-plane origin only | supervisor-owned child lifecycle only | No arbitrary destination or command |
 | updater | Signed release metadata/artifact origins only | installer/update helper only | Signature, digest, version and rollback checks |
-| sql | User-created database profile endpoints only; since E17-50 (D115, ADR-0036) the one database named by the operator's `--sql-env` variable | none | No arbitrary HTTP; TLS/host/read-only policy |
+| sql | User-created database profile endpoints only; since E17-50 (D115, ADR-0036) the one database named by the operator's `--sql-env` variable, and since E17-52 (D117, ADR-0038) the one MongoDB host named by the `--mongo-env` variable | none | No arbitrary HTTP; TLS/host/read-only policy |
 | sandbox | Policy-approved destinations only | Policy-approved executable/argv only | Owns OS isolation, resource and cancellation controls |
 | browser, terminal | No direct socket API | No direct spawn API | All capabilities delegated through sandbox |
 | desktop webview | none | none | Typed Rust local-API bridge only |
