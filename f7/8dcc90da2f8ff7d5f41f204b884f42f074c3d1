@@ -1,0 +1,72 @@
+rust/compresso-sql/src/lib.rs
+  s_89a704cfae63f5::t_445531371d34c7 18-21
+  s_89a704cfae63f5::t_174954d55c1a5c 28
+rust/compresso-sql/src/mongo/output.rs
+  s_89a704cfae63f5::t_1d78e55df651f8 1-218
+deny.toml
+  s_89a704cfae63f5::t_728932f6cb2716 20-28
+rust/compresso-sql/src/mongo/client.rs
+  s_89a704cfae63f5::t_cb0714b45bfffb 12-14
+  s_89a704cfae63f5::t_11627d28a6f4bf 1-11,15-178,201-543
+  s_89a704cfae63f5::t_d6f6cfc44d44e2 179-200
+  s_89a704cfae63f5::t_31a0a6f839b77b 544-545
+rust/compresso-sql/src/mongo/target.rs
+  s_89a704cfae63f5::t_7a7c43f3675f0b 367
+  s_89a704cfae63f5::t_d54282705e7528 1-157,161-366,368-459
+  s_89a704cfae63f5::t_5fb45559a6cf24 158-160
+  s_89a704cfae63f5::t_f83b0911df29e9 460-462
+  s_470a2f6e5f0af8::t_de3b2175dcfabb 463-530
+rust/compresso-sql/Cargo.toml
+  s_89a704cfae63f5::t_ccc5f856f55aa0 11-12,14-17,28-29
+rust/compresso-sql/src/mongo/mod.rs
+  s_89a704cfae63f5::t_e557e108f64af1 1-561
+rust/compresso-sql/src/mongo/gate.rs
+  s_89a704cfae63f5::t_024de3851cb5b9 1-932
+  s_89a704cfae63f5::t_c99b7b2d9120fe 933-935
+  s_470a2f6e5f0af8::t_0e09375ff8dd7f 936-938
+rust/compresso-sql/src/mongo/account.rs
+  s_89a704cfae63f5::t_4a7fc096250c6f 112-114
+  s_89a704cfae63f5::t_dc579d4f448906 322,326-335
+  s_89a704cfae63f5::t_8b5af8a72b71bf 1-15,22-77,92-111,115-321,323-325,336-338
+  s_89a704cfae63f5::t_a096a5d23671bd 78-91
+  s_89a704cfae63f5::t_0062ce0218d645 16-21
+  s_89a704cfae63f5::t_4c4b6fb7221ced 339-341
+  s_470a2f6e5f0af8::t_389cab132271e2 342-369
+rust/compresso-sql/tests/live_mongo.rs
+  s_89a704cfae63f5::t_beafeae815b9c7 1-445,463-466,469
+  s_89a704cfae63f5::t_cd450f32c68a4a 446-462,467-468
+  s_89a704cfae63f5::t_4512a2e02e526b 470-472
+  s_470a2f6e5f0af8::t_c50b3ac56c970a 473-524
+rust/compresso-sql/tests/mongo.rs
+  s_89a704cfae63f5::t_7a78093cd3454a 1-224
+  s_89a704cfae63f5::t_3b46afafa201a0 225-227
+  s_470a2f6e5f0af8::t_ad7bbc177d809d 228-274
+rust/compresso-sql/src/target.rs
+  s_89a704cfae63f5::t_78db780c1a5aaa 223,247,583
+Cargo.lock
+  s_470a2f6e5f0af8::t_bcf1ec0abe0e52 183-194,224-245,541,544,580-599,738-799,1004-1009,1137,1141,1386-1391,1579-1626,1654-1725,1765-1770,1900-1908,1936-1941,1982,2017-2022,2030,2034-2043,2065-2074,2084-2092,2247-2265,2285,2433-2442,2497-2518,2547-2562,2802-2813,2863-2901,2938,2955-2964,2984,2986,3155-3174,3258,3422-3430,3702-3710
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f78dcc90da2f8ff7d5f41f204b884f42f074c3d1",
+  "prompts": {},
+  "sessions": {
+    "s_470a2f6e5f0af8": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-a2ff873261d314507",
+        "model": "unknown"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    },
+    "s_89a704cfae63f5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "68626fda-7395-4d52-9256-702a31d1b5da",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Yogi <yogi100x@gmail.com>"
+    }
+  }
+}
