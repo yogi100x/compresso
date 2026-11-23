@@ -682,11 +682,7 @@ mod tests {
 
     #[test]
     fn test_unparseable_or_non_object_settings_are_refused_naming_the_file() {
-        for original in [
-            "{\"a\": ",
-            "[1, 2]",
-            "\"agent\"",
-        ] {
+        for original in ["{\"a\": ", "[1, 2]", "\"agent\""] {
             let harness = Harness::new();
             fs::write(harness.path(), original).unwrap();
             let error = harness.plan().expect_err("refused").to_string();

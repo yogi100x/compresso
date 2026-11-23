@@ -38,6 +38,39 @@ provider). Both show the exact plan first (`--dry-run` previews without
 writing), keep a backup and a receipt, and are undone with
 `compresso integrations uninstall <client>`.
 
+For a Claude Code project (`setup claude-code ROOT`, or
+`integrations install claude-code --project DIR`) the install also makes
+Compresso the session's main agent by default (ADR-0037):
+
+- `.claude/agents/compresso-main.md`: a short main-session prompt that routes
+  repository search, reads, and edits through Compresso. It replaces the
+  client's long default system prompt; the client keeps all its own tools.
+- `"agent": "compresso-main"` in your personal
+  `.claude/settings.local.json`. Only that one key is added; every other byte
+  of the file is kept. An `agent` value you already set is never
+  overwritten: the install skips this step and says so. If the project is a
+  git repository that does not ignore this file, the install prints one
+  warning and changes nothing.
+- The project's server entry runs
+  `mcp serve --tools lean --session-tools --edits`: the lean tools with
+  compact text results, the edit tool `compresso_edit`, and the two tools the
+  `/compresso` commands need. With `--sql-env` the entry keeps the full
+  profile, because the lean profile never serves `compresso_sql`.
+
+No permission rule is added for the edit tool, so the client still asks
+before each edit. Pass `--no-edits` to keep the agent without the edit tool,
+or `--no-main-agent` to install the entry as before (full profile) with no
+agent file and no settings change. A plain project uninstall removes the
+key (only while it still names `compresso-main`), the agent file (only while
+unchanged), and the settings file only if Compresso created it and nothing
+else is left in it. User-scope installs, Codex, and Cursor are unchanged.
+
+The saving behind this default was measured on one model and one
+edit-heavy suite, two runs: about $3.07 a run against $5.60 for the client
+alone, with the first request about 2,800 tokens smaller. Other models and
+task mixes are unmeasured, and the release that added the default
+re-measured only the first-request size, not the suite.
+
 Session recall is on by default for Claude Code and Codex: the server entry
 ends in `--recall-source <that client>`, which serves the `compresso_recall`
 tool over that client's own local session transcripts. Recall is scoped to the
