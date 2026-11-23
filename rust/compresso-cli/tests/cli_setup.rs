@@ -484,7 +484,12 @@ fn test_setup_rejects_valid_pending_journal_injected_after_final_plan() {
     // occur only after all post-setup fail-closed assertions above.
     let recovered = PlanManager::new("explicit-journal-fixture-proof")
         .expect("recovery manager should initialize")
-        .with_backup_dir(test_backup_dir())
+        .with_backup_dir(
+            fixture
+                .environment
+                .data_dir
+                .join(compresso_integrations::BACKUP_DIR_NAME),
+        )
         .recover(&fixture.codex_config(), &receipts)
         .expect("authenticated journal should recover")
         .expect("pending journal should produce a recovery report");
@@ -1162,9 +1167,15 @@ impl PlanClock for JournalInjectClock {
 }
 
 fn authenticated_install_journal(fixture: &Fixture) -> (PathBuf, Vec<u8>) {
+    // The CLI's own backup directory, where setup looks for pending journals.
     let manager = PlanManager::new("authenticated-journal-fixture")
         .expect("journal fixture manager should initialize")
-        .with_backup_dir(test_backup_dir());
+        .with_backup_dir(
+            fixture
+                .environment
+                .data_dir
+                .join(compresso_integrations::BACKUP_DIR_NAME),
+        );
     let adapter = CodexIntegration::new(
         fixture.environment.home_dir.clone(),
         fixture.environment.path_entries.clone(),
@@ -1183,14 +1194,6 @@ fn authenticated_install_journal(fixture: &Fixture) -> (PathBuf, Vec<u8>) {
         )
         .expect("internal journal plan should be issued");
     let receipts = FileReceiptStore::new(fixture.receipt_store_path());
-    let file_name = plan
-        .config_path
-        .file_name()
-        .expect("config path should have a file name")
-        .to_string_lossy();
-    let journal_path = plan
-        .config_path
-        .with_file_name(format!("{file_name}.compresso-journal"));
     let failing_store = FailAfterJournalStore { inner: &receipts };
     let error = manager
         .apply_install(&PlanApproval::from(&plan), &failing_store)
@@ -1199,6 +1202,9 @@ fn authenticated_install_journal(fixture: &Fixture) -> (PathBuf, Vec<u8>) {
         error,
         compresso_integrations::IntegrationError::Receipt(ReceiptError::Invalid { .. })
     ));
+    let journal_path = manager
+        .pending_journal(&plan.config_path)
+        .expect("production apply should leave an authenticated journal");
     let journal_bytes =
         fs::read(&journal_path).expect("production apply should leave an authenticated journal");
     fs::remove_file(&plan.config_path).expect("fixture should restore the missing base target");
@@ -1709,13 +1715,4 @@ fn test_setup_refuses_a_pending_settings_journal() {
         assert!(errors.to_string().contains("compresso-journal"), "{errors}");
         assert!(!fixture.root.join(".mcp.json").exists());
     }
-}
-
-/// A backup directory private to the calling test thread, removed when the
-/// thread ends (E17-53: backups are kept in the data directory).
-fn test_backup_dir() -> std::path::PathBuf {
-    thread_local! {
-        static DIR: tempfile::TempDir = tempfile::tempdir().expect("test backup directory");
-    }
-    DIR.with(|dir| dir.path().join(compresso_integrations::BACKUP_DIR_NAME))
 }

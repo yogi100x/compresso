@@ -26,12 +26,13 @@ use crate::receipt::InstallReceipt;
 /// Directory inside the data directory that holds integration backups.
 pub const BACKUP_DIR_NAME: &str = "integration-backups";
 
-/// Copies kept per target file. The newest is the one the active receipt
-/// names (an install writes it); the next covers an uninstall that kept a
-/// user-modified entry, whose receipt stays active while the uninstall wrote
-/// a newer copy; the third leaves one step of history for a manual recovery.
-/// Copies named by the plan being committed or by its prior receipt are
-/// never pruned, whatever their age.
+/// Newest copies kept per target file, besides the oldest. The newest is
+/// the one the active receipt names (an install writes it); the next covers
+/// an uninstall that kept a user-modified entry, whose receipt stays active
+/// while the uninstall wrote a newer copy; the third leaves one step of
+/// history for a manual recovery. The oldest copy, the file as it was before
+/// Compresso first changed it, is never pruned (E17-53 review), nor is a
+/// copy named by the plan being committed or by its prior receipt.
 pub const KEPT_PER_TARGET: usize = 3;
 
 /// Characters in the target-path hash prefix of a backup name.
@@ -141,27 +142,45 @@ pub(crate) fn is_backup_of(
             .is_some_and(|name| is_own_name(name, &target_key(config_path)))
 }
 
-/// Creates the backup directory and keeps it private to the user.
-pub(crate) fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(dir)?;
+/// The crash-recovery journal of a commit to `config_path`, kept in the
+/// backup directory under the same path hash as its copies (E17-53). Its
+/// name never matches a copy's, so pruning never touches it.
+pub(crate) fn journal_path(backup_dir: &Path, config_path: &Path) -> PathBuf {
+    backup_dir.join(format!("{}.journal", target_key(config_path)))
+}
+
+/// Creates the backup directory and keeps it private to the user. The
+/// error says what is wrong with it, for a message that names it.
+pub(crate) fn ensure_private_dir(dir: &Path) -> Result<(), String> {
+    let not_a_directory = || {
+        "something other than a directory (a file or a symbolic link) is in its place; remove it, and Compresso creates the directory".to_owned()
+    };
+    match fs::symlink_metadata(dir) {
+        Ok(metadata) if !metadata.file_type().is_dir() => return Err(not_a_directory()),
+        Ok(_) => {}
+        Err(_) => {
+            fs::create_dir_all(dir).map_err(|error| format!("it cannot be created: {error}"))?
+        }
+    }
+    let metadata =
+        fs::symlink_metadata(dir).map_err(|error| format!("it cannot be read: {error}"))?;
+    if !metadata.file_type().is_dir() {
+        return Err(not_a_directory());
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        let metadata = fs::symlink_metadata(dir)?;
-        if !metadata.file_type().is_dir() {
-            return Err(std::io::Error::other(
-                "the integration backup directory is not a directory",
-            ));
-        }
         if metadata.permissions().mode() & 0o777 != 0o700 {
-            fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+                .map_err(|error| format!("it cannot be made private (mode 0700): {error}"))?;
         }
     }
     Ok(())
 }
 
-/// Removes all but the newest [`KEPT_PER_TARGET`] copies of `config_path` in
-/// the directory holding `written`, never one named in `protect`. Only
+/// Removes all but the oldest and the newest [`KEPT_PER_TARGET`] copies of
+/// `config_path` in the directory holding `written`, never one named in
+/// `protect`. Only
 /// regular files whose names are exactly this target's backup names are
 /// considered. Best effort: the change is already committed, so a failure
 /// here is ignored.
@@ -181,6 +200,8 @@ pub(crate) fn prune(config_path: &Path, written: &Path, protect: &[&Path]) {
         .collect::<Vec<_>>();
     // Fixed-width UTC timestamps sort chronologically as text.
     names.sort_unstable_by(|left, right| right.cmp(left));
+    // The oldest copy is the file before Compresso first changed it.
+    names.pop();
     for name in names.into_iter().skip(KEPT_PER_TARGET) {
         let path = dir.join(&name);
         if protect.iter().any(|kept| *kept == path) {
@@ -190,27 +211,40 @@ pub(crate) fn prune(config_path: &Path, written: &Path, protect: &[&Path]) {
     }
 }
 
-/// Copies that versions before E17-53 wrote beside a file and that a
-/// receipt of ours names, which still exist as regular files, for the
-/// targets `relevant` selects; sorted, each once. Compresso never deletes
-/// them: no receipt recorded a hash of a copy, so nothing proves that a file
-/// at that path is still the copy Compresso wrote.
+/// Regular files named like the copies versions before E17-53 wrote beside
+/// a file (`<file>.compresso-backup-*`), beside every config file a receipt
+/// of ours names, for the targets `relevant` selects; sorted, each once.
+/// Copies an older version made at uninstall are in no receipt, so the
+/// directory is listed rather than the receipts' `backup_path` alone
+/// (E17-53 review). Compresso never deletes them: no receipt recorded a
+/// hash of a copy, so nothing proves that a file there is Compresso's.
 pub fn legacy_backups(
     receipts: &[InstallReceipt],
     relevant: impl Fn(&Path) -> bool,
 ) -> Vec<PathBuf> {
-    receipts
+    let configs = receipts
         .iter()
         .filter(|receipt| relevant(&receipt.config_path))
-        .map(|receipt| (&receipt.config_path, PathBuf::from(&receipt.backup_path)))
-        .filter(|(config, backup)| is_legacy_beside(config, backup))
-        .filter(|(_, backup)| {
-            fs::symlink_metadata(backup).is_ok_and(|metadata| metadata.file_type().is_file())
-        })
-        .map(|(_, backup)| backup)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
+        .map(|receipt| receipt.config_path.clone())
+        .collect::<BTreeSet<_>>();
+    let mut found = BTreeSet::new();
+    for config in configs {
+        let Some(dir) = config.parent() else {
+            continue;
+        };
+        let Ok(entries) = fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let path = entry.path();
+            if is_legacy_beside(&config, &path)
+                && entry.file_type().is_ok_and(|kind| kind.is_file())
+            {
+                found.insert(path);
+            }
+        }
+    }
+    found.into_iter().collect()
 }
 
 /// A backup directory private to the calling test thread, removed when the
@@ -320,13 +354,13 @@ mod tests {
             fs::write(path, "keep").expect("foreign file");
         }
 
-        prune(config, &paths[5], &[&paths[0]]);
+        prune(config, &paths[5], &[&paths[1]]);
 
         for (index, path) in paths.iter().enumerate() {
             assert_eq!(
                 path.exists(),
-                index == 0 || index >= 3,
-                "copy {index} kept only when protected or among the newest three"
+                index <= 1 || index >= 3,
+                "copy {index} kept only when oldest, protected, or among the newest three"
             );
         }
         for path in &foreign {

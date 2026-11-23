@@ -217,5 +217,14 @@ read when their receipt names them, never required, and never deleted; a
 command that touches such a file prints one `old_backups_kept` warning on
 stderr naming them (with `--json`, a path-free warning in the report). No receipt recorded a hash of its copy, so nothing can
 prove a file at that path is still Compresso's: an automatic cleanup step was
-not built. The crash journal (`<file>.compresso-journal`, 0600, holding the
-file's bytes until the commit finishes) is still written beside the file.
+not built.
+
+Review round (2026-11-23): the crash journal (0600, holding the file's bytes
+until the commit finishes) moved into the backup directory too
+(`<hash>.journal`), written only after the copy and the directory checks
+succeed; a journal an earlier version left beside the file is still
+recovered. The oldest copy of each file is kept as well as the newest three,
+the warning names every `<file>.compresso-backup-*` beside a managed file,
+and an uninstall says where the copies stay. Only the atomic replace's own
+temporary file is still written beside the target, as a same-directory rename
+requires.

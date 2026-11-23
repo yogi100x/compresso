@@ -1566,7 +1566,37 @@ fn execute_mutation(
             fallback_entry: None,
             json: arguments.output.json,
         },
-    )
+    )?;
+    if action == MutationAction::Uninstall && !arguments.output.json {
+        write_backups_kept_note(output, environment)?;
+    }
+    Ok(())
+}
+
+/// After an uninstall, says where the copies of changed configuration files
+/// stay and how to delete them (E17-53 review): uninstall removes Compresso's
+/// entries but keeps the copies, which can hold other servers' tokens.
+fn write_backups_kept_note(
+    output: &mut impl Write,
+    environment: &IntegrationEnvironment,
+) -> std::io::Result<()> {
+    let dir = compresso_integrations::backup_dir_in(&environment.data_dir);
+    let kept = std::fs::read_dir(&dir)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|entry| !entry.file_name().to_string_lossy().ends_with(".journal"))
+                .count()
+        })
+        .unwrap_or(0);
+    if kept > 0 {
+        writeln!(
+            output,
+            "note: copies Compresso made of the configuration files it changed (they can hold other servers' tokens) stay in {}; delete them there when you no longer need them (keep any file ending in .journal: it is an unfinished change)",
+            dir.display()
+        )?;
+    }
+    Ok(())
 }
 
 fn write_fallback_preview(output: &mut impl Write, plan: &MutationPlan) -> std::io::Result<()> {
@@ -2880,6 +2910,7 @@ impl From<IntegrationError> for IntegrationCliError {
             IntegrationError::PendingRecovery { .. } => "pending_recovery",
             IntegrationError::PlanExpired { .. } => "plan_expired",
             IntegrationError::BackupCollision { .. } => "backup_collision",
+            IntegrationError::BackupDirectory { .. } => "backup_directory",
             IntegrationError::UninstallReceiptMissing { .. }
             | IntegrationError::UninstallReceiptMismatch { .. }
             | IntegrationError::UninstallReceiptNotActive { .. }

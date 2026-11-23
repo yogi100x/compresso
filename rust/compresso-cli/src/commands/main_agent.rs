@@ -216,10 +216,9 @@ pub(crate) fn recover_pending(
     ];
     let mut recovered = false;
     for path in paths.into_iter().flatten() {
-        let journal = compresso_integrations::pending_journal_path(&path);
-        if !journal.exists() {
+        let Some(journal) = manager.pending_journal(&path) else {
             continue;
-        }
+        };
         if dry_run {
             return Err(IntegrationCliError::new(
                 "pending_recovery",

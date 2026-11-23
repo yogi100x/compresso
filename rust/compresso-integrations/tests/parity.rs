@@ -542,11 +542,16 @@ fn test_atomic_receipt_failure_recovers_each_adapter_commit() {
             "{} private target committed before receipt failure",
             client.id()
         );
+        // The journal waits in the backup directory, never beside the file.
+        let journal = manager
+            .pending_journal(&harness.config_path)
+            .unwrap_or_else(|| panic!("{} recovery journal", client.id()));
         assert!(
-            harness.journal_path().exists(),
-            "{} recovery journal",
-            client.id()
+            journal.starts_with(test_backup_dir()),
+            "{}",
+            journal.display()
         );
+        assert!(!harness.journal_path().exists(), "{}", client.id());
         assert_eq!(
             fs::read(&plan.backup_path).expect("recovery backup readable"),
             harness.baseline,

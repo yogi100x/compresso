@@ -59,7 +59,7 @@ pub use plan::{
     NO_BACKUP_KEPT_SENTINEL, OwnedKeyMutation, PLAN_SCHEMA_VERSION, PLAN_TTL_SECONDS, PlanApproval,
     PlanClock, PlanManager, RestoreReport, Scope, SystemPlanClock,
     UNMODIFIED_FILE_REMOVED_BACKUP_SENTINEL, UNMODIFIED_FILE_REPLACED_BACKUP_SENTINEL,
-    VerificationCheck, VerificationReport, pending_journal_path,
+    VerificationCheck, VerificationReport,
 };
 pub use receipt::{
     CREATED_FILE_BACKUP_SENTINEL, FileReceiptStore, InstallReceipt, MemoryReceiptStore,

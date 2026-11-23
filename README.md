@@ -76,17 +76,32 @@ provider). Both show the exact plan first (`--dry-run` previews without
 writing), keep a backup and a receipt, and are undone with
 `compresso integrations uninstall <client>`.
 
-The backup of a changed file is kept in Compresso's own data directory
-(`integration-backups/`, mode 0600 in a 0700 directory, the newest three per
-file), never beside the file, so nothing is added to your project folder
-that `git add -A` could commit; the plan's last line names it, or says
-`(none: ...)` when no copy is needed. Versions before E17-53 wrote
-`<file>.compresso-backup-<time>` beside the file. Compresso still reads such a
-copy when its receipt names it, never deletes it, and prints one
-`old_backups_kept` warning naming it when you install, reinstall, or
-uninstall (with `--json`, a warning without the path; run without it to see
-the names): it may hold other servers' tokens, so delete it yourself if you do
-not need it.
+The backup of a changed file is kept in Compresso's own data directory,
+in `integration-backups/` (`$XDG_DATA_HOME/compresso/integration-backups/`,
+by default `~/.local/share/compresso/integration-backups/` on macOS and
+Linux): mode 0600 in a 0700
+directory, the oldest copy (the file as it was before Compresso first
+changed it) and the newest three per file, never beside the file, so nothing
+is added to your project folder that `git add -A` could commit. The
+crash-recovery journal of a change (which holds the file's bytes until the
+change finishes) is kept there too. The plan's last line names the copy, or
+says `(none: ...)` when no copy is needed. If that directory cannot be used
+(a file or link in its place, or no permission), nothing is written and the
+error names it.
+
+Uninstall removes Compresso's entries but keeps these copies, which can hold
+other servers' tokens (also for user-level files such as `~/.claude.json`);
+its output says where they are. Delete the files in `integration-backups/`
+when you no longer need them, except a file ending in `.journal`, which is an
+unfinished change.
+
+Versions before E17-53 wrote `<file>.compresso-backup-<time>` beside the
+file. Compresso still reads such a copy when its receipt names it, never
+deletes one, and prints one `old_backups_kept` warning naming every such file
+beside a file it manages when you install, reinstall, or uninstall (with
+`--json`, a count without the paths; run without it to see the names): they
+may hold other servers' tokens, so delete them yourself if you do not need
+them.
 
 For a Claude Code project (`setup claude-code ROOT`, or
 `integrations install claude-code --project DIR`) the install also makes

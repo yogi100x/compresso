@@ -558,9 +558,10 @@ fn test_codex_recovery_rejects_config_directory_replaced_by_symlink() {
         env!("CARGO_PKG_VERSION"),
     )
     .expect("Codex adapter");
+    // The CLI's own backup directory, where it looks for pending journals.
     let manager = PlanManager::new("cli-codex-recovery-symlink")
         .expect("plan manager")
-        .with_backup_dir(test_backup_dir());
+        .with_backup_dir(fixture.data.join(compresso_integrations::BACKUP_DIR_NAME));
     let plan = adapter
         .plan_install(
             &manager,
@@ -576,13 +577,17 @@ fn test_codex_recovery_rejects_config_directory_replaced_by_symlink() {
     adapter
         .install(&manager, &PlanApproval::from(&plan), &receipts)
         .expect_err("injected receipt failure leaves an authenticated journal");
+    let journal = manager
+        .pending_journal(&plan.config_path)
+        .expect("authenticated journal");
+    assert!(journal.starts_with(&fixture.data), "{}", journal.display());
     let config_dir = fixture.home.join(".codex");
     let outside = fixture._directory.path().join("outside-codex");
     fs::rename(&config_dir, &outside).expect("move pending recovery outside home");
     fs::remove_file(outside.join("config.toml")).expect("restore interrupted base state");
     symlink(&outside, &config_dir).expect("replace Codex directory with symlink");
-    let journal = outside.join("config.toml.compresso-journal");
     assert!(journal.is_file());
+    assert!(!outside.join("config.toml.compresso-journal").exists());
 
     let (exit, output, errors) =
         fixture.run(&["integrations", "install", "codex", "--yes", "--json"], "");
@@ -766,6 +771,138 @@ fn test_install_reinstall_uninstall_cycle_leaves_no_extra_file_in_the_project() 
     }
 }
 
+/// Through the CLI: a backup directory that is a file stops the install
+/// before anything is written, with an error naming the directory and what
+/// is wrong; nothing (no journal, no copy) appears in the project, and the
+/// next command is not blocked once the directory is fixed (E17-53 review).
+#[test]
+fn test_an_unusable_backup_directory_leaves_the_project_untouched() {
+    let fixture = Fixture::new();
+    let config = fixture.project.join(".mcp.json");
+    fs::write(
+        &config,
+        "{\"mcpServers\": {\"other\": {\"env\": {\"TOKEN\": \"t\"}}}}\n",
+    )
+    .expect("existing project config");
+    let backups = fixture.data.join(compresso_integrations::BACKUP_DIR_NAME);
+    fs::create_dir_all(&fixture.data).expect("data");
+    fs::write(&backups, "a file where the directory belongs").expect("file in place");
+    let before = files_under(&fixture.project);
+    let base = fs::read(&config).expect("base");
+
+    let (exit, output, errors) = fixture.run(
+        &fixture.project_arguments("install", &["--no-main-agent", "--yes", "--json"]),
+        "",
+    );
+
+    assert_eq!(exit, CliExitCode::Failure, "{output}");
+    assert_eq!(errors["error"]["code"], "backup_directory", "{errors}");
+    let message = errors["error"]["message"].as_str().expect("message");
+    assert!(message.contains(&*backups.to_string_lossy()), "{message}");
+    assert!(
+        message.contains("not a directory") || message.contains("other than a directory"),
+        "{message}"
+    );
+    assert_eq!(files_under(&fixture.project), before);
+    assert_eq!(fs::read(&config).expect("config"), base);
+
+    fs::remove_file(&backups).expect("fixed");
+    let (exit, output, _) = fixture.run(
+        &fixture.project_arguments("install", &["--no-main-agent", "--yes", "--json"]),
+        "",
+    );
+    assert_eq!(exit, CliExitCode::Success, "{output}");
+}
+
+/// Through the CLI: repeated changed installs keep the oldest copy (the
+/// file before Compresso changed it) and the newest three, never delete the
+/// copy the active receipt names, and never delete a file in the backup
+/// directory that is not exactly one of this file's copies (E17-53 review).
+#[cfg(unix)]
+#[test]
+fn test_cli_pruning_keeps_the_original_and_named_copies_and_no_foreign_file() {
+    let fixture = Fixture::new();
+    let config = fs::canonicalize(&fixture.project)
+        .expect("project")
+        .join(".mcp.json");
+    let original =
+        "{\"mcpServers\": {\"other\": {\"command\": \"x\", \"env\": {\"TOKEN\": \"t\"}}}}\n";
+    fs::write(&config, original).expect("existing project config");
+    let backups = fixture.data.join(compresso_integrations::BACKUP_DIR_NAME);
+    let receipts = FileReceiptStore::new(fixture.data.join("integration-receipts.json"));
+    let install = |no_recall: bool| {
+        let mut extra = vec!["--no-main-agent", "--yes", "--json"];
+        if no_recall {
+            extra.insert(0, "--no-recall");
+        }
+        let (exit, output, _) =
+            fixture.run_with_stderr(&fixture.project_arguments("install", &extra));
+        assert_eq!(exit, CliExitCode::Success, "{output}");
+    };
+    install(false);
+    let first = receipts
+        .active_for("claude-code", &config)
+        .expect("lookup")
+        .expect("receipt");
+    let first_copy = PathBuf::from(&first.backup_path);
+    let name = first_copy
+        .file_name()
+        .expect("name")
+        .to_string_lossy()
+        .into_owned();
+    let key = &name[..32];
+    let foreign = [
+        backups.join(format!("{key}-notes.txt")),
+        backups.join(format!("{key}-2000-01-01T00-00-00Z.bak")),
+        backups.join(format!("{key}-2026-01-01T00-00-00Z~")),
+        backups.join("unrelated"),
+    ];
+    for path in &foreign {
+        fs::write(path, "keep").expect("foreign file");
+    }
+    // Eight more changed installs: the entry alternates with and without
+    // the recall argument, so each one changes the file and makes a copy.
+    for step in 1..=8 {
+        install(step % 2 == 1);
+    }
+    let commits = receipts
+        .all()
+        .expect("receipts")
+        .iter()
+        .filter(|receipt| receipt.config_path == config)
+        .count();
+
+    let active = receipts
+        .active_for("claude-code", &config)
+        .expect("lookup")
+        .expect("receipt");
+    let copies = files_under(&backups)
+        .into_iter()
+        .filter(|path| {
+            let name = path.to_string_lossy();
+            name.len() == 32 + 1 + 20 && name.starts_with(key)
+        })
+        .collect::<Vec<_>>();
+    // Old copies were deleted: at most the oldest, the newest three, and
+    // the one the active receipt names are left.
+    assert!(commits >= 6, "{commits} commits");
+    assert!(
+        copies.len() < commits && copies.len() <= 2 + compresso_integrations::KEPT_PER_TARGET,
+        "{commits} commits, kept {copies:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(&first_copy).expect("the original is kept"),
+        original
+    );
+    assert!(
+        Path::new(&active.backup_path).is_file(),
+        "the active receipt's copy is kept"
+    );
+    for path in &foreign {
+        assert_eq!(fs::read_to_string(path).expect("foreign kept"), "keep");
+    }
+}
+
 /// A copy an earlier version wrote beside `.mcp.json` and named in its
 /// receipt is reported once on stderr (never in the JSON report), is still
 /// used to restore the original bytes, and is never deleted, nor is a file
@@ -803,7 +940,7 @@ fn test_old_copies_beside_the_file_are_warned_about_and_never_deleted() {
     assert_eq!(exit, CliExitCode::Success, "{output}");
     assert!(stderr.is_empty(), "{stderr}");
     let warnings = output["data"]["warnings"].to_string();
-    assert!(warnings.contains("old_backups_kept: 1 copy"), "{output}");
+    assert!(warnings.contains("old_backups_kept: 2 copies"), "{output}");
     assert!(
         !output.to_string().contains("compresso-backup-2026"),
         "{output}"
@@ -813,7 +950,8 @@ fn test_old_copies_beside_the_file_are_warned_about_and_never_deleted() {
         fixture.run_with_stderr(&fixture.project_arguments("verify", &["--json"]));
     assert!(verified["data"].is_object(), "{verified}");
 
-    // Text output: one stderr line naming the copy, never the look-alike.
+    // Text output: one stderr line naming every file named like an old copy
+    // (one an old uninstall made is in no receipt); none is deleted.
     let (exit, output, stderr) =
         fixture.run_with_stderr(&fixture.project_arguments("uninstall", &["--yes"]));
 
@@ -827,7 +965,10 @@ fn test_old_copies_beside_the_file_are_warned_about_and_never_deleted() {
         .collect::<Vec<_>>();
     assert_eq!(warnings.len(), 1, "{stderr}");
     assert!(warnings[0].contains(&*legacy.to_string_lossy()), "{stderr}");
-    assert!(!warnings[0].contains("2025-01-01"), "{stderr}");
+    assert!(
+        warnings[0].contains(&*look_alike.to_string_lossy()),
+        "{stderr}"
+    );
 }
 
 fn parse_json(bytes: &[u8]) -> Value {
@@ -1023,13 +1164,4 @@ fn test_no_recall_is_rejected_where_it_has_no_meaning() {
         .is_err(),
         "the hook surface has no recall setting"
     );
-}
-
-/// A backup directory private to the calling test thread, removed when the
-/// thread ends (E17-53: backups are kept in the data directory).
-fn test_backup_dir() -> std::path::PathBuf {
-    thread_local! {
-        static DIR: tempfile::TempDir = tempfile::tempdir().expect("test backup directory");
-    }
-    DIR.with(|dir| dir.path().join(compresso_integrations::BACKUP_DIR_NAME))
 }
