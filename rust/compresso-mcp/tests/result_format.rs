@@ -2870,3 +2870,126 @@ async fn test_go_impact_result_lists_package_files_and_counts_unproven_ones() {
     );
     full.close().await;
 }
+
+/// E17-54 (D119): a client that calls a deferred tool before loading its
+/// schema sends integers as strings. A string of decimal digits is read as
+/// that integer for every tool, in both profiles, through the same range
+/// checks; floats, signs, whitespace, and empty strings are still refused.
+#[tokio::test]
+async fn test_integer_arguments_accept_decimal_digit_strings_in_both_profiles() {
+    let fixture = Fixture::new();
+    for profile in [McpToolProfile::Lean, McpToolProfile::Full] {
+        let mut harness = Harness::start(&fixture, fixture.options(profile)).await;
+        let (as_numbers, is_error) = harness
+            .call(
+                "compresso_read",
+                &json!({ "path": "src/lib.rs", "start_line": 7, "end_line": 9 }),
+            )
+            .await;
+        assert!(!is_error, "{as_numbers}");
+        let (as_strings, is_error) = harness
+            .call(
+                "compresso_read",
+                &json!({ "path": "src/lib.rs", "start_line": "7", "end_line": "9" }),
+            )
+            .await;
+        assert!(!is_error, "{as_strings}");
+        assert!(as_strings.contains("start_session"), "{as_strings}");
+        if profile == McpToolProfile::Lean {
+            assert_eq!(as_strings, as_numbers);
+        }
+        let (text, is_error) = harness
+            .call(
+                "compresso_read",
+                &json!({
+                    "ranges": [{ "path": "src/lib.rs", "start_line": "7", "end_line": "9" }],
+                    "max_tokens": "2000"
+                }),
+            )
+            .await;
+        assert!(!is_error, "{text}");
+        assert!(text.contains("start_session"), "{text}");
+        for (tool, arguments) in [
+            (
+                "compresso_search",
+                json!({ "query": "start_session", "limit": "3" }),
+            ),
+            (
+                "compresso_grep",
+                json!({ "patterns": ["start_session"], "max_files": "2", "context_lines": "0" }),
+            ),
+        ] {
+            let (text, is_error) = harness.call(tool, &arguments).await;
+            assert!(!is_error, "{tool}: {text}");
+            assert!(text.contains("start_session"), "{tool}: {text}");
+        }
+        for refused in [
+            json!("7.0"),
+            json!(" 7"),
+            json!("7 "),
+            json!(""),
+            json!("+7"),
+            json!("-7"),
+            json!("0x7"),
+            json!(7.5),
+            json!(-7),
+            json!("0"),
+        ] {
+            let (text, is_error) = harness
+                .call(
+                    "compresso_read",
+                    &json!({ "path": "src/lib.rs", "start_line": refused }),
+                )
+                .await;
+            assert!(is_error, "{refused}: {text}");
+            assert!(
+                text.contains("argument 'start_line' must be an integer from 1 through"),
+                "{refused}: {text}"
+            );
+        }
+        let (text, is_error) = harness
+            .call(
+                "compresso_search",
+                &json!({ "query": "start_session", "limit": "101" }),
+            )
+            .await;
+        assert!(is_error, "{text}");
+        assert!(
+            text.contains("argument 'limit' must be an integer from 1 through 100."),
+            "{text}"
+        );
+        harness.close().await;
+    }
+}
+
+/// E17-54 (D119): the lean clamps read a digit string as its number too;
+/// the full profile still rejects the same out-of-range values.
+#[tokio::test]
+async fn test_lean_clamps_read_decimal_digit_strings() {
+    let fixture = Fixture::new();
+    let read = json!({
+        "ranges": [{ "path": "src/lib.rs", "start_line": "1", "end_line": "5" }],
+        "max_tokens": "1"
+    });
+    let grep = json!({ "patterns": ["start_session"], "max_tokens": "120" });
+    let mut lean = Harness::start(&fixture, fixture.options(McpToolProfile::Lean)).await;
+    let (text, is_error) = lean.call("compresso_read", &read).await;
+    assert!(!is_error, "{text}");
+    assert!(
+        text.contains("[limits clamped: max_tokens 1 -> 100]"),
+        "{text}"
+    );
+    let (text, is_error) = lean.call("compresso_grep", &grep).await;
+    assert!(!is_error, "{text}");
+    assert!(
+        text.contains("[limits clamped: max_tokens 120 -> 300]"),
+        "{text}"
+    );
+    lean.close().await;
+    let mut full = Harness::start(&fixture, fixture.options(McpToolProfile::Full)).await;
+    for (tool, arguments) in [("compresso_read", &read), ("compresso_grep", &grep)] {
+        let (text, is_error) = full.call(tool, arguments).await;
+        assert!(is_error, "{tool}: {text}");
+    }
+    full.close().await;
+}

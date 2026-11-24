@@ -886,3 +886,38 @@ async fn test_lean_grep_text_says_at_least_when_the_outside_scan_stops_early() {
     );
     harness.close().await;
 }
+
+/// E17-54 (D119): an operation's `expected_count` given as a digit string
+/// is read as that integer, in both profiles; other strings are refused.
+#[tokio::test]
+async fn test_expected_count_accepts_a_decimal_digit_string() {
+    for profile in [McpToolProfile::Full, McpToolProfile::Lean] {
+        let fixture = Fixture::new();
+        let mut harness = Harness::start(&fixture, fixture.options(profile, true)).await;
+        let call = |count: Value| {
+            json!({
+                "operations": [{
+                    "op": "replace",
+                    "path": "src/lib.rs",
+                    "old": "seconds",
+                    "new": "secs",
+                    "expected_count": count
+                }]
+            })
+        };
+        for refused in [json!("3.0"), json!(" 3"), json!(""), json!("+3")] {
+            let (text, is_error) = harness.call("compresso_edit", &call(refused.clone())).await;
+            assert!(is_error, "{refused}: {text}");
+            assert!(text.starts_with("[invalid_arguments]"), "{refused}: {text}");
+            assert!(text.contains("expected_count"), "{refused}: {text}");
+        }
+        assert_eq!(fixture.text("src/lib.rs"), LIB_RS);
+        let (text, is_error) = harness.call("compresso_edit", &call(json!("3"))).await;
+        assert!(!is_error, "{profile:?}: {text}");
+        assert_eq!(
+            fixture.text("src/lib.rs"),
+            LIB_RS.replace("seconds", "secs")
+        );
+        harness.close().await;
+    }
+}

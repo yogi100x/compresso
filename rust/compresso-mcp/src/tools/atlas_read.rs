@@ -13,9 +13,9 @@ use std::path::Path;
 use super::Form;
 use super::common::{
     MAX_TOKENS, MIN_TOKENS, REINDEX_HINT, ToolFailure, ToolResult, checked_arguments,
-    map_atlas_error, navigation_counter, optional_bool, optional_string, optional_u32,
-    optional_usize, required_string, resolve_repository, symbol_kind_name, token_budget,
-    validate_repo_path, with_budget,
+    integer_argument, map_atlas_error, navigation_counter, optional_bool, optional_string,
+    optional_u32, optional_usize, required_string, resolve_repository, symbol_kind_name,
+    token_budget, validate_repo_path, with_budget,
 };
 use super::text;
 
@@ -530,7 +530,7 @@ fn read_ranges_tool(
     // this form, an out-of-range max_tokens is clamped with a note.
     let mut clamped = Vec::new();
     if form.is_lean()
-        && let Some(value) = arguments.get("max_tokens").and_then(Value::as_u64)
+        && let Some(value) = arguments.get("max_tokens").and_then(integer_argument)
     {
         let bound = if value < MIN_TOKENS as u64 {
             Some(MIN_TOKENS)

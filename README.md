@@ -117,8 +117,16 @@ For a Claude Code project (`setup claude-code ROOT`, or
 Compresso the session's main agent by default (ADR-0037):
 
 - `.claude/agents/compresso-main.md`: a short main-session prompt that routes
-  repository search, reads, and edits through Compresso. It replaces the
-  client's long default system prompt; the client keeps all its own tools.
+  repository search, reads, and edits through Compresso. It tells the model
+  to load the Compresso tools in its first tool search, to read every
+  repository file (SQL, JSON, and config included) with `compresso_read`,
+  with two exceptions: git-ignored dependency or build paths, which it reads
+  with the client's own Read, and secret-named files (`.env*`, keys,
+  credentials), which it is told never to read with any tool; and to keep
+  the shell for installs, the type-check, tests, and git. It
+  replaces the client's long default system prompt; the client keeps all its
+  own tools. An agent file an earlier version wrote shows as out of date in
+  `integrations verify` until you install again.
 - `"agent": "compresso-main"` in your personal
   `.claude/settings.local.json`. Only that one key is added; every other byte
   of the file is kept, and no backup copy of this file is ever written (it

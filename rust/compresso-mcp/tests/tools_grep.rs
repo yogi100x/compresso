@@ -546,7 +546,9 @@ async fn test_grep_tool_context_lines_surround_matches_within_the_token_cap() {
     );
     assert_eq!(capped["truncated"], true);
 
-    for bad in [json!(11), json!(-1), json!("2")] {
+    // A decimal-digit string is read as its integer since E17-54 (D119);
+    // other strings are still refused.
+    for bad in [json!(11), json!(-1), json!("11"), json!("2.0"), json!(" 2")] {
         assert_tool_error(
             &harness
                 .call(json!({ "pattern": "scan", "context_lines": bad }))
